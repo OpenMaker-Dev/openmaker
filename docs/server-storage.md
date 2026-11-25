@@ -320,12 +320,21 @@ The readers that read through views:
 - Describe Security (op240, `security::catalog`): each record of the
   accounts `[23, 1, 5]`, privilege sets `[23, 2, 5]` and extended
   privileges `[23, 3, 5]`, listed one key at a time and decoded as it is
-  read, one record held at a time, with only the members it decodes:
-  each read whole within what one reply carries (1 MiB, `MEMBER_LIMIT`),
-  and an extended privilege's sets `05` read as the keys of its children,
-  all the reply takes of them, so nothing below those keys is read. Never
-  an account's password `06` or its `04`. Before, it borrowed the three
-  lists whole from the store;
+  read, one record held at a time, with only the members it decodes, each
+  read as its decoder reads it: heads and keys first, a member's subtree
+  only where a decoder uses it, and nothing the reply discards. A value
+  its decoder takes as one (an account's kind `02`, status `0a` and set
+  `0b`, a set's record flags `02` and lifetime `0c`) is read as the
+  member's own value, and its children, a value in pieces that decodes as
+  none, never; a name or keyword as its own value or else its pieces; an
+  extended privilege's sets `05` as the keys of its children, all the
+  reply takes of them, nothing below those keys. A name, a keyword or the
+  sets of one record may take what one reply carries (1 MiB,
+  `MEMBER_LIMIT`), counted as the keys and values the view hands out for
+  it; one past it refuses the request. FileMaker's own security editor is
+  not known to write a member of that size (unmeasured). Never an
+  account's password `06` or its `04`. Before, it borrowed the three lists
+  whole from the store;
 - the desktop's private host (`LocalHost`): the account its account
   catalog's header names (`[23, 1, 1, 16]`, one node), looked up in the
   reading's accounts, which a client suggests (`suggested_account`); the
@@ -553,11 +562,12 @@ into the operation it runs (`ChangeSchema`, `StoreIndexes`). A recording is
 offered each operation by reference, completed and before it runs; that is
 what it holds, and a replay submits it as it is. The running server records
 nothing, so submitting an operation copies none of its uploaded trees or
-staged records. What it does copy is small: the member keys a draft took (a
-catalog path and two numbers each), kept so that they go back to waiting if
-its run is left by a panic before it writes them, as they stayed waiting
-before. The store engine will have to make issuing a member
-key and building an index operations of their own.
+staged records. What it does copy is small: what a draft took of what
+reads left waiting (a catalog path and two numbers for each member key, a
+table, a field and a kind for each index), kept so that it goes back to
+waiting if the operation is not stored or its run is left by a panic. The
+store engine will have to make issuing a member key and building an index
+operations of their own.
 
 One function, `engine::run`, runs an operation against a transaction (a
 view plus put, delete and replace-subtree), the file's lock table
@@ -1261,6 +1271,17 @@ rule 4 (section 2), and `submit` reads it for every operation
   does everything that follows from it (a commit's records are released);
   and the file takes no more changes (below).
 
+After the rename nothing takes the change back. The save records that it
+replaced the file, and that its outcome is unknown until the folder's
+flush confirms it, at the rename, before anything that can fail or unwind,
+a log line included (`Store::save`): the save is counted, the store counts
+nothing as unsaved, and the file takes no more changes until the flush
+succeeds. A guard that handles an unwind takes a change back only when no
+save replaced the file since the change began (`Store::roll_back_unwound`,
+which compares the saves the journal began with): a save left by a panic
+after its rename leaves memory as the file holds it, and the file taking
+no more changes.
+
 An operation that changed nothing of the tree (op72 reading a serial,
 op87 with a delta of 0, an account edit that leaves the account as it
 was) still saves where its request saved before, which writes the changes
@@ -1279,7 +1300,16 @@ value, leaving it deleted), the index entries, record lists and counts it
 moved being nodes the journal kept before it. Each entry keeps,
 with the node a change writes, the first of its parents the change
 creates (as absent), so that taking it back removes what it created: the
-first record of a table takes its record list `[T, 05]` back with it. The
+first record of a table takes its record list `[T, 05]` back with it.
+Whenever a change puts a child under a node that exists, the journal keeps
+that node's own kind and value: a key that is not a list yet (one holding
+an empty value, or nothing) becomes one as the child goes beneath it, so
+the first such key on the way is kept whole (`Journal::save_parents`), and
+taking the change back puts it back as that key. Every writer keeps its
+changes this way, op72's and Set Next Serial Value's serial node under its
+field definition too (`Store::kept_before`). A key that becomes a list
+drops an empty value of its own (`OwnedNode::ensure`), as the writer
+writes such a list: memory holds what the file will. The
 journal keeps what the change itself decided, never a second account of
 it: op88's choice between the member that already holds the data and a
 new one is made once (`library::store_plan`), and so is op87's between
@@ -1289,7 +1319,7 @@ counting and deleting (`library::adjust_keys`). What it keeps:
 |---|---|
 | op70, a server script's commit | each record as it was, the record lists and index entries and counts it changed, a script's library entries (as before) |
 | op71 | the last issued id `[T, 00]` |
-| op72, Set Next Serial Value | the field's serial node |
+| op72, Set Next Serial Value | the field's serial node, and its definition whole when it is not a list yet |
 | op13, op86's UploadMultiple and DeleteTable | the subtree each write replaced or deleted, moved, not copied, and the first parent a write created |
 | op86's GenerateMemberKey | the catalog index keys it advanced |
 | a find's indexes | the index nodes it put, absent as a rule |
@@ -1313,8 +1343,24 @@ waiting wait again, for the next write. Thumbnails of the libraries a
 deleted table took or a script's commit emptied are forgotten, a new
 field's basis is counted and the log lines that say a change was made are
 written only for a change the file holds (stored or unknown). A run left
-by a panic is taken back the same way, and the store then counts as
+by a panic is taken back the same way, its locks released and what it
+took of what waits put back, and so is one left by a panic as its accounts
+are decoded after it (`engine::file::unwound`); the store then counts as
 changed since its last save (below).
+
+One seeded test checks this invariant alone
+(`engine::tests::every_change_not_stored_leaves_every_node_and_flag_as_it_was`):
+it generates trees whose records, field definitions, library and account
+entries, their lists and catalogs' indexes take every shape a file admits
+(missing, an empty value, a value, a value in pieces, an empty list), runs
+every kind of operation on each, first with a panic injected at each
+change it keeps in a journal, then with its save failing before its
+rename, and compares the whole tree and every flag (the schema, the
+accounts, what waits, the locks, the record of unsaved changes, the
+read-only and no-more-changes states, the saves, the file on disk) with
+what they were before; and while the store counts nothing as changed,
+memory with the file on disk. Nine trees run by default, 2,000 seeded ones
+in an ignored run.
 
 *The record of unsaved changes.* The store keeps whether memory may hold
 what the file on disk lacks (`Store::has_unsaved_changes`). Clear, it
@@ -1449,7 +1495,8 @@ file's `error` with its status unchanged (`FileInfo::error`;
 admin-console.md). Closing the file and opening it again, or a restart,
 loads it from the renamed file, which clears the state. The no-more-changes
 state is held in the store (checked under its write lock) and once more in
-the file (`Hosted::writes_refused`, set once, read without a lock), so that
+the file (`Hosted::writes_refused`, copied from the store's as each write
+lets go of the store, an unwound one too, and read without a lock), so that
 the list of files does not wait for a busy store.
 
 *A leftover copy.* A save that stops part way (the process or the machine

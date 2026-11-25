@@ -370,7 +370,7 @@ impl FileEngine {
     /// waiting ([`complete`]), and store it ([`Self::submit`]). On a file
     /// that takes no more changes the operation is refused unrun, and what
     /// it took waits again. If the run is left by a panic, what it changed
-    /// is taken back and the member keys it took wait again.
+    /// is taken back and what it took waits again.
     fn submit_write(
         &self,
         file: &Hosted,
@@ -402,19 +402,10 @@ impl FileEngine {
         let mut outcome = match ran {
             Ok(outcome) => outcome,
             Err(panic) => {
-                // What it changed is put back, member keys it wrote
-                // included, which wait again, as they did before the engine
-                // interface; the indexes it took do not (they had been
-                // taken then too). The store counts as changed since its
-                // last save: an unwind can leave what no journal holds.
                 let journal = tx.journal;
-                store.roll_back_unwound(journal);
-                store.put_back_member_keys(taken.member_keys);
-                std::panic::resume_unwind(panic)
+                unwound(file, &mut store, journal, taken, locks, panic)
             }
         };
-        // An authoring edit's locks, released once the store is let go.
-        let held = locks.after_stored();
         let Transaction {
             mut journal,
             committing,
@@ -428,7 +419,16 @@ impl FileEngine {
         // The accounts follow the change in the same step, before its save
         // (an account edit's, an op13 upload of the security catalog's):
         // a save that is not written puts back those from before with it.
-        store.follow_accounts(Some(&mut journal));
+        // Left by a panic, they are taken back with the change, as a run
+        // left by one is.
+        let followed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            store.follow_accounts(Some(&mut journal));
+        }));
+        if let Err(panic) = followed {
+            unwound(file, &mut store, journal, taken, locks, panic);
+        }
+        // An authoring edit's locks, released once the store is let go.
+        let held = locks.after_stored();
         let effects = journal.changed();
         let lines = journal.take_lines();
         let saves = match save {
@@ -537,6 +537,30 @@ impl FileEngine {
         transaction::release(file.locks(&WRITER), held);
         outcome
     }
+}
+
+/// Take back an operation of `file` left by `panic`, then let the panic go
+/// on: what it changed is put back from `journal`, member keys it wrote and
+/// indexes it stored included, what it `taken` of what reads left waiting
+/// waits again, and the locks it took are released, an authoring edit's
+/// too, as when its save is not written (docs/server-storage.md 5, "Taking
+/// a change back"). The store counts as changed since its last save: an
+/// unwind can leave what no journal holds ([`Store::roll_back_unwound`]).
+/// The lock table is taken under the store, in the engine's lock order.
+fn unwound(
+    file: &Hosted,
+    store: &mut Store,
+    journal: crate::store::Journal,
+    taken: Taken,
+    mut locks: Locks<'_>,
+    panic: Box<dyn std::any::Any + Send>,
+) -> ! {
+    store.roll_back_unwound(journal);
+    taken.put_back(store);
+    let held = locks.after_stored();
+    locks.take_back();
+    transaction::release(file.locks(&WRITER), held);
+    std::panic::resume_unwind(panic)
 }
 
 /// What follows from an operation's change once the file holds it (stored,

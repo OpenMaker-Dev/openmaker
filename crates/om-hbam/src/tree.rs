@@ -377,15 +377,27 @@ impl OwnedNode {
                 Err(i) => {
                     node.children
                         .insert(i, OwnedNode::list(segment.to_vec(), Vec::new()));
-                    node.push = true;
+                    node.become_list();
                     i
                 }
             };
             node = &mut node.children[i];
             // A node that gains children is a list, even if it was a leaf.
-            node.push = true;
+            node.become_list();
         }
         node
+    }
+
+    /// Make this node a list. A leaf's empty value goes, as a file holds a
+    /// key as a value or a list, never both (hbam-writer.md 2.2), and a
+    /// writer writes a list's empty value as nothing: memory keeps what
+    /// the file will hold. A value that is not empty stays, for the
+    /// writer to refuse (`writer::unwritable`).
+    fn become_list(&mut self) {
+        if !self.push && self.value.as_deref().is_some_and(<[u8]>::is_empty) {
+            self.value = None;
+        }
+        self.push = true;
     }
 
     /// Put `node` at `path` (renamed to the path's last segment), replacing
@@ -430,7 +442,7 @@ impl OwnedNode {
             Ok(i) => self.children[i] = node,
             Err(i) => self.children.insert(i, node),
         }
-        self.push = true;
+        self.become_list();
     }
 
     /// The node's children in the Download wire form (see [`Node::to_wire`]).

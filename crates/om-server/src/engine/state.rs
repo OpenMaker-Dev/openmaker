@@ -11,10 +11,12 @@
 //! they stand now (a backup protects the file on disk now, a client is
 //! refused a change by the file as it is now, whatever version it read).
 //! An engine with versions keeps them once for each file. The file engine
-//! keeps the read-only cause and the identity in its store, and reads them
-//! under the store's read lock; whether the file takes no more changes it
-//! keeps beside the store (`Hosted::writes_refused`), so that it is read
-//! without waiting for a writer.
+//! keeps them in its store and reads them under the store's read lock.
+//! Whether the file takes no more changes is also copied beside the store
+//! as each write lets go of it, an unwound one too
+//! (`Hosted::writes_refused`), for the administrator's list, which reads it
+//! without waiting for a writer; the store's own is the one the engine
+//! answers.
 
 use super::{FileEngine, WRITER};
 use crate::anchored::FileId;
@@ -30,9 +32,10 @@ impl FileEngine {
     }
 
     /// Why `file` takes no more changes until it is hosted again, if it
-    /// does not: a save's outcome was unknown (`store::SaveError::Unknown`).
-    pub fn writes_refused<'h>(&self, file: &'h Hosted) -> Option<&'h str> {
-        file.writes_refused()
+    /// does not: a save's outcome was unknown (`store::SaveError::Unknown`,
+    /// or a save left by an unwind after it renamed its copy over the file).
+    pub fn writes_refused(&self, file: &Hosted) -> Option<String> {
+        file.read_store().writes_refused().map(str::to_owned)
     }
 
     /// The device and inode of the file on disk the engine last read or

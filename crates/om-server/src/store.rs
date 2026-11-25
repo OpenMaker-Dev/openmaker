@@ -276,6 +276,10 @@ pub type MemberKey = (Vec<Vec<u8>>, (u64, u64));
 pub struct Journal {
     /// Whether the tree had unsaved changes before the commit.
     was_dirty: bool,
+    /// How many saves had replaced the file when the commit began
+    /// (`Store::saves`): one more means a save renamed its copy, holding the
+    /// commit, over the file, which nothing may take back.
+    saves: u64,
     /// Whether the tree's root was a list (`OwnedNode::push`) before the
     /// commit: a file's root reads as not one, and a put at the top level
     /// makes it one.
@@ -330,7 +334,18 @@ pub enum SaveFault {
     /// Flushing the folder after the rename: the file holds the change,
     /// which may or may not survive a crash ([`SaveError::Unknown`]).
     FolderFlush,
+    /// A panic right after the rename, before the folder is flushed, as a
+    /// log line or any later step could unwind there: the file holds the
+    /// change, and nothing may take it back.
+    UnwindAfterRename,
 }
+
+/// Why the file takes no more changes while a save that renamed its new
+/// copy over the file has not confirmed it on disk: set at the rename,
+/// before anything that can fail or unwind, and cleared once the folder's
+/// flush confirms it ([`Store::save`]). A save left by an unwind keeps it.
+const UNCONFIRMED: &str = "a save replaced the file and did not confirm it on disk; whether the \
+                           file keeps that change is unknown";
 
 /// Why a save did not confirm that the file on disk holds the tree
 /// (docs/server-storage.md 2, rule 4; 5).
@@ -396,10 +411,37 @@ type Draws<'a> = (
 /// 1), and the record's entries in it before and after.
 type Reindex = (Vec<u8>, u8, BTreeSet<Vec<u8>>, BTreeSet<Vec<u8>>);
 
+#[cfg(test)]
+thread_local! {
+    /// Makes the journal's entry of this number on this thread panic, as an
+    /// unwind at any change would leave it, 0 for none: a test injects a
+    /// panic at each change of an operation (`engine::tests`).
+    pub(crate) static PANIC_AT_ENTRY: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The journal's entries on this thread since the test began counting.
+    pub(crate) static ENTRIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A change is about to be made and kept in a journal, which holds every
+/// change before it: where a test injects a panic ([`PANIC_AT_ENTRY`]).
+/// Taking an inner journal into a commit's is no change of its own.
+fn entry() {
+    #[cfg(test)]
+    {
+        let n = ENTRIES.with(|count| {
+            count.set(count.get() + 1);
+            count.get()
+        });
+        if n == PANIC_AT_ENTRY.with(std::cell::Cell::get) {
+            panic!("a test's panic at journal entry {n}");
+        }
+    }
+}
+
 impl Journal {
     /// Keep `derived`, the state the store derives from its catalogs,
     /// before the commit's first change to them ([`Journal::schema`]).
     fn schema_from(&mut self, derived: &Arc<Derived>) {
+        entry();
         if self.schema.is_none() {
             self.schema = Some(derived.clone());
         }
@@ -418,6 +460,7 @@ impl Journal {
     /// Keep the node at `path` of `root` as it is now, unless this commit
     /// already kept it; its parents are not looked at.
     fn keep_node(&mut self, root: &OwnedNode, path: Vec<Vec<u8>>) {
+        entry();
         if self.saved.contains(&path) {
             return;
         }
@@ -460,6 +503,7 @@ impl Journal {
     /// unless this commit already kept the path, and return whether there
     /// was one.
     fn take(&mut self, root: &mut OwnedNode, path: Vec<Vec<u8>>) -> bool {
+        entry();
         let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
         let old = root.remove(&segments);
         let was = old.is_some();
@@ -472,6 +516,7 @@ impl Journal {
     /// Put `node` at `path` of `root`, replacing what is there, which is
     /// kept here (moved) with the parents the put creates.
     fn replace(&mut self, root: &mut OwnedNode, path: Vec<Vec<u8>>, node: OwnedNode) {
+        entry();
         self.save_parents(root, &path);
         let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
         let old = root.remove(&segments);
@@ -485,6 +530,7 @@ impl Journal {
     /// own made in place (op73's field work), unless this commit already
     /// kept it.
     fn save_record(&mut self, table: &[u8], record: &OwnedNode) {
+        entry();
         let path = vec![table.to_vec(), vec![keys::RECORDS], record.segment.clone()];
         if self.saved.insert(path.clone()) {
             self.undo.push(Undo::Node(path, Some(record.clone())));
@@ -902,9 +948,14 @@ impl Store {
         if let Some(why) = &self.unknown {
             return Err(SaveError::NotWritten(Error::other(why.clone())));
         }
+        // From the rename on, the file holds the tree: `write_new_copy`
+        // recorded so before it returned (the save counted, the store
+        // clean, the outcome unconfirmed), so nothing takes it back.
         let folder = self.write_new_copy(at, created)?;
-        self.dirty = false;
-        self.saves += 1;
+        #[cfg(debug_assertions)]
+        if self.save_fault == Some(SaveFault::UnwindAfterRename) {
+            panic!("a test's panic right after the rename");
+        }
         #[cfg(debug_assertions)]
         let flushed = match self.save_fault {
             Some(SaveFault::FolderFlush) => Err(Error::other("a test makes the folder flush fail")),
@@ -919,10 +970,16 @@ impl Store {
                  that change is unknown",
                 at.path().display()
             );
-            error!("{}: {why}", self.name);
+            // Recorded before it is logged: a log line can unwind.
             self.unknown = Some(why);
+            error!(
+                "{}: {}",
+                self.name,
+                self.unknown.as_deref().unwrap_or_default()
+            );
             return Err(SaveError::Unknown(e));
         }
+        self.unknown = None;
         Ok(true)
     }
 
@@ -1063,6 +1120,14 @@ impl Store {
             renamed
         };
         let (lock, identity) = saved?;
+        // The file is replaced. Recorded before anything that can fail or
+        // unwind: the save is counted, the store holds what the file holds
+        // (so a roll-back of an unwind, `Store::roll_back_unwound`, puts
+        // nothing back), and until the folder's flush confirms it the
+        // outcome is unknown, the file taking no more changes.
+        self.saves += 1;
+        self.dirty = false;
+        self.unknown = Some(UNCONFIRMED.to_owned());
         self.file = identity;
         if lock.is_some() {
             // The old file is gone from the path: its lock guards nothing.
@@ -1162,6 +1227,7 @@ impl Store {
     pub fn begin_commit(&self) -> Journal {
         Journal {
             was_dirty: self.dirty,
+            saves: self.saves,
             root_push: self.root.push,
             undo: Vec::new(),
             saved: BTreeSet::new(),
@@ -1195,6 +1261,7 @@ impl Store {
         journal.save_parents(&self.root, &at);
         let (existed, exists) = (old.is_some(), record.is_some());
         let mut recount = std::mem::take(&mut journal.recount);
+        entry();
         let put = self.put_record(
             table,
             id,
@@ -1536,11 +1603,21 @@ impl Store {
             field.to_vec(),
             vec![keys::SERIAL_VALUE],
         ];
-        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        let old = self.node(&segments).cloned();
+        let kept = self.kept_before(path);
         let current = self.serial_value(table, field, Some(value), None)?;
-        journal.undo.push(Undo::Node(path, old));
+        journal.absorb(kept);
         Some(current)
+    }
+
+    /// A journal that keeps the node at `path` and what a put there changes
+    /// besides it ([`Journal::save_node`]: the first parent it creates, or
+    /// one that is not a list, which the put makes one, whole), as the tree
+    /// is now: for a write that knows only afterwards whether it changed
+    /// anything, which absorbs it into its own journal when it did.
+    fn kept_before(&self, path: Vec<Vec<u8>>) -> Journal {
+        let mut kept = self.begin_commit();
+        kept.save_node(&self.root, path);
+        kept
     }
 
     /// Write a commit to `path` ([`Store::save`]). When the file cannot be
@@ -1708,8 +1785,14 @@ impl Store {
     /// or absorbed), so memory is no longer known to equal the file on
     /// disk: the next save writes the tree, and an export walks it rather
     /// than copy the disk (`engine::export`).
+    ///
+    /// A commit a save already wrote, its new copy renamed over the file,
+    /// is not put back: the file holds it, and putting it back would leave
+    /// memory behind the file, which a later save would overwrite.
     pub(crate) fn roll_back_unwound(&mut self, journal: Journal) {
-        self.roll_back(journal);
+        if self.saves == journal.saves {
+            self.roll_back(journal);
+        }
         self.dirty = true;
     }
 
@@ -1987,12 +2070,13 @@ impl Store {
         ];
         let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
         let old = self.node(&segments).cloned();
+        // Only an existing field definition gets a serial node; one held as
+        // a value becomes a list under it, so it is kept whole.
+        let kept = self.kept_before(path.clone());
         let current = self.serial_value(table, field, replace, increment)?;
         let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-        if self.node(&segments) != old.as_ref() && journal.saved.insert(path.clone()) {
-            // Only an existing field definition gets a serial node, so its
-            // parents were there.
-            journal.undo.push(Undo::Node(path, old));
+        if self.node(&segments) != old.as_ref() {
+            journal.absorb(kept);
         }
         Some(current)
     }
@@ -2665,6 +2749,9 @@ impl Store {
                     None => self.root.remove(&index).is_some(),
                 };
             }
+        }
+        if journal.is_some() {
+            entry();
         }
         let before = self.basis.insert(table.to_vec(), basis);
         if let Some(journal) = journal.as_deref_mut() {

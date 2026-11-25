@@ -324,6 +324,12 @@ impl Drop for StoreWriteGuard<'_> {
         // store and the accounts disagree: a write outside an operation
         // (the setup of a file, a test's) has its accounts decoded here.
         self.store.follow_accounts(None);
+        // A save left by an unwind after its rename refuses writes from
+        // then on without reporting it (`Store::save`): the administrator's
+        // list learns it here. Nothing is logged: this may run in an unwind.
+        if let Some(why) = self.store.writes_refused() {
+            let _ = self.hosted.unknown.set(why.to_owned());
+        }
         let version = self.store.tree_view().version();
         let mut published = self
             .hosted
@@ -554,8 +560,9 @@ impl Hosted {
     }
 
     /// Why the file takes no more changes until it is hosted again: a
-    /// save's outcome was unknown ([`crate::store::SaveError::Unknown`]).
-    /// Read without waiting for the store.
+    /// save's outcome was unknown ([`crate::store::SaveError::Unknown`], or
+    /// a save left by an unwind after its rename), copied from the store as
+    /// a write lets go of it. Read without waiting for the store.
     pub fn writes_refused(&self) -> Option<&str> {
         self.unknown.get().map(String::as_str)
     }

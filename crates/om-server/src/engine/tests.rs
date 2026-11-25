@@ -17,6 +17,7 @@ use crate::eventlog::EventLog;
 use crate::hosting::Hosting;
 use crate::modcount::{serial_leaf, MOD_COUNT};
 use crate::scripts::fixture;
+use crate::store::{ReadOnlyCause, SaveFault};
 
 /// A fixed clock, a counter for a random source and a virtual stopwatch,
 /// the same for every engine made with it.
@@ -80,8 +81,9 @@ impl Environment for Rewound {
 /// (docs/server-storage.md 5, "not stored"): what readers see of the tree,
 /// the schema read from it, the basis of stored calculations, the
 /// accounts, what reads left waiting, the lock table, whether the file
-/// holds changes the disk lacks, and the file on disk, with no copy left
-/// beside it.
+/// holds changes the disk lacks, why it is read-only or takes no more
+/// changes, if it does not, how many saves it had, and the file on disk,
+/// with no copy left beside it.
 #[derive(Debug, PartialEq)]
 struct Untouched {
     tree: OwnedNode,
@@ -91,6 +93,9 @@ struct Untouched {
     waiting: (Vec<crate::store::IndexId>, Vec<crate::store::MemberKey>),
     locks: Vec<(KeyPath, LockUser, u16, u32, String)>,
     unsaved: bool,
+    read_only: Option<crate::store::ReadOnlyCause>,
+    refused: (Option<String>, Option<String>),
+    saves: u64,
     disk: Vec<u8>,
     copy_left: bool,
 }
@@ -106,6 +111,12 @@ fn untouched(file: &Hosted, disk: &fixture::TempFile) -> Untouched {
         waiting: store.waiting_for_tests(),
         locks: file.lock_table().entries(),
         unsaved: store.has_unsaved_changes(),
+        read_only: store.read_only_cause(),
+        refused: (
+            store.writes_refused().map(str::to_owned),
+            file.writes_refused().map(str::to_owned),
+        ),
+        saves: store.saves(),
         disk: std::fs::read(&disk.0).unwrap(),
         copy_left: std::fs::symlink_metadata(copy).is_ok(),
     }
@@ -195,16 +206,24 @@ fn each_failed_save_takes_its_step_back(
                 failed.reply
             );
             assert!(failed.notices.changes.is_empty(), "step {step}: notices");
+            let deferred = *operation == Operation::FinishDeferredWork;
+            // Deferred work whose save failed leaves its work list back and
+            // the file served read-only, as when the work cannot be done
+            // (unless it already was, for a cause that stays first).
+            let read_only = match deferred {
+                true => before.read_only.or(Some(ReadOnlyCause::DeferredWork)),
+                false => before.read_only,
+            };
             assert_eq!(
                 untouched(&file, &disk),
-                before,
+                Untouched {
+                    read_only,
+                    ..before
+                },
                 "step {step}: {operation:?}"
             );
-            if *operation == Operation::FinishDeferredWork {
-                // Its work list is back, and the file is served read-only,
-                // as when the work cannot be done: nothing after it runs
-                // as recorded.
-                assert!(engine.read_only(&file).is_some(), "step {step}: read-only");
+            if deferred {
+                // Nothing after it runs as recorded.
                 continue 'failing;
             }
             drawn.store(draws, Ordering::Relaxed);
@@ -2332,12 +2351,13 @@ fn drafts_take_what_reads_left_waiting_when_they_hold_the_store() {
     );
 }
 
-/// Member keys a draft took go back to waiting when its run is left by a
-/// panic before it writes them, as they stayed waiting before the engine
-/// interface when storing the indexes panicked; the indexes it took do not
-/// (they had been taken then too). The next write writes the keys.
+/// What a draft took of what reads left waiting goes back to waiting when
+/// its run is left by a panic, as when it is not stored: the member keys,
+/// as they stayed waiting before the engine interface when storing the
+/// indexes panicked, and since the review of #751 (round 2) the indexes
+/// too, which had been dropped. The next write writes both.
 #[test]
-fn member_keys_a_draft_took_wait_again_when_its_run_panics_before_writing_them() {
+fn what_a_draft_took_waits_again_when_its_run_panics() {
     use om_query::Source as _;
     let mut tree = fixture::tree(&[], true);
     fixture::add_tasks(&mut tree, 1..=3);
@@ -2357,15 +2377,20 @@ fn member_keys_a_draft_took_wait_again_when_its_run_panics_before_writing_them()
     }));
     super::transaction::PANIC_STORING_INDEXES.with(|panics| panics.set(false));
     assert!(ran.is_err());
+    let counts = vec![table.clone(), vec![0x01], name.clone(), vec![0x10]];
     {
         let store = file.read_store();
         assert!(store.has_issued_member_keys());
-        assert!(!store.has_indexes_on_demand());
+        assert!(store.has_indexes_on_demand());
     }
+    assert!(node_at(&file, &counts).is_none(), "the index is taken back");
     engine.submit_draft(&file, Draft::ChangeSchema { writes: Vec::new() });
     let id = node_at(&file, &[vec![4], vec![1], vec![0]]).and_then(|n| n.value);
     assert_eq!(id, Some(issued.0));
-    assert!(!file.read_store().has_issued_member_keys());
+    assert!(node_at(&file, &counts).is_some(), "the index is stored");
+    let store = file.read_store();
+    assert!(!store.has_issued_member_keys());
+    assert!(!store.has_indexes_on_demand());
 }
 
 /// op73 finds the stored calculations to recompute by comparing the field
@@ -4352,4 +4377,886 @@ fn the_test_view_reads_the_accounts_only_for_a_reader_of_them() {
         engine.read(&file).serve(has_accounts)
     }));
     assert!(unasked.is_err(), "the test view read the accounts unasked");
+}
+
+/// A shape a node can take in a file (hbam-writer.md 2.2, 2.3) that the
+/// fixtures do not give the nodes operations write: what the seeded test
+/// of the journal's invariant gives them ([`each_change_is_taken_back_whole`]).
+/// A key that is a list and carries a value of its own besides is no shape
+/// a file holds (2.2): one read from a file is served read-only
+/// (`ReadOnlyCause::Unwritable`), so the list that holds a value here is
+/// the chunked one.
+#[derive(Clone, Copy, Debug)]
+enum Shape {
+    /// As the fixture gives it.
+    AsIs,
+    /// Missing, and with it all the fixture holds beneath it.
+    Missing,
+    /// A key with an empty value where a list is usual.
+    EmptyValue,
+    /// A key with a value where a list is usual.
+    Value,
+    /// A value over 1,000 bytes, which a file stores as a list of pieces: a
+    /// node that is a list and holds a value (`om_hbam::writer::holds_value`).
+    Chunked,
+    /// A list with nothing in it.
+    EmptyList,
+}
+
+const SHAPES: [Shape; 6] = [
+    Shape::AsIs,
+    Shape::Missing,
+    Shape::EmptyValue,
+    Shape::Value,
+    Shape::Chunked,
+    Shape::EmptyList,
+];
+
+impl Shape {
+    /// Give the node at `path` of `tree` this shape.
+    fn give(self, tree: &mut OwnedNode, path: &[Vec<u8>]) {
+        let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+        let leaf = |value: Vec<u8>| OwnedNode::leaf(Vec::new(), value);
+        match self {
+            Shape::AsIs => {}
+            Shape::Missing => {
+                tree.remove(&segments);
+            }
+            Shape::EmptyValue => tree.put(&segments, leaf(Vec::new())),
+            Shape::Value => tree.put(&segments, leaf(b"held as a value".to_vec())),
+            Shape::Chunked => tree.put(&segments, leaf(vec![0x5a; 1500])),
+            Shape::EmptyList => tree.put(&segments, OwnedNode::list(Vec::new(), Vec::new())),
+        }
+    }
+}
+
+/// The script the seeded trees hold, which a design edit replaces.
+const SEEDED_SCRIPT: u64 = 5;
+
+/// The nodes the operations of [`each_change_is_taken_back_whole`] write,
+/// write beneath or replace, each named: records, field, library and
+/// account entries, their lists and catalogs' indexes, a new key's parent.
+/// Deepest first, so that a parent's shape is the one it keeps.
+fn reshaped_sites() -> Vec<(&'static str, Vec<Vec<u8>>)> {
+    let t = uint_segment(fixture::TABLE);
+    let at = |below: &[&[u8]]| {
+        let mut path = vec![t.clone()];
+        path.extend(below.iter().map(|s| s.to_vec()));
+        path
+    };
+    let count = uint_segment(fixture::COUNT);
+    let record = |id: u64| at(&[&[5], &serial::encode(id)]);
+    let mut sites = vec![
+        ("Count's serial value", at(&[&[3], &[5], &count, &[0x0c]])),
+        ("Count's definition", at(&[&[3], &[5], &count])),
+        (
+            "the photo's library member",
+            at(&[&[0x1f], &[5], &serial::encode(fixture::PHOTO_MEMBER)]),
+        ),
+        (
+            "Tasks' data version",
+            vec![vec![3], vec![0x10], vec![5], t.clone(), vec![0xfb]],
+        ),
+        ("record 1", record(1)),
+        ("record 2", record(2)),
+        ("record 3", record(3)),
+        ("Clerk's account", vec![vec![23], vec![1], vec![5], vec![3]]),
+        (
+            "Former's account",
+            vec![vec![23], vec![1], vec![5], vec![4]],
+        ),
+        (
+            "the script",
+            vec![vec![17], vec![5], serial::encode(SEEDED_SCRIPT)],
+        ),
+        ("Name's indexes", at(&[&[1], &uint_segment(fixture::NAME)])),
+        ("the field catalog's index", at(&[&[3], &[1]])),
+        ("the library's header", at(&[&[0x1f], &[1]])),
+        (
+            "the account catalog's index",
+            vec![vec![23], vec![1], vec![1]],
+        ),
+        ("Tasks' records", at(&[&[5]])),
+        ("Tasks' record ids", at(&[&[0x0d]])),
+        ("Tasks' last record id", at(&[&[0]])),
+        ("Tasks' indexes", at(&[&[1]])),
+        ("Tasks' library", at(&[&[0x1f]])),
+        ("the layout catalog's index", vec![vec![4], vec![1]]),
+        ("the script catalog's index", vec![vec![17], vec![1]]),
+        (
+            "the kept found sets",
+            vec![uint_segment(fixture::OCCURRENCE), vec![7]],
+        ),
+        ("a schema write's parent", vec![vec![0x30]]),
+    ];
+    sites.sort_by_key(|(_, path)| std::cmp::Reverse(path.len()));
+    sites
+}
+
+/// How the sites of a seeded tree are shaped.
+#[derive(Clone, Copy, Debug)]
+enum Shaping {
+    /// Every site as the fixture gives it.
+    Plain,
+    /// Site `i` in shape `(i + k) % 6` ([`SHAPES`]): the six trees of
+    /// `k` = 0 to 5 give every site every shape once.
+    Each(usize),
+    /// Each site as the fixture gives it half the time, otherwise in one of
+    /// the other shapes, drawn from the seed.
+    Seeded(u64),
+}
+
+/// A seeded source of shapes (xorshift64*).
+struct Draws64(u64);
+
+impl Draws64 {
+    fn new(seed: u64) -> Self {
+        Draws64(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1)
+    }
+
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+}
+
+/// The fixture the seeded trees start from: Tasks with records 1 to 3 and
+/// a photo in record 1's library, a script, the local accounts, and the
+/// field, layout, script and account catalogs' indexes.
+fn seeded_base() -> OwnedNode {
+    let script = fixture::script(SEEDED_SCRIPT, "Greeting", vec![fixture::exit_with("1")]);
+    let mut tree = fixture::tree(std::slice::from_ref(&script), true);
+    fixture::add_tasks(&mut tree, 1..=3);
+    fixture::add_photo(&mut tree);
+    fixture::index_scripts(&mut tree);
+    fixture::index_layouts(&mut tree);
+    fixture::add_local_accounts(&mut tree);
+    index_accounts(&mut tree);
+    index_fields(&mut tree, fixture::TABLE);
+    let t = uint_segment(fixture::TABLE);
+    tree.put(
+        &[&[3], &[0x10], &[5], &t, &[0xfb]],
+        OwnedNode::leaf(Vec::new(), 7u32.to_be_bytes().to_vec()),
+    );
+    tree
+}
+
+/// [`seeded_base`] with its sites shaped by `shaping`, and the shape each
+/// site was given.
+fn shaped_tree(shaping: Shaping) -> (OwnedNode, Vec<(&'static str, Shape)>) {
+    let mut tree = seeded_base();
+    let mut draws = match shaping {
+        Shaping::Seeded(seed) => Some(Draws64::new(seed)),
+        _ => None,
+    };
+    let mut given = Vec::new();
+    for (i, (name, path)) in reshaped_sites().into_iter().enumerate() {
+        let shape = match (shaping, &mut draws) {
+            (Shaping::Each(k), _) => SHAPES[(i + k) % SHAPES.len()],
+            (_, Some(draws)) => match draws.next() % 10 {
+                n @ 0..=4 => SHAPES[1 + n as usize],
+                _ => Shape::AsIs,
+            },
+            _ => Shape::AsIs,
+        };
+        shape.give(&mut tree, &path);
+        given.push((name, shape));
+    }
+    (tree, given)
+}
+
+/// The kinds of step [`seeded_step`] gives, in order.
+const SEEDED_STEPS: usize = 30;
+
+/// Step `kind` of [`each_change_is_taken_back_whole`] on `file` as it is
+/// now, with the passwords it is given: every kind of operation the
+/// engine has, the drafts included, the find or member key they store
+/// made first. `reserved` is the record id op71 gave, which op70 creates.
+/// `None` for a step whose inputs the file as shaped does not give.
+fn seeded_step(kind: usize, file: &Hosted, reserved: Option<&[u8]>) -> Option<(Step, Given)> {
+    use om_protocol::authoring::{self as design, catalog_revision, content_revision};
+    use om_query::Source as _;
+
+    use crate::writes::RecordWrite;
+    let t = uint_segment(fixture::TABLE);
+    let a = LockUser {
+        connection: 1,
+        txn: 7,
+    };
+    let b = LockUser {
+        connection: 2,
+        txn: 9,
+    };
+    let script = LockUser {
+        connection: 0x4000_0001,
+        txn: 1,
+    };
+    let script_holder = "OpenMaker (script engine, Admin)";
+    let record = |id: u64| vec![t.clone(), vec![0x05], serial::encode(id)];
+    let named = |id: &[u8], text: &str, count: u64| {
+        OwnedNode::list(
+            id.to_vec(),
+            vec![
+                text_node(&uint_segment(fixture::NAME), text),
+                serial_leaf(MOD_COUNT, count),
+            ],
+        )
+    };
+    let stamp = || {
+        Some(AccountStamp {
+            user: fixture::ACCOUNT.into(),
+            account: fixture::ACCOUNT.into(),
+        })
+    };
+    let deferred_work = || {
+        Operation::UploadToCatalog(UploadToCatalog {
+            path: vec![t.clone(), vec![0x03], vec![0x01], vec![0xfd]],
+            node: OwnedNode::list(
+                vec![0xfd],
+                vec![OwnedNode::leaf(
+                    uint_segment(fixture::COUNT),
+                    0x40u32.to_be_bytes().to_vec(),
+                )],
+            ),
+        })
+    };
+    let edit = |edit: DesignEdit| {
+        Operation::EditDesign(Box::new(EditDesign {
+            connection: 3,
+            session_name: "Designer".into(),
+            account: fixture::ACCOUNT.into(),
+            edit,
+        }))
+    };
+    let serial = || GetSerial {
+        table: vec![t.clone()],
+        field: vec![uint_segment(fixture::COUNT)],
+        value: String::new(),
+        increment: 1,
+        flags: SERIAL_INCREMENT,
+    };
+    let lock = |path: KeyPath| Lock {
+        waiter: 0,
+        timeout: 0,
+        want_mod_count: true,
+        path,
+        argument: 0,
+        host_file: 1,
+        txn: b.txn,
+        lock_type: LOCK_WRITE,
+    };
+    let operation = match kind {
+        0 => Operation::ReserveRecordIds(ReserveRecordIds {
+            user: a,
+            holder: "A (Admin)".into(),
+            request: CreateRecord {
+                table: vec![t.clone()],
+                count: 1,
+                txn: a.txn,
+            },
+            room: writes::MAX_LOCKS,
+            durable: true,
+        }),
+        1 => Operation::AdvanceSerial(AdvanceSerial { request: serial() }),
+        2 => {
+            let access = file.account(fixture::ACCOUNT)?.access.clone()?;
+            let mut entries = vec![
+                OwnedNode::list(
+                    serial::encode(1),
+                    vec![OwnedNode::leaf(uint_segment(fixture::NAME), Vec::new())],
+                ),
+                OwnedNode::leaf(serial::encode(2), vec![COMMIT_DELETED]),
+            ];
+            let mut staged = Staged::from([(record(1), named(&serial::encode(1), "Task one", 2))]);
+            if let Some(id) = reserved {
+                entries.push(OwnedNode::leaf(id.to_vec(), vec![COMMIT_NEW]));
+                let path = vec![t.clone(), vec![0x05], id.to_vec()];
+                staged.insert(path, named(id, "Task new", 1));
+            }
+            let list = OwnedNode::list(
+                Vec::new(),
+                vec![OwnedNode::list(
+                    t.clone(),
+                    vec![OwnedNode::list(vec![0x05], entries)],
+                )],
+            );
+            Operation::CommitRecords(CommitRecords {
+                user: a,
+                account: fixture::ACCOUNT.into(),
+                access,
+                list,
+                staged,
+                withheld: Withheld::default(),
+            })
+        }
+        3 => Operation::ReleaseLocks(ReleaseLocks {
+            connection: a.connection,
+            request: KillAllLocks {
+                host_file: 1,
+                txn: a.txn,
+                all: true,
+            },
+        }),
+        4 => Operation::SetNextSerial(SetNextSerial {
+            table: t.clone(),
+            field: uint_segment(fixture::COUNT),
+            value: "10".into(),
+        }),
+        5 => {
+            let name = uint_segment(fixture::NAME);
+            let _ = file.read_store().index_on_demand(&t, &name, 0);
+            return Some((Step::Draft(Draft::StoreIndexes), Given::Nothing));
+        }
+        6 | 28 => deferred_work(),
+        7 => Operation::UpdateTable(UpdateTable {
+            table: t.clone(),
+            account: fixture::ACCOUNT.into(),
+        }),
+        8 => {
+            let _ = file.read_store().generate_member_key(&[vec![4]]);
+            let writes = vec![om_query::Write::Put {
+                path: vec![vec![0x30], vec![1], vec![2]],
+                node: text_node(&[], "under a parent"),
+            }];
+            return Some((Step::Draft(Draft::ChangeSchema { writes }), Given::Nothing));
+        }
+        9 => Operation::StoreContainerData(StoreContainerData {
+            table: vec![t.clone()],
+            data: Ok(file_data(b"a seeded member")),
+            bytes: 15,
+        }),
+        10 => Operation::AdjustContainerCount(AdjustContainerCount {
+            request: om_protocol::container::AdjustReferenceCount {
+                path: vec![
+                    t.clone(),
+                    vec![0x1f],
+                    vec![5],
+                    serial::encode(fixture::PHOTO_MEMBER),
+                ],
+                delta: 1,
+            },
+        }),
+        11 => {
+            let definition = node_at(file, &[vec![17], vec![5], serial::encode(SEEDED_SCRIPT)]);
+            let steps =
+                fixture::script(SEEDED_SCRIPT, "Greeting", vec![fixture::exit_with("2")]).encode();
+            edit(DesignEdit::ReplaceScriptSteps(design::ReplaceScriptSteps {
+                script: SEEDED_SCRIPT,
+                expected: content_revision(&definition.unwrap_or_default()),
+                definition: steps,
+            }))
+        }
+        12 => {
+            let fields = node_at(file, &[t.clone(), vec![3]]);
+            edit(DesignEdit::CreateField(design::CreateField {
+                table: fixture::TABLE,
+                expected: catalog_revision(&fields.unwrap_or_default()),
+                data_type: 1,
+                name: "Priority".into(),
+                comment: String::new(),
+            }))
+        }
+        13 => Operation::TakeScriptLock(TakeScriptLock {
+            user: script,
+            holder: script_holder.into(),
+            path: record(3),
+        }),
+        14 => Operation::CommitScriptRecords(CommitScriptRecords {
+            user: script,
+            records: vec![RecordWrite {
+                table: fixture::TABLE,
+                id: 3,
+                record: Some(named(&serial::encode(3), "Task three", 1)),
+                new: false,
+                uploads: Vec::new(),
+            }],
+            bulk_delete: false,
+        }),
+        15 => Operation::TakeScriptLock(TakeScriptLock {
+            user: script,
+            holder: script_holder.into(),
+            path: vec![vec![23], vec![1]],
+        }),
+        16 => Operation::ReleaseScriptLock(ReleaseScriptLock {
+            user: script,
+            path: vec![vec![23], vec![1]],
+            changes: Vec::new(),
+        }),
+        17 => {
+            let operation = Operation::ChangePassword(ChangePassword {
+                account: AccountRef::Name(fixture::ACCOUNT.into()),
+                manager: false,
+                stamp: None,
+            });
+            return Some((
+                Step::Operation(operation),
+                Given::Change(fixture::PASSWORD, "a new horse"),
+            ));
+        }
+        18 => {
+            let operation = Operation::ResetPassword(ResetPassword {
+                account: fixture::CLERK.into(),
+                expire: false,
+                stamp: stamp(),
+            });
+            return Some((
+                Step::Operation(operation),
+                Given::Reset("clerk's new secret"),
+            ));
+        }
+        19 => Operation::EnableAccount(EnableAccount {
+            account: fixture::FORMER.into(),
+            active: true,
+            stamp: stamp(),
+        }),
+        20 => Operation::DeleteAccount(DeleteAccount {
+            account: fixture::CLERK.into(),
+            stamp: stamp(),
+        }),
+        21 => Operation::SaveFoundSet(SaveFoundSet {
+            occurrence: uint_segment(fixture::OCCURRENCE),
+            table: t.clone(),
+            records: Some(RidList::from_iter([1, 3])),
+            current: Some(3),
+        }),
+        22 => Operation::TakeLock(TakeLock {
+            user: b,
+            holder: "B (Admin)".into(),
+            request: lock(record(2)),
+            room: writes::MAX_LOCKS,
+        }),
+        23 => Operation::UpgradeLock(UpgradeLock {
+            user: b,
+            holder: "B (Admin)".into(),
+            request: Upgrade {
+                waiter: 0,
+                timeout: 0,
+                path: record(2),
+                host_file: 1,
+                txn: b.txn,
+                new_type: 10,
+                current_type: LOCK_WRITE,
+            },
+            room: writes::MAX_LOCKS,
+        }),
+        24 => Operation::ReleaseLock(ReleaseLock {
+            connection: b.connection,
+            request: Unlock {
+                message_address: 0,
+                attention_mask: attention::MODIFY | attention::RECORD,
+                path: record(2),
+                host_file: 1,
+                txn: b.txn,
+                lock_type: 10,
+            },
+        }),
+        25 => Operation::ReleaseSessionLocks(ReleaseSessionLocks {
+            connection: script.connection,
+        }),
+        26 => Operation::AdvanceSerial(AdvanceSerial { request: serial() }),
+        27 => Operation::SaveFile,
+        // Last: deferred work whose save fails serves the file read-only.
+        29 => Operation::FinishDeferredWork,
+        _ => return None,
+    };
+    Some((Step::Operation(operation), Given::Nothing))
+}
+
+/// Whether `panic` is one a test injected at a journal's entry
+/// (`store::PANIC_AT_ENTRY`).
+fn injected(panic: &(dyn std::any::Any + Send)) -> bool {
+    panic
+        .downcast_ref::<String>()
+        .is_some_and(|message| message.starts_with("a test's panic at journal entry"))
+}
+
+/// Keep the panics tests inject at journal entries out of the output;
+/// every other panic is shown as before.
+fn quiet_injected_panics() {
+    static QUIET: std::sync::Once = std::sync::Once::new();
+    QUIET.call_once(|| {
+        let shown = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !injected(info.payload()) {
+                shown(info);
+            }
+        }));
+    });
+}
+
+/// While `file` counts nothing as changed since its last save, memory holds
+/// exactly the tree its file on disk holds (docs/server-storage.md 5, the
+/// record of unsaved changes).
+fn memory_is_disk_when_clean(file: &Hosted, disk: &fixture::TempFile, what: &str) {
+    let store = file.read_store();
+    if store.has_unsaved_changes() {
+        return;
+    }
+    let read = om_hbam::HbamFile::from_bytes(std::fs::read(&disk.0).unwrap()).unwrap();
+    let on_disk = read.key_tree().unwrap().root.to_owned_node();
+    // The root is the file's list of keys whatever its own flag says (a
+    // put beneath it sets it), and no file stores it: its keys are compared.
+    let root = as_written(store.node(&[]).unwrap());
+    if (&root.value, &root.children) != (&on_disk.value, &on_disk.children) {
+        let (memory, disk) = first_difference(&root, &on_disk);
+        panic!(
+            "{what}: the store counts nothing as changed, and memory differs from the \
+             disk: {memory:02x?} in memory, {disk:02x?} on disk"
+        );
+    }
+}
+
+/// `node` with each value over 1,000 bytes in the pieces a file stores it
+/// in (hbam-writer.md 2.3: a list of the length `00` and the pieces keyed
+/// 1, 2, ... as serial keys), as memory holds a value a write put whole and
+/// a file read back holds it: the same value.
+fn as_written(node: &OwnedNode) -> OwnedNode {
+    use om_hbam::writer::MAX_INLINE_VALUE;
+    match &node.value {
+        Some(value) if !node.push && value.len() > MAX_INLINE_VALUE => {
+            let total = (value.len() as u32).to_be_bytes().to_vec();
+            let pieces = value
+                .chunks(MAX_INLINE_VALUE)
+                .zip(1u64..)
+                .map(|(piece, n)| OwnedNode::leaf(serial::encode(n), piece.to_vec()));
+            let children = std::iter::once(OwnedNode::leaf(vec![0], total))
+                .chain(pieces)
+                .collect();
+            OwnedNode::list(node.segment.clone(), children)
+        }
+        _ => OwnedNode {
+            children: node.children.iter().map(as_written).collect(),
+            ..node.clone()
+        },
+    }
+}
+
+/// The first node at which `a` and `b` differ, in key order, as each has
+/// it (without children when the difference is its own), `None` where one
+/// lacks it.
+fn first_difference(a: &OwnedNode, b: &OwnedNode) -> (Option<OwnedNode>, Option<OwnedNode>) {
+    let bare = |n: &OwnedNode| OwnedNode {
+        children: Vec::new(),
+        ..n.clone()
+    };
+    let mut keys: Vec<&[u8]> = a
+        .children
+        .iter()
+        .chain(&b.children)
+        .map(|c| c.segment.as_slice())
+        .collect();
+    keys.sort();
+    keys.dedup();
+    for key in keys {
+        match (a.child(key), b.child(key)) {
+            (Some(x), Some(y)) if x == y => {}
+            (Some(x), Some(y)) if (&x.value, x.push) != (&y.value, y.push) => {
+                return (Some(bare(x)), Some(bare(y)))
+            }
+            (Some(x), Some(y)) => return first_difference(x, y),
+            (x, y) => return (x.cloned(), y.cloned()),
+        }
+    }
+    (Some(bare(a)), Some(bare(b)))
+}
+
+/// What [`each_change_is_taken_back_whole`] did on one tree: the kinds of
+/// step whose failed save it took back, and how many panics it injected.
+#[derive(Debug, Default)]
+struct Swept {
+    taken_back: Vec<usize>,
+    panics: u64,
+}
+
+/// docs/server-storage.md 5, "Taking a change back", the invariant whose
+/// only check this is: a change that is not stored leaves the file as it
+/// was, every node its kind and value, every flag as it was. `tree` is
+/// hosted, and each kind of step ([`seeded_step`]) runs on it in turn:
+/// first with a panic injected at each change it keeps in a journal, its
+/// saves failing before their rename, each of which leaves the file as it
+/// was but counted as changed ([`Untouched`]); then whole with its save
+/// failing before its rename, which takes it back and leaves the file
+/// exactly as it was, from a store that counted nothing as changed (made
+/// so by op240's Save after the panics) when the save had anything of its
+/// own to store; then with saves working. While the store counts nothing
+/// as changed, memory holds exactly the file on disk. `None` when the tree
+/// is not hosted.
+fn each_change_is_taken_back_whole(tag: &str, tree: &OwnedNode) -> Option<Swept> {
+    use crate::store::{ENTRIES, PANIC_AT_ENTRY};
+    quiet_injected_panics();
+    let disk = fixture::TempFile::from_tree(tag, tree);
+    let hosted = HostedFile {
+        name: fixture::FILE.into(),
+        path: disk.0.clone(),
+    };
+    let hosting = Hosting::load(&[hosted], false, &EventLog::default(), &engine()).ok()?;
+    let file = hosting.by_name(fixture::FILE)?;
+    drop(hosting);
+    let drawn = Arc::new(AtomicU64::new(0));
+    let engine = FileEngine::new(Box::new(Rewound(Arc::clone(&drawn))));
+    let mut swept = Swept::default();
+    let mut reserved: Option<Vec<u8>> = None;
+    memory_is_disk_when_clean(&file, &disk, &format!("{tag}: as loaded"));
+    for kind in 0..SEEDED_STEPS {
+        let Some((step, given)) = seeded_step(kind, &file, reserved.as_deref()) else {
+            continue;
+        };
+        let what = format!("{tag}: step {kind}");
+        let submit = || match &step {
+            Step::Operation(operation) => {
+                engine.submit_with(&file, operation.clone(), given.credentials())
+            }
+            Step::Draft(draft) => engine.submit_draft(&file, draft.clone()),
+        };
+        let deferred = matches!(step, Step::Operation(Operation::FinishDeferredWork));
+        let draws = drawn.load(Ordering::Relaxed);
+        // A save that fails before its rename takes the step back; one for
+        // deferred work serves the file read-only besides.
+        let failed_save_left = |before: Untouched, outcome: &Outcome, what: &str| {
+            assert!(outcome.notices.changes.is_empty(), "{what}: notices");
+            let read_only = match deferred {
+                true => before.read_only.or(Some(ReadOnlyCause::DeferredWork)),
+                false => before.read_only,
+            };
+            assert_eq!(
+                untouched(&file, &disk),
+                Untouched {
+                    read_only,
+                    ..before
+                },
+                "{what}"
+            );
+        };
+        // A panic at each change, until the step runs past its last.
+        let mut n = 0;
+        let (before, outcome) = loop {
+            n += 1;
+            assert!(n < 100_000, "{what}: no end to its changes");
+            let before = untouched(&file, &disk);
+            drawn.store(draws, Ordering::Relaxed);
+            file.fail_saves(Some(SaveFault::BeforeRename));
+            ENTRIES.with(|count| count.set(0));
+            PANIC_AT_ENTRY.with(|at| at.set(n));
+            let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(submit));
+            PANIC_AT_ENTRY.with(|at| at.set(0));
+            file.fail_saves(None);
+            match ran {
+                Ok(outcome) => break (before, outcome),
+                Err(panic) => {
+                    assert!(injected(&*panic), "{what}: a panic of its own");
+                    assert_eq!(
+                        untouched(&file, &disk),
+                        Untouched {
+                            unsaved: true,
+                            ..before
+                        },
+                        "{what}: a panic at change {n}"
+                    );
+                    swept.panics += 1;
+                }
+            }
+        };
+        if !is_storage_error(&outcome.reply) {
+            // Nothing of its own to store: done.
+            memory_is_disk_when_clean(&file, &disk, &what);
+            continue;
+        }
+        failed_save_left(before, &outcome, &format!("{what}: its save failing"));
+        if deferred {
+            swept.taken_back.push(kind);
+            return Some(swept);
+        }
+        // op87 answers a refusal as it answers a save that failed.
+        let failed = outcome;
+        if n > 1 {
+            // The panics left the store counting itself changed: saved, it
+            // counts nothing, and the failed save must keep it so. (The save
+            // also stores what a draft would have taken: one left nothing
+            // of its own to store is done.)
+            let saved = engine.submit(&file, Operation::SaveFile);
+            assert_eq!(saved.reply, Reply::SaveFile(Ok(())), "{what}: saved");
+            let before = untouched(&file, &disk);
+            assert!(!before.unsaved, "{what}: saved");
+            drawn.store(draws, Ordering::Relaxed);
+            file.fail_saves(Some(SaveFault::BeforeRename));
+            let outcome = submit();
+            file.fail_saves(None);
+            if !is_storage_error(&outcome.reply) {
+                assert!(matches!(step, Step::Draft(_)), "{what}: {outcome:?}");
+                memory_is_disk_when_clean(&file, &disk, &what);
+                continue;
+            }
+            failed_save_left(before, &outcome, &format!("{what}: from a clean store"));
+            memory_is_disk_when_clean(&file, &disk, &what);
+        }
+        drawn.store(draws, Ordering::Relaxed);
+        let outcome = submit();
+        if outcome != failed {
+            assert!(!is_storage_error(&outcome.reply), "{what}: {outcome:?}");
+            swept.taken_back.push(kind);
+        }
+        if let Reply::ReserveRecordIds(reply) = &outcome.reply {
+            reserved = reply.record.first().cloned();
+        }
+        memory_is_disk_when_clean(&file, &disk, &what);
+    }
+    Some(swept)
+}
+
+/// Run [`each_change_is_taken_back_whole`] on the trees `shapings` give:
+/// every one must keep the invariant. Returns how many were hosted.
+fn sweep_shaped_trees(tag: &str, shapings: impl IntoIterator<Item = Shaping>) -> usize {
+    let mut hosted = 0;
+    for shaping in shapings {
+        let (tree, given) = shaped_tree(shaping);
+        let reshaped: Vec<_> = given
+            .iter()
+            .filter(|(_, shape)| !matches!(shape, Shape::AsIs))
+            .collect();
+        let tag = format!("{tag}-{shaping:?}");
+        let swept = std::panic::catch_unwind(|| each_change_is_taken_back_whole(&tag, &tree))
+            .unwrap_or_else(|panic| {
+                eprintln!("{shaping:?}, the sites reshaped: {reshaped:?}");
+                std::panic::resume_unwind(panic)
+            });
+        if let Some(swept) = swept {
+            hosted += 1;
+            eprintln!(
+                "{shaping:?}: taken back {:?}, {} panics injected",
+                swept.taken_back, swept.panics
+            );
+        } else {
+            eprintln!("{shaping:?}: not hosted");
+        }
+    }
+    hosted
+}
+
+/// The review of #751, round 2: the journal's invariant on generated trees
+/// that give the nodes operations write every shape a file admits
+/// ([`Shape`]): the plain fixture, the six trees that give each site each
+/// shape once, and two seeded ones. A few seconds.
+#[test]
+fn every_change_not_stored_leaves_every_node_and_flag_as_it_was() {
+    let shapings = std::iter::once(Shaping::Plain)
+        .chain((0..SHAPES.len()).map(Shaping::Each))
+        .chain((0..2).map(Shaping::Seeded));
+    let hosted = sweep_shaped_trees("engine-shapes", shapings);
+    assert_eq!(hosted, 9, "every tree is hosted");
+}
+
+/// [`every_change_not_stored_leaves_every_node_and_flag_as_it_was`] on
+/// more seeded trees.
+#[test]
+#[ignore = "runs the journal's invariant on 2,000 seeded trees (seeds 0 to 1,999), each site \
+            as the fixture gives it half the time; about three minutes in a debug build"]
+fn every_change_not_stored_leaves_every_node_and_flag_as_it_was_on_many_trees() {
+    let hosted = sweep_shaped_trees("engine-seeds", (0..2000).map(Shaping::Seeded));
+    assert_eq!(hosted, 2000, "every tree is hosted");
+}
+
+/// The review of #751, round 2 (P0): a serial value set beneath a field
+/// definition held as an empty value makes the definition a list. When
+/// the save fails before its rename, the set is taken back with the
+/// definition as it was, a value, not a list: op72's and Set Next Serial
+/// Value's. The store then counts nothing as changed, and an export, a
+/// copy of the file on disk, holds exactly what memory holds.
+#[test]
+fn a_serial_value_taken_back_leaves_its_field_definition_as_it_was() {
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_tasks(&mut tree, 1..=3);
+    let t = uint_segment(fixture::TABLE);
+    let count = uint_segment(fixture::COUNT);
+    let definition = vec![t.clone(), vec![3], vec![5], count.clone()];
+    let path: Vec<&[u8]> = definition.iter().map(Vec::as_slice).collect();
+    tree.put(&path, OwnedNode::leaf(Vec::new(), Vec::new()));
+    let (disk, file) = host("engine-serial-beneath-a-value", &tree);
+    let before = node_at(&file, &[]);
+    assert!(node_at(&file, &definition).is_some_and(|d| !d.push && d.children.is_empty()));
+    let engine = engine();
+    let advance = Operation::AdvanceSerial(AdvanceSerial {
+        request: GetSerial {
+            table: vec![t.clone()],
+            field: vec![count.clone()],
+            value: String::new(),
+            increment: 1,
+            flags: SERIAL_INCREMENT,
+        },
+    });
+    let set = Operation::SetNextSerial(SetNextSerial {
+        table: t.clone(),
+        field: count.clone(),
+        value: "10".into(),
+    });
+    for operation in [advance, set] {
+        file.fail_saves(Some(SaveFault::BeforeRename));
+        let failed = engine.submit(&file, operation.clone());
+        file.fail_saves(None);
+        assert!(is_storage_error(&failed.reply), "{:?}", failed.reply);
+        assert_eq!(node_at(&file, &[]), before, "{operation:?}");
+        assert!(!file.read_store().has_unsaved_changes());
+        exported_from_disk_as_memory(&engine, &file, &disk);
+    }
+}
+
+/// The review of #751, round 2 (P0): once a save renamed its new copy over
+/// the file, nothing takes the change back. A save left by a panic right
+/// after its rename, where a log line or any later step could unwind,
+/// keeps the change in memory, as the file holds it, and the file takes no
+/// more changes: the store, the engine and the administrator's list say
+/// so, and the next change is refused and changes nothing.
+#[test]
+fn a_save_left_by_a_panic_after_its_rename_is_not_taken_back() {
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_tasks(&mut tree, 1..=3);
+    let (disk, file) = host("engine-unwind-after-rename", &tree);
+    let t = uint_segment(fixture::TABLE);
+    let serial = vec![
+        t.clone(),
+        vec![3],
+        vec![5],
+        uint_segment(fixture::COUNT),
+        vec![0x0c],
+    ];
+    let advance = || {
+        Operation::AdvanceSerial(AdvanceSerial {
+            request: GetSerial {
+                table: vec![t.clone()],
+                field: vec![uint_segment(fixture::COUNT)],
+                value: String::new(),
+                increment: 1,
+                flags: SERIAL_INCREMENT,
+            },
+        })
+    };
+    let before = node_at(&file, &serial);
+    let engine = engine();
+    file.fail_saves(Some(SaveFault::UnwindAfterRename));
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        engine.submit(&file, advance())
+    }));
+    file.fail_saves(None);
+    assert!(ran.is_err(), "the save unwound");
+    let read = om_hbam::HbamFile::open(&disk.0).unwrap();
+    let on_disk = read.key_tree().unwrap().root.to_owned_node();
+    let memory = node_at(&file, &[]).unwrap();
+    assert_eq!(memory.children, on_disk.children, "memory holds the file");
+    let advanced = node_at(&file, &serial);
+    assert_ne!(
+        advanced, before,
+        "the serial advanced, as the file holds it"
+    );
+    assert!(engine.writes_refused(&file).is_some(), "the engine");
+    assert!(file.writes_refused().is_some(), "the administrator's list");
+    let refused = engine.submit(&file, advance());
+    assert!(
+        matches!(&refused.reply, Reply::AdvanceSerial(r) if r.status != 0),
+        "{:?}",
+        refused.reply
+    );
+    assert_eq!(node_at(&file, &serial), advanced, "nothing changed");
 }
