@@ -1430,18 +1430,17 @@ derived and not exercised live), which a client reads as the end of the
 stream. An upload's (op13, op14, op70, op88, and op86 for a part of its
 program) fails with the system exception: nothing of it is held, and the
 empty last page would read as the upload done, a program run. That is
-OpenMaker's choice against FileMaker's code, unverified, and only where
-nothing was stored: the last part of an upload this connection completed
-in parts and answered done (one of the last 256 it answered so), sent
-again by a client that retries after a timeout, is answered done again
-for op13, op14 and op70, whose work was done then and is not done again.
-The operation records that where it answers done
-(`Transfers::answered_done`), so the last part again of an upload whose
-operation failed (a commit refused whole, an upload the engine refused)
-fails as a cursor not held does, and never reads as done. op88's member
-and a program's results are not answered twice, and fail. A cursor
-evicted or refused (an upload past a limit, a continuation refused)
-fails with IMP_LIMIT.
+OpenMaker's choice against FileMaker's code, unverified. The last part of
+an upload this connection completed, sent again, is such a continuation
+too and fails, although the first sending was done and stored: the
+connection keeps no memory of the uploads it completed. A memory that
+answered such a repeat done was built and taken out again: its answer
+could not vouch for the work once the session's staging was dropped, the
+file had become read-only or the part's bytes were other ones, and no
+client is known to send a part twice on one connection (FileMaker Pro
+26.0.3 answers a failed request by opening a new session, which holds
+none of the old one's cursors). A cursor evicted or refused (an upload
+past a limit, a continuation refused) fails with IMP_LIMIT.
 `tests/recalc.rs` sends each request first to a writable copy, where it
 makes its change, read back, then to a file hosted read-only, and each that
 reaches the engine also to a file made read-only between its admission and

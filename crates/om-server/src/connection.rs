@@ -2581,7 +2581,7 @@ fn download_list(
             return Ok(reply(Vec::new(), resume, 0).to_result_within(max_return as usize));
         }
         // A read: the empty last page FileMaker Server's code gives.
-        Upload::Unknown | Upload::Repeated => {
+        Upload::Unknown => {
             let reply = reply(Vec::new(), unknown_cursor(peer, &request.resume), 0);
             return Ok(reply.to_result_within(max_return as usize));
         }
@@ -2650,13 +2650,12 @@ fn query(
                 return Ok(reply(Vec::new(), resume).to_result_within(max_return as usize));
             }
             // A part of a program this connection does not hold, or the
-            // last part of one that ran (op86 records no done answer, so
-            // that is a cursor not held too): what the program does cannot
-            // be known, or was answered already, and a program may write
+            // last part of one that ran: what the program does cannot be
+            // known, or was answered already, and a program may write
             // (`query_changes_file`), which the empty last page would answer
             // as done. It fails; a continuation of results keeps the empty
             // last page (above).
-            Upload::Unknown | Upload::Repeated => {
+            Upload::Unknown => {
                 return Err(PerformError::Status(format!(
                     "a part of program upload {:#x}, which this connection does not hold: the \
                      program is not run",
@@ -3440,20 +3439,14 @@ enum Payload {
     Complete(Vec<u8>, Charge),
     /// More parts follow: answer with this resume block (spec 5.6.6c).
     Continues(Resume),
-    /// A repeat of the last part of an upload this connection completed in
-    /// parts and whose operation answered done (a client retrying after a
-    /// timeout): nothing is done again ([`Upload::Repeated`]). The
-    /// operation says so where it answers done
-    /// ([`crate::transfer::Transfers::answered_done`]); the last part again
-    /// of an upload whose operation failed is a cursor not held, and fails
-    /// again.
-    Repeated,
 }
 
-/// The complete payload of an upload-style request, the resume block to
-/// answer with while its parts are still arriving, or a repeat of a
-/// completed upload's last part ([`Payload`]). The caller has authorized
-/// the request: each part is held only for one that may run.
+/// The complete payload of an upload-style request, or the resume block to
+/// answer with while its parts are still arriving ([`Payload`]). The caller
+/// has authorized the request: each part is held only for one that may run.
+/// The last part of a completed upload sent again is a continuation of an
+/// upload the connection does not hold, and fails as one: the connection
+/// keeps no memory of completed uploads (`crate::transfer`).
 fn upload_payload(
     shared: &Shared,
     peer: &str,
@@ -3469,13 +3462,6 @@ fn upload_payload(
     Ok(match upload? {
         Upload::Complete(payload, held) => Payload::Complete(payload, held),
         Upload::Partial(resume) => Payload::Continues(resume),
-        Upload::Repeated => {
-            debug!(
-                "{peer}: the last part of completed upload {:#x} again",
-                resume.cursor
-            );
-            Payload::Repeated
-        }
         // A continuation of an upload this connection does not hold (its
         // earlier parts never came, or it ended): nothing of it can be
         // stored, so it fails rather than answer the last page a download
@@ -3566,15 +3552,10 @@ fn upload(
             Payload::Continues(resume) => {
                 return Ok(write::upload_reply(&resume, max_return as usize))
             }
-            // Stored or staged when its last part first came: done, as then.
-            Payload::Repeated => return Ok(done),
         };
     let mut reading = reserve_tree(shared, session, payload.len());
     if to_file {
         upload_to_file(shared, peer, &hosted, &request, &payload, reading.bytes())?;
-        session
-            .transfers
-            .answered_done(Owner::of(header), &request.resume);
         return Ok(done);
     }
     let client = session.client;
@@ -3596,9 +3577,6 @@ fn upload(
             return Err(Refused.into());
         }
     }
-    session
-        .transfers
-        .answered_done(Owner::of(header), &request.resume);
     Ok(done)
 }
 
@@ -3863,8 +3841,6 @@ fn commit(
             Payload::Continues(resume) => {
                 return Ok(write::upload_reply(&resume, max_return as usize))
             }
-            // Committed when its last part first came: done, as then.
-            Payload::Repeated => return Ok(done),
         };
     // The list's tree is charged until the commit is done.
     let reading = reserve_tree(shared, session, list.len());
@@ -3935,9 +3911,6 @@ fn commit(
     let reply = match committed.result {
         Ok(()) => {
             outcome.notices.deliver(&hosted, &shared.mailboxes);
-            session
-                .transfers
-                .answered_done(Owner::of(header), &request.resume);
             Ok(done)
         }
         // Refused under the write lock, record by record, by the account's
@@ -4063,18 +4036,6 @@ fn upload_binary(
     let (payload, held) =
         match upload_payload(shared, peer, session, header, &request.resume, part)? {
             Payload::Complete(payload, held) => (payload, held),
-            // Its member was answered when its last part first came, and
-            // is not answered again: op88 records no done answer
-            // (`Transfers::answered_done`), so its last part again is a
-            // cursor not held and has failed above. This arm keeps a repeat
-            // a failure should one ever be recorded.
-            Payload::Repeated => {
-                return Err(PerformError::Status(format!(
-                    "the last part of container upload {:#x} again: its member is not \
-                     answered twice",
-                    request.resume.cursor
-                )))
-            }
             Payload::Continues(resume) => {
                 // An intermediate part: no member yet (spec 3.3).
                 let reply = UploadBinaryReply {
