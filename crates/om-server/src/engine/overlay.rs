@@ -32,7 +32,7 @@
 //! below a cover counts as changed since any other.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::ops::Bound;
 
 use om_hbam::OwnedNode;
@@ -44,14 +44,27 @@ use super::{TreeView, NO_LIMIT};
 const PAGE: usize = 256;
 
 /// A covered path and what lies over it: a node, named by the path's last
-/// segment, or nothing.
+/// segment, or nothing. A cover with the empty path changes nothing, as
+/// `OwnedNode::put` and `OwnedNode::remove` change nothing at it.
 pub type Cover = (Vec<Vec<u8>>, Option<OwnedNode>);
 
 /// A view of `base` with the paths of `covered` covered (the module doc).
 /// No covered path is at or below another.
 pub struct Overlay<'v> {
     base: &'v dyn View,
-    covered: &'v [Cover],
+    /// The covers, without any of the empty path ([`Cover`]).
+    covered: Vec<(&'v [Vec<u8>], Option<&'v OwnedNode>)>,
+}
+
+/// What the covers decide of a child of a node above them, from the covers
+/// alone (no read).
+#[derive(Clone, Copy)]
+enum Decided<'c> {
+    /// A covered child: what lies over it, or nothing.
+    Laid(Option<&'c OwnedNode>),
+    /// A child on the way to a deeper cover, whose head the rule reads
+    /// ([`View::node`] of the overlay).
+    Way,
 }
 
 /// Where a path is, as the rule sees it.
@@ -76,21 +89,26 @@ fn joined<'p>(path: &[&'p [u8]], rest: &'p [Vec<u8>]) -> Vec<&'p [u8]> {
 
 impl<'v> Overlay<'v> {
     pub fn new(base: &'v dyn View, covered: &'v [Cover]) -> Self {
-        debug_assert!(covered.iter().all(|(a, _)| {
+        let covered: Vec<_> = covered
+            .iter()
+            .filter(|(path, _)| !path.is_empty())
+            .map(|(path, node)| (path.as_slice(), node.as_ref()))
+            .collect();
+        debug_assert!(covered.iter().all(|&(a, _)| {
             let a: Vec<&[u8]> = a.iter().map(Vec::as_slice).collect();
-            covered.iter().filter(|(b, _)| starts_with(&a, b)).count() == 1
+            covered.iter().filter(|&&(b, _)| starts_with(&a, b)).count() == 1
         }));
         Overlay { base, covered }
     }
 
     fn place(&self, path: &[&[u8]]) -> Place<'v> {
-        for (covered, node) in self.covered {
+        for &(covered, node) in &self.covered {
             if starts_with(path, covered) {
                 let below = &path[covered.len()..];
-                return Place::Covered(node.as_ref().and_then(|node| node.at(below)));
+                return Place::Covered(node.and_then(|node| node.at(below)));
             }
         }
-        let above = self.covered.iter().any(|(covered, _)| {
+        let above = self.covered.iter().any(|&(covered, _)| {
             covered.len() > path.len() && starts_with(&path_of(covered), &owned(path))
         });
         if above {
@@ -105,10 +123,10 @@ impl<'v> Overlay<'v> {
         &'a self,
         path: &'a [&'a [u8]],
     ) -> impl Iterator<Item = (&'v [Vec<u8>], Option<&'v OwnedNode>)> + 'a {
-        self.covered.iter().filter_map(move |(covered, node)| {
+        self.covered.iter().filter_map(move |&(covered, node)| {
             let covered_path = path_of(covered);
             (covered.len() > path.len() && starts_with(&covered_path, &owned(path)))
-                .then(|| (&covered[path.len()..], node.as_ref()))
+                .then(|| (&covered[path.len()..], node))
         })
     }
 
@@ -117,40 +135,149 @@ impl<'v> Overlay<'v> {
         self.below(path).any(|(_, node)| node.is_some())
     }
 
-    /// The children of `path`, a node above covers, that the covers decide:
-    /// a covered child with what lies over it (nothing when it is removed),
-    /// and a child on the way to a deeper cover as the rule reads it.
-    fn decided(&self, path: &[&[u8]]) -> Result<BTreeMap<Vec<u8>, Option<Head<'_>>>, ReadError> {
+    /// The children of `path`, a node above covers, that the covers
+    /// decide, by segment, from the covers alone: nothing is read.
+    fn decided(&self, path: &[&[u8]]) -> BTreeMap<&'v [u8], Decided<'v>> {
         let mut decided = BTreeMap::new();
         let below: Vec<_> = self.below(path).collect();
         for (rest, node) in below {
-            let segment = rest[0].clone();
+            let segment = rest[0].as_slice();
             if rest.len() == 1 {
-                decided.insert(segment, node.map(Head::of));
-            } else if let std::collections::btree_map::Entry::Vacant(entry) = decided.entry(segment)
-            {
-                let mut child = path.to_vec();
-                child.push(&rest[0]);
-                entry.insert(self.node(&child)?);
+                decided.insert(segment, Decided::Laid(node));
+            } else {
+                decided.entry(segment).or_insert(Decided::Way);
             }
         }
-        Ok(decided)
+        decided
     }
 
-    /// The child of `path` a failed read of the version reached, when the
-    /// failure is at or below a cover: what the overlay does not read.
-    fn hidden_failure(&self, path: &[&[u8]], error: &ReadError) -> Option<Vec<u8>> {
+    /// The child of `path` a failed read of the version reached, and
+    /// whether a cover hides it (the failure is at or below a cover, which
+    /// the overlay does not read); `None` when the failure is not below
+    /// `path`.
+    fn failed_child(&self, path: &[&[u8]], error: &ReadError) -> Option<(Vec<u8>, bool)> {
         let ReadError::Unreadable { path: failed, .. } = error else {
             return None;
         };
         let failed_path = path_of(failed);
-        let hidden = failed.len() > path.len()
-            && starts_with(&failed_path, &owned(path))
-            && self
-                .covered
-                .iter()
-                .any(|(covered, _)| starts_with(&failed_path, covered));
-        hidden.then(|| failed[path.len()].clone())
+        if failed.len() <= path.len() || !starts_with(&failed_path, &owned(path)) {
+            return None;
+        }
+        let hidden = self
+            .covered
+            .iter()
+            .any(|&(covered, _)| starts_with(&failed_path, covered));
+        Some((failed[path.len()].clone(), hidden))
+    }
+
+    /// [`View::children_page`] of `path`, a node above covers: the
+    /// version's children with those the covers decide in their place,
+    /// merged in `direction` from `from`. The bound is applied before
+    /// anything is read or decided; the version is asked only for as many
+    /// children as the page can still use; a decided child's head is lent
+    /// from what lies over it, or read for a child on the way, only when
+    /// the page gives it. A child of the version that cannot be read fails
+    /// the page when the page reaches it, and not at all when a cover hides
+    /// it or the page ends before it. A view gives the children before one
+    /// it cannot read and fails when that one comes first (`super::copies`),
+    /// so nothing unlisted lies before it.
+    fn page_above<'a>(
+        &'a self,
+        path: &[&[u8]],
+        from: Bound<&[u8]>,
+        direction: Direction,
+        max: usize,
+        out: &mut Vec<Child<'a>>,
+    ) -> Result<bool, ReadError> {
+        let decided = self.decided(path);
+        let mut ahead: Vec<(&'v [u8], Decided<'v>)> = decided
+            .iter()
+            .filter(|(segment, _)| after(segment, from, direction))
+            .map(|(segment, decided)| (*segment, *decided))
+            .collect();
+        if direction == Direction::Backward {
+            ahead.reverse();
+        }
+        let mut ahead = ahead.into_iter().peekable();
+        let mut version: VecDeque<Child<'a>> = VecDeque::new();
+        let mut version_from: Bound<Vec<u8>> = from.map(<[u8]>::to_vec);
+        let mut version_more = true;
+        // A child of the version that could not be read and that no cover
+        // hides: the page fails if it reaches it.
+        let mut unreadable: Option<(Vec<u8>, ReadError)> = None;
+        let mut given = 0;
+        loop {
+            if given >= max {
+                let left = !version.is_empty()
+                    || version_more
+                    || unreadable.is_some()
+                    || ahead.peek().is_some();
+                return Ok(left);
+            }
+            while version.is_empty() && version_more && unreadable.is_none() {
+                let mut page = Vec::new();
+                let listed = self.base.children_page(
+                    path,
+                    version_from.as_ref().map(Vec::as_slice),
+                    direction,
+                    max - given,
+                    &mut page,
+                );
+                let got = !page.is_empty();
+                if let Some(last) = page.last() {
+                    version_from = Bound::Excluded(last.segment.to_vec());
+                }
+                version.extend(
+                    page.into_iter()
+                        .filter(|child| !decided.contains_key(&*child.segment)),
+                );
+                match listed {
+                    Ok(more) => version_more = more && got,
+                    Err(error) => match self.failed_child(path, &error) {
+                        // A child a cover hides: the listing goes on after it.
+                        Some((segment, true)) => version_from = Bound::Excluded(segment),
+                        Some((segment, false)) => unreadable = Some((segment, error)),
+                        None => return Err(error),
+                    },
+                }
+            }
+            let take_decided = {
+                let next_version = version
+                    .front()
+                    .map(|child| &*child.segment)
+                    .or(unreadable.as_ref().map(|(segment, _)| segment.as_slice()));
+                match (ahead.peek(), next_version) {
+                    (None, None) => return Ok(false),
+                    (Some(_), None) => true,
+                    (None, Some(_)) => false,
+                    (Some((decided, _)), Some(next)) => before(decided, next, direction),
+                }
+            };
+            if take_decided {
+                let (segment, decision) = ahead.next().expect("peeked");
+                let head = match decision {
+                    Decided::Laid(laid) => laid.map(Head::of),
+                    Decided::Way => {
+                        let mut child = path.to_vec();
+                        child.push(segment);
+                        self.node(&child)?
+                    }
+                };
+                if let Some(head) = head {
+                    out.push(Child {
+                        segment: Cow::Borrowed(segment),
+                        head,
+                    });
+                    given += 1;
+                }
+            } else if let Some(child) = version.pop_front() {
+                out.push(child);
+                given += 1;
+            } else {
+                let (_, error) = unreadable.take().expect("the version's next child");
+                return Err(error);
+            }
+        }
     }
 
     /// The subtree at `path`, a node above covers, built from its children
@@ -180,24 +307,30 @@ impl<'v> Overlay<'v> {
         let Some(head) = self.node(path)? else {
             return Ok(None);
         };
+        let segment = path.last().map(|s| s.to_vec()).unwrap_or_default();
+        // Charged before its value is copied.
+        let value = head.value.as_ref().map_or(0, |value| value.len());
+        charge(room, size_of::<OwnedNode>() + segment.len() + value)?;
         let mut node = OwnedNode {
-            segment: path.last().map(|s| s.to_vec()).unwrap_or_default(),
+            segment,
             value: head.value.map(Cow::into_owned),
             push: head.list,
             children: Vec::new(),
         };
-        charge(
-            room,
-            size_of::<OwnedNode>() + node.segment.len() + node.value.as_ref().map_or(0, Vec::len),
-        )?;
         let mut from: Option<Vec<u8>> = None;
         loop {
+            // No more children than could still fit, each at least a
+            // node's place, and one more to pass the limit with.
+            let page_size = match limit {
+                NO_LIMIT => PAGE,
+                _ => PAGE.min(*room / size_of::<OwnedNode>() + 1),
+            };
             let mut page = Vec::new();
             let bound = match &from {
                 Some(segment) => Bound::Excluded(segment.as_slice()),
                 None => Bound::Unbounded,
             };
-            let more = self.children_page(path, bound, Direction::Forward, PAGE, &mut page)?;
+            let more = self.children_page(path, bound, Direction::Forward, page_size, &mut page)?;
             let Some(last) = page.last().map(|child| child.segment.to_vec()) else {
                 break;
             };
@@ -331,81 +464,7 @@ impl View for Overlay<'_> {
                 Ok(())
             }),
             Place::Base => self.base.children_page(path, from, direction, max, out),
-            Place::Above => {
-                let decided = self.decided(path)?;
-                let mut from: Bound<Vec<u8>> = match from {
-                    Bound::Included(s) => Bound::Included(s.to_vec()),
-                    Bound::Excluded(s) => Bound::Excluded(s.to_vec()),
-                    Bound::Unbounded => Bound::Unbounded,
-                };
-                loop {
-                    let mut page = Vec::new();
-                    let listed = self.base.children_page(
-                        path,
-                        from.as_ref().map(Vec::as_slice),
-                        direction,
-                        max,
-                        &mut page,
-                    );
-                    let (more, last) = match listed {
-                        Ok(more) => (more, page.last().map(|child| child.segment.to_vec())),
-                        Err(error) => match self.hidden_failure(path, &error) {
-                            // A covered child the version could not read,
-                            // which the overlay does not read: the listing
-                            // goes on after it. A view gives the children
-                            // before one it cannot read and fails when that
-                            // one comes first (`super::copies`), so nothing
-                            // unlisted lies before it.
-                            Some(hidden) => {
-                                let last = match page.last() {
-                                    Some(child) => child.segment.to_vec(),
-                                    None => hidden,
-                                };
-                                (true, Some(last))
-                            }
-                            None => return Err(error),
-                        },
-                    };
-                    // The version's children the covers do not decide, and
-                    // the decided ones in this page's range: up to its last
-                    // child when more may follow it.
-                    let mut merged: Vec<Child<'a>> = page
-                        .into_iter()
-                        .filter(|child| !decided.contains_key(&*child.segment))
-                        .collect();
-                    for (segment, head) in &decided {
-                        let Some(head) = head else {
-                            continue;
-                        };
-                        let in_range = after(segment, from.as_ref().map(Vec::as_slice), direction)
-                            && match (&last, more) {
-                                (Some(last), true) => !before(last, segment, direction),
-                                _ => true,
-                            };
-                        if in_range {
-                            merged.push(Child {
-                                segment: Cow::Owned(segment.clone()),
-                                head: head.clone().into_owned(),
-                            });
-                        }
-                    }
-                    merged.sort_by(|a, b| match direction {
-                        Direction::Forward => a.segment.cmp(&b.segment),
-                        Direction::Backward => b.segment.cmp(&a.segment),
-                    });
-                    let cut = merged.len() > max;
-                    let given = !merged.is_empty();
-                    out.extend(merged.into_iter().take(max));
-                    match (given, more, last) {
-                        (true, _, _) | (false, false, _) | (false, true, None) => {
-                            return Ok(cut || more)
-                        }
-                        // Every child of this page was covered away: the
-                        // next page, after it.
-                        (false, true, Some(last)) => from = Bound::Excluded(last),
-                    }
-                }
-            }
+            Place::Above => self.page_above(path, from, direction, max, out),
         }
     }
 
@@ -722,5 +781,294 @@ mod tests {
             overlay.subtree(&[&[1]], NO_LIMIT),
             Err(ReadError::Unreadable { .. })
         ));
+    }
+
+    /// The request an overlay's page made of its version may cover:
+    /// children of `path` from `from` in `direction`, at most `max`.
+    struct Asked {
+        path: Vec<Vec<u8>>,
+        from: Bound<Vec<u8>>,
+        direction: Direction,
+        max: usize,
+    }
+
+    /// A view over `inner` that refuses, with an error, what a page of the
+    /// overlay above covers must not read of its version: children of the
+    /// asked node from before the page's bound or more of them than the
+    /// page's size, or the head of a child before the bound. It counts the
+    /// children it gives of that node and the subtrees read.
+    struct Strict<'v> {
+        inner: &'v dyn View,
+        asked: std::cell::RefCell<Option<Asked>>,
+        given: std::cell::Cell<usize>,
+        subtrees: std::cell::Cell<usize>,
+    }
+
+    impl<'v> Strict<'v> {
+        fn new(inner: &'v dyn View) -> Self {
+            Strict {
+                inner,
+                asked: Default::default(),
+                given: Default::default(),
+                subtrees: Default::default(),
+            }
+        }
+
+        fn ask(&self, path: &[&[u8]], from: Bound<&[u8]>, direction: Direction, max: usize) {
+            *self.asked.borrow_mut() = Some(Asked {
+                path: owned(path),
+                from: from.map(<[u8]>::to_vec),
+                direction,
+                max,
+            });
+            self.given.set(0);
+            self.subtrees.set(0);
+        }
+    }
+
+    fn refused(why: &str) -> ReadError {
+        ReadError::Unreadable {
+            path: Vec::new(),
+            why: why.into(),
+        }
+    }
+
+    /// Whether every segment `inner` allows in `direction` is one `outer`
+    /// allows.
+    fn within_bound(inner: &Bound<&[u8]>, outer: &Bound<Vec<u8>>, direction: Direction) -> bool {
+        let start = |bound: &Bound<&[u8]>| match bound {
+            Bound::Included(s) => Some((s.to_vec(), true)),
+            Bound::Excluded(s) => Some((s.to_vec(), false)),
+            Bound::Unbounded => None,
+        };
+        let outer = start(&outer.as_ref().map(Vec::as_slice));
+        match (start(inner), outer) {
+            (_, None) => true,
+            (None, Some(_)) => false,
+            (Some((i, i_incl)), Some((o, o_incl))) => {
+                before(&o, &i, direction) || (i == o && (o_incl || !i_incl))
+            }
+        }
+    }
+
+    impl View for Strict<'_> {
+        fn version(&self) -> Version {
+            self.inner.version()
+        }
+
+        fn node(&self, path: &[&[u8]]) -> Result<Option<Head<'_>>, ReadError> {
+            if let Some(asked) = self.asked.borrow().as_ref() {
+                let child = path.len() == asked.path.len() + 1 && starts_with(path, &asked.path);
+                if child
+                    && !after(
+                        path[asked.path.len()],
+                        asked.from.as_ref().map(Vec::as_slice),
+                        asked.direction,
+                    )
+                {
+                    return Err(refused("the head of a child before the page's bound"));
+                }
+            }
+            self.inner.node(path)
+        }
+
+        fn subtree(
+            &self,
+            path: &[&[u8]],
+            limit: usize,
+        ) -> Result<Option<Cow<'_, OwnedNode>>, ReadError> {
+            self.subtrees.set(self.subtrees.get() + 1);
+            self.inner.subtree(path, limit)
+        }
+
+        fn children_page<'a>(
+            &'a self,
+            path: &[&[u8]],
+            from: Bound<&[u8]>,
+            direction: Direction,
+            max: usize,
+            out: &mut Vec<Child<'a>>,
+        ) -> Result<bool, ReadError> {
+            let mut this = false;
+            if let Some(asked) = self.asked.borrow().as_ref() {
+                if path == path_of(&asked.path).as_slice() {
+                    if direction != asked.direction || !within_bound(&from, &asked.from, direction)
+                    {
+                        return Err(refused("children from before the page's bound"));
+                    }
+                    if max > asked.max {
+                        return Err(refused("more children than the page can give"));
+                    }
+                    this = true;
+                }
+            }
+            let before = out.len();
+            let more = self.inner.children_page(path, from, direction, max, out)?;
+            if this {
+                self.given.set(self.given.get() + out.len() - before);
+            }
+            Ok(more)
+        }
+
+        fn subtrees_page<'a>(
+            &'a self,
+            path: &[&[u8]],
+            from: Bound<&[u8]>,
+            direction: Direction,
+            max: usize,
+            limit: usize,
+            out: &mut Vec<Cow<'a, OwnedNode>>,
+        ) -> Result<bool, ReadError> {
+            self.inner
+                .subtrees_page(path, from, direction, max, limit, out)
+        }
+
+        fn walk_page<'a>(
+            &'a self,
+            path: &[&[u8]],
+            after: Option<&[Vec<u8>]>,
+            max: usize,
+            out: &mut Vec<Step<'a>>,
+        ) -> Result<Option<Vec<Vec<u8>>>, ReadError> {
+            self.inner.walk_page(path, after, max, out)
+        }
+
+        fn changed_since(&self, path: &[&[u8]], since: Version) -> Result<bool, ReadError> {
+            self.inner.changed_since(path, since)
+        }
+    }
+
+    /// A page of an overlay node above covers costs what it gives
+    /// (docs/server-storage.md 5, "The overlay view"). Over a version
+    /// whose node lists sixteen laid records before its own, with large
+    /// values, a replaced, a removed and an unreadable record of its own,
+    /// one on the way to a deeper cover that cannot be read, and one laid
+    /// after them, every page from every bound in both directions, by 1, 2
+    /// and 3: it gives what the reference tree gives, and fails exactly
+    /// when it reaches a record that cannot be read and that no cover
+    /// hides; it asks the version for no child before its bound, for no
+    /// more than it can give, and is given no more than that and the
+    /// decided children it skips; a laid head is lent, not copied. A
+    /// subtree with a limit smaller than the first laid record is refused
+    /// before any record of the version is read. A cover with the empty
+    /// path changes nothing.
+    #[test]
+    fn an_overlay_page_costs_what_it_gives() {
+        let mut base = OwnedNode::default();
+        for id in 0x20..=0x2fu8 {
+            base.put(&[&[1], &[id]], leaf(&[id]));
+        }
+        base.put(&[&[1], &[0x25], &[1]], leaf(b"deep"));
+        let big = vec![7u8; 64 * 1024];
+        let mut covers: Vec<Cover> = (0x01..=0x10u8)
+            .map(|id| {
+                (
+                    vec![vec![1], vec![id]],
+                    Some(OwnedNode::leaf(vec![id], big.clone())),
+                )
+            })
+            .collect();
+        covers.push((
+            vec![vec![1], vec![0x22]],
+            Some(OwnedNode::leaf(vec![0x22], b"changed".to_vec())),
+        ));
+        covers.push((vec![vec![1], vec![0x23]], None));
+        covers.push((
+            vec![vec![1], vec![0x25], vec![2]],
+            Some(OwnedNode::leaf(vec![2], b"added".to_vec())),
+        ));
+        covers.push((
+            vec![vec![1], vec![0x40]],
+            Some(OwnedNode::leaf(vec![0x40], b"last".to_vec())),
+        ));
+        covers.push((Vec::new(), None));
+        let mut reference = base.clone();
+        for (path, laid) in &covers {
+            let path = path_of(path);
+            match laid {
+                Some(laid) => reference.put(&path, laid.clone()),
+                None => {
+                    reference.remove(&path);
+                }
+            }
+        }
+        let version = TreeView::new(&base, 3);
+        let expected = TreeView::new(&reference, 3);
+        // Hidden: 0x22 replaced, 0x23 removed. Not hidden: 0x20 and 0x2a
+        // of the version's own, and 0x25, on the way to a deeper cover.
+        let unreadable: [u8; 3] = [0x20, 0x25, 0x2a];
+        let failing: Vec<Vec<Vec<u8>>> = [0x20u8, 0x22, 0x23, 0x25, 0x2a]
+            .iter()
+            .map(|id| vec![vec![1], vec![*id]])
+            .collect();
+        let copies = Copies::new(&version, &failing);
+        let strict = Strict::new(&copies);
+        let overlay = Overlay::new(&strict, &covers);
+        let laid: Vec<u8> = (0x01..=0x10).chain([0x22, 0x40]).collect();
+        let segments: Vec<Vec<u8>> = reference
+            .at(&[&[1]])
+            .unwrap()
+            .children
+            .iter()
+            .map(|c| c.segment.clone())
+            .collect();
+        let mut bounds = vec![Bound::Unbounded];
+        for segment in segments
+            .iter()
+            .chain([&vec![0x23], &vec![0x00], &vec![0x50]])
+        {
+            bounds.push(Bound::Included(segment.clone()));
+            bounds.push(Bound::Excluded(segment.clone()));
+        }
+        for from in &bounds {
+            let from = from.as_ref().map(Vec::as_slice);
+            for direction in [Direction::Forward, Direction::Backward] {
+                for max in [1, 2, 3] {
+                    let at = format!("from {from:02x?} {direction:?} by {max}");
+                    let mut want = Vec::new();
+                    expected
+                        .children_page(&[&[1]], from, direction, max, &mut want)
+                        .unwrap();
+                    strict.ask(&[&[1]], from, direction, max);
+                    let mut got = Vec::new();
+                    let page = overlay.children_page(&[&[1]], from, direction, max, &mut got);
+                    let reaches = want.iter().any(|c| unreadable.contains(&c.segment[0]));
+                    match page {
+                        Err(error) => assert!(reaches, "{at}: {error}"),
+                        Ok(_) => {
+                            assert!(!reaches, "{at}: reaches an unreadable record");
+                            assert_eq!(got, want, "{at}");
+                        }
+                    }
+                    assert!(
+                        strict.given.get() <= max + 3,
+                        "{at}: {} given",
+                        strict.given.get()
+                    );
+                    for child in &got {
+                        if laid.contains(&child.segment[0]) {
+                            assert!(
+                                matches!(child.head.value, Some(Cow::Borrowed(_))),
+                                "{at}: a laid head copied"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // A limit smaller than the first laid record: refused before any
+        // record of the version is read.
+        let limit = 1024;
+        strict.ask(
+            &[&[1]],
+            Bound::Unbounded,
+            Direction::Forward,
+            limit / size_of::<OwnedNode>() + 1,
+        );
+        assert!(matches!(
+            overlay.subtree(&[&[1]], limit),
+            Err(ReadError::TooLarge { .. })
+        ));
+        assert_eq!(strict.subtrees.get(), 0, "no record of the version read");
     }
 }
