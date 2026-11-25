@@ -15,6 +15,19 @@
 //! it answers through this view alone, so that the client gets what a
 //! failed read gives. Its derived state is computed through it, as another
 //! engine would compute its own, and checked against the file engine's.
+//!
+//! The store engine's view is checked the same way ([`StoreCopy`]): at a
+//! file's first read the switch writes the file engine's tree as an
+//! `.fmp12` and imports it into a store in memory, as the store engine
+//! imports a file it hosts (`paged::import`), with its derived state
+//! computed from that view as the store engine computes it
+//! (`store::derived_of`). Every read at that version is then answered a
+//! third time, through a [`PagedView`] of the copy, and must give the same
+//! answer. A read at a later version (the file changed) is not: the store
+//! engine takes no changes. With `OM_STORE_CHECK_LOG` set to a file, each
+//! test notes there, once for each file, that a read was compared, and that
+//! one came after a change: how many tests only read, and had every read
+//! checked so.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -24,8 +37,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use log::warn;
 use om_hbam::OwnedNode;
 
+use super::paged::{Batch, PagedView};
 use super::reading::{Read, Reading};
-use super::view::{Child, Direction, Head, ReadError, Step, Version, View};
+use super::view::{Child, Direction, Head, ReadError, Step, Version, View, NO_LIMIT};
 use crate::derived::{self, Derived};
 
 /// The most children or nodes of a walk one call gives.
@@ -246,7 +260,6 @@ impl super::FileEngine {
 
 /// A server's switch to the test view (`Server::checking_reads`,
 /// `ServerHandle::failing_reads`).
-#[derive(Default)]
 pub(crate) struct Switch {
     /// The paths of each file, by name, whose reads fail; when any is set,
     /// reads are answered through the test view alone.
@@ -255,6 +268,83 @@ pub(crate) struct Switch {
     /// file engine's it was checked against (the same `Arc` while the
     /// file engine's has not changed).
     derived: Mutex<HashMap<u32, Computed>>,
+    /// Each file's copy in a store, by its id and load
+    /// (`Derived::instance`): `None` for a file whose tree the import
+    /// refuses (it holds what the store engine does not host).
+    stores: Mutex<HashMap<(u32, u64), Copied>>,
+    /// The test that switched the server (its thread's name), for
+    /// `OM_STORE_CHECK_LOG`.
+    test: Option<String>,
+}
+
+impl Default for Switch {
+    fn default() -> Self {
+        Switch {
+            failing: Default::default(),
+            derived: Default::default(),
+            stores: Default::default(),
+            test: std::thread::current().name().map(str::to_owned),
+        }
+    }
+}
+
+/// A file's store copy ([`StoreCopy`]), or none where its tree cannot be
+/// imported.
+type Copied = Option<Arc<StoreCopy>>;
+
+/// A file's tree at one version, imported into a store in memory as the
+/// store engine imports a file it hosts, and the state derived from that
+/// view as the store engine derives it.
+pub(crate) struct StoreCopy {
+    store: om_store::page::MemStore,
+    root: om_store::page::Root,
+    derived: Derived,
+    /// The file engine's version the copy holds.
+    version: Version,
+    /// Whether a read was compared, and a read came after a change, noted.
+    compared: std::sync::atomic::AtomicBool,
+    changed: std::sync::atomic::AtomicBool,
+}
+
+impl StoreCopy {
+    /// The copy of the version `reading` holds: `None` where the tree
+    /// cannot be written as an `.fmp12` or the import refuses it. Its
+    /// derived state must be the file engine's.
+    fn of(reading: &Reading<'_>) -> Option<StoreCopy> {
+        let view = reading.engine_view();
+        let current = reading.derived();
+        let root = view.subtree(&[], NO_LIMIT).ok()??.into_owned();
+        let bytes = om_hbam::writer::rebuild(&root, current.page_zero()).ok()?;
+        let mut store = om_store::page::MemStore::new(om_store::page::Numbering::Sequential);
+        let name = om_store::page::TreeName::new(b"copy".to_vec())?;
+        let imported = super::paged::import(
+            std::io::Cursor::new(bytes),
+            &mut store,
+            &name,
+            1,
+            Batch::default(),
+        )
+        .ok()?;
+        let paged = PagedView::open(&store, imported.root).ok()?;
+        let mut derived =
+            super::store::derived_of(&paged, current.name(), current.page_zero()).ok()?;
+        if current.desktop() {
+            derived.serve_desktop();
+        }
+        assert!(
+            derived.same_as(current, true),
+            "{:?}: the store engine's derived state differs from the file engine's:\n{derived:?}\n{current:?}",
+            reading.file().name
+        );
+        Some(StoreCopy {
+            store,
+            root: imported.root,
+            derived,
+            version: view.version(),
+            compared: Default::default(),
+            changed: Default::default(),
+        })
+    }
 }
 
 /// The file engine's derived state of a file, and the test view's computed
@@ -317,7 +407,66 @@ impl Switch {
             "{:?}: the test view's answer differs from the file engine's",
             reading.file().name
         );
+        if let Some(copy) = self.store_copy(reading) {
+            let paged = PagedView::open(&copy.store, copy.root)
+                .expect("a copy in memory opens as it opened when it was made");
+            let stored = read(Read {
+                view: &paged,
+                derived: &copy.derived,
+                ..file_read
+            });
+            assert_eq!(
+                stored,
+                expected,
+                "{:?}: the store engine's answer differs from the file engine's",
+                reading.file().name
+            );
+            self.note(&copy.compared, "compared");
+        }
         answer
+    }
+
+    /// The store copy of the file `reading` reads, made at its first read,
+    /// when the file is still at the version the copy holds; a later
+    /// version is noted as a change.
+    fn store_copy(&self, reading: &Reading<'_>) -> Option<Arc<StoreCopy>> {
+        let key = (reading.file().id, reading.derived().instance());
+        let mut stores = self.stores.lock().unwrap_or_else(PoisonError::into_inner);
+        let copy = stores
+            .entry(key)
+            .or_insert_with(|| StoreCopy::of(reading).map(Arc::new))
+            .clone()?;
+        drop(stores);
+        if reading.engine_view().version() == copy.version {
+            return Some(copy);
+        }
+        self.note(&copy.changed, "changed");
+        None
+    }
+
+    /// Note `what` once in `OM_STORE_CHECK_LOG`, with the test's name.
+    fn note(&self, once: &std::sync::atomic::AtomicBool, what: &str) {
+        use std::io::Write;
+        if once.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let Some(log) = std::env::var_os("OM_STORE_CHECK_LOG") else {
+            return;
+        };
+        let test = self.test.as_deref().unwrap_or("?");
+        let binary = std::env::current_exe()
+            .ok()
+            .and_then(|exe| Some(exe.file_stem()?.to_string_lossy().into_owned()))
+            .unwrap_or_default();
+        // One write, so that the lines of tests running at once do not mix.
+        let line = format!("{binary}\t{test}\t{what}\n");
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log)
+        {
+            let _ = file.write_all(line.as_bytes());
+        }
     }
 
     /// `read`, answered through the test view alone, unchecked: a read
