@@ -871,7 +871,7 @@ administrator did to it.
 | Its script starts | 689 `Schedule "<name>" has started FileMaker script "<script>".` |
 | The run ends | 150 `Schedule "<name>" completed.`, or 644 `... completed; last scripting error (<n>).`; then 126 `Schedule "<name>" scheduled for MM/DD/YYYY hh:mm AM.` when it runs again on its own |
 | The run passes its time limit and goes on | 690, level Warning |
-| The run is aborted | 152 (by the administrator), 691 (at its own time limit, or the server stopping), 732 (its account cannot log in); else OpenMaker's own with the reason and error, level Error (the file is not hosted, the server's limits, the server refused or failed to run it) |
+| The run is aborted | 152 (by the administrator), 691 (at its own time limit, or the server stopping), 732 (its account cannot log in); else OpenMaker's own with the reason and error, level Error (the file is not hosted, its accounts could not be read (802), the server's limits, the server refused or failed to run it) |
 | A run was due while the last one ran | OpenMaker's own, level Warning: `... was skipped: its last run has not ended.` |
 | `ServerHandle::run_schedule`, `enable_schedule` | OpenMaker's own: `Schedule "<name>" run now by the administrator.`, `... enabled by` / `disabled by the administrator.` |
 | A Perform Script on Server script is aborted (by the administrator, its file closing, the server stopping, or the server's step or time limit) | OpenMaker's own, level Warning, with the script, file, account, reason and error |

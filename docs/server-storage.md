@@ -11,11 +11,15 @@ it except the contract in section 2.
 (`crates/om-server/src/store.rs`). Of the engine interface, the write
 operations are built: every change the server makes to a hosted file or
 its lock table goes through them, and every save's outcome is reported
-(section 5). Views are built, and downloads, finds, logins, thumbnails
-and op88's check of a library read through them. `export` is built, and
-backups and the desktop's Save a Copy as make their copies with it. The
-other readers still hold the file engine's store (section 5, "Moving the
-other readers"). Still to come: `import` and `capabilities` (section 5),
+(section 5). Views are built, and every reader outside server scripts
+and the operations' own reads reads through them: downloads, finds,
+logins, thumbnails, op88's check of a library, Describe Security, the
+desktop's private host and a schedule's login. `export` is built, and
+backups and the desktop's Save a Copy as make their copies with it. What
+the engine says of a file that is not a version's (whether it takes
+changes, its file on disk) it offers itself. Server scripts and the
+operations' own reads still hold the file engine's store (section 5,
+"Moving the other readers"). Still to come: `import` and `capabilities` (section 5),
 the store engine and everything in sections 6 to 12, which are specified
 here and not built.
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) lists the
@@ -172,8 +176,6 @@ lock table to read (`Hosted::lock_table`), and a whole-file copy is an
 export (`engine::export`, below), which opens the file on disk only to
 read it (`Store::open_saved`). The exceptions:
 
-- the setup of a file no one can reach yet: `hosting::load_hosted` records
-  the file's identity in its store before serving it;
 - test switches: `Hosted::fail_commit_saves` and `Hosted::fail_saves`
   (debug builds, behind `ServerHandle::failing_commit_saves` and
   `ServerHandle::failing_saves`), which set a flag of the store and never
@@ -190,13 +192,18 @@ read it (`Store::open_saved`). The exceptions:
 
 Views are built, with the file engine's behind them, and these readers
 read through them: downloads (op90, op15, op92), finds (op86), logins
-(op80), thumbnails (op96), and op88's check of the library it stores
-into, with the read-only check of every write request. `export` is built
+(op80), thumbnails (op96), op88's check of the library it stores into,
+Describe Security (op240), the desktop's private host (its suggested
+account, stored login and logged-in account) and a schedule's login.
+What the engine says of a file that is not a version's (whether it takes
+changes and why, which file on disk it last read or saved) it offers
+itself ("The engine's state of a file", below). `export` is built
 ("Exports", below): it copies the file on disk where that holds the
 version and walks a view otherwise, and backup schedules and the
-desktop's Save a Copy as make their copies with it. The other readers
-still hold the store; "Moving the other readers" below lists them and
-the plan for them. `import` and `capabilities` are not built.
+desktop's Save a Copy as make their copies with it. Server scripts and
+the operations' own reads still hold the store; "Moving the other
+readers" below lists them and the plan for them. `import` and
+`capabilities` are not built.
 
 **Views.** A view (`engine::View`) is one fixed version of one file's
 tree. Nothing a view returned changes later. It answers:
@@ -309,9 +316,31 @@ The readers that read through views:
   wait for writers needs it anyway, the cache would not keep it;
 - op88's check that the session may store into the file's own library
   (`connection::container_library_writable`): the base tables of the
-  derived state's catalog. Every write request's check of whether the
-  file is hosted read-only (`connection::writable`, and op72's) reads the
-  file's state once from a reading, as a find's does.
+  derived state's catalog;
+- Describe Security (op240, `security::catalog`): each record of the
+  accounts `[23, 1, 5]`, privilege sets `[23, 2, 5]` and extended
+  privileges `[23, 3, 5]`, listed one key at a time, with only the
+  members it decodes read whole (never an account's password `06` or its
+  `04`), where it took the three lists whole before;
+- the desktop's private host (`LocalHost`): the account its account
+  catalog's header names (`[23, 1, 1, 16]`, one node), looked up in the
+  reading's accounts, which a client suggests (`suggested_account`); the
+  same name and the stored password `06` (one node each) of File
+  Options' "Log in using" (`stored_login`); and the facts of the account
+  a desktop logged in as, from the reading's accounts
+  (`authenticated_account`), which it read from the published accounts
+  before. The stored password is read as before: lent by the file
+  engine's view, which copies nothing, and a value in parts assembled
+  into a copy that is wiped when dropped; a view that hands over its own
+  copy (the test view) has it wiped when dropped too;
+- a schedule's login (`schedules::log_in`): its account, looked up in the
+  reading's accounts, which it read from the published accounts before.
+
+Every write request's check of whether the file is hosted read-only
+(`connection::writable`, and op72's), and the desktop host's read-only
+reasons and its Change Password, ask the engine for the file's state
+("The engine's state of a file", below), as a server script's account
+steps do.
 
 Every subtree these readers ask for whole is asked for with `NO_LIMIT`:
 each was read whole and without a limit before, and a limit would refuse
@@ -333,9 +362,20 @@ a wrong account or password and counts toward locking the account out,
 and not a success. Its password is not checked, it does not count toward
 the server's login limits (as a right password for an account the file
 does not admit does not), and no failed login is recorded in the event
-log, since no credentials were refused. The read is logged as an error.
-All of these are OpenMaker's choice; what FileMaker Server answers when it
-cannot read its file is unmeasured.
+log, since no credentials were refused. Describe Security is refused with
+802 too (`om_protocol::authoring::status::UNREADABLE`, with the message
+"The file's security catalog could not be read."), never answered with a
+catalog that lacks what could not be read. A schedule's run whose file's
+accounts cannot be read is aborted with 802, its event "Schedule "…"
+aborted; its file's accounts could not be read (error 802).", as the
+client's login is answered, not as an account that cannot log in (212).
+The desktop's private host returns the error from each of its reads
+(`std::io::Error`), and the desktop's provider answers it with 802, "The
+file could not be read: …": opening the file, which reads the suggested
+account and, unless the user asks, the stored login, fails with it, as
+does loading a file that just logged in, which reads its account's facts.
+The read is logged as an error. All of these are OpenMaker's choice; what
+FileMaker Server answers when it cannot read its file is unmeasured.
 
 These readers hold the store's read lock as long as they did, with two
 differences, both shorter and both within one hold, so each still reads
@@ -357,15 +397,19 @@ while a write holds the store (an operation and its save of the file), as
 the client's next request after it, a download, already did. An unknown
 account and a wrong password wait alike, and their logins still differ
 only by the outcome: each is one lookup in the same list and one hash.
-The readers of the accounts that are not logins and do not read through
-a view (a server script's account facts, a schedule's login, the local
-host's account of a desktop that logged in, "Derived state" below) read
-the accounts as before, without waiting for the store.
+A schedule's login and the desktop host's account facts take the store's
+read lock too, which they did not: they read the published accounts. The
+desktop host's suggested account and stored login, and Describe
+Security, took it before. The one reader of the accounts that does not
+read through a view is a server script's (its account facts, "Derived
+state" below), which reads them as before, without waiting for the
+store.
 
 Each of these reads may run twice (`Reading::serve`, below): the login's
-lookup, op96's two reads and op88's list of tables change nothing they
-read. GenerateMemberKey's read alone runs once (`Reading::serve_once`),
-since it issues keys.
+lookup, op96's two reads, op88's list of tables, Describe Security's
+lists, the desktop host's three reads and a schedule's lookup change
+nothing they read. GenerateMemberKey's read alone runs once
+(`Reading::serve_once`), since it issues keys.
 
 A second view, for tests only (`engine::copies`, debug builds), shows
 that readers do not lean on the file engine's: it serves the same tree but
@@ -388,7 +432,11 @@ local-file tests are not. A
 read it was told to fail (`ServerHandle::failing_reads`) is answered
 through it alone, so that a test sees what the client gets
 (`tests/indexes.rs`, `a_failed_read_reaches_the_client_as_an_error`;
-`tests/psos_containers.rs`, `thumbnails_read_through_views_and_fail_as_downloads_do`);
+`tests/psos_containers.rs`, `thumbnails_read_through_views_and_fail_as_downloads_do`;
+`tests/local.rs`, `the_local_hosts_failed_reads_are_errors`, through
+`LocalHost::failing_reads`; `tests/schedules.rs`,
+`a_run_whose_accounts_cannot_be_read_is_aborted_unable_to_open`;
+`om-author`'s `security_that_cannot_be_read_is_refused`);
 there a derived state it cannot compute is the file engine's, since
 derived state is computed when a file is loaded and when its schema
 changes, not by the read that fails. Accounts it cannot read are held as
@@ -637,7 +685,13 @@ an `.fmp12`, in one of two ways; the engine says which
   it is that file (the descriptor a desktop's host holds locked, or the
   entry at the file's path while it is the one the server read or last
   saved there,
-  [#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)). A file
+  [#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)).
+  "Nothing changed since" is exact also after a save that is not written:
+  the change is taken back whole, the parents it created included, and
+  the store's record of unsaved changes with it ("Taking a change back",
+  below; after a table's first record whose save failed, an export holds
+  exactly what memory holds,
+  `engine::tests::an_export_after_a_failed_save_holds_what_memory_holds`). A file
   hosted read-only for content the writer cannot write is always its file
   on disk, the bytes it was loaded from (section 2, rule 2); while changes
   its refused saves left wait in memory, an export of the version held is
@@ -741,14 +795,6 @@ at any time from a running server, at a clean stop, and `om-server export`
 
 **Limits of exports.**
 
-- A copy of the file on disk relies on the store's record that nothing
-  changed since the last save being exact. One case is not: a change whose
-  save fails before its rename is taken back, but a parent list it created
-  on its way (the first record of a table creates `[T, 05]`) stays in
-  memory, empty, while the store counts as unchanged; an export then copies
-  the file on disk, which lacks that empty list.
-  [#725](https://github.com/OpenMaker-Dev/openmaker/pull/725) takes such
-  parents back.
 - Another program that writes into the hosted file in place, keeping its
   length, gives a copy that passes the length check: OpenMaker's saves never
   write in place, but nothing stops another program, as before exports
@@ -809,13 +855,23 @@ deleted or a password since changed; every login to the file is then
 refused (Views, above). The file engine reads them from its tree, which
 never fails.
 
-The readers of the accounts that are not logins read the derived state the
-last write published when it let go of the store (`Hosted::accounts`,
-`Hosted::account`), the same value, without taking the store: a server
-script's calculation that asks for the session's account
-(`Get ( AccountType )`) may hold the store already and must not take its
-lock again, and a schedule's login and the local host's account of a
-logged-in desktop need nothing else of the file.
+Every reader of the accounts reads them through a reading but one: a
+server script's account facts and Change Password's check of the
+account's kind (`Hosted::accounts`, `Hosted::account`), which a
+calculation asks for (`Get ( AccountType )`) while the script host may
+hold the store already, and must not take its lock again. They read the
+derived state of a version published with that version
+(`hosting::Published`): the version the store holds when a write lets go
+of it and that version's derived state, the same `Arc` every reading of
+it shares. It is published while the write still holds the store's write
+lock, after the write, its save or roll-back and its accounts, and
+before the lock is let go (`StoreWriteGuard`'s drop). So a reader that
+takes the store after a write finds the version that write published,
+which a reading checks in debug builds (`FileEngine::read`), and a reader
+of the published state gets the last version a write let go: while a
+write runs, the one before it, which every reader of the store had until
+then. Its lock is its own, taken after the store's by a writer and alone
+by a reader, never the other way.
 
 The reads of a file through a view and derived state are functions beside
 it (`derived`): the catalogs, an index built on demand
@@ -851,26 +907,55 @@ is named by nothing, and a server that stops between op13 and op73 never
 computes it
 ([#707](https://github.com/OpenMaker-Dev/openmaker/issues/707)).
 
-**Moving the other readers.** The readers below, but the one marked
-moved, still hold the store (`Hosted::read_store`, or
-`Transaction::view() -> &Store` inside `run`), or read the accounts the store published without a view
-(`Hosted::accounts`, `Hosted::account`). Each is listed with the `Store`
-helpers it reads through, what it reads (one node, a list a node's
-children make, or a subtree whole), and what it needs that views and
-derived state do not give yet. No connection handler is among them: the
-connection reads only through readings. They move in this order, the
-smaller first, each with the test view's runs of its tests:
+**The engine's state of a file.** Some of what the server asks of a
+hosted file is not a version's: whether it takes changes from its
+clients and why not, whether it takes no more changes at all, and which
+file on disk the engine last read or saved for it. The engine offers them
+itself (`engine::state`, on `FileEngine`), not through a view or `Store`:
+`read_only(file)` (the first cause: opened read-only, content the writer
+cannot write, deferred work refused), `writes_refused(file)` (a save
+whose outcome was unknown) and `file_on_disk(file)` (its device and
+inode). They describe the engine's hold of the file on disk and of its
+clients, not the content of a version. Two versions with the same tree
+can differ in them: a save renames a new copy over the file and changes
+its identity on disk and nothing in the tree. And a reader holding an
+older version must be told how they stand now: a backup protects the file
+on disk now, and a client is refused a change by the file as it is now,
+whatever version it read. An engine with versions keeps them once for
+each file. The file engine keeps the read-only cause and the identity in
+its store and reads them under the store's read lock, as `Hosted` did
+before; whether the file takes no more changes it keeps beside the store
+(`Hosted::writes_refused`), read without waiting for a writer. Their
+writes outside an operation are the engine's too: the identity of the
+file it loaded, set before anyone can reach the file
+(`FileEngine::loaded_from`), and the read-only hold of a file whose
+deferred work a panic left part way (`FileEngine::hold_read_only`).
 
-1. The security catalog and the desktop's private host.
-   `security::catalog` (the security catalog `[23]` whole, for an
-   authoring session's view of the file's security), `local.rs`'s
-   `LocalHost::suggested_account` and `stored_login` (the account named
-   in the account catalog's header, `[23, 1, 1, 16]`, and its stored
-   password `06`, one node each; then the account from the published
-   accounts), `LocalHost::authenticated_account` (the published accounts)
-   and `LocalHost::read_only` (`Store::read_only_cause`, the file's state),
-   and a schedule's login (`schedules::log_in`, the published accounts).
-   Needs: nothing new; a reading each, the flag read once from it.
+The callers: the desktop host's read-only reasons (`LocalHost::read_only`,
+in the same order of precedence: the reason it was opened with, then no
+more changes, then the engine's cause) and its Change Password, a server
+script's account steps, every write request's read-only check
+(`connection::writable`, op72), the event a file's opening records, a
+slot's file on disk for backups (`Slot::saved_file`) and for a close
+(`Slot::finish_close_if_drained`), and the check that no other slot hosts
+the same file (`hosting::hosted_as`). Whether a file is closing, and which
+slot serves it, are the hosting's (`Slot`), as before.
+
+**Moving the other readers.** The readers below, but those marked moved,
+still hold the store (`Hosted::read_store`, or
+`Transaction::view() -> &Store` inside `run`), or read the accounts the
+store published (`Hosted::accounts`, `Hosted::account`). Each is listed
+with the `Store` helpers it reads through, what it reads (one node, a
+list a node's children make, or a subtree whole), and what it needs that
+views and derived state do not give yet. No connection handler is among
+them, nor anything of the hosting, the desktop's private host, the
+authoring extension or schedules: outside the file engine itself
+(`engine`, `Hosted`'s store and its guard), only server scripts and the
+operations' own reads take `Store`. They move in this order, the smaller
+first, each with the test view's runs of its tests:
+
+1. The security catalog, the desktop's private host and schedules: moved
+   (Views, above).
 2. Server scripts and their host (`scripts/host.rs` and `scripts/host/`).
    `Schema::load` and `refresh_schema` (`Store::catalog`, `locale`,
    `file_language`, `schema_generation`, and the design catalogs `[3]`,
@@ -903,11 +988,8 @@ smaller first, each with the test view's runs of its tests:
    opened the file under the store before, and copies it after;
    `LocalHost`'s `prepare_copy` is an export of the current version or a
    compacted copy.
-4. Admin commands and the hosting state. `Hosted::is_read_only`,
-   `Hosted::saved_file` (`Store::file`), `finish_close_if_drained` and
-   `hosting::hosted_as` read the store's flags and the file's identity on
-   disk, not its tree. Needs: those as the engine's state of a file, beside
-   its views; nothing of the view.
+4. Admin commands and the hosting state: moved. They read the engine's
+   state of a file ("The engine's state of a file", above), not a view.
 5. The operations' own reads inside `engine::run`, through
    `Transaction::view() -> &Store` and the transaction's delegates
    (`has_table`, `has_record`, `last_record_id`, `node`): a commit's

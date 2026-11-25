@@ -2846,11 +2846,10 @@ fn query(
     Ok(reply(page, resume).to_result_within(max_return as usize))
 }
 
-/// Whether `file` is hosted read-only, read under a reading of it as it was
-/// under the store before: the file's state, not its view's, so read once
-/// and not through `Reading::serve`.
+/// Whether `file` is hosted read-only: the engine's state of the file, not
+/// a version's (`engine::state`), so read once and not through a view.
 fn file_read_only(shared: &Shared, file: &OpenFile) -> bool {
-    shared.engine.read(&file.hosted).read().read_only
+    shared.engine.read_only(&file.hosted).is_some()
 }
 
 /// An op86 reply that is the error slot alone, `[00] = 02 <code>`
