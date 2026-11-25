@@ -445,8 +445,8 @@ and reopening the hosted file instead sent a fresh Open and a normal
 login type 0 [O: same relay capture].
 
 **OpenMaker.** A local file's host sets an account's own password the way
-the sign-in change above does (`Hosted::change_password`, reached through
-`LocalHost::change_password`): `06` with a new random salt and its check
+the sign-in change above does (the engine's `ChangePassword` operation,
+`hosting::change_password`, reached through `LocalHost::change_password`): `06` with a new random salt and its check
 bytes, `0a` stamped to the second in this computer's local time [I] with
 bit 18 cleared and the other flags kept, and `04` again
 (`om_server::accounts::checksum`, which reproduces the vector above and the
@@ -482,8 +482,9 @@ catalog's index `[23, 1, 1]` (schema-path.md 8.1), so a client's cached
 copy of the catalog shows as stale, and other clients are told the
 catalog changed.
 
-Reset Account Password and Enable Account run through
-`Hosted::reset_account_password` and `Hosted::enable_account`, under the
+Reset Account Password and Enable Account run through the engine's
+`ResetPassword` and `EnableAccount` operations
+(`hosting::reset_account_password`, `hosting::enable_account`), under the
 same lock, stamps, notification and checksum check, writing the members
 the table above lists. A session without full access gets 9. Reset
 Account Password takes only a FileMaker-file account (206) and a password
@@ -504,7 +505,8 @@ text, is never found. A new status that would not read back as written
 (flags added to a fraction of a second already held, past the six digits
 the value keeps) is not written (3).
 
-Delete Account runs through `Hosted::delete_account`, under the same
+Delete Account runs through the `DeleteAccount` operation
+(`hosting::delete_account`), under the same
 lock and notification, for a session with full access (else 9). It
 removes the account's member and, from the catalog's index (3), its name
 list entry, its place in the display order (the order numbered again
@@ -785,8 +787,18 @@ than a second reader and writer.
   safely: this user or its file system may not write it, its folder does not
   allow the new copy a save writes, it has other names (hard links, which
   the renamed copy would leave with old contents), it cannot be locked here
-  (Windows; file systems without `flock`), or an entry already has the name
-  of a save's copy (`<file>.omsave`). The window shows why; the provider
+  (Windows; file systems without `flock`), or anything already has the
+  name of a save's copy (`<file>.omsave`), a copy an earlier save left
+  when it stopped part way included: nothing removes it, the user does
+  (docs/server-storage.md 5, "A leftover copy"). A file also becomes
+  read-only after it opened: when the deferred field work it held could
+  not be saved at the first admitted login, or was left part way, and when
+  a save's outcome was unknown, after which it takes no more changes
+  (docs/server-storage.md 5). Each has its own reason (`ReadOnly`), and
+  the reason the provider gives when the opening login ends, and at each
+  later check, is the host's state then. The window shows why (the reason
+  given when it opened: one a later save brings is not shown, though the
+  provider refuses the writes); the provider
   refuses changes before sending them (FileMaker's error 6, also for the
   deletions scripts and portals make), the host refuses every write request
   (record creation, uploads, commits, serials, schema and container
@@ -821,13 +833,23 @@ than a second reader and writer.
   metadata beyond the permission bits are not carried over.
 - **Save a Copy as.** The host writes a copy of the current file or a
   compacted copy (3.3) to a new file only.
-  - *Contents.* A copy of the current file is the file's bytes as the last
-    save left them, read by position through a second descriptor of the
-    one the host holds locked, so the version copied is the one the host
-    has, whatever is renamed over the path meanwhile. A compacted copy is
-    the key tree written as a new packed file (hbam-writer.md 7.2). So is a
-    copy while changes a failed save left wait in memory, or of a file the
-    host could not lock.
+  - *Contents.* Each copy is an export of the version the host holds
+    (docs/server-storage.md 5, "Exports"). A copy of the current file is
+    the file on disk when it holds that version: its bytes as the last
+    save left them, or as the file was opened when no save wrote it,
+    opened under the host's read lock (from its path, while that leads to
+    the file the host holds locked) and copied after it, checked against
+    what was read (its length). While changes a failed save left
+    wait in memory, or for a file the host could not lock, it is the key
+    tree written as a new packed file (hbam-writer.md 7.2), as the next
+    save would write it, under the read lock. A copy of a file opened
+    read-only for content OpenMaker cannot write, while changes its
+    refused saves left wait in memory, would lack them and is refused. A
+    compacted copy is the key tree written as a new packed file from the
+    change number the next save starts from, under the read lock.
+    Before any login the tree is the file as its disk holds it, deferred
+    field work list included, so a compacted copy saved then finishes that
+    work when an account first logs in to it.
   - *Destinations.* Linux only. The resolved path must lead through
     existing directories on ext2, ext3, ext4 or tmpfs. Each ancestor must
     be owned by root or the effective user and either deny group and other
@@ -846,11 +868,14 @@ than a second reader and writer.
     that filesystem, with mode 0600. Linux's creation mode masks any
     inherited POSIX ACL grants to other accounts from the start. The host
     flushes the file, then links its descriptor to the final name using
-    the opened output directory. A file, directory or link already at
-    that name is left untouched. An interrupted or failed write closes
-    the unnamed file, which the kernel reclaims. There is no staging name
-    to remove, and the final name appears only after the bytes are written
-    and flushed. These are OpenMaker's choices [I].
+    the opened output directory, and flushes the directory. A file,
+    directory or link already at that name is left untouched. An
+    interrupted or failed write closes the unnamed file, which the kernel
+    reclaims. There is no staging name to remove, and the final name
+    appears only after the bytes are written and flushed. When the
+    directory cannot be flushed after the link, that is logged and the
+    copy kept. Exports share this publication (server-storage.md 5,
+    "Exports"). These are OpenMaker's choices [I].
   - *The desktop's step.* The step refuses clones, self-contained copies,
     an absent output path (the Save dialog is not built), "Automatically
     open file", "Create email", an open transaction, a hosted file and
@@ -863,10 +888,14 @@ than a second reader and writer.
     the resulting store [I]. A later I/O failure or a destination that
     becomes occupied during the commit returns 800.
 - **Recovery.** Deferred field work an earlier stop left in the file
-  (schema-path.md) is finished in memory when the file opens and saved only
-  once an admitted account logs in to a writable file: a wrong password,
-  a refused account, Cancel or a failed open leave the file as it was.
-  OpenMaker Server's own files are still recovered as it starts.
+  (schema-path.md) is finished and saved, as one operation, when an
+  admitted account first logs in to a writable file: a wrong password, a
+  refused account, Cancel or a failed open leave the file as it was. When
+  that save fails the work is taken back and the file is served as its
+  disk holds it, read-only; so it is when the work was left part way (a
+  panic), which the next login finds. A second login waits for the first
+  one's work to end. OpenMaker Server's own files are recovered the same
+  way as it starts.
 - **Closing.** Closing the file disconnects its session and gives up the
   session's hold on the host (below, "Related files and other files"). When
   no other session of the window's files has the file open, the host stops,

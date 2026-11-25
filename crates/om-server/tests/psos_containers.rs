@@ -454,6 +454,57 @@ fn run(client: &mut Session, script: u64) -> String {
     reply.result
 }
 
+/// op96 reads through a view of the file (docs/server-storage.md 5): the
+/// thumbnail of record 1's picture is answered through the file engine's
+/// view and the test view alike, the same chunk from both; once the test
+/// view fails reads of the library member, as a damaged page would, the
+/// request is answered with the system exception a download that cannot
+/// be read gets, both for the thumbnail cached and for one not made yet,
+/// never as a missing thumbnail.
+#[cfg(debug_assertions)]
+#[test]
+fn thumbnails_read_through_views_and_fail_as_downloads_do() {
+    use om_protocol::container::{self, DownloadThumbnail, ThumbnailReply};
+    let file = TempFile::from_tree("containers-thumbnail", &with_photo());
+    let (port, handle) = server::start_configured_with_handle(&file, |server| server);
+    let (mut client, file_id) = server::logged_in(port, "containers-thumbnail");
+    let (table, member) = (uint_segment(TABLE), serial::encode(MEMBER));
+    let mut thumbnail = |width: u32| {
+        let request = DownloadThumbnail {
+            reserved: [0; 4],
+            height: 4,
+            width,
+            member: vec![member.clone()],
+            table: vec![table.clone()],
+            flags: 0,
+            offset: 0,
+            max_chunk: 0x000f_ffe6,
+        };
+        client
+            .perform(&container::build_download_thumbnail(10, file_id, &request))
+            .map(|reply| container::parse_download_thumbnail_reply(&reply).unwrap())
+    };
+    let reply = thumbnail(6).unwrap();
+    assert!(
+        matches!(
+            reply,
+            ThumbnailReply::Chunk {
+                width: 6,
+                height: 4,
+                status: 0,
+                ..
+            }
+        ),
+        "{reply:?}"
+    );
+    handle.failing_reads(fixture::FILE, &[&table, &[0x1f], &[5], &member]);
+    for width in [6, 12] {
+        let error = thumbnail(width).unwrap_err();
+        assert!(error.to_string().contains("SystemException"), "{error}");
+    }
+    client.disconnect().unwrap();
+}
+
 #[test]
 fn calculations_read_container_data_from_the_library() {
     let file = TempFile::from_tree("containers-read", &with_photo());

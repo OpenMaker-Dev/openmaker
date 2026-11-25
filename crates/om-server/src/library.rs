@@ -177,23 +177,71 @@ pub enum Stored {
     Existing(Vec<u8>),
 }
 
+/// What a [`store`] of data does in a library: count one more reference
+/// on the member that already holds it, or add a new member. One decision
+/// ([`store_plan`]), which the store carries out ([`store_as`]) and a
+/// caller that may have to put the change back journals ([`Self::keys`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StorePlan {
+    /// The member that already holds the data.
+    Existing(Vec<u8>),
+    /// A new member.
+    New,
+}
+
+/// What a [`store`] of data with `md5` into `library` (`None`: there is no
+/// library yet) does. Members are named by serial keys (containers.md), and
+/// op88's reply names the one it reuses in a key of at most 255 bytes: a
+/// member whose key in the file is not a serial key is not reused.
+pub fn store_plan(library: Option<&OwnedNode>, md5: &[u8; 16]) -> StorePlan {
+    library
+        .and_then(|l| reused_member(l, md5).filter(|m| member(l, m).is_some()))
+        .map_or(StorePlan::New, StorePlan::Existing)
+}
+
+impl StorePlan {
+    /// The keys under `library` the store changes, for a caller that may
+    /// have to put them back: the counts of the member it reuses, else the
+    /// header and the new member. `None` when there is no library yet: all
+    /// of it is new.
+    pub fn keys(&self, library: Option<&OwnedNode>) -> Option<Vec<Vec<Vec<u8>>>> {
+        let library = library?;
+        Some(match self {
+            StorePlan::Existing(existing) => count_keys(existing).into_iter().collect(),
+            StorePlan::New => match next_member(Some(library)) {
+                Some(next) => vec![vec![vec![keys::HEADER]], vec![vec![keys::MEMBERS], next]],
+                // No member can be added ([`store_counter_refusal`]).
+                None => vec![vec![vec![keys::HEADER]]],
+            },
+        })
+    }
+}
+
 /// Store `data` in `library` (3.4): count + 1 on the member that already
 /// holds data with its MD5, otherwise a new member with count 1. The header
 /// is created on first use. `unique_id` makes the random ids (`d8`).
 /// `None`, changing nothing, when a counter the store advances cannot
 /// ([`store_counter_refusal`]).
+#[cfg(test)]
 pub fn store(
     library: &mut OwnedNode,
     data: BinaryData,
+    unique_id: impl FnMut() -> [u8; 16],
+) -> Option<Stored> {
+    let plan = store_plan(Some(library), &data.md5);
+    store_as(library, data, &plan, unique_id)
+}
+
+/// [`store`] as `plan` decided it ([`store_plan`], for this library and
+/// this data).
+pub fn store_as(
+    library: &mut OwnedNode,
+    data: BinaryData,
+    plan: &StorePlan,
     mut unique_id: impl FnMut() -> [u8; 16],
 ) -> Option<Stored> {
-    // Members are named by serial keys (containers.md), and op88's reply
-    // names the one it reuses in a key of at most 255 bytes: a member
-    // whose key in the file is not a serial key is not reused.
-    if let Some(existing) =
-        reused_member(library, &data.md5).filter(|m| member(library, m).is_some())
-    {
-        return adjust(library, &existing, 1).map(|_| Stored::Existing(existing));
+    if let StorePlan::Existing(existing) = plan {
+        return adjust(library, existing, 1).map(|_| Stored::Existing(existing.clone()));
     }
     // Both counters the new member advances, before anything changes.
     let header = library.child(&[keys::HEADER]);
@@ -372,9 +420,8 @@ pub fn member<'a>(library: &'a OwnedNode, member: &[u8]) -> Option<&'a OwnedNode
 }
 
 /// The keys under a library that an [`adjust`] of `member` changes while
-/// its count stays above 0 (its count and its modification count), for a
-/// caller that may have to put them back.
-pub fn count_keys(member: &[u8]) -> [Vec<Vec<u8>>; 2] {
+/// its count stays above 0 (its count and its modification count).
+fn count_keys(member: &[u8]) -> [Vec<Vec<u8>>; 2] {
     [keys::REF_COUNT, MOD_COUNT].map(|key| vec![vec![keys::MEMBERS], member.to_vec(), vec![key]])
 }
 
@@ -399,32 +446,28 @@ pub fn member_tree(member: &OwnedNode) -> Option<BinaryData> {
     Some(BinaryData::from_tree(keys, md5))
 }
 
-/// The keys under a library that a [`store`] of data with `md5` changes,
-/// for a caller that may have to put them back: the count keys of the
-/// member that already holds the data, else the header and the new member.
-/// `None` when there is no library yet: all of it is new.
-pub fn store_keys(library: Option<&OwnedNode>, md5: &[u8; 16]) -> Option<Vec<Vec<Vec<u8>>>> {
-    let library = library?;
-    let existing = library
-        .at(&[&[keys::HEADER], &[keys::MD5_INDEX], md5])
-        .and_then(|n| n.children.first())
-        .map(|m| m.segment.clone())
-        .filter(|m| member(library, m).is_some());
-    Some(match existing {
-        Some(existing) => count_keys(&existing).into_iter().collect(),
-        None => {
-            let Some(next) = next_member(Some(library)) else {
-                // No member can be added ([`store_counter_refusal`]).
-                return Some(vec![vec![vec![keys::HEADER]]]);
-            };
-            vec![vec![vec![keys::HEADER]], vec![vec![keys::MEMBERS], next]]
-        }
+/// The keys under `library` that an [`adjust`] of `member` by `delta`
+/// changes, by the decision it makes ([`deletes`]), for a caller that may
+/// have to put them back: the member's counts, or, when it goes, the
+/// member and the header that lists it; none for a delta of 0. `None` when
+/// the library has no such member.
+pub fn adjust_keys(library: &OwnedNode, member: &[u8], delta: i32) -> Option<Vec<Vec<Vec<u8>>>> {
+    let count = reference_count(library.at(&[&[keys::MEMBERS], member])?);
+    Some(match delta {
+        0 => Vec::new(),
+        _ if deletes(count, delta) => deletion_keys(member).into_iter().collect(),
+        _ => count_keys(member).into_iter().collect(),
     })
+}
+
+/// Whether an [`adjust`] by `delta` of a member counted `count` deletes it.
+fn deletes(count: u32, delta: i32) -> bool {
+    delta != 0 && adjusted(count, delta) == 0
 }
 
 /// The keys under a library that an [`adjust`] deleting `member` changes:
 /// the member and the header that lists it.
-pub fn deletion_keys(member: &[u8]) -> [Vec<Vec<u8>>; 2] {
+fn deletion_keys(member: &[u8]) -> [Vec<Vec<u8>>; 2] {
     [
         vec![vec![keys::MEMBERS], member.to_vec()],
         vec![vec![keys::HEADER]],
@@ -458,17 +501,18 @@ pub fn adjust(library: &mut OwnedNode, member: &[u8], delta: i32) -> Option<u32>
         return Some(count);
     }
     let new = adjusted(count, delta);
+    let deleted = deletes(count, delta);
     // The member's count and, when it goes, the header's, before anything
     // changes.
     let member_count = serial_value(node.child(&[MOD_COUNT])).checked_add(1)?;
-    let header_count = match library.child(&[keys::HEADER]).filter(|_| new == 0) {
+    let header_count = match library.child(&[keys::HEADER]).filter(|_| deleted) {
         Some(header) => Some(serial_value(header.child(&[MOD_COUNT])).checked_add(1)?),
         None => None,
     };
     let node = library.at_mut(&[&[keys::MEMBERS], member])?;
     node.set_child(OwnedNode::leaf(vec![keys::REF_COUNT], new.to_be_bytes()));
     node.set_child(serial_leaf(MOD_COUNT, member_count));
-    if new == 0 {
+    if deleted {
         delete(library, member, header_count);
     }
     Some(new)
@@ -726,22 +770,63 @@ mod tests {
         assert_eq!(reference("photo.png"), None);
     }
 
-    /// The keys a store changes, which a commit keeps to put back.
+    /// The keys a store changes, which a commit keeps to put back, come
+    /// from the decision the store carries out: a member the MD5 index
+    /// names under a key that is not a serial key is not reused, so the
+    /// store adds a new member and changes the header, and that is what is
+    /// kept, not the named member's counts.
     #[test]
-    fn store_keys_name_what_a_store_changes() {
+    fn a_store_plan_names_what_its_store_changes() {
         let mut library = OwnedNode::default();
         let first = picture("a.png");
-        assert_eq!(store_keys(None, &first.md5), None);
+        assert_eq!(store_plan(None, &first.md5).keys(None), None);
         store(&mut library, first.clone(), ids());
         let second = picture("b.png");
+        let new = store_plan(Some(&library), &second.md5);
+        assert_eq!(new, StorePlan::New);
         assert_eq!(
-            store_keys(Some(&library), &second.md5).unwrap(),
+            new.keys(Some(&library)).unwrap(),
             vec![vec![vec![keys::HEADER]], vec![vec![keys::MEMBERS], vec![2]]]
         );
+        let reused = store_plan(Some(&library), &first.md5);
+        assert_eq!(reused, StorePlan::Existing(vec![1]));
         assert_eq!(
-            store_keys(Some(&library), &first.md5).unwrap(),
+            reused.keys(Some(&library)).unwrap(),
             count_keys(&[1]).to_vec()
         );
+
+        // The index names member `ff`, which is not a serial key.
+        let third = picture("c.png");
+        let index = [&[keys::HEADER][..], &[keys::MD5_INDEX], &third.md5];
+        library.put(
+            &index,
+            OwnedNode::list(Vec::new(), vec![OwnedNode::leaf(vec![0xff], Vec::new())]),
+        );
+        library.put(
+            &[&[keys::MEMBERS], &[0xff]],
+            OwnedNode::list(Vec::new(), Vec::new()),
+        );
+        let plan = store_plan(Some(&library), &third.md5);
+        assert_eq!(plan, StorePlan::New);
+        let kept = plan.keys(Some(&library)).unwrap();
+        let mut changed = library.clone();
+        assert_eq!(
+            store_as(&mut changed, third, &plan, ids()),
+            Some(Stored::New(vec![2]))
+        );
+        // The header and the new member changed, as kept; the named
+        // member did not.
+        assert_eq!(
+            kept,
+            vec![vec![vec![keys::HEADER]], vec![vec![keys::MEMBERS], vec![2]]]
+        );
+        assert_ne!(
+            changed.child(&[keys::HEADER]),
+            library.child(&[keys::HEADER])
+        );
+        assert!(changed.at(&[&[keys::MEMBERS], &[2]]).is_some());
+        let named: [&[u8]; 2] = [&[keys::MEMBERS], &[0xff]];
+        assert_eq!(changed.at(&named), library.at(&named));
     }
 
     #[test]

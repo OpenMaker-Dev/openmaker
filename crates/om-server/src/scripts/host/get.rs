@@ -15,7 +15,9 @@ use om_data::host::machine;
 use om_data::host::session::selector::*;
 use om_data::host::session::{auto_enters, modified_fields};
 use om_formula::Names;
-use om_hbam::OwnedNode;
+use std::ops::Bound;
+
+use crate::engine::{Direction, ReadError, View};
 
 use super::{Mode, ServerHost, NO_RECORD};
 use crate::config::Privileges;
@@ -365,7 +367,7 @@ impl ServerHost {
         changed: &std::collections::BTreeSet<u64>,
         new: bool,
     ) -> Vec<String> {
-        let Some((_, schema)) = self.schema.rules.as_ref() else {
+        let Some(schema) = self.schema.calc() else {
             return Vec::new();
         };
         // A cell is a field's first repetition, or `field * 256 + n`.
@@ -399,22 +401,30 @@ impl ServerHost {
     /// The session account's privilege set: its own in the file's
     /// security catalog, else [Full Access]'s for a session given full
     /// access whose account the file does not have (a test's session).
+    ///
+    /// Read through a reading taken for it, which reads each account's name
+    /// and set reference alone, never a password; one that fails gives
+    /// none and fails the step ([`ServerHost::read`]).
     fn privilege_set(&self) -> Option<SetPrivileges> {
-        let store = self.hosted.read_store();
-        let security = store.node(&[&[SECURITY]])?;
-        account_set(security, &self.account).or_else(|| {
-            (self.privileges == Privileges::FullAccess)
-                .then(|| named_set(security, "[Full Access]"))
-                .flatten()
+        let full_access = self.privileges == Privileges::FullAccess;
+        self.read(|read| {
+            Ok(match account_set(read.view, &self.account)? {
+                Some(set) => Some(set),
+                None if full_access => named_set(read.view, "[Full Access]")?,
+                None => None,
+            })
         })
+        .ok()
+        .flatten()
     }
 
     /// Effective set while a script runs with full access. Account Get
     /// selectors continue to use the signed-in account's original set.
     fn current_privilege_set(&self) -> Option<SetPrivileges> {
         if self.elevated {
-            let store = self.hosted.read_store();
-            named_set(store.node(&[&[SECURITY]])?, "[Full Access]")
+            self.read(|read| named_set(read.view, "[Full Access]"))
+                .ok()
+                .flatten()
         } else {
             self.privilege_set()
         }
@@ -467,41 +477,68 @@ fn server_system_locale() -> Locale {
     locale
 }
 
-/// A member's name `10`.
-fn member_name(member: &OwnedNode) -> Option<String> {
-    member
-        .child(&[NAME])
-        .and_then(|n| n.value.as_deref())
-        .and_then(|v| om_scsu::decode_scsu(v).ok())
+/// The name `10` of the member at `member` of the security catalog, its
+/// own value as SCSU text, read through `view`.
+fn member_name(view: &dyn View, member: &[&[u8]]) -> Result<Option<String>, ReadError> {
+    let mut path = member.to_vec();
+    path.push(&[NAME]);
+    Ok(view
+        .node(&path)?
+        .and_then(|head| head.value)
+        .and_then(|value| om_scsu::decode_scsu(&value).ok()))
 }
 
 /// The privilege set account `account` (any case) uses, from the security
-/// catalog `security` (`[23]`): the account member under `[1, 5]` whose
-/// name `10` is `account`, its set reference `0b` a key string (length,
-/// then the set member's segment under `[2, 5]`; `01 02` is set 2).
-fn account_set(security: &OwnedNode, account: &str) -> Option<SetPrivileges> {
+/// catalog `[23]`: the first account member under `[1, 5]`, in key order,
+/// whose name `10` is `account`, its set reference `0b` a key string
+/// (length, then the set member's segment under `[2, 5]`; `01 02` is set
+/// 2). Only each account's name and set reference are read.
+fn account_set(view: &dyn View, account: &str) -> Result<Option<SetPrivileges>, ReadError> {
     let lower = account.to_lowercase();
-    let member = security
-        .at(&[&[ACCOUNTS], &[MEMBERS]])?
-        .children
-        .iter()
-        .find(|m| member_name(m).is_some_and(|n| n.to_lowercase() == lower))?;
-    let reference = member.child(&[SET_REFERENCE])?.value.as_deref()?;
-    let (&length, segment) = reference.split_first()?;
-    let segment = segment.get(..usize::from(length))?;
-    set_privileges(security, segment)
+    let accounts: [&[u8]; 3] = [&[SECURITY], &[ACCOUNTS], &[MEMBERS]];
+    let mut found = None;
+    for member in view.children(&accounts, Bound::Unbounded, Direction::Forward) {
+        let member = member?;
+        let at: [&[u8]; 4] = [&[SECURITY], &[ACCOUNTS], &[MEMBERS], &member.segment];
+        if member_name(view, &at)?.is_some_and(|n| n.to_lowercase() == lower) {
+            found = Some(member.segment.into_owned());
+            break;
+        }
+    }
+    let Some(member) = found else {
+        return Ok(None);
+    };
+    let reference: [&[u8]; 5] = [
+        &[SECURITY],
+        &[ACCOUNTS],
+        &[MEMBERS],
+        &member,
+        &[SET_REFERENCE],
+    ];
+    let Some(reference) = view.node(&reference)?.and_then(|head| head.value) else {
+        return Ok(None);
+    };
+    let Some((&length, segment)) = reference.split_first() else {
+        return Ok(None);
+    };
+    match segment.get(..usize::from(length)) {
+        Some(segment) => set_privileges(view, segment),
+        None => Ok(None),
+    }
 }
 
-/// The privilege set named `set`.
-fn named_set(security: &OwnedNode, set: &str) -> Option<SetPrivileges> {
-    let segment = security
-        .at(&[&[PRIVILEGE_SETS], &[MEMBERS]])?
-        .children
-        .iter()
-        .find(|m| member_name(m).as_deref() == Some(set))?
-        .segment
-        .clone();
-    set_privileges(security, &segment)
+/// The privilege set named `set`: the first set member under `[2, 5]`, in
+/// key order, whose name `10` is `set`.
+fn named_set(view: &dyn View, set: &str) -> Result<Option<SetPrivileges>, ReadError> {
+    let sets: [&[u8]; 3] = [&[SECURITY], &[PRIVILEGE_SETS], &[MEMBERS]];
+    for member in view.children(&sets, Bound::Unbounded, Direction::Forward) {
+        let member = member?;
+        let at: [&[u8]; 4] = [&[SECURITY], &[PRIVILEGE_SETS], &[MEMBERS], &member.segment];
+        if member_name(view, &at)?.as_deref() == Some(set) {
+            return set_privileges(view, &member.segment);
+        }
+    }
+    Ok(None)
 }
 
 /// The privilege set member `segment` under `[2, 5]`: its name, the
@@ -510,30 +547,47 @@ fn named_set(security: &OwnedNode, set: &str) -> Option<SetPrivileges> {
 /// `02`: bits `0x01` delete, `0x04` and `0x40` create and edit, `0x10`
 /// view (`55` full and data entry, `54` without delete, `10` read only;
 /// s33-account-privileges).
-fn set_privileges(security: &OwnedNode, segment: &[u8]) -> Option<SetPrivileges> {
-    let member = security.at(&[&[PRIVILEGE_SETS], &[MEMBERS], segment])?;
-    let mut extended: Vec<String> = security
-        .at(&[&[EXTENDED_PRIVILEGES], &[MEMBERS]])
-        .map(|privileges| {
-            privileges
-                .children
-                .iter()
-                .filter(|p| {
-                    p.child(&[MEMBERS])
-                        .is_some_and(|s| s.child(segment).is_some())
-                })
-                .filter_map(member_name)
-                .collect()
-        })
-        .unwrap_or_default();
+fn set_privileges(view: &dyn View, segment: &[u8]) -> Result<Option<SetPrivileges>, ReadError> {
+    let set: [&[u8]; 4] = [&[SECURITY], &[PRIVILEGE_SETS], &[MEMBERS], segment];
+    if view.node(&set)?.is_none() {
+        return Ok(None);
+    }
+    let privileges: [&[u8]; 3] = [&[SECURITY], &[EXTENDED_PRIVILEGES], &[MEMBERS]];
+    let mut extended = Vec::new();
+    for privilege in view.children(&privileges, Bound::Unbounded, Direction::Forward) {
+        let privilege = privilege?;
+        let p = &privilege.segment;
+        let listed: [&[u8]; 6] = [
+            &[SECURITY],
+            &[EXTENDED_PRIVILEGES],
+            &[MEMBERS],
+            p,
+            &[MEMBERS],
+            segment,
+        ];
+        if view.node(&listed)?.is_some() {
+            let at: [&[u8]; 4] = [&[SECURITY], &[EXTENDED_PRIVILEGES], &[MEMBERS], p];
+            extended.extend(member_name(view, &at)?);
+        }
+    }
     extended.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then(a.cmp(b)));
-    let records = member
-        .child(&[RECORD_PRIVILEGES])
-        .and_then(|n| n.value.as_deref())
+    let flags: [&[u8]; 5] = [
+        &[SECURITY],
+        &[PRIVILEGE_SETS],
+        &[MEMBERS],
+        segment,
+        &[RECORD_PRIVILEGES],
+    ];
+    let records = view
+        .node(&flags)?
+        .and_then(|head| head.value)
         .and_then(|v| v.first().copied())
         .unwrap_or(0);
-    Some(SetPrivileges {
-        name: member_name(member)?,
+    let Some(name) = member_name(view, &set)? else {
+        return Ok(None);
+    };
+    Ok(Some(SetPrivileges {
+        name,
         extended,
         record_access: if records & 0x45 != 0 {
             2
@@ -542,7 +596,7 @@ fn set_privileges(security: &OwnedNode, segment: &[u8]) -> Option<SetPrivileges>
         } else {
             0
         },
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -564,8 +618,8 @@ mod tests {
     use super::super::design::tests::{session, unescape, FILES};
     use super::super::ServerHost;
     use super::{
-        account_set, named_set, SetPrivileges, ACCOUNTS, EXTENDED_PRIVILEGES, MEMBERS, NAME,
-        PRIVILEGE_SETS, RECORD_PRIVILEGES, SECURITY, SET_REFERENCE,
+        SetPrivileges, ACCOUNTS, EXTENDED_PRIVILEGES, MEMBERS, NAME, PRIVILEGE_SETS,
+        RECORD_PRIVILEGES, SECURITY, SET_REFERENCE,
     };
     use crate::config::Privileges;
 
@@ -1089,10 +1143,15 @@ mod tests {
             record_access,
         };
         let full = answer("[Full Access]", &["fmreauthenticate10"], 2);
-        assert_eq!(account_set(&security, "Admin"), Some(full.clone()));
+        // Read through a view of a file holding the catalog.
+        let root = OwnedNode::list(Vec::new(), vec![security.clone()]);
+        let view = crate::engine::TreeView::new(&root, 0);
+        let account_set = |name: &str| super::account_set(&view, name).unwrap();
+        let named_set = |name: &str| super::named_set(&view, name).unwrap();
+        assert_eq!(account_set("Admin"), Some(full.clone()));
         // Account names match in any case.
         assert_eq!(
-            account_set(&security, "entry"),
+            account_set("entry"),
             Some(answer(
                 "[Data Entry Only]",
                 &["fmapp", "fmreauthenticate10", "fmrest"],
@@ -1100,16 +1159,16 @@ mod tests {
             ))
         );
         assert_eq!(
-            account_set(&security, "Viewer"),
+            account_set("Viewer"),
             Some(answer("[Read-Only Access]", &["fmreauthenticate10"], 1))
         );
         assert_eq!(
-            account_set(&security, "Prober"),
+            account_set("Prober"),
             Some(answer("Probe Set", &["fmrest", "fmxml"], 2))
         );
-        assert_eq!(account_set(&security, "Nobody"), None);
-        assert_eq!(named_set(&security, "[Full Access]"), Some(full.clone()));
-        assert_eq!(named_set(&security, "[Nobody]"), None);
+        assert_eq!(account_set("Nobody"), None);
+        assert_eq!(named_set("[Full Access]"), Some(full.clone()));
+        assert_eq!(named_set("[Nobody]"), None);
 
         // Exercise real Get dispatch before, during and after elevation.
         use crate::scripts::{
@@ -1117,8 +1176,7 @@ mod tests {
             tests::{hosted, shared},
         };
         use om_data::host::session::selector as get;
-        let accounts =
-            ["Entry", "Viewer"].map(|name| (name, account_set(&security, name).unwrap()));
+        let accounts = ["Entry", "Viewer"].map(|name| (name, account_set(name).unwrap()));
         let mut tree = fixture::tree(&[], true);
         tree.put(&[&[SECURITY]], security);
         let file = fixture::TempFile::from_tree("elevated-get-privileges", &tree);

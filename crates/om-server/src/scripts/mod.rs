@@ -56,6 +56,8 @@ pub const DEFAULT_SCRIPT_LIMIT: usize = ScriptLimits::DEFAULT.concurrent;
 const FILE_MISSING: u16 = 100;
 const SCRIPT_MISSING: u16 = 104;
 const WINDOW_MISSING: u16 = 112;
+/// "Unable to open file": the session could not read the file's schema.
+const UNREADABLE: u16 = 802;
 const HOST_CAPACITY: u16 = 812;
 /// "File is being closed": a request while the server shuts down.
 const CLOSING: u16 = 820;
@@ -612,8 +614,17 @@ pub(crate) fn run(
     host.set_calc_limits(slot.calc_limits);
     host.set_account_key(account_key);
     host.set_access(access);
-    let outcome = execute(&mut host, script, parameter, slot);
-    host.close();
+    let mut outcome = execute(&mut host, script, parameter, slot);
+    // A save at the script's end that failed is the script's error: what
+    // it left unsaved is not on disk (docs/server-storage.md 5). A read
+    // that failed, also one the close made, ends the run with 802 and no
+    // result (section 5, "A read that fails ends the run").
+    if let Some(error) = host.close() {
+        outcome.error = error;
+        if error == UNREADABLE {
+            outcome.result.clear();
+        }
+    }
     // (The session's locks go with it, before another can get its id.)
     drop(host);
     drop(session);
@@ -644,8 +655,13 @@ impl Drop for SessionId<'_> {
 
 /// `SMScriptRuntime::ExecuteScript` (11.3): 112 without a window, 104 for a
 /// missing script, else the script run to completion or until it is
-/// aborted.
+/// aborted. A session that could not read the file's schema runs nothing
+/// and ends with 802 (docs/server-storage.md 5, "A script session's
+/// reads").
 fn execute(host: &mut ServerHost, script: ScriptRef<'_>, parameter: &str, slot: &Slot) -> Outcome {
+    if host.unread() {
+        return Outcome::failed(UNREADABLE);
+    }
     if !host.has_window() {
         return Outcome::failed(WINDOW_MISSING);
     }
@@ -749,6 +765,9 @@ mod tests {
     const CLIENT: u32 = 0x77;
 
     pub(super) fn shared(file: &TempFile) -> Arc<Shared> {
+        let engine = crate::engine::FileEngine::default();
+        // Every read answered through both views (`engine::copies`).
+        engine.check_reads();
         let hosting = Hosting::load(
             &[HostedFile {
                 name: fixture::FILE.into(),
@@ -756,6 +775,7 @@ mod tests {
             }],
             false,
             &Default::default(),
+            &engine,
         )
         .unwrap();
         let shared = Arc::new(Shared {
@@ -773,6 +793,7 @@ mod tests {
             connection_ids: Default::default(),
             recordings: None,
             mailboxes: Default::default(),
+            engine: std::sync::Arc::new(engine),
             scripts: ScriptEngine::new(ScriptLimits::DEFAULT),
             refused_downloads: Default::default(),
             omitted_list_paths: Default::default(),
@@ -882,7 +903,7 @@ mod tests {
         // Manage Database replaces the layout catalog without layout 2.
         {
             let hosted = hosted(&shared);
-            let mut store = hosted.write_store();
+            let mut store = hosted.write_store(&crate::engine::Writer::for_tests());
             let mut layouts = store.node(&[&[4], &[5]]).unwrap().clone();
             layouts.remove(&[&[2]]);
             store.put_subtree(&[vec![4], vec![5]], layouts);
@@ -908,7 +929,7 @@ mod tests {
             let hosted = hosted.clone();
             let t = t.clone();
             std::thread::spawn(move || {
-                let mut store = hosted.write_store();
+                let mut store = hosted.write_store(&crate::engine::Writer::for_tests());
                 let mut journal = store.begin_commit();
                 store.guarded(&mut journal, |store, journal| {
                     store.write_record_in(journal, &t, 1, None);
@@ -1004,7 +1025,7 @@ mod tests {
             ]
         );
         // Every lock of the session is released, and its id with it.
-        assert!(!hosted(&shared).locks.lock().unwrap().held_by_other(
+        assert!(!hosted(&shared).lock_table().held_by_other(
             &[uint_segment(fixture::TABLE), vec![5], serial::encode(1)],
             LockUser {
                 connection: CLIENT,
@@ -1244,7 +1265,7 @@ mod tests {
             stored(&shared, 1, fixture::NAME).as_deref(),
             Some("Write tests")
         );
-        assert!(!hosted(&shared).locks.lock().unwrap().held_by_other(
+        assert!(!hosted(&shared).lock_table().held_by_other(
             &[uint_segment(fixture::TABLE), vec![5], serial::encode(1)],
             LockUser {
                 connection: CLIENT,
@@ -1440,7 +1461,7 @@ mod tests {
             txn: 5,
         };
         hosted(&shared)
-            .locks
+            .locks(&crate::engine::Writer::for_tests())
             .lock()
             .unwrap()
             .lock(
@@ -1467,5 +1488,1141 @@ mod tests {
             .collect();
         assert_eq!(codes, [attention::DELETE | attention::RECORD]);
         host.close();
+    }
+
+    /// A script's account step tells each client registered on the file
+    /// that the account catalog changed, once, when its edit wrote: the
+    /// catalog `[23, 1]` and its index `[23, 1, 1]`, after its lock on the
+    /// catalog is released (the release carries them,
+    /// `engine::ReleaseScriptLock`), as before the engine interface. An
+    /// edit that was refused, or changed nothing, tells no one, and the
+    /// catalog's lock is released either way.
+    #[test]
+    fn a_scripts_account_edit_tells_of_the_catalog_once_and_only_when_it_wrote() {
+        use om_scripts::runtime::Accounts as _;
+        let mut root = fixture::tree(&[], true);
+        // The account catalog's index, which a stamped edit stamps.
+        root.put(
+            &[&[23], &[1], &[1], &[4]],
+            om_hbam::OwnedNode::leaf(Vec::new(), 2u32.to_be_bytes().to_vec()),
+        );
+        let file = TempFile::from_tree("script-account-notices", &root);
+        let shared = shared(&file);
+        let mut host = session(&shared);
+        let told = |shared: &Shared| -> Vec<u32> {
+            let taken = shared.mailboxes.take(CLIENT, usize::MAX);
+            taken.iter().map(|n| n.code).collect()
+        };
+        host.reset_account_password(fixture::CLERK, "fresh", false)
+            .unwrap();
+        assert_eq!(told(&shared), [2, 2], "the catalog and its index");
+        assert!(host
+            .reset_account_password("Nobody", "fresh", false)
+            .is_err());
+        assert!(told(&shared).is_empty(), "a refused edit tells no one");
+        host.enable_account(fixture::CLERK, true).unwrap();
+        assert!(told(&shared).is_empty(), "an edit that changed nothing");
+        host.enable_account(fixture::CLERK, false).unwrap();
+        assert_eq!(told(&shared), [2, 2]);
+        let catalog = [vec![23], vec![1]];
+        assert_eq!(hosted(&shared).lock_table().held_by(0x55), 0);
+        assert!(!hosted(&shared).lock_table().held_by_other(
+            &catalog,
+            LockUser {
+                connection: CLIENT,
+                txn: 1
+            }
+        ));
+        host.close();
+    }
+
+    /// The finders of `criterion` on `field` of Tasks, a field of `data_type`.
+    fn finders(field: u64, data_type: om_hbam::DataType, criterion: &str) -> Vec<Vec<u8>> {
+        om_query::find::finders(
+            fixture::TABLE,
+            field,
+            data_type,
+            criterion,
+            om_collate::DateOrder::default(),
+        )
+        .unwrap_or_else(|e| panic!("{criterion}: {e:?}"))
+        .into_iter()
+        .map(|finder| finder.bytes)
+        .collect()
+    }
+
+    /// docs/server-storage.md 5, "The overlay view": a find inside a
+    /// script's transaction answers as it did before the overlay. The
+    /// transaction changes record 1, deletes record 2 and adds a record;
+    /// finds on Name, whose value index a find stored before the
+    /// transaction, and on Count, whose index each find builds, by word,
+    /// by value, by range, for any value and for duplicates, answer through
+    /// the overlay of the version as through the store that held the
+    /// transaction's records alone (`Store::scratch`, kept for this test as
+    /// the reference: `ServerHost::query_by_scratch`).
+    #[test]
+    fn a_find_in_a_transaction_answers_as_the_scratch_store_did() {
+        use om_hbam::DataType::{Number, Text};
+        use om_scripts::runtime::RecordMove::{First, Next};
+        let mut tree = fixture::tree(&[], true);
+        fixture::add_tasks(&mut tree, 1..=6);
+        let file = TempFile::from_tree("overlay-find", &tree);
+        let shared = shared(&file);
+        let mut host = session(&shared);
+        let table = uint_segment(fixture::TABLE);
+        let name = uint_segment(fixture::NAME);
+        // A find outside the transaction builds Name's index, which is
+        // stored.
+        let all = host
+            .find_for_tests(fixture::TABLE, &finders(fixture::NAME, Text, "Task"))
+            .unwrap();
+        assert_eq!(all.iter().collect::<Vec<_>>(), [1, 2, 3, 4, 5, 6]);
+        let index = hosted(&shared)
+            .read_store()
+            .node(&[&table, &[1], &name])
+            .is_some();
+        assert!(index, "Name's index is stored");
+        host.begin_transaction(Default::default()).unwrap();
+        host.go_to_record(First, false).unwrap();
+        host.set_field(field(fixture::NAME), Value::text("Changed one"))
+            .unwrap();
+        host.set_field(field(fixture::COUNT), Value::text("4"))
+            .unwrap();
+        host.go_to_record(Next, false).unwrap();
+        host.delete_record(false).unwrap();
+        host.new_record().unwrap();
+        host.set_field(field(fixture::NAME), Value::text("Added task"))
+            .unwrap();
+        host.set_field(field(fixture::COUNT), Value::text("3"))
+            .unwrap();
+        host.commit_records(Default::default()).unwrap();
+        let cases = [
+            (fixture::NAME, Text, "Task"),
+            (fixture::NAME, Text, "Changed"),
+            (fixture::NAME, Text, "added"),
+            (fixture::NAME, Text, "one"),
+            (fixture::NAME, Text, "==Task 3"),
+            (fixture::NAME, Text, "*"),
+            (fixture::COUNT, Number, "3"),
+            (fixture::COUNT, Number, "2...4"),
+            (fixture::COUNT, Number, "!"),
+        ];
+        for (field, data_type, criterion) in cases {
+            let finders = finders(field, data_type, criterion);
+            assert_eq!(
+                host.find_for_tests(fixture::TABLE, &finders),
+                host.query_by_scratch(fixture::TABLE, &finders),
+                "{criterion}"
+            );
+        }
+        // What they found: the changed record by its new name, the added
+        // one, and never the deleted record 2.
+        let found = |field, data_type, criterion| {
+            let finders = finders(field, data_type, criterion);
+            let found = host.find_for_tests(fixture::TABLE, &finders).unwrap();
+            found.iter().collect::<Vec<_>>()
+        };
+        assert_eq!(found(fixture::NAME, Text, "Changed"), [1]);
+        assert_eq!(found(fixture::NAME, Text, "Task"), [3, 4, 5, 6, 7]);
+        assert_eq!(found(fixture::COUNT, Number, "4"), [1, 4]);
+        host.revert_transaction().unwrap();
+        host.close();
+    }
+
+    /// A session reads the file through a reading of its own taken for each
+    /// read, never across its own writes (docs/server-storage.md 5, "A
+    /// script session's reads"): a record it commits, a serial value it
+    /// sets and a record it deletes are what it reads next, through the
+    /// file, not through what it held.
+    #[test]
+    fn a_session_reads_what_it_committed() {
+        use om_hbam::DataType::Text;
+        use om_scripts::runtime::RecordMove::First;
+        let file = TempFile::new("reads-own-commit", &[], true);
+        let shared = shared(&file);
+        let mut host = session(&shared);
+        // A find before the commit reads the version before it.
+        let fresh = finders(fixture::NAME, Text, "Fresh");
+        assert!(host
+            .find_for_tests(fixture::TABLE, &fresh)
+            .unwrap()
+            .is_empty());
+        host.new_record().unwrap();
+        host.set_field(field(fixture::NAME), Value::text("Fresh"))
+            .unwrap();
+        host.commit_records(Default::default()).unwrap();
+        let found = host.find_for_tests(fixture::TABLE, &fresh).unwrap();
+        assert_eq!(found.iter().collect::<Vec<_>>(), [3]);
+        // A field a calculation reads of the committed record.
+        let context = host.calc_context_for_test();
+        let count = CalcHost::get(&mut host, 19, &context).unwrap();
+        assert_eq!(text(&host, &count), "3", "TotalRecordCount");
+        host.go_to_record(First, false).unwrap();
+        host.set_field(field(fixture::NAME), Value::text("Renamed"))
+            .unwrap();
+        host.commit_records(Default::default()).unwrap();
+        let renamed = finders(fixture::NAME, Text, "Renamed");
+        let found = host.find_for_tests(fixture::TABLE, &renamed).unwrap();
+        assert_eq!(found.iter().collect::<Vec<_>>(), [1]);
+        host.delete_record(false).unwrap();
+        let found = host.find_for_tests(fixture::TABLE, &renamed).unwrap();
+        assert!(found.is_empty(), "the deleted record is gone");
+        let context = host.calc_context_for_test();
+        let count = CalcHost::get(&mut host, 19, &context).unwrap();
+        assert_eq!(text(&host, &count), "2", "TotalRecordCount");
+        host.close();
+    }
+
+    /// The Design functions read one version of the file
+    /// (docs/server-storage.md 5, "A script session's reads"): a field
+    /// another client adds after the step's schema was read is one
+    /// FieldType answers for, its definition and the catalog that lists it
+    /// read through the same reading.
+    #[test]
+    fn the_design_functions_read_one_version() {
+        let file = TempFile::new("design-one-version", &[], true);
+        let shared = shared(&file);
+        let mut host = session(&shared);
+        om_scripts::runtime::ScriptHost::before_step(&mut host);
+        let field_type = |host: &mut ServerHost| {
+            let context = host.calc_context_for_test();
+            let field_type = om_calc::eval::evaluate_text(
+                "FieldType ( Get ( FileName ) ; \"Tasks::Added\" )",
+                host,
+                &context,
+            );
+            assert_eq!(field_type.code(), 0, "{:?}", field_type.value);
+            text(host, &field_type.value)
+        };
+        assert_eq!(field_type(&mut host), "", "no such field yet");
+        let mut fields = om_hbam::OwnedNode::default();
+        fixture::add_field(&mut fields, fixture::TABLE, 40, "Added", 1, 1, 0, 0, 0);
+        let (t, f) = (uint_segment(fixture::TABLE), uint_segment(40));
+        let upload = crate::engine::UploadToCatalog {
+            path: vec![t.clone(), vec![3], vec![5], f.clone()],
+            node: fields.at(&[&t, &[3], &[5], &f]).unwrap().clone(),
+        };
+        let uploaded = shared.engine.submit(
+            &hosted(&shared),
+            crate::engine::Operation::UploadToCatalog(upload),
+        );
+        assert_eq!(
+            uploaded.reply,
+            crate::engine::Reply::UploadToCatalog(Ok(true))
+        );
+        assert!(
+            field_type(&mut host).contains("Text"),
+            "the added field, in the step that read the schema before it"
+        );
+        host.close();
+    }
+
+    /// After a failed read, no step has an effect outside the session and
+    /// the file engine (docs/server-storage.md 5, "A read that fails ends
+    /// the run"). In a session whose read of a global failed, each host
+    /// method that writes a file, sends mail or makes a request is called
+    /// with arguments that would otherwise have its effect (the host's
+    /// moment after a step's argument read failed): each is refused with
+    /// 802 and the run ends with 802; no file is made or changed, also where
+    /// the destination exists; nothing reaches the loopback mail and web
+    /// servers. Create Data File and Delete File read nothing of the file
+    /// for their arguments, so only a direct call reaches them so.
+    #[test]
+    fn a_failed_read_stops_every_effect_outside_the_file() {
+        use om_scripts::runtime::{
+            Encoding, ErrorCode, Files as _, HostResult, Mail, MailVia, Network as _,
+            ScriptHost as _, SmtpOptions, TransferCall, UrlRequest,
+        };
+        use om_transfer::spec::ExportField;
+        use std::fs;
+        let tag = format!("{}-{:?}", std::process::id(), std::thread::current().id())
+            .replace(['(', ')'], "");
+        let root = std::env::temp_dir().join(format!("om-effects-{tag}"));
+        let _ = fs::remove_dir_all(&root);
+        let documents = root.join("Documents");
+        fs::create_dir_all(&documents).unwrap();
+        let mut tree = fixture::tree(&[], true);
+        fixture::add_photo(&mut tree);
+        let file = TempFile(root.join(fixture::FILE));
+        fixture::write_tree(&file.0, &tree);
+        let shared = shared(&file);
+        let mut host = session(&shared);
+        // Files the steps would change, which exist.
+        let existing = [
+            "export.tab",
+            "created.txt",
+            "written.txt",
+            "deleted.txt",
+            "renamed.txt",
+        ];
+        for name in existing {
+            fs::write(documents.join(name), "old").unwrap();
+        }
+        let path = |name: &str| vec![format!("file:{}", documents.join(name).display())];
+        let id = host.open_data_file(&path("written.txt")).unwrap();
+        let listener = || {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            listener
+        };
+        let (mail_server, web_server) = (listener(), listener());
+        // A read of the global fails.
+        shared
+            .engine
+            .fail_reads(fixture::FILE, vec![uint_segment(fixture::TABLE), vec![8]]);
+        let context = host.calc_context_for_test();
+        let _ = om_calc::eval::evaluate_text("Tasks::Setting", &mut host, &context);
+        let unreadable = Some(ErrorCode(i32::from(UNREADABLE)));
+        assert_eq!(host.take_step_error(), unreadable, "the read failed");
+        let options = om_transfer::ExportOptions {
+            fields: vec![ExportField {
+                field: om_transfer::FieldSpec::new(fixture::OCCURRENCE, fixture::NAME),
+                sum_by: om_transfer::FieldSpec::none(),
+            }],
+            group_by: Vec::new(),
+            formatting: false,
+            charset: om_transfer::ExportCharset::Utf8,
+            use_name_alias: Some(1),
+            field_names: None,
+        };
+        let step = om_scripts::ScriptStep::new(36);
+        let export = TransferCall {
+            id: 36,
+            step: &step,
+            paths: path("export.tab"),
+            with_dialog: false,
+            restore: true,
+            create_folders: false,
+            open_automatically: false,
+            create_email: false,
+            verify_ssl: false,
+            source_kind: 0,
+            import_order: None,
+            export_order: Some(options.encode()),
+            profile: Some(om_transfer::Profile::new(om_transfer::FileType::TabSeparated).encode()),
+            profile_ex: None,
+            field_flags: None,
+            slots: Vec::new(),
+        };
+        let port = |server: &std::net::TcpListener| server.local_addr().unwrap().port();
+        let request = UrlRequest {
+            url: format!("http://127.0.0.1:{}/", port(&web_server)),
+            curl_options: None,
+            verify_ssl: false,
+            with_dialog: false,
+            encode_url: false,
+            variables: Vec::new(),
+            target: None,
+        };
+        let mail = Mail {
+            via: MailVia::Smtp,
+            to: "kim@example.org".into(),
+            cc: String::new(),
+            bcc: String::new(),
+            subject: "Weekly report".into(),
+            message: String::new(),
+            collect: [false; 3],
+            one_per_record: false,
+            attachments: String::new(),
+            with_dialog: false,
+            smtp: Some(SmtpOptions {
+                name: "Pat".into(),
+                email: "pat@example.org".into(),
+                reply_to: String::new(),
+                server: "127.0.0.1".into(),
+                port: port(&mail_server).to_string(),
+                encryption: 0,
+                authentication: 1,
+                user: String::new(),
+                password: String::new(),
+            }),
+        };
+        let refused = Err(HostError::Error(ErrorCode(i32::from(UNREADABLE))));
+        let mut steps: Vec<(&str, HostResult)> = vec![
+            ("Export Records", host.export_records(&export)),
+            (
+                "Export Field Contents",
+                host.export_field_contents(Some(field(fixture::PHOTO)), &path("photo.png"), false),
+            ),
+            (
+                "Create Data File",
+                host.create_data_file(&path("created.txt"), false),
+            ),
+            (
+                "Create Data File, new",
+                host.create_data_file(&path("new.txt"), false),
+            ),
+            (
+                "Write to Data File",
+                host.write_data_file(id, &Value::text("new"), Encoding::Utf8, false),
+            ),
+            ("Delete File", host.delete_file(&path("deleted.txt"))),
+            (
+                "Rename File",
+                host.rename_file(&path("renamed.txt"), "moved.txt"),
+            ),
+        ];
+        // A request that is made ends within seconds: the loopback servers
+        // never answer.
+        let soon = || Control {
+            abort: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            deadline: Some(Instant::now() + Duration::from_secs(2)),
+        };
+        host.set_control(soon());
+        steps.push(("Insert from URL", host.fetch_url(&request).map(|_| ())));
+        host.set_control(soon());
+        steps.push(("Send Mail", host.send_mail(&mail)));
+        let mut failures: Vec<String> = steps
+            .into_iter()
+            .filter(|(_, result)| *result != refused)
+            .map(|(step, result)| format!("{step}: {result:?}"))
+            .collect();
+        assert_eq!(host.take_step_error(), unreadable, "the run ends with 802");
+        let mut names: Vec<String> = fs::read_dir(&documents)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        let mut expected: Vec<String> = existing.iter().map(|name| name.to_string()).collect();
+        expected.sort();
+        if names != expected {
+            failures.push(format!("files made, deleted or renamed: {names:?}"));
+        }
+        for name in existing {
+            let now = fs::read_to_string(documents.join(name)).unwrap_or_default();
+            if now != "old" {
+                failures.push(format!("{name} changed: {now:?}"));
+            }
+        }
+        for (server, what) in [(&mail_server, "mail"), (&web_server, "web")] {
+            let accepted = server.accept().map(|_| ());
+            if !accepted.is_err_and(|e| e.kind() == std::io::ErrorKind::WouldBlock) {
+                failures.push(format!("a connection reached the {what} server"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        host.close();
+        drop(file);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The reads kept to one version (docs/server-storage.md 5, "A script
+    /// session's reads"), each through one reading, counted by the test
+    /// hook that counts the readings a session takes: a Design function's
+    /// schema parts and the account facts of its session information, and
+    /// a committed row with its containers' file names.
+    #[test]
+    fn the_reads_kept_to_one_version_take_one_reading() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let mut tree = fixture::tree(&[], true);
+        fixture::add_photo(&mut tree);
+        let file = TempFile::from_tree("one-version-reads", &tree);
+        let shared = shared(&file);
+        let mut host = session(&shared);
+        let fault = &hosted(&shared).read_fault;
+        fault.fail(0, false);
+        let context = host.calc_context_for_test();
+        let field_type = om_calc::eval::evaluate_text(
+            "FieldType ( Get ( FileName ) ; \"Tasks::Name\" )",
+            &mut host,
+            &context,
+        );
+        assert_eq!(field_type.code(), 0, "{:?}", field_type.value);
+        assert_eq!(fault.reads.load(Relaxed), 1, "a Design function");
+        fault.fail(0, false);
+        let row = host.sql_row_for_tests(fixture::TABLE, 1).expect("record 1");
+        assert_eq!(
+            fault.reads.load(Relaxed),
+            1,
+            "a row and its containers' names"
+        );
+        let photo = row.get(fixture::PHOTO, 1).expect("a photo");
+        assert_eq!(text(&host, photo), "photo2.png", "the member's file name");
+        host.close();
+    }
+
+    /// docs/server-storage.md 5, "A script session's reads": a read of the
+    /// file that fails ends the run with 802, "Unable to open file", for
+    /// each kind of read, and the session changes nothing in the file from
+    /// then on; accounts the engine could not decode answer as before (3).
+    /// Each case fails one path in the test view (`FileEngine::fail_reads`)
+    /// and runs a script, or a step, that reads it.
+    #[test]
+    fn each_kind_of_read_that_fails_is_802() {
+        use om_scripts::runtime::Accounts as _;
+        const UNREADABLE: u16 = 802;
+        let t = uint_segment(fixture::TABLE);
+        let notes = uint_segment(fixture::NOTES);
+        // A script of one step reading `text`, run with `path` failing:
+        // its error.
+        use om_hbam::OwnedNode;
+        let run_step = |tag: &str,
+                        prepare: &dyn Fn(&mut OwnedNode),
+                        path: Vec<Vec<u8>>,
+                        step: om_scripts::ScriptStep| {
+            let script = fixture::script(1, "Read", vec![step]);
+            let mut tree = fixture::tree(std::slice::from_ref(&script), true);
+            prepare(&mut tree);
+            let file = TempFile::from_tree(tag, &tree);
+            let shared = shared(&file);
+            shared.engine.fail_reads(fixture::FILE, path);
+            perform(&shared, request(&shared, 1, "", 0)).error
+        };
+        let run_reading =
+            |tag: &str, prepare: &dyn Fn(&mut OwnedNode), path: Vec<Vec<u8>>, text: &str| {
+                run_step(tag, prepare, path, fixture::set_variable("$x", text))
+            };
+        let nothing = |_: &mut OwnedNode| {};
+        let cases: Vec<(&str, u16)> = vec![
+            // The session's schema: its script catalog.
+            (
+                "schema",
+                run_reading("fail-schema", &nothing, vec![vec![17]], "1"),
+            ),
+            // A table's record-id list, which the session's window lists.
+            (
+                "a record-id list",
+                run_reading("fail-ids", &nothing, vec![t.clone(), vec![0x0d]], "1"),
+            ),
+            // A record a calculation reads.
+            (
+                "a record",
+                run_reading(
+                    "fail-record",
+                    &nothing,
+                    vec![t.clone(), vec![5], serial::encode(1)],
+                    "Tasks::Name",
+                ),
+            ),
+            // A record a step opens to change, which it reads whole.
+            (
+                "a record opened",
+                run_step(
+                    "fail-open",
+                    &nothing,
+                    vec![t.clone(), vec![5], serial::encode(1)],
+                    fixture::set_field(fixture::NAME, "\"Changed\""),
+                ),
+            ),
+            // A global value.
+            (
+                "a global",
+                run_reading(
+                    "fail-global",
+                    &nothing,
+                    vec![t.clone(), vec![8]],
+                    "Tasks::Setting",
+                ),
+            ),
+            // The catalogs the Design functions read.
+            (
+                "the Design catalogs",
+                run_reading(
+                    "fail-design",
+                    &nothing,
+                    vec![vec![4]],
+                    "LayoutNames ( Get ( FileName ) )",
+                ),
+            ),
+            // The session's privilege set.
+            (
+                "the privilege set",
+                run_reading(
+                    "fail-privileges",
+                    &nothing,
+                    vec![vec![23], vec![1], vec![5]],
+                    "Get ( AccountPrivilegeSetName )",
+                ),
+            ),
+            // A container's data.
+            (
+                "a container",
+                run_reading(
+                    "fail-container",
+                    &|tree| fixture::add_photo(tree),
+                    vec![t.clone(), vec![0x1f], vec![5]],
+                    "Base64Encode ( GetField ( \"Tasks::Photo\" ) )",
+                ),
+            ),
+            // A related-record lookup through an index.
+            (
+                "an index lookup",
+                run_reading(
+                    "fail-lookup",
+                    &|tree| {
+                        fixture::add_relationship(
+                            tree,
+                            1,
+                            (fixture::OCCURRENCE, fixture::NAME),
+                            0,
+                            (fixture::NOTES_OCCURRENCE, fixture::BODY),
+                        )
+                    },
+                    vec![notes.clone(), vec![1]],
+                    "Count ( Notes::Body )",
+                ),
+            ),
+        ];
+        for (what, error) in cases {
+            assert_eq!(error, UNREADABLE, "{what}");
+        }
+
+        // A find.
+        let file = TempFile::new("fail-find", &[], true);
+        let finding = shared(&file);
+        let host = session(&finding);
+        finding
+            .engine
+            .fail_reads(fixture::FILE, vec![t.clone(), vec![1]]);
+        let finders = finders(fixture::NAME, om_hbam::DataType::Text, "Task");
+        assert_eq!(
+            host.find_for_tests(fixture::TABLE, &finders),
+            Err(find::FindError::Query(UNREADABLE)),
+            "a find"
+        );
+
+        // A unique field's check, which refuses the commit.
+        let mut tree = fixture::tree(&[], true);
+        fixture::set_field_options(&mut tree, fixture::TABLE, fixture::CODE, 0x8000_0000);
+        fixture::set_field_validation(&mut tree, fixture::TABLE, fixture::CODE, 0x410);
+        let file = TempFile::from_tree("fail-unique", &tree);
+        let checking = shared(&file);
+        let mut host = session(&checking);
+        host.set_field(field(fixture::CODE), Value::text("A"))
+            .unwrap();
+        checking
+            .engine
+            .fail_reads(fixture::FILE, vec![t.clone(), vec![1]]);
+        assert_eq!(
+            host.commit_records(Default::default()),
+            Err(HostError::Error(ErrorCode(i32::from(UNREADABLE)))),
+            "a unique value's check"
+        );
+        assert_eq!(stored(&checking, 1, fixture::CODE), None, "nothing written");
+        host.close();
+
+        // The schema read again before a step, after another client
+        // changed it (an upload of a custom function's catalog): the step
+        // fails, and changes nothing.
+        let file = TempFile::new("fail-refresh", &[], true);
+        let refreshing = shared(&file);
+        let mut host = session(&refreshing);
+        let name = stored(&refreshing, 1, fixture::NAME);
+        let upload = crate::engine::UploadToCatalog {
+            path: vec![vec![16], vec![5], vec![1]],
+            node: om_scripts::text_node(&[16], "Uploaded"),
+        };
+        let uploaded = refreshing.engine.submit(
+            &hosted(&refreshing),
+            crate::engine::Operation::UploadToCatalog(upload),
+        );
+        assert_eq!(
+            uploaded.reply,
+            crate::engine::Reply::UploadToCatalog(Ok(true))
+        );
+        refreshing.engine.fail_reads(fixture::FILE, vec![vec![17]]);
+        om_scripts::runtime::ScriptHost::before_step(&mut host);
+        // Within the step, nothing is changed: a commit is refused.
+        assert_eq!(
+            host.set_field(field(fixture::NAME), Value::text("Unwritten"))
+                .and_then(|()| host.commit_records(Default::default())),
+            Err(HostError::Error(ErrorCode(i32::from(UNREADABLE)))),
+            "nothing is changed while a read failed"
+        );
+        assert_eq!(
+            om_scripts::runtime::ScriptHost::take_step_error(&mut host),
+            Some(ErrorCode(i32::from(UNREADABLE))),
+            "the schema read again"
+        );
+        assert_eq!(
+            stored(&refreshing, 1, fixture::NAME),
+            name,
+            "nothing written"
+        );
+        host.close();
+
+        // The accounts Change Password checks, which the reading's derived
+        // state gives: a security catalog that could not be read is a read
+        // that failed. The step is refused as before (3), the run ends with
+        // 802, and a serial write after it does not happen.
+        let file = TempFile::new("fail-accounts", &[], true);
+        let changing = shared(&file);
+        let mut host = session(&changing);
+        host.set_account_key(&[2]);
+        changing
+            .engine
+            .fail_reads(fixture::FILE, vec![vec![23], vec![1], vec![5]]);
+        assert_eq!(
+            host.change_password(fixture::PASSWORD, "another", false),
+            Err(HostError::Unsupported),
+            "the accounts"
+        );
+        assert_eq!(
+            om_scripts::runtime::ScriptHost::take_step_error(&mut host),
+            Some(ErrorCode(i32::from(UNREADABLE))),
+            "the accounts' read failed"
+        );
+        let before = hosted(&changing).read_store().node(&[]).cloned();
+        assert_eq!(
+            host.set_next_serial_value(field(fixture::COUNT), Value::text("100")),
+            Err(HostError::Error(ErrorCode(i32::from(UNREADABLE)))),
+            "a serial write after it"
+        );
+        let after = hosted(&changing).read_store().node(&[]).cloned();
+        assert!(before == after, "the serial write did not happen");
+        host.close();
+
+        // The same fault through the account facts of ExecuteSQL's session
+        // and through a Design call's: each is a read that failed.
+        for (what, text) in [
+            (
+                "ExecuteSQL's account facts",
+                "ExecuteSQL ( \"SELECT Name FROM Tasks\" ; \"\" ; \"\" )",
+            ),
+            (
+                "a Design call's account facts",
+                "FieldType ( Get ( FileName ) ; \"Tasks::Name\" )",
+            ),
+        ] {
+            let file = TempFile::new("fail-accounts-calc", &[], true);
+            let calculating = shared(&file);
+            let mut host = session(&calculating);
+            calculating
+                .engine
+                .fail_reads(fixture::FILE, vec![vec![23], vec![1], vec![5]]);
+            let context = host.calc_context_for_test();
+            let _ = om_calc::eval::evaluate_text(text, &mut host, &context);
+            assert_eq!(
+                om_scripts::runtime::ScriptHost::take_step_error(&mut host),
+                Some(ErrorCode(i32::from(UNREADABLE))),
+                "{what}"
+            );
+            host.close();
+        }
+    }
+
+    /// The scripts of [`a_failed_read_ends_the_run_and_writes_nothing`]:
+    /// between them, every kind of step that reads the file.
+    fn read_fault_corpus() -> Vec<om_scripts::Script> {
+        use om_scripts::{FieldSpec, ScriptStep, StoredKey};
+        let replace = |text: &str| {
+            let mut step = ScriptStep::new(91);
+            step.set_field_spec(
+                0,
+                Some(FieldSpec::new(
+                    StoredKey::from_id(fixture::OCCURRENCE).unwrap(),
+                    StoredKey::from_id(fixture::COUNT).unwrap(),
+                    1,
+                )),
+            );
+            step.set_number(1, Some(3));
+            step.set_calculation(0, Some(&fixture::calc(text)));
+            step
+        };
+        let reset = |account: &str| {
+            let mut step = ScriptStep::new(136);
+            step.set_calculation(0, Some(&fixture::calc(account)));
+            step.set_calculation(1, Some(&fixture::calc("\"a new secret\"")));
+            step
+        };
+        let report = || fixture::exit_with("Get ( LastError )");
+        let change_password = || {
+            let mut step = ScriptStep::new(83);
+            step.set_calculation(
+                0,
+                Some(&fixture::calc(&format!("\"{}\"", fixture::PASSWORD))),
+            );
+            step.set_calculation(1, Some(&fixture::calc("\"another secret\"")));
+            step
+        };
+        let next_serial = |text: &str| {
+            let mut step = ScriptStep::new(116);
+            step.set_field_spec(
+                0,
+                Some(FieldSpec::new(
+                    StoredKey::from_id(fixture::OCCURRENCE).unwrap(),
+                    StoredKey::from_id(fixture::COUNT).unwrap(),
+                    1,
+                )),
+            );
+            step.set_calculation(0, Some(&fixture::calc(text)));
+            step
+        };
+        let scripts: Vec<(&str, Vec<ScriptStep>)> = vec![
+            (
+                "Set Field from a field",
+                vec![
+                    fixture::go_to_record(1),
+                    fixture::set_field(fixture::COUNT, "Tasks::Count + 1"),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+            (
+                "Set Field from a global",
+                vec![
+                    fixture::set_field(fixture::NAME, "Tasks::Setting"),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+            (
+                "Set Field from a related value",
+                vec![
+                    fixture::set_field(fixture::NAME, "Notes::Body & \"!\""),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+            (
+                "If on a global, then Delete",
+                vec![
+                    fixture::with_calc(68, "IsEmpty ( Tasks::Setting )"),
+                    ScriptStep::new(9),
+                    ScriptStep::new(70),
+                    report(),
+                ],
+            ),
+            (
+                "Loop over the records",
+                vec![
+                    fixture::go_to_record(1),
+                    ScriptStep::new(71),
+                    fixture::set_field(fixture::COUNT, "Tasks::Count + 1"),
+                    fixture::with_calc(72, "Get ( RecordNumber ) >= Get ( FoundCount )"),
+                    fixture::go_to_record(4),
+                    ScriptStep::new(73),
+                    report(),
+                ],
+            ),
+            (
+                "Find",
+                vec![
+                    ScriptStep::new(22),
+                    fixture::set_field(fixture::NAME, "\"Task\""),
+                    ScriptStep::new(28),
+                    fixture::set_field(fixture::COUNT, "Tasks::Count * 2"),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+            (
+                "Find inside a transaction",
+                vec![
+                    ScriptStep::new(205),
+                    fixture::go_to_record(1),
+                    fixture::set_field(fixture::NAME, "\"Changed\""),
+                    ScriptStep::new(75),
+                    ScriptStep::new(22),
+                    fixture::set_field(fixture::NAME, "\"Changed\""),
+                    ScriptStep::new(28),
+                    fixture::set_field(fixture::COUNT, "Tasks::Count + 5"),
+                    ScriptStep::new(206),
+                    report(),
+                ],
+            ),
+            (
+                "Go to Record, Revert and Commit",
+                vec![
+                    fixture::go_to_record(2),
+                    fixture::set_field(fixture::NAME, "Tasks::Name & \" reverted\""),
+                    ScriptStep::new(51),
+                    fixture::go_to_record(1),
+                    fixture::set_field(fixture::NAME, "Tasks::Name & \" kept\""),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+            (
+                "A transaction reverted on error",
+                vec![
+                    fixture::on(223, true),
+                    ScriptStep::new(205),
+                    fixture::set_field(fixture::COUNT, "Tasks::Count + 1"),
+                    ScriptStep::new(7),
+                    fixture::set_field(fixture::NAME, "Tasks::Setting"),
+                    ScriptStep::new(206),
+                    report(),
+                ],
+            ),
+            (
+                "A transaction not reverted on error",
+                vec![
+                    fixture::on(223, false),
+                    ScriptStep::new(205),
+                    fixture::set_field(fixture::COUNT, "Tasks::Count + 1"),
+                    fixture::go_to_record(2),
+                    fixture::set_field(fixture::NAME, "Tasks::Name & Tasks::Setting"),
+                    ScriptStep::new(206),
+                    report(),
+                ],
+            ),
+            (
+                "Delete",
+                vec![fixture::go_to_record(2), ScriptStep::new(9), report()],
+            ),
+            (
+                "Replace Field Contents",
+                vec![replace("Tasks::Count + Length ( Tasks::Name )"), report()],
+            ),
+            (
+                "ExecuteSQL",
+                vec![
+                    fixture::set_field(
+                        fixture::NAME,
+                        "ExecuteSQL ( \"SELECT Name FROM Tasks\" ; \"\" ; \"\" )",
+                    ),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+            (
+                "The Design functions",
+                vec![
+                    fixture::set_field(
+                        fixture::NAME,
+                        "FieldNames ( Get ( FileName ) ; \"Tasks\" ) & \
+                         GetNextSerialValue ( Get ( FileName ) ; \"Tasks::Count\" )",
+                    ),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+            ("An account step", vec![reset("Tasks::Name"), report()]),
+            (
+                "An edit held across an account edit",
+                vec![
+                    fixture::go_to_record(1),
+                    fixture::set_field(fixture::NAME, "Tasks::Name & \" held\""),
+                    reset("\"Clerk\""),
+                    fixture::set_field(fixture::COUNT, "Tasks::Count + 1"),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+            (
+                "A subscript",
+                vec![
+                    fixture::perform_script(1),
+                    fixture::set_field(fixture::COUNT, "Tasks::Count + 10"),
+                    ScriptStep::new(75),
+                    report(),
+                ],
+            ),
+            // Script 18.
+            (
+                "Exit Script with a global",
+                vec![fixture::exit_with("\"prefix:\" & Tasks::Setting")],
+            ),
+            (
+                "A subscript's result",
+                vec![
+                    fixture::perform_script(18),
+                    fixture::exit_with("Get ( ScriptResult ) & \"/\" & Get ( LastError )"),
+                ],
+            ),
+            (
+                "Change Password, then Set Next Serial Value",
+                vec![change_password(), next_serial("100"), report()],
+            ),
+        ];
+        scripts
+            .into_iter()
+            .zip(1u64..)
+            .map(|((name, mut steps), id)| {
+                steps.insert(0, fixture::on(86, true));
+                fixture::script(id, name, steps)
+            })
+            .collect()
+    }
+
+    /// The file the corpus runs on: Tasks with records 1 to 3 and a stored
+    /// global, Notes with records related to Tasks by name, the local
+    /// accounts.
+    fn read_fault_tree(scripts: &[om_scripts::Script]) -> om_hbam::OwnedNode {
+        let mut tree = fixture::tree(scripts, true);
+        fixture::add_tasks(&mut tree, 1..=3);
+        fixture::add_local_accounts(&mut tree);
+        // The account catalog's index, which every FileMaker file has.
+        tree.put(
+            &[&[23], &[1], &[1], &[4]],
+            om_hbam::OwnedNode::leaf(Vec::new(), vec![2]),
+        );
+        fixture::add_relationship(
+            &mut tree,
+            1,
+            (fixture::OCCURRENCE, fixture::NAME),
+            0,
+            (fixture::NOTES_OCCURRENCE, fixture::BODY),
+        );
+        let t = uint_segment(fixture::TABLE);
+        tree.put(
+            &[&t, &[8], &uint_segment(fixture::SETTING)],
+            om_scripts::text_node(&[], "a setting"),
+        );
+        let notes = uint_segment(fixture::NOTES);
+        for (id, body) in [(1u64, "Task 1"), (2, "Task 2")] {
+            let path = [
+                &notes[..],
+                &[5],
+                &serial::encode(id),
+                &uint_segment(fixture::BODY),
+            ];
+            tree.put(&path, om_scripts::text_node(&[], body));
+        }
+        tree
+    }
+
+    /// Run script `script` of a fresh file holding `tree` with read `fail`
+    /// of the run failing (0: none): the run's error, the reads the run
+    /// made, and the file's tree when the session ended and when the read
+    /// failed.
+    fn run_with_failed_read(
+        tree: &om_hbam::OwnedNode,
+        script: u64,
+        fail: u64,
+        after: bool,
+    ) -> FaultRun {
+        use std::sync::atomic::Ordering::Relaxed;
+        let file = TempFile::from_tree(&format!("read-fault-{script}-{fail}"), tree);
+        let shared = shared(&file);
+        // A run that does not end after its failed read stops at a step
+        // budget the corpus's scripts are far within, rather than hang.
+        shared.scripts.set_limits(ScriptLimits {
+            steps: 1_000,
+            ..ScriptLimits::DEFAULT
+        });
+        let hosted = hosted(&shared);
+        hosted.read_fault.fail(fail, after);
+        let reply = perform(&shared, request(&shared, script, "", 0));
+        let fault = &hosted.read_fault;
+        let (ended, waiting_ended) = {
+            let store = hosted.read_store();
+            (store.node(&[]).cloned(), store.waiting_for_tests())
+        };
+        let waiting_at_failure = fault.waiting_at_failure.lock().unwrap().clone();
+        let since = fault.since.lock().unwrap().clone();
+        FaultRun {
+            reply,
+            reads: fault.reads.load(Relaxed),
+            failed: fault.failed.load(Relaxed),
+            ended,
+            at_failure: fault.tree_at_failure(),
+            waiting_ended,
+            waiting_at_failure,
+            since,
+        }
+    }
+
+    /// What [`run_with_failed_read`] found.
+    struct FaultRun {
+        reply: PerformScriptReply,
+        /// The reads the run made.
+        reads: u64,
+        /// Whether a read failed.
+        failed: bool,
+        /// The file's tree when the session ended, and when the read
+        /// failed.
+        ended: Option<om_hbam::OwnedNode>,
+        at_failure: Option<om_hbam::OwnedNode>,
+        /// The file's waiting set when the session ended, and when the read
+        /// failed.
+        waiting_ended: crate::hosting::WaitingSnapshot,
+        waiting_at_failure: Option<crate::hosting::WaitingSnapshot>,
+        /// What the session did after the read failed
+        /// (`hosting::ReadFault::since`).
+        since: Vec<String>,
+    }
+
+    /// docs/server-storage.md 5, "A read that fails ends the run": from the
+    /// failed read on, the session has no effect outside itself but
+    /// releasing what it holds, and the run ends with 802 and no result.
+    /// For each script of a corpus that between them make every kind of
+    /// read (`read_fault_corpus`), the k-th read of the run fails, for every
+    /// k up to the run's number of reads, and with `after` every read after
+    /// it too. Recorded from the failure on (`hosting::ReadFault`), each run
+    /// must show: no step entered after the one the read failed in; nothing
+    /// submitted but releases, so no lock taken; the file's waiting set and
+    /// its whole tree, when the session has ended, as they were at the
+    /// failure; error 802; and no result. Returns the runs made.
+    fn every_failed_read_ends_the_run(after: bool) -> usize {
+        let scripts = read_fault_corpus();
+        let tree = read_fault_tree(&scripts);
+        let mut runs = 0;
+        let mut failures = Vec::new();
+        for script in &scripts {
+            let whole = run_with_failed_read(&tree, script.id, 0, false);
+            let reads = whole.reads;
+            assert_ne!(
+                whole.reply.error, 802,
+                "{}: without a failed read",
+                script.name
+            );
+            assert!(reads > 1, "{}: {reads} reads", script.name);
+            for fail in 1..=reads {
+                let run = run_with_failed_read(&tree, script.id, fail, after);
+                let what = format!("{}: read {fail} of {reads} failing", script.name);
+                runs += 1;
+                if !run.failed {
+                    failures.push(format!("{what}: no read failed"));
+                    continue;
+                }
+                let steps = run.since.iter().filter(|s| *s == "step").count();
+                if steps > 0 {
+                    failures.push(format!("{what}: {steps} steps entered after it"));
+                }
+                let locks: Vec<&String> = run
+                    .since
+                    .iter()
+                    .filter(|s| ["TakeScriptLock", "TakeLock", "UpgradeLock"].contains(&s.as_str()))
+                    .collect();
+                if !locks.is_empty() {
+                    failures.push(format!("{what}: locks taken after it: {locks:?}"));
+                }
+                let submitted: Vec<&String> = run
+                    .since
+                    .iter()
+                    .filter(|s| *s != "step" && !s.starts_with("Release") && !locks.contains(s))
+                    .collect();
+                if !submitted.is_empty() {
+                    failures.push(format!("{what}: submitted after it: {submitted:?}"));
+                }
+                if run.reply.error != 802 {
+                    failures.push(format!("{what}: the run ended with {}", run.reply.error));
+                }
+                if !run.reply.result.is_empty() {
+                    failures.push(format!("{what}: a result, {:?}", run.reply.result));
+                }
+                if run.ended != run.at_failure {
+                    failures.push(format!("{what}: the file changed after the read failed"));
+                }
+                if Some(&run.waiting_ended) != run.waiting_at_failure.as_ref() {
+                    failures.push(format!(
+                        "{what}: the waiting set changed after it: {:?} at the failure, {:?} at the end",
+                        run.waiting_at_failure, run.waiting_ended
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        runs
+    }
+
+    /// [`every_failed_read_ends_the_run`] with one read failing: about
+    /// 400 runs, a few seconds.
+    #[test]
+    fn a_failed_read_ends_the_run_and_writes_nothing() {
+        let runs = every_failed_read_ends_the_run(false);
+        eprintln!("{runs} runs with a failed read");
+    }
+
+    /// [`every_failed_read_ends_the_run`] with every read failing from the
+    /// k-th on, storage that stays broken, after the default run.
+    #[test]
+    #[ignore = "runs the corpus twice, the second time with every read failing from the k-th on"]
+    fn a_failed_read_ends_the_run_and_writes_nothing_when_reads_keep_failing() {
+        let once = every_failed_read_ends_the_run(false);
+        let after = every_failed_read_ends_the_run(true);
+        eprintln!("{once} runs with a failed read, {after} with reads failing from it on");
     }
 }

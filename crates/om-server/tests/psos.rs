@@ -65,6 +65,10 @@ fn start_configured(
         .unwrap()
         .with_script_limits(limits);
     let server = configure(server);
+    // Reads through views are answered through the test view too, and
+    // checked against the file engine's (docs/server-storage.md 5, "Views").
+    #[cfg(debug_assertions)]
+    let server = server.checking_reads();
     let port = server.local_addr().unwrap().port();
     let handle = server.handle().unwrap();
     std::thread::spawn(move || server.serve());
@@ -1772,6 +1776,54 @@ fn change_password_sets_the_accounts_own_password() {
     });
     assert_eq!(member(4), Some(&expected[..]));
     assert_ne!(index_count(&file), before);
+}
+
+/// An account edit counts from the next login on at once, on another
+/// connection: right after a server script reset Clerk's password, a
+/// session that opened the file before the script ran logs in with the new
+/// one, and another is refused the old one. The server answers logins
+/// through the test view too (`Server::checking_reads`), whose accounts
+/// follow the edit as the file engine's do (docs/server-storage.md 5).
+#[test]
+fn a_login_right_after_an_account_edit_takes_the_new_password() {
+    use fixture::{calc, exit_with, on, script};
+    let mut reset = ScriptStep::new(136);
+    reset.set_calculation(0, Some(&calc("\"Clerk\"")));
+    reset.set_calculation(1, Some(&calc("\"new secret\"")));
+    let scripts = [script(
+        6,
+        "Reset",
+        vec![on(86, true), reset, exit_with("Get ( LastError )")],
+    )];
+    let mut root = fixture::tree(&scripts, true);
+    // The account catalog's index, which every FileMaker file has.
+    root.put(
+        &[&[23], &[1], &[1], &[4]],
+        om_hbam::OwnedNode::leaf(Vec::new(), vec![2]),
+    );
+    let file = TempFile::from_tree("account-edit-login", &root);
+    let port = start(&file, None);
+    let opened = |name: &str| {
+        let mut session = connect(port, name);
+        session.open_file("127.0.0.1", FILE).unwrap();
+        session.fetch_internal_creation().unwrap();
+        session
+    };
+    let login = |session: &mut Session, password: &str| {
+        let environment = LoginEnvironment::for_remote_file("127.0.0.1", FILE);
+        session
+            .login(CLERK, password, INTERNAL_CREATION, &environment)
+            .unwrap()
+            .error_code
+    };
+    let (mut new, mut old) = (opened("new"), opened("old"));
+    let mut admin = logged_in(port, "admin");
+    assert_eq!(run(&mut admin, 6), (0, "0".to_owned()));
+    assert_eq!(login(&mut new, "new secret"), 0);
+    assert_eq!(login(&mut old, CLERK_PASSWORD), 212);
+    for session in [new, old, admin] {
+        session.disconnect().unwrap();
+    }
 }
 
 /// Reset Account Password (136) and Enable Account (137) in a server

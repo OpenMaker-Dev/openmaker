@@ -19,6 +19,7 @@
 //! FileMaker summarizes the related records; the host cannot tell which
 //! record it is read from, so it answers 1225 rather than a wrong value.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -36,7 +37,7 @@ use om_hbam::{Field, FieldKind};
 use om_scripts::specs::{SortEntry, SortSpec};
 
 use super::{values, ServerHost, Window};
-use crate::store::Store;
+use crate::engine::{ReadError, View, NO_LIMIT};
 
 /// Unstored calculations and summaries read inside one another deeper than
 /// this read as `?`: FileMaker rejects circular definitions, so only a
@@ -44,22 +45,29 @@ use crate::store::Store;
 /// calculations).
 const MAX_READ_DEPTH: u32 = 32;
 
-/// The summary definitions of a file's summary fields, by (table, field):
-/// `[T, 3, 5, F, 09]` (file-metadata.md 5.1).
-pub(super) fn summaries(store: &Store) -> HashMap<(u64, u64), Summary> {
-    let mut out = HashMap::new();
-    for table in &store.catalog().tables {
+/// A summary field's (table, field) and its stored definition.
+pub(super) type StoredSummary = ((u64, u64), Vec<u8>);
+
+/// The summary definitions of a file's summary fields, by (table, field),
+/// as stored: `[T, 3, 5, F, 09]` (file-metadata.md 5.1), read through
+/// `view` for the fields of `catalog`.
+pub(super) fn summaries(
+    view: &dyn View,
+    catalog: &om_hbam::Catalog,
+) -> Result<Vec<StoredSummary>, ReadError> {
+    let mut out = Vec::new();
+    for table in &catalog.tables {
         let t = uint_segment(table.id);
         for field in table.fields.iter().filter(|f| f.kind == FieldKind::Summary) {
-            let bytes = store
-                .node(&[&t, &[3], &[5], &uint_segment(field.id), &[9]])
-                .and_then(|n| n.assembled())
-                .map(|b| b.into_owned())
+            let path: [&[u8]; 5] = [&t, &[3], &[5], &uint_segment(field.id), &[9]];
+            let bytes = view
+                .subtree(&path, NO_LIMIT)?
+                .and_then(|n| n.assembled().map(Cow::into_owned))
                 .unwrap_or_default();
-            out.insert((table.id, field.id), Summary::decode(&bytes));
+            out.push(((table.id, field.id), bytes));
         }
     }
-    out
+    Ok(out)
 }
 
 /// What a summary reads from the found set ([`Found`]), owned.
@@ -96,9 +104,8 @@ impl ServerHost {
         if self.may_view() {
             let calc = self
                 .schema
-                .rules
-                .as_ref()
-                .and_then(|(_, calc)| calc.field(occurrence, field))
+                .calc()
+                .and_then(|calc| calc.field(occurrence, field))
                 .filter(|calc| calc.is_unstored_calculation() && calc.formula.is_some());
             if let Some(calc) = calc {
                 return Some(calc.info());
@@ -157,9 +164,8 @@ impl ServerHost {
     /// file's calculation schema reads it.
     pub(super) fn evaluates_always(&self, occurrence: u64, field: u64) -> bool {
         self.schema
-            .rules
-            .as_ref()
-            .and_then(|(_, calc)| calc.field(occurrence, field))
+            .calc()
+            .and_then(|calc| calc.field(occurrence, field))
             .map_or(true, om_data::host::FieldDef::evaluates_always)
     }
 

@@ -585,9 +585,19 @@ list shows them.
 - Each hosted file: id, name, absolute path, folder, size on disk, status
   (`FileStatus`: FileMaker Server's `NORMAL`, `CLOSING`, `CLOSED`,
   `OPENING`, `PAUSED`, re 7), the number of connected clients that have it
-  open, and why it is closed when it failed to open again. Every hosted
-  file is opened at startup; the administrator closes, opens, pauses and
-  resumes it (below).
+  open, and why it is closed when it failed to open again. A file that is
+  served but takes no more changes, because a save of it renamed its new
+  copy over the file and could not flush the folder, gives that reason in
+  the same field (`FileInfo::error`) with its status unchanged; closing it
+  and opening it again clears it (docs/server-storage.md 5, "Failed
+  saves"). The Admin API's and the console's database lists do not show
+  the field. A file opened with something at its save's copy name
+  (`<file>.omsave`) is served, and an alert names the entry, which
+  nothing removes: each change fails at its save, taken back, until the
+  administrator removes it, and then the next one is saved
+  (docs/server-storage.md 5, "A leftover copy"). Every hosted file is
+  opened at startup; the administrator closes, opens, pauses and resumes
+  it (below).
 - Each client as its entry holds it, oldest session first, and whether it is
   being disconnected (at once, or with notice during its grace time;
   FileMaker Server's Admin API lists such a client as `NORMAL`, re 9). A
@@ -861,7 +871,7 @@ administrator did to it.
 | Its script starts | 689 `Schedule "<name>" has started FileMaker script "<script>".` |
 | The run ends | 150 `Schedule "<name>" completed.`, or 644 `... completed; last scripting error (<n>).`; then 126 `Schedule "<name>" scheduled for MM/DD/YYYY hh:mm AM.` when it runs again on its own |
 | The run passes its time limit and goes on | 690, level Warning |
-| The run is aborted | 152 (by the administrator), 691 (at its own time limit, or the server stopping), 732 (its account cannot log in); else OpenMaker's own with the reason and error, level Error (the file is not hosted, the server's limits, the server refused or failed to run it) |
+| The run is aborted | 152 (by the administrator), 691 (at its own time limit, or the server stopping), 732 (its account cannot log in); else OpenMaker's own with the reason and error, level Error (the file is not hosted, its accounts could not be read (802), the server's limits, the server refused or failed to run it) |
 | A run was due while the last one ran | OpenMaker's own, level Warning: `... was skipped: its last run has not ended.` |
 | `ServerHandle::run_schedule`, `enable_schedule` | OpenMaker's own: `Schedule "<name>" run now by the administrator.`, `... enabled by` / `disabled by the administrator.` |
 | A Perform Script on Server script is aborted (by the administrator, its file closing, the server stopping, or the server's step or time limit) | OpenMaker's own, level Warning, with the script, file, account, reason and error |
@@ -1009,7 +1019,16 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
   renamed over the old one, never in place. So a run opens each file while it
   holds the file's store for reading, and lets go once the file is open. The
   open descriptor keeps reading that saved version whatever later saves
-  rename over it, so each copy is one saved version of the file.
+  rename over it, so each copy is one saved version of the file. The copy is
+  checked to be as long as the file was when it was opened. Where the
+  backup folder's file system makes unnamed files (Linux), it is written
+  without a name and linked to its name once complete; elsewhere, and where
+  the file system has no hard links, it is written under its name, as
+  before ([server-storage.md](server-storage.md) 5, "Exports"). A folder
+  flush that fails after a copy is named is logged, and the run's flush of
+  every folder before the backup is named decides, as before. A copy is
+  not read back to verify it, as before; FileMaker's Verify option would
+  add that (below).
 - **What clients see.** The store is held for one `open` call, never while
   the file is copied. Clients see nothing: a write waits at most for that
   call, and a save in progress delays the backup, not the client.
@@ -1224,8 +1243,9 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
 - **Backups.** These are not implemented, and the console shows them as not
   available:
   - FileMaker's Verify, Clone and Clone Only options
-    ([#158](https://github.com/OpenMaker-Dev/openmaker/issues/158)),
-    progressive backups
+    ([#158](https://github.com/OpenMaker-Dev/openmaker/issues/158)): a
+    backup's copy is not verified by reading it back, which is what Verify
+    would add; progressive backups
     ([#160](https://github.com/OpenMaker-Dev/openmaker/issues/160)),
     Parallel Backup and Keep Cancelled Backups. The schedules file refuses
     their keys.

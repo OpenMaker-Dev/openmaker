@@ -774,7 +774,12 @@ fn in_evaluation_order(mut targets: BTreeMap<u64, Target>) -> (Vec<Target>, Vec<
     (order, targets.into_keys().collect())
 }
 
-/// How long one evaluation of a record limit may run.
+/// How long one evaluation of a record limit may run, on the write's
+/// stopwatch ([`super::WriteSources::stopwatch`]): a server's protection
+/// against a formula that runs long under the file's write lock. A seeded
+/// environment's stopwatch advances by a fixed step at each of the
+/// evaluator's checks, so that the budget is met after the same number of
+/// checks on every machine.
 const LIMIT_BUDGET: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// What one evaluation of a record limit may build: text values of 1 MiB at
@@ -900,7 +905,8 @@ impl RecordLimit {
         // loop allowance; the evaluator checks for interruption as it
         // runs): a stopped evaluation allows nothing. The host evaluates
         // under the file's write lock.
-        let deadline = std::time::Instant::now() + LIMIT_BUDGET;
+        let stopwatch = environment.stopwatch();
+        let started = stopwatch();
         let outer = environment.interrupted.clone();
         let mut environment = environment.clone();
         environment.limits = om_calc::eval::CalcLimits {
@@ -909,11 +915,11 @@ impl RecordLimit {
             calculations: environment.limits.calculations,
         };
         environment.interrupted = Some(Arc::new(move || {
-            outer.as_ref().is_some_and(|stop| stop()) || std::time::Instant::now() >= deadline
+            outer.as_ref().is_some_and(|stop| stop())
+                || stopwatch().saturating_sub(started) >= LIMIT_BUDGET
         }));
         let session = environment.session();
-        let today = crate::host::session::today(0);
-        let cx = om_calc::Ctx::new(&self.plan.schema.locale, today);
+        let cx = om_calc::Ctx::new(&self.plan.schema.locale, session.today());
         let first = InRepetition::Calculation(1);
         self.plan
             .run(
@@ -977,6 +983,7 @@ mod tests {
             held: None,
             others_held: Default::default(),
             related_needs: None,
+            sources: None,
         }
     }
 

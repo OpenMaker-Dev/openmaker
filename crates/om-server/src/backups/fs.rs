@@ -159,6 +159,23 @@ impl Protected {
     }
 }
 
+impl Identity {
+    /// The copy an export made ([`crate::engine::export::Exported`]): its numbers
+    /// and size.
+    pub(super) fn exported(id: Id, size: u64) -> Identity {
+        Identity { id, size }
+    }
+}
+
+/// A backup exports each file into a folder of it
+/// (`crate::engine::export`), by its descriptor.
+impl crate::engine::export::Folder for Folder {
+    #[cfg(unix)]
+    fn descriptor(&self) -> std::os::fd::BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&self.fd)
+    }
+}
+
 /// Copy `source`, `size` bytes from its start, to the new file `name` in
 /// `into` with `permissions`, flushed to disk. Until it has them it is
 /// owner-only, so that no one the source keeps out reads it while it is
