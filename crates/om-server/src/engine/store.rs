@@ -1704,13 +1704,16 @@ mod tests {
         }
     }
 
+    /// A change made to a source's bytes.
+    type Change = Box<dyn FnOnce(&mut Vec<u8>)>;
+
     /// A source that changes as it is read: once `at` bytes were read in
     /// all, over every reading, `change` is made to its bytes; its stamp
     /// gives their length, and moves otherwise only when `stamp_moves`.
     struct Changes {
         bytes: Vec<u8>,
         at: u64,
-        change: Option<Box<dyn FnOnce(&mut Vec<u8>)>>,
+        change: Option<Change>,
         stamp_moves: bool,
         moved: bool,
         read: u64,
@@ -1780,11 +1783,10 @@ mod tests {
         let len = source.len() as u64;
         assert!(len > 3 * (64 << 10), "{len}");
         let flip = |offset: u64| {
-            Box::new(move |bytes: &mut Vec<u8>| bytes[offset as usize] ^= 0xff)
-                as Box<dyn FnOnce(&mut Vec<u8>)>
+            Box::new(move |bytes: &mut Vec<u8>| bytes[offset as usize] ^= 0xff) as Change
         };
         let last = len - 100;
-        type Case = (&'static str, u64, Box<dyn FnOnce(&mut Vec<u8>)>, bool, bool);
+        type Case = (&'static str, u64, Change, bool, bool);
         let cases: Vec<Case> = vec![
             (
                 "a: after the first reading",
