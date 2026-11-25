@@ -358,13 +358,14 @@ impl LocalHost {
     }
 
     /// Answer every read of the file that goes through a view through the
-    /// test view as well as the file engine's (`Server::checking_reads`).
-    /// Only in debug builds.
+    /// test view as well as the file engine's, and check every operation's
+    /// writes (`Server::checking_reads`). Only in debug builds.
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn checking_reads(self) -> Self {
         if let Some(handle) = &self.handle {
             handle.shared.engine.check_reads();
+            handle.shared.engine.check_writes();
         }
         self
     }
@@ -481,17 +482,16 @@ impl LocalHost {
         let Some((shared, file)) = self.served() else {
             return Ok(Default::default());
         };
-        let info = shared.engine.read(&file).serve_with_accounts(|read| {
+        let account = shared.engine.read(&file).serve_with_accounts(|read| {
             let accounts = read.derived.accounts().as_ref().map_err(ReadError::clone)?;
-            Ok::<_, ReadError>(
-                accounts
-                    .iter()
-                    .find(|account| account.key == key)
-                    .map(|account| account.authenticated_info())
-                    .unwrap_or_default(),
-            )
+            Ok::<_, ReadError>(accounts.iter().find(|account| account.key == key).cloned())
         });
-        info.map_err(io::Error::other)
+        // Its facts check a password against the account's verifier, once
+        // the reading is let go.
+        let account = account.map_err(io::Error::other)?;
+        Ok(account
+            .map(|account| account.authenticated_info())
+            .unwrap_or_default())
     }
 
     /// Set account `name`'s password from `old` to `new`, as FileMaker

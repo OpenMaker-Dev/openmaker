@@ -505,11 +505,16 @@ impl Server {
     /// engine's, and panic when the two answers differ
     /// (docs/server-storage.md 5, "Views"; `engine::copies`): a test
     /// fixture that shows readers do not lean on the file engine's view.
-    /// Only in debug builds.
+    /// Every operation's reads and writes through its transaction are
+    /// checked too, against its starting tree with its writes applied in order
+    /// ("The operations' transaction"; `engine::checking`), which shows
+    /// each moved operation's writes say all it changed. Only in debug
+    /// builds.
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn checking_reads(self) -> Self {
         self.shared.engine.check_reads();
+        self.shared.engine.check_writes();
         self
     }
 

@@ -24,11 +24,11 @@ use om_data::host::{
     relationship_missing, CalcSchema, CalcSource, FieldClass, Hop, JoinOp, RecordValues, TableDef,
 };
 use om_hbam::slot::{be_uint, uint_segment};
-use om_hbam::{FieldKind, OwnedNode, RidList};
+use om_hbam::{FieldKind, RidList};
 use om_scripts::runtime::{ErrorCode, HostError, HostResult, LayoutTarget, RelatedRecords};
 
-use super::{values, ServerHost, Window, INDEXES, VALUE_INDEX};
-use crate::engine::Draft;
+use super::{values, FindSource, ServerHost, Window, INDEXES, VALUE_INDEX};
+use crate::engine::NO_LIMIT;
 use crate::modcount;
 
 /// The session's records as calculation data (`om_data::host`).
@@ -246,7 +246,7 @@ impl ServerHost {
     /// The file's calculation schema (occurrences, relationships, custom
     /// functions), when its catalogs could be read.
     pub(super) fn calc_schema(&self) -> Option<&CalcSchema> {
-        self.schema.rules.as_ref().map(|(_, calc)| &**calc)
+        self.schema.calc().map(|calc| &**calc)
     }
 
     /// A record's stored values for calculations, typed by its table's
@@ -301,38 +301,51 @@ impl ServerHost {
             _ => om_hbam::DataType::Text,
         };
         let (t, f) = (uint_segment(table), uint_segment(field));
-        let mut found = RidList::new();
-        let built = {
-            let store = self.hosted.read_store();
+        // Through a reading taken for it: each key's entry of the stored
+        // index, or of the index built on demand (noted to be stored). A
+        // read that fails is 802 ([`ServerHost::read`]).
+        let built = crate::engine::Waiting::default();
+        let looked_up = self.read(|read| {
             let keys: BTreeSet<Vec<u8>> = texts
                 .iter()
-                .flat_map(|text| store.value_keys(&t, &f, data_type, text))
+                .flat_map(|text| read.derived.value_keys(&t, &f, data_type, text))
                 .collect();
-            let stored = store.node(&[&t, &[INDEXES], &f, &[VALUE_INDEX]]);
-            let on_demand;
-            let index: Option<&OwnedNode> = match stored {
-                Some(index) => Some(index),
-                None => {
-                    on_demand = om_query::Source::index_on_demand(&*store, &t, &f, VALUE_INDEX)
-                        .map_err(|_| CalcError::from_code(3).expect("nonzero"))?;
-                    on_demand.as_ref()
+            let index: [&[u8]; 4] = [&t, &[INDEXES], &f, &[VALUE_INDEX]];
+            let mut found = RidList::new();
+            if read.view.node(&index)?.is_some() {
+                for key in &keys {
+                    let entry: [&[u8]; 5] = [&t, &[INDEXES], &f, &[VALUE_INDEX], key];
+                    if let Some(ids) = read
+                        .view
+                        .subtree(&entry, NO_LIMIT)?
+                        .and_then(|n| RidList::from_owned(&n).ok())
+                    {
+                        found = found.or(&ids);
+                    }
                 }
+                return Ok(Ok(found));
+            }
+            let source = FindSource::over(read.view, read.derived, &built);
+            let built = om_query::Source::index_on_demand(&source, &t, &f, VALUE_INDEX);
+            source.failed()?;
+            let Ok(on_demand) = built else {
+                return Ok(Err(()));
             };
             for key in &keys {
-                if let Some(ids) = index
+                if let Some(ids) = on_demand
+                    .as_ref()
                     .and_then(|i| i.child(key))
                     .and_then(|n| RidList::from_owned(n).ok())
                 {
                     found = found.or(&ids);
                 }
             }
-            store.has_indexes_on_demand()
-        };
-        if built {
-            self.shared
-                .engine
-                .submit_draft(&self.hosted, Draft::StoreIndexes);
-        }
+            Ok(Ok(found))
+        });
+        let found = looked_up
+            .map_err(|_| CalcError::from_code(802).expect("nonzero"))?
+            .map_err(|()| CalcError::from_code(3).expect("nonzero"))?;
+        self.store_built_indexes(&built);
         Ok(found)
     }
 

@@ -2,6 +2,7 @@
 //! by the administrator (`ServerHandle::close_file`, `open_file`), each in a
 //! [`Slot`] that keeps its id, name and path meanwhile.
 
+use std::borrow::Cow;
 use std::ops::Bound;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -17,11 +18,9 @@ use crate::admin::FileStatus;
 use crate::anchored::{FileAt, FileId};
 use crate::config::{HostedFile, Privileges};
 use crate::connection::host_time_key_at;
-use crate::derived::Derived;
 use crate::engine::{
     AccountStamp, ChangePassword, DeleteAccount, Direction, EnableAccount, Environment, FileEngine,
-    Operation, Password, ReadError, Reply, ResetPassword, Transaction, Version, View, Writer,
-    NO_LIMIT,
+    Operation, Password, ReadError, Reply, ResetPassword, Transaction, View, Writer, NO_LIMIT,
 };
 use crate::eventlog::{Event, EventLog, SaveOutcome};
 use crate::filelock::FileLock;
@@ -60,8 +59,11 @@ pub struct FileAccount {
 
 impl FileAccount {
     /// Facts about a file account after its own password authenticated it.
-    /// No credential or security-catalog bytes leave the host.
+    /// No credential or security-catalog bytes leave the host. They check
+    /// an empty password against the account's verifier, which is no read:
+    /// never with a reading of the file held (debug builds check it).
     pub fn authenticated_info(&self) -> om_data::host::AccountInfo {
+        crate::engine::assert_no_reading_held("an account's verifier check");
         let account_type =
             (self.kind == Some(AccountKind::FileMakerFile)).then(|| "FileMaker File".to_owned());
         let password_expiry = match (self.password.as_ref(), self.password_days, self.status) {
@@ -239,14 +241,6 @@ pub struct Hosted {
     pub thumbnails: Mutex<thumbnail::Cache>,
     /// `mInternalCreation` (`[2, 254]`), the second half of the Login nonce.
     pub internal_creation: u32,
-    /// The derived state of the version the last write left, published
-    /// with that version ([`Published`]): for the readers of the accounts
-    /// that do not take the store ([`Hosted::accounts`]), which may hold it
-    /// already, as a server script's calculation does when it asks for the
-    /// session's account (`Get ( AccountType )`), and must not take its
-    /// lock twice (#421). Every other reader of the accounts reads them
-    /// through a reading (`engine::Read::derived`).
-    published: RwLock<Published>,
     /// Where the deferred field work the file records as pending stands
     /// ([`Hosted::recover`]): finished and saved, a server's file's as it
     /// is loaded, a local file's when an account it admits first logs in,
@@ -260,6 +254,68 @@ pub struct Hosted {
     unknown: std::sync::OnceLock<String>,
     /// Where a failed save is recorded and raised as an alert.
     events: EventLog,
+    /// A test's switch that fails one of a script session's reads of the
+    /// file ([`ReadFault`]).
+    #[cfg(test)]
+    pub(crate) read_fault: ReadFault,
+}
+
+/// A test's switch that fails the n-th read a script session makes of the
+/// file (`scripts::host::SessionReads::begin`), counted from when it is
+/// set, or every read from the n-th on. It keeps what the file held when
+/// the first of them failed (its tree and its waiting set), and what the
+/// session did after it (each step it entered, each operation it
+/// submitted), for the test to compare with what the session left.
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct ReadFault {
+    /// The read to fail, 0 for none.
+    pub fail_at: std::sync::atomic::AtomicU64,
+    /// Whether every read after it fails too, as storage that stays broken.
+    pub after: std::sync::atomic::AtomicBool,
+    /// The reads counted.
+    pub reads: std::sync::atomic::AtomicU64,
+    /// Whether the read failed.
+    pub failed: std::sync::atomic::AtomicBool,
+    /// The file's tree when the read failed.
+    pub at_failure: Mutex<Option<om_hbam::OwnedNode>>,
+    /// The file's waiting set when the read failed (`Waiting::snapshot`).
+    pub waiting_at_failure: Mutex<Option<WaitingSnapshot>>,
+    /// What the session did after the read failed, in order: `step` for a
+    /// step it entered, and each operation or draft it submitted by name.
+    pub since: Mutex<Vec<String>>,
+}
+
+/// The indexes and member keys a file's waiting set holds.
+#[cfg(test)]
+pub(crate) type WaitingSnapshot = (Vec<crate::store::IndexId>, Vec<crate::store::MemberKey>);
+
+#[cfg(test)]
+impl ReadFault {
+    /// Fail read `n` from now on (0 for none), counting from 0, and with
+    /// `after` every read after it too.
+    pub fn fail(&self, n: u64, after: bool) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.reads.store(0, Relaxed);
+        self.fail_at.store(n, Relaxed);
+        self.after.store(after, Relaxed);
+        self.failed.store(false, Relaxed);
+        *self.at_failure.lock().unwrap() = None;
+        *self.waiting_at_failure.lock().unwrap() = None;
+        self.since.lock().unwrap().clear();
+    }
+
+    /// The tree kept when the read failed, if one did.
+    pub fn tree_at_failure(&self) -> Option<om_hbam::OwnedNode> {
+        self.at_failure.lock().unwrap().clone()
+    }
+
+    /// Note `what` the session did, once the read failed.
+    pub fn note(&self, what: impl FnOnce() -> String) {
+        if self.failed.load(std::sync::atomic::Ordering::Relaxed) {
+            self.since.lock().unwrap().push(what());
+        }
+    }
 }
 
 /// Where a file's deferred field work stands ([`Hosted::recover`]).
@@ -273,26 +329,6 @@ enum Recovery {
     /// read-only) or unknown (the file taking no more changes); or found
     /// left by a panic and the file made read-only.
     Ended,
-}
-
-/// A version's derived state, published with the version
-/// ([`Hosted::published`]). It is published while the write that made the
-/// version still holds the store's write lock, after the write, its save
-/// or its roll-back, and its accounts ([`StoreWriteGuard`]'s drop), and
-/// before the lock is let go. So a reader that takes the store after a
-/// write finds the version that write published, and a reader of the
-/// published state gets the last version a write let go: while a write
-/// runs, the one before it, which every reader of the store had until
-/// then.
-#[derive(Clone)]
-pub(crate) struct Published {
-    /// The version the store held when the write let go of it
-    /// (`engine::View::version`); a reading checks that it is its own
-    /// (`FileEngine::read`, debug builds).
-    #[cfg_attr(not(debug_assertions), allow(dead_code))]
-    pub version: Version,
-    /// The derived state of that version, shared with every reading of it.
-    pub derived: Arc<Derived>,
 }
 
 /// The store of a [`Hosted`] file held for writing ([`Hosted::write_store`]).
@@ -330,16 +366,6 @@ impl Drop for StoreWriteGuard<'_> {
         if let Some(why) = self.store.writes_refused() {
             let _ = self.hosted.unknown.set(why.to_owned());
         }
-        let version = self.store.tree_view().version();
-        let mut published = self
-            .hosted
-            .published
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *published = Published {
-            version,
-            derived: self.store.derived().clone(),
-        };
     }
 }
 
@@ -408,10 +434,6 @@ impl Hosted {
                 store.set_read_only(crate::store::ReadOnlyCause::Opened);
             }
         }
-        let published = RwLock::new(Published {
-            version: store.tree_view().version(),
-            derived: store.derived().clone(),
-        });
         Ok(Hosted {
             id,
             name: hosted.name.clone(),
@@ -422,10 +444,11 @@ impl Hosted {
             registrations: Mutex::new(Vec::new()),
             thumbnails: Mutex::new(thumbnail::Cache::default()),
             internal_creation,
-            published,
             recovery: Mutex::new(Recovery::Due),
             unknown: std::sync::OnceLock::new(),
             events: events.clone(),
+            #[cfg(test)]
+            read_fault: ReadFault::default(),
         })
     }
 
@@ -552,6 +575,30 @@ impl Hosted {
         self.store_for_writing().fail_commit_saves = fail;
     }
 
+    /// A script session's read of the file is about to be made: counted,
+    /// and failed when it is the one [`ReadFault`] was set to fail, the
+    /// file's tree kept as it is then.
+    #[cfg(test)]
+    pub(crate) fn script_read(&self) -> Result<(), ReadError> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let fault = &self.read_fault;
+        let n = fault.reads.fetch_add(1, Relaxed) + 1;
+        let at = fault.fail_at.load(Relaxed);
+        if at == 0 || n < at || (n > at && !fault.after.load(Relaxed)) {
+            return Ok(());
+        }
+        if n == at {
+            let store = self.read_store();
+            *fault.at_failure.lock().unwrap() = store.node(&[]).cloned();
+            *fault.waiting_at_failure.lock().unwrap() = Some(store.waiting_for_tests());
+            fault.failed.store(true, Relaxed);
+        }
+        Err(ReadError::Unreadable {
+            path: Vec::new(),
+            why: format!("a test failed read {n}"),
+        })
+    }
+
     /// Make every save of this file fail at `fault`, or work again with
     /// `None` (`ServerHandle::failing_saves`, a test's switch).
     #[cfg(debug_assertions)]
@@ -573,21 +620,12 @@ impl Hosted {
         self.store.is_poisoned()
     }
 
-    /// The version the last write let go and its derived state
-    /// ([`Published`]), read without taking the store.
-    pub(crate) fn published(&self) -> Published {
-        self.published
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    /// The accounts in the file's security catalog in the version the last
-    /// write let go, read without taking the store ([`Hosted::published`]):
-    /// none when they could not be read, which on the file engine they
-    /// always can.
+    /// The accounts in the file's security catalog as the store holds
+    /// them, none when they could not be read: a test's. Every reader of
+    /// the accounts reads them through a reading (`engine::Read::derived`).
+    #[cfg(test)]
     pub fn accounts(&self) -> Arc<[Arc<FileAccount>]> {
-        match self.published().derived.accounts() {
+        match self.read_store().derived().accounts() {
             Ok(accounts) => accounts.clone(),
             Err(_) => Arc::new([]),
         }
@@ -688,8 +726,9 @@ impl Hosted {
         saved
     }
 
-    /// The file's account named `name` ([`account_named`]), read without
-    /// taking the store ([`Hosted::accounts`]).
+    /// The file's account named `name` ([`account_named`],
+    /// [`Hosted::accounts`]): a test's.
+    #[cfg(test)]
     pub fn account(&self, name: &str) -> Option<Arc<FileAccount>> {
         account_named(&self.accounts(), name)
     }
@@ -803,7 +842,7 @@ pub(crate) fn change_password(
         return Err(PasswordChangeError::TooLong);
     }
     let now = environment.now();
-    let Some(record) = find_account(tx.view(), &account) else {
+    let Some(record) = find_account(tx, &account) else {
         return Err(PasswordChangeError::Refused);
     };
     let view = crate::store::view(&record);
@@ -834,14 +873,18 @@ pub(crate) fn change_password(
         .and_then(|r| r.split_first())
         .filter(|(length, key)| usize::from(**length) == key.len())
         .and_then(|(_, key)| {
-            tx.node(&[
+            let path = [
                 PRIVILEGE_SETS_PATH[0],
                 PRIVILEGE_SETS_PATH[1],
                 PRIVILEGE_SETS_PATH[2],
                 key,
-            ])
-        })
-        .map(crate::store::view);
+            ];
+            tx.subtree(&path, NO_LIMIT)
+                .ok()
+                .flatten()
+                .map(Cow::into_owned)
+        });
+    let set = set.as_ref().map(crate::store::view);
     let Some(set) = set else {
         return Err(PasswordChangeError::NotAllowed);
     };
@@ -907,8 +950,7 @@ pub(crate) fn reset_account_password(
         return Err(AccountEditError::TooLong);
     }
     let now = environment.now();
-    let record =
-        find_account(tx.view(), &AccountRef::Name(account)).ok_or(AccountEditError::Missing)?;
+    let record = find_account(tx, &AccountRef::Name(account)).ok_or(AccountEditError::Missing)?;
     let view = crate::store::view(&record);
     if AccountKind::decode(member(&view, ACCOUNT_KIND)) != Some(AccountKind::FileMakerFile) {
         return Err(AccountEditError::NotFileAccount);
@@ -946,8 +988,7 @@ pub(crate) fn enable_account(
         active,
         stamp,
     } = op;
-    let record =
-        find_account(tx.view(), &AccountRef::Name(account)).ok_or(AccountEditError::Missing)?;
+    let record = find_account(tx, &AccountRef::Name(account)).ok_or(AccountEditError::Missing)?;
     let view = crate::store::view(&record);
     // The file's own accounts and external server groups (kind 1);
     // OAuth identities are `provider << 3 | 2` (local-files.md 2.2).
@@ -989,8 +1030,7 @@ pub(crate) fn delete_account(
     environment: &dyn Environment,
 ) -> Result<(), AccountEditError> {
     let DeleteAccount { account, stamp } = op;
-    let record =
-        find_account(tx.view(), &AccountRef::Name(account)).ok_or(AccountEditError::Missing)?;
+    let record = find_account(tx, &AccountRef::Name(account)).ok_or(AccountEditError::Missing)?;
     let view = crate::store::view(&record);
     // [Guest] (key 1) is the file's own; OAuth and Claris ID
     // identities are not the step's (Claris, "Delete Account").
@@ -1004,31 +1044,39 @@ pub(crate) fn delete_account(
     if account_set(&view) == Some(FULL_ACCESS_SET) {
         return Err(AccountEditError::FullAccess);
     }
-    let mut accounts = tx
-        .node(&ACCOUNTS_PATH)
-        .cloned()
-        .ok_or_else(|| AccountEditError::Unwritten("no account catalog".into()))?;
+    // The catalog's members by key, listed: their records are not read.
+    let view: &dyn View = tx;
+    let members: Vec<Vec<u8>> = view
+        .children(&ACCOUNTS_PATH, Bound::Unbounded, Direction::Forward)
+        .map(|child| child.map(|child| child.segment.into_owned()))
+        .collect::<Result<_, _>>()
+        .map_err(|e| AccountEditError::Unwritten(e.to_string()))?;
+    if members.is_empty() && View::node(tx, &ACCOUNTS_PATH).ok().flatten().is_none() {
+        return Err(AccountEditError::Unwritten("no account catalog".into()));
+    }
     let index = tx
-        .node(&ACCOUNT_INDEX_PATH)
-        .cloned()
+        .subtree(&ACCOUNT_INDEX_PATH, NO_LIMIT)
+        .ok()
+        .flatten()
+        .map(Cow::into_owned)
         .ok_or_else(|| AccountEditError::Unwritten("the account catalog has no index".into()))?;
-    let members: Vec<Vec<u8>> = accounts
-        .children
-        .iter()
-        .map(|a| a.segment.clone())
-        .collect();
     let mut index =
         index_without(index, &record.segment, &members).map_err(AccountEditError::Unwritten)?;
     if let Some(stamp) = &stamp {
         let time = host_time_key_at(&environment.now());
         index = crate::authoring::stamped(index, &stamp.user, &stamp.account, &time);
     }
-    accounts.children.retain(|a| a.segment != record.segment);
-    let path = |segments: &[&[u8]]| segments.iter().map(|s| s.to_vec()).collect();
-    tx.replace_members(vec![
-        (path(&ACCOUNTS_PATH), accounts),
-        (path(&ACCOUNT_INDEX_PATH), index),
-    ]);
+    let path =
+        |segments: &[&[u8]]| -> Vec<Vec<u8>> { segments.iter().map(|s| s.to_vec()).collect() };
+    let mut member = path(&ACCOUNTS_PATH);
+    member.push(record.segment.clone());
+    tx.begin_commit();
+    if let Err(reason) = tx.remove(member) {
+        tx.refuse(reason);
+    }
+    if let Err(reason) = tx.replace(path(&ACCOUNT_INDEX_PATH), index) {
+        tx.refuse(reason);
+    }
     Ok(())
 }
 
@@ -1063,16 +1111,19 @@ fn rewrite_account(
     let description = view.child(ACCOUNT_DESCRIPTION).and_then(|n| n.text()?.ok());
     let kind = member(&view, ACCOUNT_KIND).and_then(|v| v.first().copied());
     let set = member_owned(&view, ACCOUNT_PRIVILEGES);
-    let store = tx.view();
-    let version = store
-        .node(&[&[2], &[5]])
-        .and_then(|n| n.value.as_deref())
-        .and_then(|v| <[u8; 2]>::try_from(v).ok())
+    let value = |tx: &Transaction<'_>, path: &[&[u8]]| -> Option<Vec<u8>> {
+        View::node(tx, path)
+            .ok()
+            .flatten()
+            .and_then(|head| head.value)
+            .map(Cow::into_owned)
+    };
+    let version = value(tx, &[&[2], &[5]])
+        .and_then(|v| <[u8; 2]>::try_from(v.as_slice()).ok())
         .map(u16::from_be_bytes);
-    let access_uuid = store
-        .node(&[&[23], &[4], &[1], &[0x10]])
-        .and_then(|n| n.value.as_deref());
-    let creation = store.node(&[&[2], &[254]]).and_then(|n| n.value.as_deref());
+    let access_uuid = value(tx, &[&[23], &[4], &[1], &[0x10]]);
+    let creation = value(tx, &[&[2], &[254]]);
+    let (access_uuid, creation) = (access_uuid.as_deref(), creation.as_deref());
     let checksum = |password: &[u8], status: Option<&[u8]>| {
         crate::accounts::checksum(&crate::accounts::ChecksumInput {
             version,
@@ -1115,9 +1166,11 @@ fn rewrite_account(
         .collect();
     let mut members = Vec::new();
     if let Some(stamp) = stamp {
-        let index = store
-            .node(&ACCOUNT_INDEX_PATH)
-            .cloned()
+        let index = tx
+            .subtree(&ACCOUNT_INDEX_PATH, NO_LIMIT)
+            .ok()
+            .flatten()
+            .map(Cow::into_owned)
             .ok_or("the account catalog has no index")?;
         changed = crate::authoring::stamped(changed, stamp.user, stamp.account, stamp.time);
         members.push((
@@ -1126,7 +1179,14 @@ fn rewrite_account(
         ));
     }
     members.insert(0, (path, changed));
-    tx.replace_members(members);
+    // One commit; a member the file cannot hold fails it, the others kept
+    // out with it.
+    tx.begin_commit();
+    for (path, node) in members {
+        if let Err(reason) = tx.replace(path, node) {
+            tx.refuse(reason);
+        }
+    }
     Ok(())
 }
 
@@ -1281,24 +1341,39 @@ pub(crate) struct ModStamp<'a> {
     pub time: &'a [u8],
 }
 
-/// The record of `account` as `store` holds it: by key, or by name as
-/// FileMaker matches names, ignoring case. [Guest], whose name is not
-/// text, is found only by its key.
-fn find_account(store: &Store, account: &AccountRef) -> Option<om_hbam::OwnedNode> {
-    let accounts = store.node(&ACCOUNTS_PATH)?;
-    match account {
-        AccountRef::Key(key) => accounts.children.iter().find(|a| a.segment == *key),
+/// The record of `account` as `view` holds it, whole: by key, or by name
+/// as FileMaker matches names, ignoring case, the catalog `[23, 1, 5]`
+/// listed and each account's name read. [Guest], whose name is not text,
+/// is found only by its key.
+fn find_account(view: &dyn View, account: &AccountRef) -> Option<om_hbam::OwnedNode> {
+    let key = match account {
+        AccountRef::Key(key) => key.clone(),
         AccountRef::Name(name) => {
             let wanted = name.to_lowercase();
-            accounts.children.iter().find(|a| {
-                crate::store::view(a)
-                    .child(ACCOUNT_NAME)
-                    .and_then(|n| n.text()?.ok())
-                    .is_some_and(|text| text.to_lowercase() == wanted)
-            })
+            view.children(&ACCOUNTS_PATH, Bound::Unbounded, Direction::Forward)
+                .map_while(Result::ok)
+                .map(|child| child.segment.into_owned())
+                .find(|key| {
+                    let path = [
+                        ACCOUNTS_PATH[0],
+                        ACCOUNTS_PATH[1],
+                        ACCOUNTS_PATH[2],
+                        key,
+                        ACCOUNT_NAME,
+                    ];
+                    view.subtree(&path, NO_LIMIT)
+                        .ok()
+                        .flatten()
+                        .and_then(|name| crate::store::view(&name).text()?.ok())
+                        .is_some_and(|text| text.to_lowercase() == wanted)
+                })?
         }
-    }
-    .cloned()
+    };
+    let path = [ACCOUNTS_PATH[0], ACCOUNTS_PATH[1], ACCOUNTS_PATH[2], &key];
+    view.subtree(&path, NO_LIMIT)
+        .ok()
+        .flatten()
+        .map(Cow::into_owned)
 }
 
 /// The key of the privilege set account `view` is in (`0b`, a key string).
@@ -2259,7 +2334,7 @@ mod tests {
 
     /// A password changed over the wire (#732's review: FileMaker Pro's
     /// Manage Security uploads the account's record with op13,
-    /// `Store::put_subtree`) counts from the next login on, and the old
+    /// `engine::schema::upload_to_catalog`) counts from the next login on, and the old
     /// one no more.
     #[test]
     fn logins_follow_the_security_catalog_as_the_store_holds_it() {

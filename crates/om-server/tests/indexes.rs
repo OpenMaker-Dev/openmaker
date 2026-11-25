@@ -606,6 +606,120 @@ fn a_changed_record_leaves_entries_another_rule_wrote() {
             (vec![0xff, 0x80], vec![1]),
         ]
     );
+
+    // A failed save once the commits above have checked Name's index: the
+    // roll-back puts back the mark they left, exactly, which the checking
+    // transaction checks (review of #811, round 1).
+    assert!(handle.failing_commit_saves(id, true));
+    assert!(commit_cells(&mut session, 1, &[(fixture::NAME, "Write more")]).is_err());
+    assert!(handle.failing_commit_saves(id, false));
+    commit_name(&mut session, 1, "Write more");
+    session.disconnect().unwrap();
+}
+
+/// An upload (op13) into an index whose agreement with its records a
+/// commit has checked: the index is checked again at the next commit,
+/// which sweeps a posting the upload planted for a record under a key its
+/// value does not give (review of #785, round 1). The check is kept per
+/// index, and a write into the index or the records that is not a commit's
+/// own upkeep forgets it (`Store::forget_verified`).
+#[test]
+fn an_upload_into_an_index_has_it_checked_again() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{OwnedNode, RidList};
+    let written = om_collate::text_key("Write tests");
+    let ship = om_collate::text_key("Ship");
+    let entry = |key: &[u8], id: u64| [id].into_iter().collect::<RidList>().to_node(key.to_vec());
+    let table = uint_segment(fixture::TABLE);
+    let name = uint_segment(fixture::NAME);
+    let index: [&[u8]; 4] = [&table, &[1], &name, &[0]];
+    let mut root = fixture::tree(&[], true);
+    let mut entries = vec![entry(&written, 1), entry(&ship, 2)];
+    entries.sort_by(|a, b| a.segment.cmp(&b.segment));
+    root.put(&index, OwnedNode::list(vec![0], entries));
+    let file = fixture::TempFile::from_tree("upload-into-index", &root);
+    let port = server::start(&file);
+    let (mut session, _) = server::logged_in(port, "upload into index");
+
+    // An ordinary edit: the index agrees with its records, and the commit
+    // keeps it so.
+    commit_name(&mut session, 1, "Written");
+    let written = om_collate::text_key("Written");
+    // The index uploaded again with record 2 also under a key its value
+    // does not give.
+    let unrelated = om_collate::text_key("Unrelated");
+    let mut entries = vec![entry(&written, 1), entry(&ship, 2), entry(&unrelated, 2)];
+    entries.sort_by(|a, b| a.segment.cmp(&b.segment));
+    session
+        .upload_to_host(&index, &OwnedNode::list(vec![0], entries))
+        .unwrap();
+    // Record 2's edit finds the index disagreeing and sweeps the posting.
+    commit_name(&mut session, 2, "Shipped");
+    let mut expected = vec![
+        (written, vec![1]),
+        (om_collate::text_key("Shipped"), vec![2]),
+    ];
+    expected.sort();
+    assert_eq!(name_index_on_disk(&file), expected);
+    session.disconnect().unwrap();
+}
+
+/// A commit of a value its field's rules key to nothing, a date that does
+/// not parse and a time past the hour's minutes, into a value index a find
+/// built and the commit checks first: the record leaves the index, and the
+/// index no longer agrees with the current rules, which would not account
+/// for the value, so its verified mark is forgotten (review of #811,
+/// round 1; `derived::record_keys`). The checking transaction checks every
+/// mark that an index agrees when the commit ends.
+#[test]
+fn a_value_without_a_key_has_its_index_checked_again() {
+    use om_hbam::serial;
+    use om_hbam::slot::uint_segment;
+    const CLOCK: u64 = 0x20;
+    let mut root = fixture::tree(&[], true);
+    fixture::add_field(&mut root, fixture::TABLE, CLOCK, "Clock", 1, 4, 0, 0, 0);
+    root.put(
+        &[
+            &uint_segment(fixture::TABLE),
+            &[5],
+            &serial::encode(2),
+            &uint_segment(CLOCK),
+        ],
+        om_scripts::text_node(&[], "10:30:00"),
+    );
+    let file = fixture::TempFile::from_tree("unkeyed-values", &root);
+    let port = server::start(&file);
+    let (mut session, file_id) = server::logged_in(port, "unkeyed values");
+    // Record 1's Due, record 2's Clock.
+    for (record, field, data_type, held, unkeyed) in [
+        (1, fixture::DUE, DataType::Date, "10/1/2026", "99/99/2026"),
+        (2, CLOCK, DataType::Time, "10:30:00", "10:99"),
+    ] {
+        // A find on the field builds its value index and stores it.
+        let finders: Vec<Vec<u8>> = find::finders(
+            fixture::TABLE,
+            field,
+            data_type,
+            held,
+            DateOrder::MonthDayYear,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|finder| finder.bytes)
+        .collect();
+        let program = find::checked_program(file_id, fixture::TABLE, field, &finders, None);
+        let reply = session.query(&program).unwrap();
+        let found: Vec<u64> = find::found(&reply.slots).unwrap().iter().collect();
+        assert_eq!(found, [record]);
+        let indexed = |record| {
+            index_on_disk(&file, field, 0)
+                .iter()
+                .any(|(key, ids)| key.as_slice() != [1] && ids.contains(&record))
+        };
+        assert!(indexed(record), "{held} is indexed");
+        commit_cells(&mut session, record, &[(field, unkeyed)]).unwrap();
+        assert!(!indexed(record), "{unkeyed} has no key");
+    }
     session.disconnect().unwrap();
 }
 

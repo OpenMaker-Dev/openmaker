@@ -46,7 +46,7 @@ Scripts are members of catalog `[17]` (scripts.md): `[17, 5, S]` per script.
 | `04` | step list | the step descriptors, 28 bytes each, concatenated (chunked when large) [O] |
 | `05` | step data | one subtree per step, keyed by the step's data key (section 4) [O] |
 | `10` | `KName` | script name, masked SCSU text (chunked when long) [O] |
-| `13` | (`KCompatibility`/`KPrefixKey` share the number) | u32, 0 in all 361 samples [O]; meaning unknown |
+| `13` | (`KCachedCountIgnoreFolders`, `KCompatibility`, `KDragSize` and `KPrefixKey` share the number) | u32, 0 in all 361 samples and on all 330 scripts of the 66 starter files, folders included [O]; meaning unknown (file-format.md 3.7) |
 | `d8`, `d9` | `KUniqueID`, `KSourceUUID` | 16-byte UUIDs [O] |
 | `f0` | `KMemberFlags` | u64; values 0, 2, 8, 9, 0xa, 0xd, 0x18 seen; bit 0 marks a folder (scripts.md) [O]; bit 3 (`0x8`) leaves the member out of the Scripts menu: FileMaker's XML writes it as the `Options` value with `hidden="True"` (oracle, "Implementation notes (Script Workspace)") [O]; "run with full access" and Siri visibility (XML `runwithfullaccess`, `SiriShortcutVisible`) are not mapped [I] |
 | `f1` | `KPrivateMemberFlags` | u64, 0 [O] |
@@ -249,7 +249,12 @@ text, then calculation slot 2 when `kCalculation` is set) [O shape, Med slots].
 `[17, 5, S, 5, K]` where K is the segment of `mDataKey`.
 `ScriptStep::MakeDataKey` allocates K as the next serial key in `[17, 5, S, 5]`
 (`DBCatalogItemList::MakeDataKey` -> `HBAbstractKey::GenerateSerialKey`) [O].
-Steps without data still get a key and UUIDs.
+Steps without data still get a key and UUIDs. `[17, 5, S, 5, 00]` holds a
+key string, its length then a key (`01 21` for key `21`): in the 66
+FileMaker Pro 26 starter files it is in each of the 198 scripts with step
+data and equals the highest data key there [O]; [I] the last issued data
+key, kept as a catalog keeps its last issued id `[cat, 1, 00]`
+(schema-path.md 5.1).
 
 Slot nodes are two-byte segments `[00 nn]` (`HBInt16Key(slot)`) [O]:
 
@@ -1059,7 +1064,11 @@ extracting pages), slot 6 u8 enable copying, slot 7 u8 screen reader,
 slot 8 u16 initial view (2 pages panel and page), slot 9 u16 page layout
 (1 single page), slot 10 u16 magnification (7 = 100%). Calculations: the
 XML `position` of each calculation is its slot (page from = 4, and the
-document metadata and passwords at the positions the XML gives). So slot 4
+document metadata and passwords at the positions the XML gives). The
+passwords to open and to control are taken to be the calculations of
+slots 7 and 8, beside the numbers of slots 7 and 8, as Create PDF's
+(12.2), whose slots 2-10 are these [I: no stored step with a password was
+compared]. So slot 4
 can hold both the print permission number (`03`) and the page-from
 calculation (`05`). A production step with Restore and All pages stores
 exactly that: the number 2 and the calculation `1`, with slots 8-10 =

@@ -20,6 +20,10 @@ pub struct FileEngine {
     /// (`super::copies`).
     #[cfg(debug_assertions)]
     pub(super) copies: std::sync::RwLock<Option<std::sync::Arc<super::copies::Switch>>>,
+    /// Whether each operation's reads and writes through its transaction
+    /// are checked (`super::checking`), when a test asked for it.
+    #[cfg(debug_assertions)]
+    checking_writes: std::sync::atomic::AtomicBool,
 }
 
 /// What the engine offers each operation to, by reference, completed and
@@ -118,6 +122,24 @@ fn needs(operation: &Operation) -> Needs {
         | Operation::ReleaseScriptLock(_)
         | Operation::ReleaseSessionLocks(_) => Needs::LockTable,
     }
+}
+
+/// The operations not moved onto the transaction's writes at all: they
+/// change the tree through the store's own helpers alone, so a check of
+/// the transaction's writes has nothing to check in them, and would compare
+/// and copy the whole tree around each record they write
+/// (docs/server-storage.md 5, "Moving the other readers", item 5). An
+/// operation that moved, even in part, is checked around each helper it
+/// calls (`super::checking::Check::before_store`).
+#[cfg(debug_assertions)]
+fn on_the_store(operation: &Operation) -> bool {
+    matches!(
+        operation,
+        Operation::CommitRecords(_)
+            | Operation::CommitScriptRecords(_)
+            | Operation::UpdateTable(_)
+            | Operation::FinishDeferredWork
+    )
 }
 
 fn save(operation: &Operation) -> Save {
@@ -236,7 +258,19 @@ impl FileEngine {
             recorder: None,
             #[cfg(debug_assertions)]
             copies: Default::default(),
+            #[cfg(debug_assertions)]
+            checking_writes: Default::default(),
         }
+    }
+
+    /// Check each operation's reads and writes through its transaction
+    /// (`super::checking`, `Server::checking_reads`).
+    /// Nothing in a release build, which has no check.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    pub(crate) fn check_writes(&self) {
+        #[cfg(debug_assertions)]
+        self.checking_writes
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// This engine, offering each operation it runs to `recorder` first
@@ -294,6 +328,9 @@ impl FileEngine {
         operation: Operation,
         credentials: Credentials,
     ) -> Outcome {
+        super::reading::assert_no_reading_held("an operation submitted");
+        #[cfg(test)]
+        file.read_fault.note(|| submitted(&operation));
         let environment = &*self.environment;
         match needs(&operation) {
             Needs::LockTable => {
@@ -343,6 +380,8 @@ impl FileEngine {
         match needs(&operation) {
             Needs::Transaction => {
                 let store = file.try_write_store(&WRITER)?;
+                #[cfg(test)]
+                file.read_fault.note(|| submitted(&operation));
                 Some(self.submit_write(file, store, Credentials::None, |_| {
                     (operation, Taken::default())
                 }))
@@ -357,6 +396,10 @@ impl FileEngine {
     /// completed operation ([`Self::recording`]), which [`Self::submit`]
     /// replays.
     pub fn submit_draft(&self, file: &Hosted, draft: Draft) -> Outcome {
+        super::reading::assert_no_reading_held("an operation submitted");
+        #[cfg(test)]
+        file.read_fault
+            .note(|| format!("draft {}", submitted(&draft)));
         self.submit_write(
             file,
             file.write_store(&WRITER),
@@ -389,15 +432,25 @@ impl FileEngine {
         let save = save(&operation);
         let mut locks = Locks::new(file.locks(&WRITER));
         let mut tx = Transaction::new(&mut store);
+        #[cfg(debug_assertions)]
+        if self
+            .checking_writes
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            tx.checked(!on_the_store(&operation));
+        }
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run(
+            let outcome = run(
                 operation,
                 credentials,
                 &file.name,
                 Hold::Transaction(&mut tx),
                 &mut locks,
                 &*self.environment,
-            )
+            );
+            // The derived state follows the operation's last writes.
+            tx.settle();
+            outcome
         }));
         let mut outcome = match ran {
             Ok(outcome) => outcome,
@@ -406,6 +459,8 @@ impl FileEngine {
                 unwound(file, &mut store, journal, taken, locks, panic)
             }
         };
+        #[cfg(debug_assertions)]
+        let check = tx.check.take();
         let Transaction {
             mut journal,
             committing,
@@ -413,7 +468,6 @@ impl FileEngine {
             stored_lines,
             released_libraries,
             emptied_libraries,
-            field_bases,
             ..
         } = tx;
         // The accounts follow the change in the same step, before its save
@@ -427,6 +481,20 @@ impl FileEngine {
         if let Err(panic) = followed {
             unwound(file, &mut store, journal, taken, locks, panic);
         }
+        // The operation's writes said all it changed (a test's check).
+        #[cfg(debug_assertions)]
+        let settled = match check {
+            Some(check) => {
+                let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    check.finish(&store, &journal)
+                }));
+                match checked {
+                    Ok(settled) => Some(settled),
+                    Err(panic) => unwound(file, &mut store, journal, taken, locks, panic),
+                }
+            }
+            None => None,
+        };
         // An authoring edit's locks, released once the store is let go.
         let held = locks.after_stored();
         let effects = journal.changed();
@@ -465,11 +533,12 @@ impl FileEngine {
         };
         let outcome = match saved {
             Ok(()) => {
+                #[cfg(debug_assertions)]
+                if let Some(settled) = &settled {
+                    settled.after_stored(&store);
+                }
                 stored(file, &released_libraries, &emptied_libraries);
                 locks.keep();
-                for (table, field) in field_bases {
-                    store.add_field_basis(&table, field);
-                }
                 for line in stored_lines.into_iter().chain(lines) {
                     info!("{line}");
                 }
@@ -479,11 +548,12 @@ impl FileEngine {
                 // The renamed file holds the change: the tree keeps it, as
                 // what was derived from it does, and the file takes no
                 // more changes (`Hosted::save_change`).
+                #[cfg(debug_assertions)]
+                if let Some(settled) = &settled {
+                    settled.after_stored(&store);
+                }
                 stored(file, &released_libraries, &emptied_libraries);
                 locks.keep();
-                for (table, field) in field_bases {
-                    store.add_field_basis(&table, field);
-                }
                 for line in stored_lines.into_iter().chain(lines) {
                     info!("{line} (not confirmed on disk)");
                 }
@@ -499,7 +569,13 @@ impl FileEngine {
                 if !effects {
                     // Nothing of its own to take back: what others left
                     // waiting waits on (`Hosted::save_change` alerted it),
-                    // and what it took waits again.
+                    // and what it took waits again. The store still took
+                    // back its (empty) journal and the indexes the file
+                    // cannot hold (`Store::save_commit`).
+                    #[cfg(debug_assertions)]
+                    if let Some(settled) = &settled {
+                        settled.after_roll_back(&store);
+                    }
                     taken.put_back(&mut store);
                     locks.keep();
                     if outcome.reply == Reply::SaveFile(Ok(())) {
@@ -508,6 +584,10 @@ impl FileEngine {
                     outcome
                 } else {
                     // The journal was put back (`Store::save_commit`).
+                    #[cfg(debug_assertions)]
+                    if let Some(settled) = &settled {
+                        settled.after_roll_back(&store);
+                    }
                     locks.take_back();
                     taken.put_back(&mut store);
                     if let Reply::EditDesign(Edited {
@@ -577,4 +657,16 @@ fn stored(file: &Hosted, released: &[Vec<Vec<u8>>], emptied: &[Vec<Vec<u8>>]) {
     for library in released.iter().chain(emptied) {
         thumbnails.forget_library(library);
     }
+}
+
+/// The name of what a test's read fault notes as submitted
+/// (`hosting::ReadFault::since`): its variant, without its contents.
+#[cfg(test)]
+fn submitted(what: &dyn std::fmt::Debug) -> String {
+    let debug = format!("{what:?}");
+    debug
+        .split(['(', ' ', '{'])
+        .next()
+        .unwrap_or_default()
+        .to_owned()
 }
