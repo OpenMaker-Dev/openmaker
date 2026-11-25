@@ -1329,10 +1329,8 @@ impl Runtime {
         let executing = self.stack.last().map(|f| f.id);
         let mut exec = self.execute(host, &step);
         if let Some(code) = host.take_step_error() {
-            if !exec.error.is_error() {
-                exec.error = code;
-                exec.unsupported = false;
-            }
+            exec.error = code;
+            exec.unsupported = false;
         }
         // A navigation step may change the caller's window. Keep that
         // window for restoration after an external script, not the one

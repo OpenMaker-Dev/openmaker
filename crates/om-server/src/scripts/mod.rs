@@ -1682,15 +1682,21 @@ mod tests {
         // A script of one step reading `text`, run with `path` failing:
         // its error.
         use om_hbam::OwnedNode;
+        let run_step = |tag: &str,
+                        prepare: &dyn Fn(&mut OwnedNode),
+                        path: Vec<Vec<u8>>,
+                        step: om_scripts::ScriptStep| {
+            let script = fixture::script(1, "Read", vec![step]);
+            let mut tree = fixture::tree(std::slice::from_ref(&script), true);
+            prepare(&mut tree);
+            let file = TempFile::from_tree(tag, &tree);
+            let shared = shared(&file);
+            shared.engine.fail_reads(fixture::FILE, path);
+            perform(&shared, request(&shared, 1, "", 0)).error
+        };
         let run_reading =
             |tag: &str, prepare: &dyn Fn(&mut OwnedNode), path: Vec<Vec<u8>>, text: &str| {
-                let script = fixture::script(1, "Read", vec![fixture::set_variable("$x", text)]);
-                let mut tree = fixture::tree(std::slice::from_ref(&script), true);
-                prepare(&mut tree);
-                let file = TempFile::from_tree(tag, &tree);
-                let shared = shared(&file);
-                shared.engine.fail_reads(fixture::FILE, path);
-                perform(&shared, request(&shared, 1, "", 0)).error
+                run_step(tag, prepare, path, fixture::set_variable("$x", text))
             };
         let nothing = |_: &mut OwnedNode| {};
         let cases: Vec<(&str, u16)> = vec![
@@ -1712,6 +1718,16 @@ mod tests {
                     &nothing,
                     vec![t.clone(), vec![5], serial::encode(1)],
                     "Tasks::Name",
+                ),
+            ),
+            // A record a step opens to change, which it reads whole.
+            (
+                "a record opened",
+                run_step(
+                    "fail-open",
+                    &nothing,
+                    vec![t.clone(), vec![5], serial::encode(1)],
+                    fixture::set_field(fixture::NAME, "\"Changed\""),
                 ),
             ),
             // A global value.

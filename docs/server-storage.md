@@ -1054,9 +1054,11 @@ read part of a file in a script is unmeasured. By the kind of read:
 After a read failed in a step, the session submits no change to the file
 until the step ends (a commit, a serial number, a record id, Set Next
 Serial Value and the account edits are refused with 802), so nothing read
-as missing is written, and the step fails with 802 unless it failed with
-an error of its own (`ScriptHost::take_step_error`). A step that reads
-nothing that fails is unchanged. Accounts the file engine could not
+as missing is written, and the step fails with 802, also over an error
+of its own, which may follow from what was read as missing (a record that
+could not be read is not a missing record, 101;
+`ScriptHost::take_step_error`). A step that reads nothing that fails is
+unchanged. Accounts the file engine could not
 decode are a read that failed too: Change Password was refused with 3 and
 the account facts read as none before; both are 802 now
 (`scripts::tests::each_kind_of_read_that_fails_is_802`).

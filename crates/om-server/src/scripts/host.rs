@@ -4209,7 +4209,7 @@ impl ScriptHost for ServerHost {
     }
 
     /// 802 when a read of the file failed while the step ran
-    /// ([`ServerHost::read`]).
+    /// ([`ServerHost::read`]), over any error of the step's own.
     fn take_step_error(&mut self) -> Option<ErrorCode> {
         self.failed_read
             .swap(false, Ordering::Relaxed)
