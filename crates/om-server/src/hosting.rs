@@ -2351,7 +2351,8 @@ fn load_stored(
         let deferred = [&t[..], &[3], &[1], &[0xfd]];
         if view.node(&deferred).map_err(unreadable)?.is_some() {
             warn!(
-                "{:?}: table {:02x?} has deferred field work pending, which the store engine                  does not do: its stored calculations are served as the file holds them",
+                "{:?}: table {:02x?} has deferred field work pending, which the store engine \
+                 does not do: its stored calculations are served as the file holds them",
                 hosted.name, t
             );
         }

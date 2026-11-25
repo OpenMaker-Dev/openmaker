@@ -4839,8 +4839,9 @@ impl Records for ServerHost {
                 .and_then(|key| serial::decode(key))
                 .ok_or(ErrorCode::UNKNOWN)?,
             106 => return Err(TABLE_MISSING.into()),
-            // The file takes no more changes (docs/server-storage.md 5).
-            code @ (800 | 809 | 810) => return Err(ErrorCode(code as i32).into()),
+            // The file takes no more changes (docs/server-storage.md 5), or
+            // its engine takes none yet (3, section 11).
+            code @ (3 | 800 | 809 | 810) => return Err(ErrorCode(code as i32).into()),
             _ => return Err(RECORD_IN_USE.into()),
         };
         // Its serial numbers generated on creation are taken now, as

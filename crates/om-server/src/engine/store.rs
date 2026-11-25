@@ -17,9 +17,12 @@
 //! The state readers need besides the tree ([`Derived`]) is computed from
 //! the view when the file is hosted. At this step the engine takes no
 //! changes: every file is hosted read-only ([`ReadOnlyCause::StoreEngine`]),
-//! each write operation is refused as a file the server holds read-only
-//! refuses it, and what the engine cannot do answers a typed "unavailable"
-//! ([`StoreEngine::submit`], docs/server-storage.md 11 lists each answer).
+//! so a client's write requests are refused before they reach the engine,
+//! as those to any file the server hosts read-only are, and each operation
+//! that would change the file and still reaches it (a server script's
+//! write, an authoring edit) answers a typed "unavailable", FileMaker's
+//! error 3 ([`StoreEngine::submit`]; docs/server-storage.md 11 lists each
+//! answer).
 //!
 //! The folder is not a format promise (section 6.10; groups are #778): the
 //! tree [`META`] carries [`FORMAT_MARK`], and a server that does not find
@@ -41,8 +44,8 @@ use om_store::tree::{self, Edit, Node, Tree};
 use super::paged::{self, Batch, ImportError, PagedView, Units};
 use super::reading::Waiting;
 use super::{
-    not_run, run, Credentials, Draft, Environment, FileNotSaved, Hold, HostEnvironment, Locks,
-    Operation, Outcome, ReadError, Reply, StorageError, View, WRITER,
+    design, not_run, run, Credentials, Draft, Edited, Environment, FileNotSaved, Hold,
+    HostEnvironment, Locks, Operation, Outcome, ReadError, Reply, StorageError, View, WRITER,
 };
 use crate::anchored::FileId;
 use crate::derived::Derived;
@@ -662,9 +665,8 @@ impl std::fmt::Debug for StoreEngine {
     }
 }
 
-/// Why each write is refused: what the file engine says of a file it holds
-/// read-only, and why.
-const READ_ONLY: &str = "the file is open read-only: the store engine takes no changes yet";
+/// Why each operation that would change a file is refused.
+const UNAVAILABLE: &str = "the store engine takes no changes yet: the file is hosted read-only";
 
 impl StoreEngine {
     pub fn new(folder: Arc<StoreFolder>) -> Self {
@@ -686,11 +688,9 @@ impl StoreEngine {
 
     /// Run `operation` on `file` as the store engine can: the lock table's
     /// operations as the file engine runs them, op60 with the modification
-    /// count read from the file's view, and every operation that would
-    /// change the file refused as a file the server holds read-only refuses
-    /// it: nothing of it is stored, and the reply says so where it can
-    /// (`not_run`: an op240 Save is told the file is read-only, the rest
-    /// that it was not stored, with the save error a read-only file gives).
+    /// count read from the file's view, a save as a read-only file's
+    /// (`FileNotSaved::ReadOnly`), and every other operation, each of which
+    /// would change the file, refused without running ([`unavailable`]).
     pub fn submit_with(
         &self,
         file: &Hosted,
@@ -737,8 +737,8 @@ impl StoreEngine {
             }
             Operation::SaveFile => Outcome::new(Reply::SaveFile(Err(FileNotSaved::ReadOnly))),
             other => {
-                info!("{:?}: not done: {READ_ONLY}", file.name);
-                not_run(other, &read_only_error())
+                info!("{:?}: not done: {UNAVAILABLE}", file.name);
+                unavailable(other)
             }
         }
     }
@@ -786,18 +786,34 @@ impl StoreEngine {
     }
 }
 
-/// The error a write refused on a file hosted read-only says: the save
-/// error a read-only file's save gives on the file engine (800).
-fn read_only_error() -> StorageError {
-    StorageError {
-        code: crate::hosting::save_error(&io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            READ_ONLY,
-        )),
-        message: READ_ONLY.to_owned(),
+/// The answer to `operation`, which would change the file, refused
+/// without running: a typed "unavailable", FileMaker's error 3 ("Command
+/// is unavailable"; OpenMaker's choice, as a server script's account step
+/// on a file hosted read-only answers). Each reply carries it where it has
+/// a status (`not_run`): a server script's step fails with 3, an authoring
+/// edit is refused with status 3 and says nothing was changed. Nothing is
+/// stored and no client is told of a change.
+fn unavailable(operation: Operation) -> Outcome {
+    let error = StorageError {
+        code: UNAVAILABLE_CODE,
+        message: UNAVAILABLE.to_owned(),
         unknown: false,
+    };
+    match operation {
+        Operation::EditDesign(_) => Outcome::new(Reply::EditDesign(Edited {
+            reply: design::Reply::Refused {
+                status: design::status::UNSUPPORTED,
+                message: format!("Nothing was changed: {UNAVAILABLE}."),
+                current: None,
+            },
+            not_stored: None,
+        })),
+        other => not_run(other, &error),
     }
 }
+
+/// FileMaker's error 3, "Command is unavailable".
+const UNAVAILABLE_CODE: u16 = 3;
 
 /// The state of `file` the store engine computes from `view` when it is
 /// hosted, page 0 as imported.
