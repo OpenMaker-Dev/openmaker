@@ -366,6 +366,7 @@ fn submit(
         account: account.to_owned(),
         edit,
     }));
+    crate::connection::before_engine_write(shared, file);
     let outcome = shared.engine.submit(file, operation);
     match outcome.reply {
         engine::Reply::EditDesign(edited) => {
@@ -873,6 +874,7 @@ fn replace_script_steps(ed: &mut Editor<'_, '_, '_>, request: &ReplaceScriptStep
 /// memory, for the next save. The engine saves it
 /// (`engine::Operation::SaveFile`).
 fn save(shared: &Shared, peer: &str, file: &Hosted) -> Result<Reply, PerformError> {
+    crate::connection::before_engine_write(shared, file);
     let outcome = shared.engine.submit(file, engine::Operation::SaveFile);
     Ok(match outcome.reply {
         engine::Reply::SaveFile(Ok(())) => Reply::Saved,

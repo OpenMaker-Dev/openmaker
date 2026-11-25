@@ -741,10 +741,11 @@ pub enum Reply {
     ReleaseLock,
     /// op65 is answered with the request's own header (write-path.md 4.4).
     ReleaseLocks,
-    /// Whether the subtree was put into the file: it is not on a read-only
-    /// file or where the file cannot hold it, and op13's reply is the same
-    /// either way (schema-path.md 3.3); or the storage error when it was
-    /// not stored.
+    /// The subtree stored (`true`; the engine's refusal of an operation it
+    /// does not hold aside, never `false`); or why it was not: the storage
+    /// error of a save that failed, or the refusal of a file hosted
+    /// read-only or of a destination the file cannot hold, which op13
+    /// answers as a save that failed (#737).
     UploadToCatalog(Result<bool, StorageError>),
     /// op86's reply is what its program answered when it ran; this is
     /// only whether its writes were refused because the file became
@@ -859,8 +860,8 @@ impl StorageError {
     }
 
     /// The error of an operation refused, unrun, because the file takes no
-    /// more changes (`why`, `Store::writes_refused`): nothing of it is
-    /// stored.
+    /// more changes (`why`, `Store::writes_refused`) or is hosted read-only:
+    /// nothing of it is stored.
     fn refused(why: &str) -> Self {
         StorageError {
             code: crate::hosting::save_error(&std::io::Error::other(why)),
@@ -1251,9 +1252,13 @@ pub fn run(
             writes::kill_all_locks(op, locks);
             Outcome::new(Reply::ReleaseLocks)
         }
-        (Operation::UploadToCatalog(op), Hold::Transaction(tx)) => Outcome::new(
-            Reply::UploadToCatalog(Ok(schema::upload_to_catalog(op, file, tx))),
-        ),
+        (Operation::UploadToCatalog(op), Hold::Transaction(tx)) => {
+            Outcome::new(Reply::UploadToCatalog(
+                schema::upload_to_catalog(op, file, tx)
+                    .map(|()| true)
+                    .map_err(|why| StorageError::refused(&why)),
+            ))
+        }
         (Operation::ChangeSchema(op), Hold::Transaction(tx)) => Outcome::new(Reply::ChangeSchema(
             schema::change_schema(op, file, tx).map_err(SchemaNotChanged::Refused),
         )),
@@ -1449,7 +1454,7 @@ fn refusal(operation: Operation, why: &'static str) -> Outcome {
         Operation::UpgradeLock(_) => Reply::UpgradeLock(refused_lock),
         Operation::ReleaseLock(_) => Reply::ReleaseLock,
         Operation::ReleaseLocks(_) => Reply::ReleaseLocks,
-        Operation::UploadToCatalog(_) => Reply::UploadToCatalog(Ok(false)),
+        Operation::UploadToCatalog(_) => Reply::UploadToCatalog(Err(StorageError::refused(why))),
         Operation::ChangeSchema(_) => Reply::ChangeSchema(Err(SchemaNotChanged::Refused(why))),
         Operation::StoreIndexes(_) => Reply::StoreIndexes(Ok(())),
         Operation::UpdateTable(_) => Reply::UpdateTable(Err(why.to_owned())),

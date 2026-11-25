@@ -25,26 +25,31 @@ use crate::store::{IndexId, MemberKey};
 const READ_ONLY: &str = "the file is hosted read-only";
 
 /// op13: put the subtree at its path (schema-path.md 3.3), creating missing
-/// parents: whether it was stored. Nothing is on a read-only file; a
-/// subtree the file cannot hold there (hbam-writer.md 2.2, 2.3) is refused
-/// and logged, as op13 refuses an upload it cannot store, and the tree is
-/// unchanged.
-pub(super) fn upload_to_catalog(op: UploadToCatalog, file: &str, tx: &mut Transaction<'_>) -> bool {
+/// parents; one the file holds already is stored as no change (the
+/// transaction's). Refused, with the tree unchanged: on a file hosted
+/// read-only, decided here under the write lock before anything else, also
+/// when the file holds the subtree already (#737); over the whole file; and
+/// where the file cannot hold it (hbam-writer.md 2.2, 2.3,
+/// `om_hbam::writer::put_refusals`), logged. The request's reply must not
+/// say done for any of them: op13 answers each as an upload whose save
+/// failed.
+pub(super) fn upload_to_catalog(
+    op: UploadToCatalog,
+    file: &str,
+    tx: &mut Transaction<'_>,
+) -> Result<(), String> {
     if tx.is_read_only() {
-        return false;
+        return Err(READ_ONLY.to_owned());
     }
     if op.path.is_empty() {
         warn!("{file}: refusing an upload over the whole file");
-        return false;
+        return Err("an upload over the whole file".to_owned());
     }
     let path = op.path.clone();
-    match tx.replace(op.path, op.node) {
-        Ok(()) => true,
-        Err(reason) => {
-            warn!("{file}: refusing an upload to {path:02x?} the file cannot hold: {reason}");
-            false
-        }
-    }
+    tx.replace(op.path, op.node).map_err(|reason| {
+        warn!("{file}: refusing an upload to {path:02x?} the file cannot hold: {reason}");
+        format!("the file cannot hold it there: {reason}")
+    })
 }
 
 /// op86's writes, after the program ran: refused, with nothing stored, when

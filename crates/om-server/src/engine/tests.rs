@@ -338,10 +338,12 @@ fn set_formula(catalog: &mut OwnedNode, field: u64, text: &str) {
 /// recorded with its outcomes replays against a fresh load of the same
 /// file to the same replies, notices and tree. The sequence covers each
 /// operation: op71 reserves ids 4 and 5, which another user then cannot
-/// lock; op72 advances a serial; op70 creates record 4 and deletes 2 and
-/// leaves record 1, which the other user holds, staged; that user
-/// upgrades and releases its lock, telling of a change; op65 ends the
-/// first user's locks; a second op72 reads the serial the first advanced.
+/// lock; op72 advances a serial; op70 creates record 4 and deletes 2, and
+/// the edit of record 1, which the other user holds and the list does not
+/// name, stays staged (a list naming it is refused whole,
+/// `writes::unstorable`); that user upgrades and releases its lock,
+/// telling of a change; op65 ends the first user's locks; a second op72
+/// reads the serial the first advanced.
 #[test]
 fn a_recorded_sequence_of_operations_replays_to_the_same_replies_and_tree() {
     let mut tree = fixture::tree(&[], true);
@@ -382,10 +384,6 @@ fn a_recorded_sequence_of_operations_replays_to_the_same_replies_and_tree() {
         ],
     );
     let entries = vec![
-        OwnedNode::list(
-            serial::encode(1),
-            vec![OwnedNode::leaf(uint_segment(fixture::NAME), Vec::new())],
-        ),
         OwnedNode::leaf(serial::encode(2), vec![COMMIT_DELETED]),
         OwnedNode::leaf(serial::encode(4), vec![COMMIT_NEW]),
     ];
