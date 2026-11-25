@@ -1,58 +1,62 @@
-//! Exports (docs/server-storage.md 2, rule 2; 5, "The engine"; 6.10): one
-//! version of a hosted file written as an `.fmp12`.
+//! Exports (docs/server-storage.md 2, rule 2; 5, "Exports"; 6.10): one
+//! version of a hosted file as an `.fmp12`.
 //!
-//! **What an export holds.** Exactly the version's key tree, every node
-//! with its kind and value, empty lists included, written from a walk of
-//! its view in key order into `om_hbam`'s streaming writer
-//! ([`om_hbam::writer::NodeWriter`]), and the file's page 0 as it was
-//! loaded ([`crate::derived::Derived::page_zero`]) with the fields a writer
-//! maintains set as a save sets them: the clean-close flag, and the change
-//! number counted on from the one the engine names for the version
-//! (hbam-writer.md 5.1, 5.2). The engine says how a version is exported
-//! ([`Source`]): written so, or, for a version that is the file exactly as
-//! it was loaded, as the bytes it was loaded from (below).
+//! **Two ways.** The engine says how a version is exported ([`Source`]):
 //!
-//! **The file engine's versions** (`Store::export_source`). A version a
-//! save wrote, with nothing changed since, is written from the change
-//! number that save started from, so its export is the saved file byte for
-//! byte. A version with changes the disk lacks (a failed save's) is written
-//! from the change number the next save starts from: what that save would
-//! write. A version no save wrote, the file as it was loaded, is the bytes
-//! it was loaded from, read from the file on disk where the store still
-//! has it (the descriptor it holds locked, or the entry at the file's path
-//! while it is the file the server read there, #468): FileMaker's own
-//! pages, which no writer of the tree reproduces. So is a file hosted
-//! read-only because it holds content the writer cannot write (section 2,
-//! rule 2), also when changes its refused saves left wait in memory: those
-//! are then not in the export, and [`Exported::current`] says so.
+//! - **The file on disk** ([`OnDisk`]), when the disk holds the version: a
+//!   file engine's version a save wrote, or the file as it was loaded,
+//!   with nothing changed since. The file is opened under the store's read
+//!   lock, which is let go at once, and copied after it. No view is read:
+//!   the file is what a checked save wrote, or what the server loaded.
+//! - **Written from the view** ([`Source::Written`]), when the disk lacks
+//!   the version (changes in memory that no save wrote), and for a caller
+//!   that asks for a file rewritten (the desktop's compacted copy). A
+//!   depth-first walk of the view in key order goes into `om_hbam`'s
+//!   streaming writer ([`om_hbam::writer::NodeWriter`]): every node with
+//!   its kind and value, empty lists included, and the file's page 0 as it
+//!   was loaded ([`crate::derived::Derived::page_zero`]) with the fields a
+//!   writer maintains set as a save sets them, the clean-close flag and the
+//!   change number counted on from the one the engine names (hbam-writer.md
+//!   5.1, 5.2). The file engine's view holds the store's read lock for the
+//!   whole walk: writes to the file wait for it (docs/performance/export.md).
 //!
-//! **Checked.** Before it gets its final name, the file written is read
-//! back with the streaming reader ([`om_hbam::stream::NodeStream`]) and
+//! **The file engine's versions** (`Store::export_source`). With nothing
+//! changed since the last save or the load, the version is the file on
+//! disk, opened where the store can tell it is that file (the descriptor
+//! it holds locked, or the entry at the file's path while it is the file
+//! the server read or last saved there, #468). With changes the disk
+//! lacks, it is written from the change number the next save starts from:
+//! what that save would write. A file hosted read-only because it holds
+//! content the writer cannot write is always the file on disk, the bytes
+//! it was loaded from (section 2, rule 2), also when changes its refused
+//! saves left wait in memory: those are then not in the export, and
+//! [`Exported::current`] says so. A backup asks for the file on disk
+//! whatever memory holds ([`FileEngine::stored`]).
+//!
+//! **Checked.** A copy is checked against its source: as many bytes as the
+//! file had when it was opened, and the SHA-256 of the bytes read from it
+//! equal to the SHA-256 of the copy read back. A written file is read back
+//! with the streaming reader ([`om_hbam::stream::NodeStream`]) and
 //! compared with a second walk of the view, node by node: path, kind (list
-//! or value) and value, with a value over 1,000 bytes as the writer
-//! splits it (hbam-writer.md 2.3), and page 0 as written. A difference, or
-//! a file that does not read back, is an error. An image that is not the
-//! version ([`Exported::current`] false) is read back to its end and its
-//! page 0 compared, but not its nodes.
+//! or value) and value, with a value over 1,000 bytes as the writer splits
+//! it (hbam-writer.md 2.3), and page 0 as written. A difference, or a file
+//! that does not read back, is an error.
 //!
-//! **Memory** is what the writer holds (a few pages and the open key path,
-//! hbam-writer.md 7.2), what the reader holds (a page and the open path),
-//! one page of the view's walk at a time and the path of the node being
-//! written, and a copy buffer of [`COPY_BUFFER`] bytes for an image. A
-//! value is borrowed from the view while it is written and compared.
-//! Nothing grows with the file.
+//! **Memory** is a copy buffer of [`COPY_BUFFER`] bytes and two hash states
+//! for a copy; for a written file, what the writer holds (a few pages and
+//! the open key path, hbam-writer.md 7.2), what the reader holds (a page
+//! and the open path), one page of the view's walk at a time and the path
+//! of the node being written. A value is borrowed from the view while it is
+//! written and compared. Nothing grows with the file.
 //!
-//! **Where it goes.** [`prepare`] writes and checks the export under
-//! `<name>.omexport` in the destination folder ([`Folder`]), created only
-//! where nothing is (an entry there is an error, never removed); the
-//! caller may then let go of the view. [`Prepared::publish`] flushes it to
-//! the device, renames it to the final name, never over an entry there,
-//! and flushes the folder. A failure at any step, or a [`Prepared`]
-//! dropped unpublished, removes what this export created, and only while
-//! it is still that file: the temporary entry, or the final one when the
-//! folder flush after the rename fails. [`FileEngine::export`] does both
-//! steps with the file engine's reading, which it holds only for the
-//! first.
+//! **Where it goes.** An export is made under `<name>.omexport` in the
+//! destination folder ([`Folder`]), created only where nothing is (an entry
+//! there is an error, never removed), and checked there ([`Prepared`]).
+//! [`Prepared::publish`] flushes it to the device, renames it to the final
+//! name, never over an entry there, and flushes the folder. A failure at
+//! any step, or a [`Prepared`] dropped unpublished, removes what this
+//! export created, and only while it is still that file: the temporary
+//! entry, or the final one when the folder flush after the rename fails.
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
@@ -61,6 +65,7 @@ use std::io::{self, Seek, SeekFrom, Write};
 
 use om_hbam::stream::NodeStream;
 use om_hbam::writer::{self as hbam_writer, NodeWriter, MAX_INLINE_VALUE};
+use ring::digest;
 
 use super::reading::Read;
 use super::view::{ReadError, View};
@@ -71,7 +76,7 @@ use crate::hosting::Hosted;
 /// What a temporary export's name adds to the final name.
 const TEMPORARY: &str = ".omexport";
 
-/// How many bytes an image copy reads at once.
+/// How many bytes a copy reads at once.
 pub const COPY_BUFFER: usize = 256 << 10;
 
 /// How often, in bytes written, the caller hears how far an export got.
@@ -80,12 +85,31 @@ const REPORT_EVERY: u64 = 8 << 20;
 /// How the engine exports a version (the module doc).
 #[derive(Debug)]
 pub enum Source {
+    /// Copied from the file on disk, which holds the version.
+    OnDisk(OnDisk),
     /// Written from the view, page 0 the loaded one with the change number
     /// a writer starts from.
     Written { change_number: u64 },
-    /// The bytes the file was loaded from, read from `file`'s start;
-    /// `current` when they are this version.
-    Image { file: File, current: bool },
+}
+
+/// A version of a file as the file on disk holds it, opened under the
+/// store's read lock and read after it: the descriptor keeps naming that
+/// file whatever later saves rename over its path.
+#[derive(Debug)]
+pub struct OnDisk {
+    /// The file, opened to read.
+    pub file: File,
+    /// Its length when it was opened; a copy must be as long.
+    pub len: u64,
+    /// Its permissions, which a backup's copy gets.
+    pub permissions: Permissions,
+    /// On the file engine, how many saves wrote the file since it was
+    /// loaded (`Store::saves`): an unchanged count means the same file.
+    pub saves: u64,
+    /// Whether the store held changes this file lacks when it was opened:
+    /// changes a failed save, or a read-only file's refused saves, left in
+    /// memory.
+    pub unsaved: bool,
 }
 
 /// A folder an export is written into: new entries are made, renamed and
@@ -168,14 +192,9 @@ pub struct Exported {
     pub size: u64,
     /// Its device and inode, where the system has them.
     pub id: Option<FileId>,
-    /// Whether it holds the version read. Only an image of a file hosted
-    /// read-only for content the writer cannot write, with changes its
-    /// refused saves left in memory, does not (the module doc).
+    /// Whether it holds the version the store held: false for a copy of a
+    /// file on disk that lacks changes memory held (the module doc).
     pub current: bool,
-    /// On the file engine, how many saves the file had had since it was
-    /// loaded when the version exported is the file on disk, with no
-    /// changes the disk lacks; `None` when it has such changes.
-    pub saves: Option<u64>,
 }
 
 /// Why an export failed. Nothing is left under the final name, nor under
@@ -194,8 +213,14 @@ pub enum ExportError {
         path: Vec<Vec<u8>>,
         what: &'static str,
     },
-    /// The bytes the file was loaded from could not be read.
-    Image(io::Error),
+    /// The file on disk could not be opened or read.
+    Source(io::Error),
+    /// The file on disk was `expected` bytes long when it was opened and
+    /// `copied` were read from it: it changed while it was copied.
+    SourceChanged { expected: u64, copied: u64 },
+    /// The copy does not read back as the bytes read from the file on disk
+    /// (their SHA-256 differ).
+    CopyDiffers,
     /// Creating, writing, flushing or renaming the export failed.
     Io(io::Error),
     /// An entry is in the way at the temporary name.
@@ -215,9 +240,12 @@ impl fmt::Display for ExportError {
             ExportError::Differs { path, what } => {
                 write!(f, "the export differs from the file at {path:02x?}: {what}")
             }
-            ExportError::Image(e) => {
-                write!(f, "the file as it was loaded could not be read: {e}")
-            }
+            ExportError::Source(e) => write!(f, "{e}"),
+            ExportError::SourceChanged { expected, copied } => write!(
+                f,
+                "{copied} bytes copied of {expected}: the file changed while it was copied"
+            ),
+            ExportError::CopyDiffers => write!(f, "the copy does not read back as the file"),
             ExportError::Io(e) => write!(f, "{e}"),
             ExportError::TemporaryTaken(name) => write!(
                 f,
@@ -313,51 +341,93 @@ impl Seek for Counted<'_, '_> {
     }
 }
 
-/// Write the version `read` reads, as `source` says, into `target`, an
-/// empty file open for reading and writing, and check it (the module doc).
-/// What the export holds; on an error `target` holds part of a file, for
-/// the caller to discard.
-pub fn write_checked(
-    read: Read<'_>,
-    source: Source,
+/// Copy `source`, `len` bytes long when it was opened, from its start into
+/// `target`, an empty file open for reading and writing, and check the
+/// copy against it (the module doc, "Checked"). On an error `target` holds
+/// part of a file, for the caller to discard.
+pub fn copy_checked(
+    source: &File,
+    len: u64,
     target: &mut File,
     progress: Progress<'_>,
-) -> Result<Checked, ExportError> {
+) -> Result<(), ExportError> {
+    use std::io::Read as _;
     let mut counted = Counted {
         file: target,
         progress,
         unreported: 0,
     };
-    let checked = match source {
-        Source::Written { change_number } => {
-            let page_zero =
-                hbam_writer::with_change_number(read.derived.page_zero(), change_number);
-            write_view(read.view, &page_zero, &mut counted)?;
-            counted.report();
-            let file = &*counted.file;
-            check(read.view, file, Expect::Written(&page_zero, change_number))?;
-            Checked { current: true }
+    let mut from = source;
+    from.seek(SeekFrom::Start(0)).map_err(ExportError::Source)?;
+    let mut buffer = vec![0; COPY_BUFFER];
+    let mut read = digest::Context::new(&digest::SHA256);
+    // No more than the file held when it was opened, and one byte to see
+    // whether it holds more now: a file another program writes to cannot
+    // make the copy run on.
+    let mut from = from.take(len.saturating_add(1));
+    let mut copied = 0u64;
+    loop {
+        let n = match from.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(ExportError::Source(e)),
+        };
+        copied += n as u64;
+        if copied > len {
+            break;
         }
-        Source::Image { file, current } => {
-            copy_image(&file, &mut counted)?;
-            counted.report();
-            let target = &*counted.file;
-            check(
-                read.view,
-                target,
-                Expect::Image(read.derived.page_zero(), current),
-            )?;
-            Checked { current }
-        }
-    };
-    Ok(checked)
+        read.update(&buffer[..n]);
+        counted.write_all(&buffer[..n]).map_err(destination)?;
+    }
+    if copied != len {
+        return Err(ExportError::SourceChanged {
+            expected: len,
+            copied,
+        });
+    }
+    counted.flush().map_err(destination)?;
+    counted.report();
+    // The copy as the file system gives it back.
+    let mut back = &*counted.file;
+    back.seek(SeekFrom::Start(0)).map_err(ExportError::Io)?;
+    let mut written = digest::Context::new(&digest::SHA256);
+    let mut length = 0u64;
+    loop {
+        let n = match back.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(ExportError::Io(e)),
+        };
+        written.update(&buffer[..n]);
+        length += n as u64;
+    }
+    if length != copied || written.finish().as_ref() != read.finish().as_ref() {
+        return Err(ExportError::CopyDiffers);
+    }
+    Ok(())
 }
 
-/// What [`write_checked`] wrote.
-#[derive(Clone, Copy, Debug)]
-pub struct Checked {
-    /// [`Exported::current`].
-    pub current: bool,
+/// Write the version `read` reads from its view into `target`, an empty
+/// file open for reading and writing, page 0 the loaded one with
+/// `change_number`, and check it against the view (the module doc). On an
+/// error `target` holds part of a file, for the caller to discard.
+pub fn write_walked(
+    read: Read<'_>,
+    change_number: u64,
+    target: &mut File,
+    progress: Progress<'_>,
+) -> Result<(), ExportError> {
+    let mut counted = Counted {
+        file: target,
+        progress,
+        unreported: 0,
+    };
+    let page_zero = hbam_writer::with_change_number(read.derived.page_zero(), change_number);
+    write_view(read.view, &page_zero, &mut counted)?;
+    counted.report();
+    check(read.view, counted.file, &page_zero, change_number)
 }
 
 /// Every node of `view` but the root, in the order of a depth-first walk,
@@ -391,72 +461,23 @@ fn write_view(
     Ok(())
 }
 
-/// Copy `image` from its start to `target`.
-fn copy_image(image: &File, target: &mut Counted<'_, '_>) -> Result<(), ExportError> {
-    use std::io::Read as _;
-    let mut source = image;
-    source
-        .seek(SeekFrom::Start(0))
-        .map_err(ExportError::Image)?;
-    let mut buffer = vec![0; COPY_BUFFER];
-    loop {
-        let n = match source.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(ExportError::Image(e)),
-        };
-        target.write_all(&buffer[..n]).map_err(destination)?;
-    }
-    target.flush().map_err(destination)
-}
-
-/// What the file read back must hold besides the view's nodes.
-enum Expect<'a> {
-    /// Written from the view with this page 0 and starting change number:
-    /// page 0 closed by the writer, and long values split as it splits
-    /// them.
-    Written(&'a [u8], u64),
-    /// The image of a file loaded with this page 0; its nodes compared
-    /// when it is the version.
-    Image(&'a [u8], bool),
-}
-
 /// Read `file` back from its start and compare it with `view` (the module
-/// doc, "Checked").
-fn check(view: &dyn View, file: &File, expect: Expect<'_>) -> Result<(), ExportError> {
+/// doc, "Checked"): page 0 is `given` closed by the writer, its pages
+/// numbered from change number `start`, and a long value is split as the
+/// writer splits it.
+fn check(view: &dyn View, file: &File, given: &[u8], start: u64) -> Result<(), ExportError> {
     let mut stream = NodeStream::new(file).map_err(ExportError::Unreadable)?;
-    let page_zero = stream.superblock().raw;
     let differs = |what| ExportError::Differs {
         path: Vec::new(),
         what,
     };
-    let (split, compare) = match expect {
-        Expect::Written(given, start) => {
-            // Each page but page 0 took the next change number.
-            let pages = u64::from(stream.page_count()).saturating_sub(1);
-            let expected = start
-                .checked_add(pages)
-                .and_then(|last| hbam_writer::closed_page_zero(given, last));
-            if expected.as_deref() != Some(page_zero) {
-                return Err(differs("page 0 is not the one written"));
-            }
-            (true, true)
-        }
-        Expect::Image(loaded, current) => {
-            if page_zero != loaded {
-                return Err(differs("page 0 is not the one the file was loaded with"));
-            }
-            (false, current)
-        }
-    };
-    if !compare {
-        while stream
-            .next_node()
-            .map_err(ExportError::Unreadable)?
-            .is_some()
-        {}
-        return Ok(());
+    // Each page but page 0 took the next change number.
+    let pages = u64::from(stream.page_count()).saturating_sub(1);
+    let expected = start
+        .checked_add(pages)
+        .and_then(|last| hbam_writer::closed_page_zero(given, last));
+    if expected.as_deref() != Some(stream.superblock().raw) {
+        return Err(differs("page 0 is not the one written"));
     }
     let mut path: Vec<Vec<u8>> = Vec::new();
     for step in view.walk(&[]) {
@@ -467,7 +488,7 @@ fn check(view: &dyn View, file: &File, expect: Expect<'_>) -> Result<(), ExportE
         path.truncate(step.depth - 1);
         path.push(step.segment.into_owned());
         let value = step.head.value.as_deref().unwrap_or_default();
-        if split && !step.head.list && value.len() > MAX_INLINE_VALUE {
+        if !step.head.list && value.len() > MAX_INLINE_VALUE {
             // A list of the length and the pieces (hbam-writer.md 2.3).
             next_is(&mut stream, &path, true, &[])?;
             let length = u32::try_from(value.len()).map_err(|_| differs("a value over 4 GiB"))?;
@@ -519,8 +540,9 @@ fn next_is(
     Ok(())
 }
 
-/// An export written and checked under its temporary name ([`prepare`]),
-/// not yet published. Dropped unpublished, it removes its file.
+/// An export made and checked under its temporary name ([`prepare_walked`],
+/// [`prepare_copy`]), not yet published. Dropped unpublished, it removes
+/// its file.
 pub struct Prepared<'d> {
     folder: &'d dyn Folder,
     name: OsString,
@@ -537,13 +559,12 @@ pub fn temporary_name(name: &OsStr) -> OsString {
     temporary
 }
 
-/// Write and check the version `read` reads, as `source` says, under the
-/// temporary name beside `to`'s (the module doc).
-pub fn prepare<'d>(
-    read: Read<'_>,
-    source: Source,
+/// Make the temporary file beside `to`'s name, fill it with `fill` and
+/// give it `to`'s permissions.
+fn prepare<'d>(
     to: &Destination<'d>,
-    progress: Progress<'_>,
+    current: bool,
+    fill: impl FnOnce(&mut File) -> Result<(), ExportError>,
 ) -> Result<Prepared<'d>, ExportError> {
     let temporary = temporary_name(to.name);
     let file = match to.folder.create(&temporary) {
@@ -558,10 +579,10 @@ pub fn prepare<'d>(
         name: to.name.to_owned(),
         temporary,
         file: Some(file),
-        current: true,
+        current,
     };
     let file = prepared.file.as_mut().expect("just created");
-    prepared.current = write_checked(read, source, file, progress)?.current;
+    fill(file)?;
     if let Some(permissions) = &to.permissions {
         file.set_permissions(permissions.clone())
             .map_err(ExportError::Io)?;
@@ -569,11 +590,43 @@ pub fn prepare<'d>(
     Ok(prepared)
 }
 
+/// Write and check the version `read` reads, from `change_number`, under
+/// the temporary name beside `to`'s (the module doc).
+pub fn prepare_walked<'d>(
+    read: Read<'_>,
+    change_number: u64,
+    to: &Destination<'d>,
+    progress: Progress<'_>,
+) -> Result<Prepared<'d>, ExportError> {
+    prepare(to, true, |file| {
+        write_walked(read, change_number, file, progress)
+    })
+}
+
+/// Copy and check `on_disk` under the temporary name beside `to`'s.
+pub fn prepare_copy<'d>(
+    on_disk: &OnDisk,
+    to: &Destination<'d>,
+    progress: Progress<'_>,
+) -> Result<Prepared<'d>, ExportError> {
+    prepare(to, !on_disk.unsaved, |file| {
+        copy_checked(&on_disk.file, on_disk.len, file, progress)
+    })
+}
+
+/// Copy `on_disk` to `to`, checked, and publish it: what a backup does
+/// with each file it does not link.
+pub fn copy(
+    on_disk: &OnDisk,
+    to: &Destination<'_>,
+    progress: Progress<'_>,
+) -> Result<Exported, ExportError> {
+    prepare_copy(on_disk, to, progress)?.publish()
+}
+
 impl Prepared<'_> {
-    /// Flush the export, give it its final name and flush the folder. The
-    /// file engine's saves on `exported.saves`, from the reading the export
-    /// was written from.
-    pub fn publish(mut self, saves: Option<u64>) -> Result<Exported, ExportError> {
+    /// Flush the export, give it its final name and flush the folder.
+    pub fn publish(mut self) -> Result<Exported, ExportError> {
         let file = self.file.as_ref().expect("until published");
         file.sync_all().map_err(ExportError::Io)?;
         let size = file.metadata().map_err(ExportError::Io)?.len();
@@ -606,7 +659,6 @@ impl Prepared<'_> {
             size,
             id,
             current: self.current,
-            saves,
         })
     }
 
@@ -626,43 +678,105 @@ impl Drop for Prepared<'_> {
     }
 }
 
+/// Which file an export of the version a store holds writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// The version as it is: the file on disk when it holds it, else the
+    /// tree written ([`FileEngine::export`]).
+    Current,
+    /// The tree written whatever the disk holds, from the change number the
+    /// next save starts from: a compacted copy (hbam-writer.md 9.3).
+    Compacted,
+}
+
+/// Where an export goes: a new entry of a folder, made under a temporary
+/// name and renamed ([`Destination`]), or an empty file the caller made,
+/// open for reading and writing, which it then publishes itself (the
+/// desktop's unnamed copy).
+pub enum Target<'t, 'd> {
+    #[allow(
+        dead_code,
+        reason = "part of the engine's export (docs/server-storage.md 5); backups copy the \
+                  stored version (`export::copy`), and an export of the current version to a \
+                  folder is not offered yet (section 6.10)"
+    )]
+    Folder(&'t Destination<'d>),
+    File(&'t mut File),
+}
+
 impl FileEngine {
-    /// Export the version of `file` its store holds now to `to` (the module
-    /// doc): written and checked under the store's read lock, which a
-    /// reading holds (`FileEngine::read`), then flushed and renamed after
-    /// the lock is let go. A server switched to the test view
-    /// (`Server::checking_reads`) exports through it alone.
+    /// Export the version of `file` its store holds now, as `kind` says,
+    /// to `target` (the module doc). A version on disk is opened under the
+    /// store's read lock and copied after it is let go; a version written
+    /// is written and checked under the lock, for as long as the walk takes.
+    /// Flushing and renaming come after the lock. A server switched to the
+    /// test view (`Server::checking_reads`) walks through it alone.
     pub fn export(
         &self,
         file: &Hosted,
-        to: &Destination<'_>,
+        kind: Kind,
+        target: Target<'_, '_>,
         progress: Progress<'_>,
     ) -> Result<Exported, ExportError> {
-        let (prepared, saves) = {
-            let reading = self.read(file);
-            let source = reading.export_source().map_err(ExportError::Image)?;
-            let saves = reading.saved_version();
-            let prepared = reading.serve_once(|read| prepare(read, source, to, progress))?;
-            (prepared, saves)
+        let reading = self.read(file);
+        let source = match kind {
+            Kind::Current => reading.export_source().map_err(ExportError::Source)?,
+            Kind::Compacted => reading.compacted_source(),
         };
-        prepared.publish(saves)
+        match (source, target) {
+            (Source::OnDisk(on_disk), Target::Folder(to)) => {
+                drop(reading);
+                prepare_copy(&on_disk, to, progress)?.publish()
+            }
+            (Source::OnDisk(on_disk), Target::File(into)) => {
+                drop(reading);
+                copy_checked(&on_disk.file, on_disk.len, into, progress)?;
+                exported(into, !on_disk.unsaved)
+            }
+            (Source::Written { change_number }, Target::Folder(to)) => {
+                let prepared =
+                    reading.serve_once(|read| prepare_walked(read, change_number, to, progress))?;
+                drop(reading);
+                prepared.publish()
+            }
+            (Source::Written { change_number }, Target::File(into)) => {
+                reading.serve_once(|read| write_walked(read, change_number, into, progress))?;
+                drop(reading);
+                exported(into, true)
+            }
+        }
     }
+
+    /// The file on disk of `file`, the version its last save wrote or that
+    /// it was loaded from, whatever memory holds: opened under the store's
+    /// read lock for as long as an open takes, for a backup to copy after
+    /// ([`copy`]).
+    pub fn stored(&self, file: &Hosted) -> io::Result<OnDisk> {
+        self.read(file).on_disk()
+    }
+}
+
+/// What a caller's file holds once an export filled it.
+fn exported(file: &File, current: bool) -> Result<Exported, ExportError> {
+    Ok(Exported {
+        size: file.metadata().map_err(ExportError::Io)?.len(),
+        id: file_identity(file).map_err(ExportError::Io)?,
+        current,
+    })
 }
 
 /// Through the test view too, which only debug builds have.
 #[cfg(all(test, debug_assertions))]
 mod tests {
+    use std::cell::Cell;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{mpsc, Arc, Mutex};
-    use std::time::Duration;
+    use std::sync::Arc;
 
     use om_hbam::slot::uint_segment;
     use om_hbam::{serial, HbamFile, OwnedNode};
     use om_protocol::write::{GetSerial, SERIAL_INCREMENT};
     use om_scripts::text_node;
 
-    use super::super::copies::Copies;
     use super::super::{AdvanceSerial, Operation, Writer};
     use super::*;
     use crate::anchored::FileAt;
@@ -723,6 +837,30 @@ mod tests {
         }
     }
 
+    /// Export the version `file` holds now to `name` in `folder`.
+    fn export(
+        engine: &FileEngine,
+        file: &Hosted,
+        kind: Kind,
+        folder: &crate::anchored::Folder,
+        name: &str,
+        progress: Progress<'_>,
+    ) -> Result<Exported, ExportError> {
+        engine.export(file, kind, Target::Folder(&to(folder, name)), progress)
+    }
+
+    /// An engine whose walks go through the test view, which copies every
+    /// node and gives three at a time, and fails the reads at or below
+    /// `failing` in the fixture's file.
+    fn engine(failing: Option<Vec<Vec<u8>>>) -> FileEngine {
+        let engine = FileEngine::default();
+        match failing {
+            Some(path) => engine.fail_reads(fixture::FILE, path),
+            None => engine.check_reads(),
+        }
+        engine
+    }
+
     /// The fixture's file with 40 tasks, a value of 2,500 bytes (held in
     /// pieces once the file is loaded) and an empty list, hosted from a
     /// file of its own.
@@ -758,6 +896,20 @@ mod tests {
         vec![uint_segment(fixture::TABLE), vec![0x05], serial::encode(id)]
     }
 
+    /// op72 on the fixture's serial field: a write that changes the file
+    /// and saves it.
+    fn serial() -> Operation {
+        Operation::AdvanceSerial(AdvanceSerial {
+            request: GetSerial {
+                table: vec![uint_segment(fixture::TABLE)],
+                field: vec![uint_segment(fixture::COUNT)],
+                value: String::new(),
+                increment: 1,
+                flags: SERIAL_INCREMENT,
+            },
+        })
+    }
+
     /// Change the tree without saving it: a task renamed, and a value of
     /// 3,100 bytes held whole, as a write leaves one until the file is
     /// loaded again.
@@ -780,71 +932,70 @@ mod tests {
         assert!(store.save(&file.at).unwrap());
     }
 
-    /// Export `file`'s current version to `name` through the test view,
-    /// which copies every node and walks three at a time, failing the reads
-    /// at or below `failing`.
-    fn export_through_copies(
-        file: &Hosted,
-        failing: &[Vec<Vec<u8>>],
-        folder: &crate::anchored::Folder,
-        name: &str,
-    ) -> Result<Exported, ExportError> {
-        let engine = FileEngine::default();
-        let reading = engine.read(file);
-        let source = reading.export_source().map_err(ExportError::Image)?;
-        let saves = reading.saved_version();
-        let read = reading.read();
-        let copies = Copies::new(read.view, failing);
-        let read = Read {
-            view: &copies,
-            ..read
-        };
-        let destination = to(folder, name);
-        let prepared = prepare(read, source, &destination, Progress::none())?;
-        drop(reading);
-        prepared.publish(saves)
+    /// Whether the version `file` holds is exported from the file on disk.
+    fn on_disk(engine: &FileEngine, file: &Hosted) -> bool {
+        matches!(
+            engine.read(file).export_source().unwrap(),
+            Source::OnDisk(_)
+        )
     }
 
     /// An export of a hosted file is the file on disk for its version: as
     /// it was loaded, the bytes it was loaded from; once saved, what the
-    /// save wrote; with changes the disk lacks, what the next save writes.
-    /// Each reads back as the view (the check, which every export makes),
-    /// and the test view, which copies and pages, gives the same bytes.
+    /// save wrote; with changes the disk lacks, what the next save writes,
+    /// written from the view (through the test view, which copies and
+    /// pages) and checked against it. A caller's file gets the same bytes.
     #[test]
-    fn an_export_is_the_file_a_save_writes_for_its_version() {
+    fn an_export_is_the_file_on_disk_or_what_the_next_save_writes() {
         let (disk, file) = hosted("export-versions");
         let scratch = Scratch::new("versions");
         let folder = scratch.folder();
-        let engine = FileEngine::default();
-        let export = |name: &str| engine.export(&file, &to(&folder, name), Progress::none());
+        let engine = engine(None);
+        let export =
+            |kind, name: &str| export(&engine, &file, kind, &folder, name, Progress::none());
 
-        let loaded = export("loaded.fmp12").unwrap();
+        let loaded = export(Kind::Current, "loaded.fmp12").unwrap();
         assert_eq!(
             scratch.read("loaded.fmp12"),
             std::fs::read(&disk.0).unwrap()
         );
-        assert_eq!((loaded.current, loaded.saves), (true, Some(0)));
-        export_through_copies(&file, &[], &folder, "loaded-copies.fmp12").unwrap();
-        assert_eq!(
-            scratch.read("loaded-copies.fmp12"),
-            scratch.read("loaded.fmp12")
-        );
+        assert!(loaded.current);
 
         change(&file, "Renamed");
-        let unsaved = export("unsaved.fmp12").unwrap();
-        assert_eq!((unsaved.current, unsaved.saves), (true, None));
-        export_through_copies(&file, &[], &folder, "unsaved-copies.fmp12").unwrap();
+        let unsaved = export(Kind::Current, "unsaved.fmp12").unwrap();
+        assert!(unsaved.current);
+        let mut into = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(scratch.0.join("into.fmp12"))
+            .unwrap();
+        engine
+            .export(
+                &file,
+                Kind::Current,
+                Target::File(&mut into),
+                Progress::none(),
+            )
+            .unwrap();
         save(&file);
         let saved = std::fs::read(&disk.0).unwrap();
         assert_eq!(scratch.read("unsaved.fmp12"), saved);
-        assert_eq!(scratch.read("unsaved-copies.fmp12"), saved);
+        assert_eq!(scratch.read("into.fmp12"), saved);
         assert_ne!(saved, scratch.read("loaded.fmp12"));
 
-        let after = export("saved.fmp12").unwrap();
-        assert_eq!((after.saves, after.size), (Some(1), saved.len() as u64));
+        let after = export(Kind::Current, "saved.fmp12").unwrap();
+        assert_eq!(after.size, saved.len() as u64);
         assert_eq!(scratch.read("saved.fmp12"), saved);
-        export_through_copies(&file, &[], &folder, "saved-copies.fmp12").unwrap();
-        assert_eq!(scratch.read("saved-copies.fmp12"), saved);
+        // A compacted copy is the tree written from the change number the
+        // next save starts from.
+        export(Kind::Compacted, "compacted.fmp12").unwrap();
+        let compacted = HbamFile::open(scratch.0.join("compacted.fmp12")).unwrap();
+        let read = HbamFile::open(&disk.0).unwrap();
+        assert_eq!(
+            compacted.key_tree().unwrap().root.to_owned_node(),
+            read.key_tree().unwrap().root.to_owned_node()
+        );
 
         // The export reads as the file holds it: the renamed task, and the
         // long value in its pieces.
@@ -860,39 +1011,198 @@ mod tests {
         assert_eq!(
             scratch.names(),
             [
-                "loaded-copies.fmp12",
+                "compacted.fmp12",
+                "into.fmp12",
                 "loaded.fmp12",
-                "saved-copies.fmp12",
                 "saved.fmp12",
-                "unsaved-copies.fmp12",
                 "unsaved.fmp12"
             ]
         );
     }
 
-    /// A read that fails fails the export with its error, whether it comes
-    /// while the export is written or while it is checked (an image is
-    /// copied without the view, then checked against it), and leaves
-    /// nothing in the folder.
+    /// The view is walked exactly when memory holds what the disk lacks,
+    /// and for a compacted copy: with a read of the view failing, a version
+    /// on disk is exported (copied, never read through the view), while a
+    /// changed version and a compacted copy fail with the read's error and
+    /// leave nothing in the folder.
     #[test]
-    fn a_failed_read_fails_the_export_and_leaves_nothing() {
-        let (_disk, file) = hosted("export-failing");
-        let scratch = Scratch::new("failing");
+    fn the_view_is_walked_exactly_when_memory_holds_what_the_disk_lacks() {
+        let (_disk, file) = hosted("export-walked");
+        let scratch = Scratch::new("walked");
         let folder = scratch.folder();
-        let failing = vec![record(20)];
+        let engine = engine(Some(record(20)));
+        let export =
+            |kind, name: &str| export(&engine, &file, kind, &folder, name, Progress::none());
+        let failed = |result: Result<Exported, ExportError>| match result {
+            Err(ExportError::Read(ReadError::Unreadable { path, .. })) => path == record(20),
+            _ => false,
+        };
         for saved in [false, true] {
-            if saved {
-                change(&file, "Saved");
-                save(&file);
-            }
-            match export_through_copies(&file, &failing, &folder, "failed.fmp12") {
-                Err(ExportError::Read(ReadError::Unreadable { path, .. })) => {
-                    assert_eq!(path, failing[0])
-                }
-                other => panic!("saved {saved}: {other:?}"),
-            }
+            assert!(on_disk(&engine, &file), "saved {saved}");
+            export(Kind::Current, "copied.fmp12").unwrap();
+            assert!(failed(export(Kind::Compacted, "compacted.fmp12")));
+            assert_eq!(scratch.names(), ["copied.fmp12"]);
+            std::fs::remove_file(scratch.0.join("copied.fmp12")).unwrap();
+            change(&file, "Changed");
+            assert!(!on_disk(&engine, &file));
+            assert!(failed(export(Kind::Current, "changed.fmp12")));
             assert!(scratch.names().is_empty(), "{:?}", scratch.names());
+            save(&file);
         }
+    }
+
+    /// A write is not held up by an export of a version on disk: the store
+    /// is let go once the file is opened, so a write taken only when no one
+    /// holds the store (`FileEngine::try_submit`) runs, and saves, while
+    /// the copy is under way, and the export holds the version before it,
+    /// whole. An export that walks the view holds the store: the same write
+    /// does not run, and the export holds the version without it.
+    #[test]
+    fn a_write_runs_while_a_version_on_disk_is_copied() {
+        let (disk, file) = hosted("export-overlap");
+        let scratch = Scratch::new("overlap");
+        let folder = scratch.folder();
+        let engine = engine(None);
+        export(
+            &engine,
+            &file,
+            Kind::Current,
+            &folder,
+            "before.fmp12",
+            Progress::none(),
+        )
+        .unwrap();
+        // Once the export writes, the write is tried, once.
+        let tried: Cell<Option<bool>> = Cell::new(None);
+        let stop = || {
+            if tried.get().is_none() {
+                tried.set(Some(engine.try_submit(&file, serial()).is_some()));
+            }
+            false
+        };
+        let progress = Progress {
+            stop: &stop,
+            written: &|_| {},
+        };
+        export(
+            &engine,
+            &file,
+            Kind::Current,
+            &folder,
+            "during.fmp12",
+            progress,
+        )
+        .unwrap();
+        assert_eq!(tried.get(), Some(true), "the write waited for the copy");
+        assert_eq!(scratch.read("during.fmp12"), scratch.read("before.fmp12"));
+        export(
+            &engine,
+            &file,
+            Kind::Current,
+            &folder,
+            "after.fmp12",
+            Progress::none(),
+        )
+        .unwrap();
+        let after = std::fs::read(&disk.0).unwrap();
+        assert_ne!(after, scratch.read("before.fmp12"));
+        assert_eq!(scratch.read("after.fmp12"), after);
+
+        change(&file, "Changed");
+        tried.set(None);
+        let progress = Progress {
+            stop: &stop,
+            written: &|_| {},
+        };
+        export(
+            &engine,
+            &file,
+            Kind::Current,
+            &folder,
+            "walked.fmp12",
+            progress,
+        )
+        .unwrap();
+        assert_eq!(tried.get(), Some(false), "the write ran during the walk");
+        save(&file);
+        assert_eq!(
+            scratch.read("walked.fmp12"),
+            std::fs::read(&disk.0).unwrap()
+        );
+    }
+
+    /// A copy is checked against the file on disk: a file that grew while
+    /// it was copied, and a copy that does not read back as what was read,
+    /// fail the export and leave nothing.
+    #[test]
+    fn a_copy_is_checked_against_the_file_on_disk() {
+        let (disk, file) = hosted("export-copy-check");
+        let scratch = Scratch::new("copy-check");
+        let folder = scratch.folder();
+        let engine = engine(None);
+        // Grown once, before the first write.
+        let grew = Cell::new(false);
+        let grow = || {
+            if !grew.replace(true) {
+                let mut source = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&disk.0)
+                    .unwrap();
+                source.write_all(&[0; 4096]).unwrap();
+            }
+            false
+        };
+        let progress = Progress {
+            stop: &grow,
+            written: &|_| {},
+        };
+        let grown = export(
+            &engine,
+            &file,
+            Kind::Current,
+            &folder,
+            "grown.fmp12",
+            progress,
+        );
+        assert!(
+            matches!(grown, Err(ExportError::SourceChanged { .. })),
+            "{grown:?}"
+        );
+        assert!(scratch.names().is_empty());
+        // Written over once the copy is complete, before it is read back.
+        let temporary = scratch.0.join("altered.fmp12.omexport");
+        let alter = |_| {
+            let mut copy = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&temporary)
+                .unwrap();
+            copy.write_all(b"altered").unwrap();
+        };
+        let progress = Progress {
+            stop: &|| false,
+            written: &alter,
+        };
+        // A fresh file on disk: the grown one is no longer what was loaded.
+        save_fresh(&file);
+        let altered = export(
+            &engine,
+            &file,
+            Kind::Current,
+            &folder,
+            "altered.fmp12",
+            progress,
+        );
+        assert!(
+            matches!(altered, Err(ExportError::CopyDiffers)),
+            "{altered:?}"
+        );
+        assert!(scratch.names().is_empty());
+    }
+
+    /// Make the file on disk the tree's again: a change, then a save.
+    fn save_fresh(file: &Hosted) {
+        change(file, "Fresh");
+        save(file);
     }
 
     /// An export never removes or replaces an entry it did not make: one
@@ -903,91 +1213,46 @@ mod tests {
         let (_disk, file) = hosted("export-entries");
         let scratch = Scratch::new("entries");
         let folder = scratch.folder();
-        let engine = FileEngine::default();
+        let engine = engine(None);
         std::fs::write(scratch.0.join("taken.fmp12.omexport"), b"mine").unwrap();
         assert!(matches!(
-            engine.export(&file, &to(&folder, "taken.fmp12"), Progress::none()),
+            export(
+                &engine,
+                &file,
+                Kind::Current,
+                &folder,
+                "taken.fmp12",
+                Progress::none()
+            ),
             Err(ExportError::TemporaryTaken(_))
         ));
         std::fs::write(scratch.0.join("there.fmp12"), b"there").unwrap();
         assert!(matches!(
-            engine.export(&file, &to(&folder, "there.fmp12"), Progress::none()),
+            export(
+                &engine,
+                &file,
+                Kind::Current,
+                &folder,
+                "there.fmp12",
+                Progress::none()
+            ),
             Err(ExportError::Exists(_))
         ));
         assert_eq!(scratch.names(), ["taken.fmp12.omexport", "there.fmp12"]);
         assert_eq!(scratch.read("taken.fmp12.omexport"), b"mine");
         assert_eq!(scratch.read("there.fmp12"), b"there");
-        // A stop asked for while it writes.
-        let stop = || true;
+        // A stop asked for while it writes, copying and walking.
         let progress = Progress {
-            stop: &stop,
+            stop: &|| true,
             written: &|_| {},
         };
-        assert!(matches!(
-            engine.export(&file, &to(&folder, "stopped.fmp12"), progress),
-            Err(ExportError::Stopped)
-        ));
+        for kind in [Kind::Current, Kind::Compacted] {
+            assert!(matches!(
+                export(&engine, &file, kind, &folder, "stopped.fmp12", progress),
+                Err(ExportError::Stopped)
+            ));
+        }
         assert_eq!(scratch.names(), ["taken.fmp12.omexport", "there.fmp12"]);
-    }
-
-    /// A write committed while an export runs is in it whole or not at
-    /// all: the export reads one version. On the file engine the commit
-    /// waits for the export's view, so the export holds the version before
-    /// it, and the next export the one after.
-    #[test]
-    fn a_change_committed_during_an_export_is_wholly_in_it_or_not_at_all() {
-        let (disk, file) = hosted("export-overlap");
-        let scratch = Scratch::new("overlap");
-        let folder = scratch.folder();
-        let engine = FileEngine::default();
-        engine
-            .export(&file, &to(&folder, "before.fmp12"), Progress::none())
-            .unwrap();
-        let serial = Operation::AdvanceSerial(AdvanceSerial {
-            request: GetSerial {
-                table: vec![uint_segment(fixture::TABLE)],
-                field: vec![uint_segment(fixture::COUNT)],
-                value: String::new(),
-                increment: 1,
-                flags: SERIAL_INCREMENT,
-            },
-        });
-        let (started, writing) = mpsc::channel();
-        let started = Mutex::new(Some(started));
-        let committed = AtomicBool::new(false);
-        let (engine, file, committed) = (&engine, &file, &committed);
-        std::thread::scope(|scope| {
-            let committer = scope.spawn(move || {
-                writing.recv().unwrap();
-                engine.submit(file, serial);
-                committed.store(true, Ordering::SeqCst);
-            });
-            // Once the export writes, the commit is submitted, and given
-            // time to run if it could.
-            let stop = || {
-                if let Some(started) = started.lock().unwrap().take() {
-                    started.send(()).unwrap();
-                    std::thread::sleep(Duration::from_millis(100));
-                    assert!(!committed.load(Ordering::SeqCst));
-                }
-                false
-            };
-            let progress = Progress {
-                stop: &stop,
-                written: &|_| {},
-            };
-            engine
-                .export(file, &to(&folder, "during.fmp12"), progress)
-                .unwrap();
-            committer.join().unwrap();
-        });
-        assert!(committed.load(Ordering::SeqCst));
-        assert_eq!(scratch.read("during.fmp12"), scratch.read("before.fmp12"));
-        engine
-            .export(file, &to(&folder, "after.fmp12"), Progress::none())
-            .unwrap();
-        assert_ne!(scratch.read("after.fmp12"), scratch.read("before.fmp12"));
-        assert_eq!(scratch.read("after.fmp12"), std::fs::read(&disk.0).unwrap());
     }
 
     /// The check finds a file that differs from the view: in a value, in a
@@ -1017,8 +1282,7 @@ mod tests {
             unreported: 0,
         };
         write_view(&view, &page_zero, &mut counted).unwrap();
-        let expect = || Expect::Written(&page_zero, 0);
-        check(&view, &file, expect()).unwrap();
+        check(&view, &file, &page_zero, 0).unwrap();
         let task = record(3);
         let task: Vec<&[u8]> = task.iter().map(Vec::as_slice).collect();
         type Vary<'a> = Box<dyn Fn(&mut OwnedNode) + 'a>;
@@ -1063,7 +1327,7 @@ mod tests {
             let other_view = super::super::TreeView::new(&other, 0);
             assert!(
                 matches!(
-                    check(&other_view, &file, expect()),
+                    check(&other_view, &file, &page_zero, 0),
                     Err(ExportError::Differs { .. })
                 ),
                 "{what}"
@@ -1072,11 +1336,11 @@ mod tests {
         let mut other_page = page_zero.clone();
         other_page[0x100] ^= 1;
         assert!(matches!(
-            check(&view, &file, Expect::Written(&other_page, 0)),
+            check(&view, &file, &other_page, 0),
             Err(ExportError::Differs { .. })
         ));
         assert!(matches!(
-            check(&view, &file, Expect::Written(&page_zero, 1)),
+            check(&view, &file, &page_zero, 1),
             Err(ExportError::Differs { .. })
         ));
     }
@@ -1084,8 +1348,9 @@ mod tests {
 
 /// The same against FileMaker's own files: the 66 Mac templates
 /// (git-ignored extractions, `re/extracted`). Each is exported as it was
-/// loaded (its own bytes), then with a change the disk lacks, which must
-/// be what the save then writes, then as saved.
+/// loaded (its own bytes, copied), then with a change the disk lacks
+/// (written from the view, which must be what the save then writes), then
+/// as saved (the saved file, copied).
 ///
 /// ```sh
 /// cargo test -p om-server --lib -- --ignored exports_of_filemakers_files
@@ -1114,29 +1379,43 @@ mod templates {
         }
     }
 
-    /// Export `store`'s version to `name` in `folder`.
-    fn export(store: &Store, at: &FileAt, folder: &crate::anchored::Folder, name: &str) -> Vec<u8> {
-        let view = store.tree_view();
-        let read = Read {
-            view: &view,
-            derived: store.derived(),
-            waiting: store.waiting(),
-            read_only: store.is_read_only(),
-        };
-        let source = store.export_source(at).unwrap();
+    /// Export `store`'s version to `name` in `folder`, as the store says;
+    /// its bytes, and whether it was written from the view.
+    fn export(
+        store: &Store,
+        at: &FileAt,
+        folder: &crate::anchored::Folder,
+        name: &str,
+    ) -> (Vec<u8>, bool) {
         let to = Destination {
             folder,
             name: OsStr::new(name),
             permissions: None,
         };
-        prepare(read, source, &to, Progress::none())
-            .unwrap()
-            .publish(store.saved_version())
-            .unwrap();
+        let walked = match store.export_source(at).unwrap() {
+            Source::OnDisk(on_disk) => {
+                copy(&on_disk, &to, Progress::none()).unwrap();
+                false
+            }
+            Source::Written { change_number } => {
+                let view = store.tree_view();
+                let read = Read {
+                    view: &view,
+                    derived: store.derived(),
+                    waiting: store.waiting(),
+                    read_only: store.is_read_only(),
+                };
+                prepare_walked(read, change_number, &to, Progress::none())
+                    .unwrap()
+                    .publish()
+                    .unwrap();
+                true
+            }
+        };
         let path = at.place().with_file_name(name);
         let bytes = std::fs::read(&path).unwrap();
         std::fs::remove_file(path).unwrap();
-        bytes
+        (bytes, walked)
     }
 
     #[test]
@@ -1168,11 +1447,8 @@ mod templates {
                 store.set_file(Some((metadata.dev(), metadata.ino())));
             }
             let shown = template.display();
-            assert_eq!(
-                export(&store, &at, &folder, "loaded.fmp12"),
-                original,
-                "{shown}"
-            );
+            let loaded = export(&store, &at, &folder, "loaded.fmp12");
+            assert_eq!(loaded, (original, false), "{shown}");
             if store.is_read_only() {
                 read_only += 1;
             } else {
@@ -1180,45 +1456,58 @@ mod templates {
                     &[vec![2], vec![0x7e]],
                     OwnedNode::leaf(Vec::new(), b"exported".to_vec())
                 ));
-                let unsaved = export(&store, &at, &folder, "unsaved.fmp12");
+                let (unsaved, walked) = export(&store, &at, &folder, "unsaved.fmp12");
+                assert!(walked, "{shown}");
                 assert!(store.save(&at).unwrap());
                 let saved = std::fs::read(&path).unwrap();
                 assert_eq!(unsaved, saved, "{shown}");
-                assert_eq!(
-                    export(&store, &at, &folder, "saved.fmp12"),
-                    saved,
-                    "{shown}"
-                );
+                let after = export(&store, &at, &folder, "saved.fmp12");
+                assert_eq!(after, (saved, false), "{shown}");
                 written += 1;
             }
             std::fs::remove_file(&path).unwrap();
         }
         std::fs::remove_dir_all(&scratch).unwrap();
         println!(
-            "{} files: {written} exported as loaded, unsaved and saved, {read_only} read-only as loaded",
+            "{} files: {written} copied as loaded, written unsaved and copied saved, {read_only} \
+             read-only copied as loaded",
             found.len()
         );
     }
 }
 
-/// A measurement, not a test: peak memory and time of an export of a
-/// generated file against a save of the same tree, and how long each holds
-/// the store's read lock. One step per process, so that each peak is its
-/// own: `generate` writes a file of `OM_EXPORT_RECORDS` records (one table,
-/// eight 64-byte text cells each, as #673 measured) to `OM_EXPORT_FILE`;
-/// `export` and `save` load it, change one node, then export it (written
-/// from the view, not copied) or save it, reporting the peak resident
-/// memory above the loaded store (`VmHWM`, reset through `clear_refs`
-/// once loaded). For a release build:
+/// A measurement, not a test: how long each whole-file copy holds the
+/// store's read lock, its time and its peak memory, for a file a save
+/// wrote. One step per process, so that each peak is its own: `generate`
+/// writes a file of `OM_EXPORT_RECORDS` records (one table, eight 64-byte
+/// text cells each, as #673 measured) to `OM_EXPORT_FILE`; every other
+/// step loads it, changes one node and saves it, so that the disk holds the
+/// version, then makes one copy of it beside it, reporting the time under
+/// the lock, the total and the peak resident memory above the loaded store
+/// (`VmHWM`, reset through `clear_refs` once the store is saved). For a
+/// release build:
 ///
 /// ```sh
 /// OM_EXPORT_RECORDS=200000 OM_EXPORT_FILE=target/m/f.fmp12 OM_EXPORT_STEP=generate \
 ///   cargo test --release -p om-server --lib -- --ignored export_measurement --nocapture
 /// ```
+///
+/// The steps: `walk`, the tree written and checked under the lock, then
+/// flushed and renamed (at 0b36912 a backup and a desktop Copy of a saved
+/// version; a compacted copy then and now); `copy`, the file opened under
+/// the lock and copied and checked after it (a backup and a desktop Copy
+/// now); and the code before exports, re-enacted with the calls it made:
+/// `backup-before` (the file opened under the lock, then copied with
+/// `io::copy` in 8 MB parts, its permissions set and flushed),
+/// `copy-before` (the locked descriptor cloned under the lock, then read by
+/// position into the copy and flushed) and `compacted-before` (the whole
+/// file rebuilt in memory under the lock, then written and flushed).
 #[cfg(all(test, target_os = "linux"))]
 mod measurement {
+    use std::io::Read as _;
+    use std::os::unix::fs::FileExt;
     use std::path::PathBuf;
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use om_hbam::slot::uint_segment;
     use om_hbam::{serial, HbamFile, OwnedNode};
@@ -1232,22 +1521,51 @@ mod measurement {
         std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"))
     }
 
-    /// `VmHWM` and `VmRSS` of this process, in MB.
-    fn memory() -> (f64, f64) {
+    /// The field `name` of this process's status, in MB.
+    fn status(name: &str) -> f64 {
         let status = std::fs::read_to_string("/proc/self/status").unwrap();
-        let field = |name: &str| {
-            status
-                .lines()
-                .find_map(|l| l.strip_prefix(name))
-                .and_then(|v| v.trim().trim_end_matches(" kB").trim().parse::<f64>().ok())
-                .unwrap()
-                / 1024.0
-        };
-        (field("VmHWM:"), field("VmRSS:"))
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix(name))
+            .and_then(|v| v.trim().trim_end_matches(" kB").trim().parse::<f64>().ok())
+            .unwrap()
+            / 1024.0
     }
 
-    fn reset_peak() {
-        std::fs::write("/proc/self/clear_refs", "5").unwrap();
+    fn generate(path: &std::path::Path) {
+        let records: u64 = var("OM_EXPORT_RECORDS").parse().unwrap();
+        let mut tree = fixture::tree(&[], true);
+        let cell = |field: u64, record: u64| {
+            let text: String = format!("{record:012}-{field:02}-")
+                .chars()
+                .cycle()
+                .take(64)
+                .collect();
+            om_scripts::text_node(&uint_segment(field), &text)
+        };
+        let list = (1..=records)
+            .map(|id| OwnedNode::list(serial::encode(id), (1..=8).map(|f| cell(f, id)).collect()))
+            .collect();
+        tree.put(
+            &[&uint_segment(fixture::TABLE), &[0x05]],
+            OwnedNode::list(vec![0x05], list),
+        );
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fixture::write_tree(path, &tree);
+        println!(
+            "generated {records} records: {:.1} MB",
+            std::fs::metadata(path).unwrap().len() as f64 / 1e6
+        );
+    }
+
+    /// A new file `path`, for reading and writing.
+    fn create(path: &std::path::Path) -> File {
+        File::options()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .unwrap()
     }
 
     #[test]
@@ -1256,34 +1574,8 @@ mod measurement {
         let path = PathBuf::from(var("OM_EXPORT_FILE"));
         let step = var("OM_EXPORT_STEP");
         if step == "generate" {
-            let records: u64 = var("OM_EXPORT_RECORDS").parse().unwrap();
-            let mut tree = fixture::tree(&[], true);
-            let cell = |field: u64, record: u64| {
-                let text: String = format!("{record:012}-{field:02}-")
-                    .chars()
-                    .cycle()
-                    .take(64)
-                    .collect();
-                om_scripts::text_node(&uint_segment(field), &text)
-            };
-            let list = (1..=records)
-                .map(|id| {
-                    OwnedNode::list(serial::encode(id), (1..=8).map(|f| cell(f, id)).collect())
-                })
-                .collect();
-            tree.put(
-                &[&uint_segment(fixture::TABLE), &[0x05]],
-                OwnedNode::list(vec![0x05], list),
-            );
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fixture::write_tree(&path, &tree);
-            println!(
-                "generated {records} records: {:.1} MB",
-                std::fs::metadata(&path).unwrap().len() as f64 / 1e6
-            );
-            return;
+            return generate(&path);
         }
-        let started = Instant::now();
         let file = HbamFile::open(&path).unwrap();
         let mut store = Store::load(&file, "Measured.fmp12").unwrap();
         drop(file);
@@ -1296,16 +1588,26 @@ mod measurement {
             &[vec![2], vec![0x7e]],
             OwnedNode::leaf(Vec::new(), b"measured".to_vec())
         ));
-        let loaded = started.elapsed();
         let at = FileAt::open(&path).unwrap();
-        reset_peak();
-        let (_, base) = memory();
+        assert!(store.save(&at).unwrap());
+        let folder = at.folder_now().unwrap();
+        let out = path.with_file_name("Measured-copy.fmp12");
+        let name = out.file_name().unwrap();
+        let to = Destination {
+            folder: &folder,
+            name,
+            permissions: None,
+        };
+        std::fs::write("/proc/self/clear_refs", "5").unwrap();
+        let base = status("VmRSS:");
         let size = std::fs::metadata(&path).unwrap().len() as f64 / 1e6;
+        let mut started = Instant::now();
+        let held: Duration;
         match step.as_str() {
-            "export" => {
-                let folder = at.folder_now().unwrap();
-                let name = OsStr::new("Measured-export.fmp12");
-                let started = Instant::now();
+            "walk" => {
+                let Source::Written { change_number } = store.compacted_source() else {
+                    unreachable!()
+                };
                 let view = store.tree_view();
                 let read = Read {
                     view: &view,
@@ -1313,57 +1615,70 @@ mod measurement {
                     waiting: store.waiting(),
                     read_only: store.is_read_only(),
                 };
-                let source = store.export_source(&at).unwrap();
-                assert!(matches!(source, Source::Written { .. }));
-                let to = Destination {
-                    folder: &folder,
-                    name,
-                    permissions: None,
+                let prepared = prepare_walked(read, change_number, &to, Progress::none()).unwrap();
+                held = started.elapsed();
+                prepared.publish().unwrap();
+            }
+            "copy" => {
+                let Source::OnDisk(on_disk) = store.export_source(&at).unwrap() else {
+                    panic!("the saved version is not on disk")
                 };
-                let prepared = prepare(read, source, &to, Progress::none()).unwrap();
-                let held = started.elapsed();
-                let exported = prepared.publish(None).unwrap();
-                let total = started.elapsed();
-                let (peak, _) = memory();
-                println!(
-                    "export {size:.1} MB file: {:.0} ms ({:.0} ms written and checked under the \
-                     lock, {:.0} ms flushed and renamed after it), peak {:.1} MB above the \
-                     loaded store ({base:.0} MB; load {:.0} ms), export {:.1} MB",
-                    total.as_secs_f64() * 1e3,
-                    held.as_secs_f64() * 1e3,
-                    (total - held).as_secs_f64() * 1e3,
-                    peak - base,
-                    loaded.as_secs_f64() * 1e3,
-                    exported.size as f64 / 1e6
-                );
-                std::fs::remove_file(path.with_file_name(name)).unwrap();
+                held = started.elapsed();
+                copy(&on_disk, &to, Progress::none()).unwrap();
             }
-            "save" => {
-                let started = Instant::now();
-                assert!(store.save(&at).unwrap());
-                let total = started.elapsed();
-                let (peak, _) = memory();
-                println!(
-                    "save {size:.1} MB file: {:.0} ms under the write lock, peak {:.1} MB above \
-                     the loaded store ({base:.0} MB)",
-                    total.as_secs_f64() * 1e3,
-                    peak - base,
-                );
-            }
-            "open" => {
-                // What a backup held the store's read lock for before: one
-                // open of the saved file.
-                let runs = 1000;
-                let started = Instant::now();
-                for _ in 0..runs {
-                    drop(store.open_saved(&at).unwrap());
+            "backup-before" => {
+                let source = store.open_saved(&at).unwrap();
+                let metadata = source.metadata().unwrap();
+                held = started.elapsed();
+                let mut copy = create(&out);
+                loop {
+                    let n = io::copy(&mut (&source).take(8 << 20), &mut copy).unwrap();
+                    if n == 0 {
+                        break;
+                    }
                 }
-                println!(
-                    "open of the saved file: {:.1} µs",
-                    started.elapsed().as_secs_f64() * 1e6 / f64::from(runs)
-                );
+                copy.set_permissions(metadata.permissions()).unwrap();
+                copy.sync_all().unwrap();
+            }
+            "copy-before" => {
+                // The store's locked descriptor, as `Store::saved_file`
+                // cloned it under the lock.
+                let locked = store.open_saved(&at).unwrap();
+                started = Instant::now();
+                let clone = locked.try_clone().unwrap();
+                held = started.elapsed();
+                struct FromStart<'a>(&'a File, u64);
+                impl io::Read for FromStart<'_> {
+                    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                        let n = self.0.read_at(buf, self.1)?;
+                        self.1 += n as u64;
+                        Ok(n)
+                    }
+                }
+                let mut copy = create(&out);
+                io::copy(&mut FromStart(&clone, 0), &mut copy).unwrap();
+                copy.sync_all().unwrap();
+            }
+            "compacted-before" => {
+                let root = store.node(&[]).unwrap();
+                let page_zero = store.derived().page_zero().to_vec();
+                let bytes = om_hbam::writer::rebuild(root, &page_zero).unwrap();
+                held = started.elapsed();
+                let mut copy = create(&out);
+                copy.write_all(&bytes).unwrap();
+                drop(bytes);
+                copy.sync_all().unwrap();
             }
             other => panic!("unknown step {other}"),
         }
+        let total = started.elapsed();
+        println!(
+            "{step} {size:.1} MB file: {:.3} ms under the read lock, {:.0} ms in all, peak {:.1} \
+             MB above the loaded store ({base:.0} MB)",
+            held.as_secs_f64() * 1e3,
+            total.as_secs_f64() * 1e3,
+            status("VmHWM:") - base,
+        );
+        std::fs::remove_file(&out).unwrap();
     }
 }

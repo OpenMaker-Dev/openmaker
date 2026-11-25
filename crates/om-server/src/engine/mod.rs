@@ -197,7 +197,7 @@ use crate::store::{IndexId, MemberKey};
 use crate::views::Withheld;
 use crate::writes::{self, Change, CommitError, Mailboxes, RecordWrite};
 
-pub(crate) use export::{Destination, ExportError, Progress, Source};
+pub(crate) use export::{Destination, ExportError, OnDisk, Progress, Source};
 pub(crate) use file::FileEngine;
 pub(crate) use reading::{Read, Waiting};
 pub(crate) use transaction::{Hold, Locks, Transaction};

@@ -34,29 +34,27 @@
 //! inode numbers, found where the server reads the hosted files, links
 //! followed (`fs::Protected`).
 //!
-//! **Consistency.** A file's copy is an export of one version of it
-//! (`crate::engine::FileEngine::export`, docs/server-storage.md 5,
-//! "Exports"): written under a temporary name in its folder of the backup,
-//! read back and compared with the version, then renamed. A version a save
-//! wrote is the saved file byte for byte, and a file no save wrote since it
-//! was loaded is the bytes it was loaded from, so a copy is the file on disk
-//! as it was when copies were made from it. Changes a failed save left in
-//! memory are in the export; a file hosted read-only for content the
-//! writer cannot write is the bytes it was loaded from without them, and
-//! the run logs a warning. The store is held for reading while the export
-//! is written and checked, and let go before it is flushed and renamed: a
-//! client's write to the file waits for that (docs/performance/export.md),
-//! where FileMaker Server pauses each file at the end of its copy (re 3).
-//! Before the export the run takes the store once more, for one open of the
-//! saved file, whose permissions the copy gets, as it opened the file for
-//! its copy before.
+//! **Consistency.** OpenMaker Server writes each change of a file as a
+//! complete new file renamed over the old one, and never writes a file in
+//! place (`crate::store::Store::save`). A run opens each file while it
+//! holds the file's store for reading, so that no save is half done, and
+//! lets go at once ([`crate::engine::FileEngine::stored`]): the descriptor
+//! names that version of the file whatever later saves rename over it, so
+//! the copy made from it is a snapshot of one save. The copy is an export
+//! of that file (`crate::engine::export::copy`): written under a temporary
+//! name in its folder of the backup, checked against the file (its length
+//! and SHA-256), then renamed. The store is held only for that open call,
+//! never while the file is copied. Clients see no pause (FileMaker Server
+//! pauses each file at the end of its copy, re 3): a client's write waits
+//! at most for one `open`, and a save in progress delays the backup, not
+//! the client. Changes a failed save left in memory are not in the copy;
+//! the run logs a warning.
 //!
 //! **Unchanged files are linked**, as FileMaker does (re 2.3): when the
 //! file has not been saved since this schedule's last complete backup made
-//! in this process (`Store::saves`), and neither then nor now held changes a
-//! failed save left in memory, its entry is a hard link to that backup's
-//! copy, while that copy is still the file the run made. After a restart,
-//! the first run of each schedule copies every file.
+//! in this process (`Store::saves`), its entry is a hard link to that
+//! backup's copy, while that copy is still the file the run made. After a
+//! restart, the first run of each schedule copies every file.
 //!
 //! **A run** writes `<name>_InProgress`, flushes every file and folder,
 //! and renames it to `<name>` once it is complete, so a crash never leaves
@@ -92,7 +90,6 @@ mod fs;
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::fs::Permissions;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
@@ -104,7 +101,7 @@ use log::{debug, error, info, warn};
 
 use crate::anchored::{FileAt, FileId};
 use crate::connection::Shared;
-use crate::engine::{Destination, ExportError, Progress};
+use crate::engine::{export, Destination, ExportError, Progress};
 use crate::hosting::{save_error, Hosted};
 use crate::schedules::{BackupFiles, BackupTask};
 use crate::scripts::AbortReason;
@@ -292,10 +289,8 @@ struct Run {
 /// A copy a backup made of a hosted file.
 #[derive(Clone, Debug)]
 struct Made {
-    /// The file's [`crate::store::Store::saves`] when it was exported, if
-    /// the version exported was the file on disk; `None` when it held
-    /// changes the disk lacked, which a later backup never links.
-    saves: Option<u64>,
+    /// The file's [`crate::store::Store::saves`] when it was copied.
+    saves: u64,
     /// The finished backup's folder name in its target folder.
     backup: String,
     /// The copy's folder below the backup's `Databases`, and its name.
@@ -377,25 +372,15 @@ impl Failure {
         }
     }
 
-    /// A file's export to `what` failed: stopped, as a copy is; the file
-    /// not read, as a file that cannot be opened (802); the copy not
-    /// written, with a save's codes; or not written as the file holds it
-    /// (800).
-    fn export(
-        what: &dyn std::fmt::Display,
-        hosted: &Hosted,
-        e: ExportError,
-        ticket: &Ticket,
-    ) -> Self {
+    /// A file's copy to `what` failed: stopped, or not read or written,
+    /// with a save's codes, as a copy failed before; or not read back as
+    /// the file (800).
+    fn export(what: &dyn std::fmt::Display, e: ExportError, ticket: &Ticket) -> Self {
         match e {
             ExportError::Stopped => {
                 Failure::Cancelled(ticket.cancelled().unwrap_or(AbortReason::Admin))
             }
-            ExportError::Io(e) => Failure::io(what, &e),
-            e @ (ExportError::Read(_) | ExportError::Image(_)) => Failure::Failed {
-                code: UNOPENABLE,
-                message: format!("{}: {e}", hosted.path.display()),
-            },
+            ExportError::Io(e) | ExportError::Source(e) => Failure::io(what, &e),
             e => Failure::Failed {
                 code: CANNOT_WRITE,
                 message: format!("{what}: {e}"),
@@ -1084,32 +1069,6 @@ fn database_root(shared: &Shared) -> PathBuf {
     root.unwrap_or_default()
 }
 
-/// What a run reads of a hosted file before it backs it up, under one
-/// reading of it ([`crate::engine::FileEngine::read`], the store's read
-/// lock): which saved version it holds ([`Made::saves`]), and the
-/// permissions of the file on disk, which its copy gets. The file is opened
-/// only while the path leads to the one the server read or last saved
-/// there (#468), as its copy was.
-struct Saved {
-    saves: Option<u64>,
-    permissions: Permissions,
-}
-
-fn saved_state(shared: &Shared, hosted: &Hosted) -> io::Result<Saved> {
-    let (file, saves) = {
-        let reading = shared.engine.read(hosted);
-        (reading.open_saved()?, reading.saved_version())
-    };
-    let metadata = file.metadata()?;
-    if !metadata.is_file() {
-        return Err(io::Error::other("not a regular file"));
-    }
-    Ok(Saved {
-        saves,
-        permissions: metadata.permissions(),
-    })
-}
-
 /// The name FileMaker's event log gives a file: without its extension.
 fn shown_name(hosted: &Hosted) -> String {
     Path::new(&hosted.name)
@@ -1342,44 +1301,43 @@ fn write_backup(
         let dest_path = temporary_path.join(DATABASES).join(&relative);
         let into = folder_below(&databases, &relative, &mut folders)
             .map_err(|e| Failure::io(&dest_path.display(), &e))?;
-        let source = saved_state(shared, hosted).map_err(|e| unreadable(&e))?;
+        // The file as its last save left it, opened under the store's read
+        // lock for that call alone, and copied after it.
+        let source = shared.engine.stored(hosted).map_err(|e| unreadable(&e))?;
+        if source.unsaved {
+            warn!(
+                "{:?}: the backup holds the file as last saved: changes the server could not \
+                 save are not in it",
+                hosted.name
+            );
+        }
         let shown = shown_name(hosted);
-        let previous = last
-            .get(&hosted.id)
-            .filter(|p| source.saves.is_some() && p.saves == source.saves);
+        let previous = last.get(&hosted.id).filter(|p| p.saves == source.saves);
         let linked = match previous {
             Some(previous) => link_previous(&target.folder, previous, &into, file_name)
                 .map_err(|e| Failure::io(&dest_path.display(), &e))?,
             None => false,
         };
-        let (saves, identity) = if let (true, Some(previous)) = (linked, previous) {
+        let identity = if let (true, Some(previous)) = (linked, previous) {
             info!(
                 "Backup of {shown:?} skipped because no changes were made since last backup; \
                  created hard link to last backup file \"{}\".",
                 target.path.join(previous.path()).display()
             );
-            (previous.saves, previous.identity)
+            previous.identity
         } else {
             info!("Starting to back up database {shown:?}, current status: Normal");
             let to = Destination {
                 folder: &into,
                 name: file_name,
-                permissions: Some(source.permissions),
+                permissions: Some(source.permissions.clone()),
             };
             let progress = Progress {
                 stop: &stop,
                 written: &copied,
             };
-            let exported = shared.engine.export(hosted, &to, progress).map_err(|e| {
-                Failure::export(&dest_path.join(file_name).display(), hosted, e, ticket)
-            })?;
-            if !exported.current {
-                warn!(
-                    "{:?}: the backup holds the file as last saved: changes the server could \
-                     not save are not in it",
-                    hosted.name
-                );
-            }
+            let exported = export::copy(&source, &to, progress)
+                .map_err(|e| Failure::export(&dest_path.join(file_name).display(), e, ticket))?;
             let id = exported.id.ok_or_else(|| Failure::Failed {
                 code: CANNOT_WRITE,
                 message: format!(
@@ -1388,12 +1346,12 @@ fn write_backup(
                 ),
             })?;
             info!("Backup of {shown:?} completed, current status: Normal");
-            (exported.saves, Identity::exported(id, exported.size))
+            Identity::exported(id, exported.size)
         };
         made.insert(
             hosted.id,
             Made {
-                saves,
+                saves: source.saves,
                 backup: name.clone(),
                 relative: relative.clone(),
                 file: file_name.to_os_string(),

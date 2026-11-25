@@ -46,7 +46,7 @@ use crate::derived::{
     self, cell_text, counts_key, field_texts, Derived, CATALOG_INDEX, ENGLISH, LAST_MEMBER_ID,
     LOCALE,
 };
-use crate::engine::{Read, Source, TreeView, Version, Waiting};
+use crate::engine::{OnDisk, Read, Source, TreeView, Version, Waiting};
 use crate::filelock::FileLock;
 use crate::library::{self, BinaryData, Stored, LIBRARY};
 use crate::modcount::{self, MOD_COUNT};
@@ -741,23 +741,22 @@ impl Store {
     }
 
     /// How an export writes the version the store holds now
-    /// (`engine::export`, the module doc): the file as it was loaded, while
-    /// no save wrote it and nothing changed it, or while it holds content
-    /// the writer cannot write, is the bytes it was loaded from, read from
-    /// the file on disk ([`Store::open_saved`]); a version a save wrote,
-    /// unchanged since, is written from the change number that save started
-    /// from, so that it is the saved file byte for byte; a version the disk
-    /// lacks is written from the change number the next save starts from.
-    /// A store that cannot tell that the file at `at` is the one it loaded
-    /// (no lock, no identity) writes that version too, as its compacted
-    /// copy did.
+    /// (`engine::export`, the module doc). With nothing changed since the
+    /// last save or the load, the file on disk holds the version, and is
+    /// copied ([`Store::on_disk`]); so is the file of a store that loaded
+    /// content the writer cannot write, the bytes it was loaded from, also
+    /// with changes its refused saves left in memory. With changes the disk
+    /// lacks, the tree is written from the change number the next save
+    /// starts from: what that save would write. A store that cannot tell
+    /// that the file at `at` is the one it holds (no lock, no identity)
+    /// writes the tree too: a version a save wrote from the change number
+    /// that save started from, so that it is the saved file byte for byte,
+    /// and the file as loaded from the loaded change number, as its
+    /// compacted copy was.
     pub(crate) fn export_source(&self, at: &FileAt) -> std::io::Result<Source> {
-        let loaded = self.saves == 0 && (!self.dirty || self.unwritable);
-        if loaded && (self.lock.is_some() || self.file.is_some()) {
-            return Ok(Source::Image {
-                file: self.open_saved(at)?,
-                current: !self.dirty,
-            });
+        let on_disk = !self.dirty || self.unwritable;
+        if on_disk && (self.lock.is_some() || self.file.is_some()) {
+            return Ok(Source::OnDisk(self.on_disk(at)?));
         }
         let change_number = match (self.dirty, self.saved_from) {
             (false, Some(saved_from)) => saved_from,
@@ -776,11 +775,23 @@ impl Store {
         }
     }
 
-    /// How many saves wrote the file since it was loaded, when the version
-    /// the store holds is the file on disk: `None` while it has changes the
-    /// disk lacks.
-    pub(crate) fn saved_version(&self) -> Option<u64> {
-        (!self.dirty).then_some(self.saves)
+    /// The file on disk, as [`Store::open_saved`] opens it, with its length
+    /// and permissions, how many saves wrote it since the load, and whether
+    /// the tree holds changes it lacks: what a copy of it needs, taken
+    /// while the store is held.
+    pub(crate) fn on_disk(&self, at: &FileAt) -> std::io::Result<OnDisk> {
+        let file = self.open_saved(at)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(std::io::Error::other("not a regular file"));
+        }
+        Ok(OnDisk {
+            file,
+            len: metadata.len(),
+            permissions: metadata.permissions(),
+            saves: self.saves,
+            unsaved: self.dirty,
+        })
     }
 
     /// The file on disk the store was read from or last saved as, opened to
