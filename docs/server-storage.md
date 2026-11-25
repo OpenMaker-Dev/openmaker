@@ -570,14 +570,19 @@ an `.fmp12`, in one of two ways; the engine says which
   was loaded, with nothing changed since, opened where the store can tell
   it is that file (the descriptor a desktop's host holds locked, or the
   entry at the file's path while it is the one the server read or last
-  saved there, #468). A file hosted read-only for content the writer
-  cannot write is always its file on disk, the bytes it was loaded from
-  (section 2, rule 2), also while changes its refused saves left wait in
-  memory; those are then not in the export, and `Exported::current` says
-  so. A copy is checked against what it read: as many bytes as the file
-  had when it was opened, and the SHA-256 of the bytes read equal to that
-  of the copy read back. No view is read: the file is what a checked save
-  wrote, or what the server loaded.
+  saved there,
+  [#468](https://github.com/OpenMaker-Dev/openmaker/issues/468)). A file
+  hosted read-only for content the writer cannot write is always its file
+  on disk, the bytes it was loaded from (section 2, rule 2), also while
+  changes its refused saves left wait in memory; those are then not in
+  the export, and `Exported::current` says so. The copy goes from descriptor to descriptor, by the kernel where the
+  system can (`copy_file_range`), as backups always copied, and is checked
+  to be as long as the file was when it was opened, the file not having
+  grown past that. It is not read back: that is what FileMaker Server's
+  Verify option of a backup schedule adds
+  ([#158](https://github.com/OpenMaker-Dev/openmaker/issues/158)). No view
+  is read: the file is what a checked save wrote, or what the server
+  loaded.
 - **Written from the view**, when the disk lacks the version (changes in
   memory that no save wrote) and for a compacted copy
   (`engine::export::Kind::Compacted`): a depth-first walk of the view, in
@@ -601,9 +606,10 @@ to a folder is made under `<name>.omexport`, made only where nothing is,
 then flushed, renamed to its name, never over an entry there, and the
 folder flushed; on any failure what the export made is removed while it is
 still that file, and nothing else. An export can also fill an empty file
-its caller made (`engine::export::Target::File`). Memory is a 256 KB copy
-buffer, or what the writer and reader hold (a few pages and the open key
-path) and a page of the view's walk; never a part of the file.
+its caller made (`engine::export::Target::File`). Memory is what the
+kernel's copy takes, or what the writer and reader hold (a few pages and
+the open key path) and a page of the view's walk; never a part of the
+file.
 
 **The file engine's limit.** Its view holds the store's read lock for as
 long as the view lives, so a written export holds up every write to the

@@ -829,7 +829,7 @@ than a second reader and writer.
     save left them, or as the file was opened when no save wrote it,
     opened under the host's read lock (from its path, while that leads to
     the file the host holds locked) and copied after it, checked against
-    what was read (length and SHA-256). While changes a failed save left
+    what was read (its length). While changes a failed save left
     wait in memory, or for a file the host could not lock, it is the key
     tree written as a new packed file (hbam-writer.md 7.2), as the next
     save would write it, under the read lock. A copy of a file opened

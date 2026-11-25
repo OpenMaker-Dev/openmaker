@@ -41,9 +41,12 @@
 //! lets go at once ([`crate::engine::FileEngine::stored`]): the descriptor
 //! names that version of the file whatever later saves rename over it, so
 //! the copy made from it is a snapshot of one save. The copy is an export
-//! of that file (`crate::engine::export::copy`): written under a temporary
-//! name in its folder of the backup, checked against the file (its length
-//! and SHA-256), then renamed. The store is held only for that open call,
+//! of that file (`crate::engine::export::copy`): copied by the kernel where
+//! the system can, as before, under a temporary name in its folder of the
+//! backup, checked to be as long as the file was when it was opened, then
+//! renamed. It is not read back: that is FileMaker's Verify option
+//! ([#158](https://github.com/OpenMaker-Dev/openmaker/issues/158)), which
+//! OpenMaker does not have. The store is held only for that open call,
 //! never while the file is copied. Clients see no pause (FileMaker Server
 //! pauses each file at the end of its copy, re 3): a client's write waits
 //! at most for one `open`, and a save in progress delays the backup, not
@@ -373,8 +376,8 @@ impl Failure {
     }
 
     /// A file's copy to `what` failed: stopped, or not read or written,
-    /// with a save's codes, as a copy failed before; or not read back as
-    /// the file (800).
+    /// with a save's codes, as a copy failed before; or the file changed
+    /// length while it was copied (800).
     fn export(what: &dyn std::fmt::Display, e: ExportError, ticket: &Ticket) -> Self {
         match e {
             ExportError::Stopped => {
