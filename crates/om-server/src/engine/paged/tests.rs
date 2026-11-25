@@ -573,6 +573,58 @@ const SMALL: Batch = Batch {
     bytes: 64 << 10,
 };
 
+/// A find's index entry is read within the work its program has left
+/// (`om_query::Listing::entry`): through the store engine's view, an entry
+/// past it is refused at the limit rather than given, one within it is
+/// given, and a view that keeps failed reads for a server script's find
+/// (`Noted`) does not take the refusal for one, so that the find fails at
+/// its work limit, not as an unreadable file.
+#[test]
+fn a_listed_entry_past_the_work_left_is_refused_by_the_store_engines_view() {
+    use om_hbam::RidList;
+    use om_query::program::Size;
+    let mut root = fixture::tree(&[], true);
+    let index: [&[u8]; 4] = [&[0x80, 0x01], &[1], &[1], &[0]];
+    let key: &[u8] = b"\x01ship";
+    let posting: RidList = (1..=200_000u64).step_by(3).collect();
+    let mut at = index.to_vec();
+    at.push(key);
+    root.put(&at, posting.to_node(Vec::new()));
+    let (memory, imported) = import_into_memory(&written(&root), SMALL);
+    let view = PagedView::open(&memory, imported.root).unwrap();
+    let noted = crate::engine::Noted::new(&view);
+    let Some(om_query::Children::Listed(listing)) =
+        crate::connection::ViewListing::of(&noted, &index).unwrap()
+    else {
+        panic!("the store engine's view lists an index");
+    };
+    let whole = posting.to_node(key.to_vec());
+    let work = Size {
+        nodes: 1 + whole.children.len(),
+        bytes: key.len()
+            + whole
+                .children
+                .iter()
+                .map(|c| c.segment.len() + c.value.as_ref().map_or(0, Vec::len))
+                .sum::<usize>(),
+    };
+    assert!(work.nodes > 40, "{work:?}");
+    let little = Size {
+        nodes: 4,
+        bytes: 200,
+    };
+    assert!(matches!(
+        listing.entry(key, little),
+        Err(om_hbam::Error::TooLarge { .. })
+    ));
+    assert!(
+        noted.failed().is_ok(),
+        "a refusal at the caller's limit is no failed read"
+    );
+    let given = listing.entry(key, work).unwrap().unwrap();
+    assert_eq!(RidList::from_owned(&given).unwrap(), posting);
+}
+
 /// Two engines, one answer (docs/server-storage.md 12, "Both engines
 /// behind one server", for reads): for every fixture file, each read the
 /// comparison makes is answered alike by the file engine's view of the

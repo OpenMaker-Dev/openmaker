@@ -303,8 +303,12 @@ impl<'v> Noted<'v> {
         }
     }
 
+    /// Keep `read`'s error, if it failed. A subtree refused at the
+    /// caller's own limit ([`ReadError::TooLarge`]) is no failed read: the
+    /// caller asked within it and answers the refusal itself (a find's
+    /// index entry past its work, `om_query::Listing::entry`).
     fn note<T>(&self, read: Result<T, ReadError>) -> Result<T, ReadError> {
-        if let Err(error) = &read {
+        if let Err(error @ ReadError::Unreadable { .. }) = &read {
             self.failed
                 .borrow_mut()
                 .get_or_insert_with(|| error.clone());

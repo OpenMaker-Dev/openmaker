@@ -28,7 +28,7 @@ use om_hbam::slot::uint_segment;
 use om_hbam::OwnedNode;
 
 use crate::derived::Derived;
-use crate::engine::{Read, ReadError, NO_LIMIT};
+use crate::engine::{Head, Read, ReadError, NO_LIMIT};
 use crate::modcount::MOD_COUNT;
 
 /// Under a table `[T]`: its indexes, its records and its global values.
@@ -175,6 +175,18 @@ impl ViewFilter {
         }))
     }
 
+    /// A filter whose account may view no record of each of `never`, and
+    /// not the cells `hidden` names, for tests that need no set.
+    #[cfg(test)]
+    pub(crate) fn of(never: &[Vec<u8>], hidden: HiddenFields) -> Self {
+        Self {
+            limits: never.iter().map(|table| (table.clone(), None)).collect(),
+            hidden,
+            environment: crate::recalc::record_environment("test", crate::recalc::random_uuid()),
+            withheld: RefCell::default(),
+        }
+    }
+
     /// Whether the account may not read all of base table `table`: a view
     /// limit, no view at all, or a field without access. Its indexes and
     /// container library are withheld.
@@ -202,6 +214,45 @@ impl ViewFilter {
             [table, [INDEXES] | [LIBRARY], _, ..] => self.limits(table),
             _ => false,
         }
+    }
+
+    /// What [`ViewFilter::filter`] would leave of the node at `path` whose
+    /// head is `head`, as its head, without reading the node's subtree:
+    /// `None` where the filter answers `None`, the head without its value
+    /// where it empties the node, and the head as it is where it removes or
+    /// withholds children only (a node with children is a pushed list in
+    /// either engine, so it stays one). Below a record of a view-limited
+    /// table, as the filter does, the record is read to evaluate the limit
+    /// ([`ViewFilter::viewable`]); nothing else is read.
+    pub(crate) fn head<'h>(
+        &self,
+        read: Read<'_>,
+        path: &[&[u8]],
+        head: Head<'h>,
+    ) -> Result<Option<Head<'h>>, ReadError> {
+        let emptied = |head: Head<'h>| Head {
+            list: head.list,
+            value: None,
+        };
+        Ok(match path {
+            [] => Some(head),
+            [[LIBRARY]] => Some(emptied(head)),
+            [[LIBRARY], ..] => None,
+            [table, rest @ ..] if self.limits(table) => match rest {
+                [[INDEXES]] | [[LIBRARY]] => Some(emptied(head)),
+                [[INDEXES], ..] | [[LIBRARY], ..] => None,
+                [[RECORDS], record, field, ..] => {
+                    let viewable = self.viewable(read, table, record)?;
+                    if !viewable {
+                        self.note(table, record);
+                    }
+                    (viewable && !self.hides(table, field)).then_some(head)
+                }
+                [[GLOBALS], field, ..] => (!self.hides(table, field)).then_some(head),
+                _ => Some(head),
+            },
+            _ => Some(head),
+        })
     }
 
     /// Whether field `field` of `table` (their keys) is hidden.

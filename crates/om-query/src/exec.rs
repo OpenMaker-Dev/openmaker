@@ -3003,11 +3003,151 @@ mod tests {
         }
     }
 
-    /// What each of [`counted_programs`] counted against [`counted_index`]
-    /// held whole before an index could be listed: the work limit (nodes,
-    /// bytes) each ran within at `085f2cdc1`, the commit before, by these
-    /// programs on that code.
-    const COUNTED_BEFORE_LISTINGS: [(&str, usize, usize); 30] = [
+    /// LookupValue (op 17, spec 8.6) of a row whose field 9 holds `key`, by
+    /// `predicates` in turn, each on field `field`, to the next lower or
+    /// higher value.
+    fn lookup_on(field: u8, key: &[u8], predicates: &[u8], higher: bool) -> Vec<u8> {
+        let rows = vec![OwnedNode::list(
+            serial::encode(1),
+            vec![OwnedNode::list(vec![9], uploaded(&[key]))],
+        )];
+        let mut leaves = vec![
+            OwnedNode::leaf(vec![leaf::SRC], vec![1, 2, 1, 1]),
+            OwnedNode::leaf(vec![leaf::DEL_LIST], vec![1, 2, 1, 2]),
+        ];
+        if higher {
+            leaves.push(OwnedNode::leaf(vec![leaf::LOOKUP_HIGHER], vec![1, 1]));
+        }
+        let predicates = numbered(
+            predicates
+                .iter()
+                .map(|&p| vec![p, 2, 1, field, 2, 1, 9])
+                .collect(),
+        );
+        lookup(opcode::LOOKUP, leaves, [rows, predicates])
+    }
+
+    /// CreateValueListEx (spec 8.7) of field `field`: every value.
+    fn value_list_on(field: u8) -> Vec<u8> {
+        let leaves = vec![OwnedNode::leaf(vec![leaf::FIELD_KEY], vec![1, field])];
+        lookup(opcode::CREATE_VALUE_LIST_EX, leaves, [vec![], vec![]])
+    }
+
+    /// A finder of the word index (scope 0) of field 1.
+    fn word_finder(kind: u8, options: u8, begin: &[u8], end: &[u8]) -> Vec<u8> {
+        let mut bytes = finder(kind, options, 1, begin, end);
+        bytes[1] = 0;
+        bytes
+    }
+
+    /// [`counted_index`] as field 1's value index, and its word index: the
+    /// source [`counted_programs`] and [`more_counted_programs`] read.
+    /// Field 2's index has no keys, and field 3 has none.
+    fn counted_source() -> Indexed {
+        let mut source = Indexed::new(30, counted_index()).defined(21, 1);
+        let words = vec![
+            entry(&[0x20], &[7, 8]),
+            entry(&[0x30], &[9, 10]),
+            entry(&[0x50], &[21, 22]),
+        ];
+        source.root.put(
+            &[&[0x80, 0x01], &[1], &[1], &[1]],
+            OwnedNode::list(Vec::new(), words),
+        );
+        source
+    }
+
+    /// More programs over [`counted_source`]: other range and prefix forms,
+    /// the word index, LookupValue by two predicates, and each instruction
+    /// over a field whose index has no keys (2) and one without an index (3).
+    fn more_counted_programs() -> Vec<(String, Vec<u8>)> {
+        let both = INCLUDE_BEGIN | INCLUDE_END;
+        let mut programs: Vec<(String, Vec<u8>)> = vec![
+            (
+                "finder: a range, its bounds excluded".into(),
+                find_program(&[finder(2, 0, 1, &[0x10], &[0x40])]),
+            ),
+            (
+                "finder: from a key on".into(),
+                find_program(&[finder(2, INCLUDE_BEGIN, 1, &[0x20], &[])]),
+            ),
+            (
+                "finder: after a key".into(),
+                find_program(&[finder(2, 0, 1, &[0x20], &[])]),
+            ),
+            (
+                "finder: a word".into(),
+                find_program(&[word_finder(0, 0, &[0x30], &[])]),
+            ),
+            (
+                "finder: a range of words".into(),
+                find_program(&[word_finder(2, both, &[0x10], &[0x40])]),
+            ),
+            (
+                "finder: duplicate words".into(),
+                find_program(&[word_finder(7, 0, &[], &[])]),
+            ),
+            (
+                "lookup: = then <, lower".into(),
+                lookup_on(1, &[0x40], &[pred::EQ, pred::LT], false),
+            ),
+            (
+                "lookup: = then ≥, higher".into(),
+                lookup_on(1, &[0x45], &[pred::GE, pred::EQ], true),
+            ),
+            (
+                "value list: a prefix no key has".into(),
+                value_list_program(Some(&[0x35])),
+            ),
+            (
+                "value list: the empty prefix".into(),
+                value_list_program(Some(&[])),
+            ),
+        ];
+        for (field, what) in [(2u8, "no keys"), (3, "no index")] {
+            let f = |name: &str| format!("{name}, field {field} ({what})");
+            programs.extend([
+                (
+                    f("finder: a key"),
+                    find_program(&[finder(0, 0, field, &[0x20], &[])]),
+                ),
+                (
+                    f("finder: not a key"),
+                    find_program(&[finder(1, 0, field, &[0x20], &[])]),
+                ),
+                (
+                    f("finder: a range"),
+                    find_program(&[finder(2, both, field, &[0x10], &[0x40])]),
+                ),
+                (
+                    f("finder: duplicates"),
+                    find_program(&[finder(7, 0, field, &[], &[])]),
+                ),
+                (f("exists"), exists_program(field, &[&[0x05], &[0x20]], &[])),
+                (
+                    f("join ="),
+                    join_program(&[&[&[0x20]], &[&[0x40]]], &[(pred::EQ, field)]),
+                ),
+                (
+                    f("join ≠"),
+                    join_program(&[&[&[0x20]]], &[(pred::NE, field)]),
+                ),
+                (
+                    f("join <"),
+                    join_program(&[&[&[0x40]]], &[(pred::LT, field)]),
+                ),
+                (f("lookup"), lookup_on(field, &[0x45], &[pred::EQ], false)),
+                (f("value list"), value_list_on(field)),
+            ]);
+        }
+        programs
+    }
+
+    /// What each of [`counted_programs`] and [`more_counted_programs`]
+    /// counted against [`counted_source`] before an index could be listed:
+    /// the work limit (nodes, bytes) each ran within at `085f2cdc1`, the
+    /// commit before, by these programs on that code.
+    const COUNTED_BEFORE_LISTINGS: [(&str, usize, usize); 60] = [
         ("finder: a key", 24, 266),
         ("finder: a key missing", 21, 263),
         ("finder: not a key", 25, 282),
@@ -3038,20 +3178,60 @@ mod tests {
         ("sort: up", 82, 1878),
         ("sort: down", 82, 1998),
         ("sort: some records", 59, 628),
+        ("finder: a range, its bounds excluded", 35, 508),
+        ("finder: from a key on", 39, 518),
+        ("finder: after a key", 37, 516),
+        ("finder: a word", 13, 42),
+        ("finder: a range of words", 17, 50),
+        ("finder: duplicate words", 15, 52),
+        ("lookup: = then <, lower", 69, 752),
+        ("lookup: = then ≥, higher", 49, 281),
+        ("value list: a prefix no key has", 23, 247),
+        ("value list: the empty prefix", 43, 539),
+        ("finder: a key, field 2 (no keys)", 6, 28),
+        ("finder: not a key, field 2 (no keys)", 8, 41),
+        ("finder: a range, field 2 (no keys)", 7, 30),
+        ("finder: duplicates, field 2 (no keys)", 5, 26),
+        ("exists, field 2 (no keys)", 9, 9),
+        ("join =, field 2 (no keys)", 11, 18),
+        ("join ≠, field 2 (no keys)", 8, 15),
+        ("join <, field 2 (no keys)", 8, 15),
+        ("lookup, field 2 (no keys)", 11, 16),
+        ("value list, field 2 (no keys)", 6, 12),
+        ("finder: a key, field 3 (no index)", 6, 28),
+        ("finder: not a key, field 3 (no index)", 8, 41),
+        ("finder: a range, field 3 (no index)", 7, 30),
+        ("finder: duplicates, field 3 (no index)", 5, 26),
+        ("exists, field 3 (no index)", 9, 9),
+        ("join =, field 3 (no index)", 11, 18),
+        ("join ≠, field 3 (no index)", 8, 15),
+        ("join <, field 3 (no index)", 8, 15),
+        ("lookup, field 3 (no index)", 11, 16),
+        ("value list, field 3 (no index)", 6, 12),
     ];
 
     /// An index held whole counts the work it counted before an index could
     /// be listed, instruction for instruction: reading the index, its
-    /// lookups, ranges, walks and the entries read, so that a program that
-    /// ran within its limit still does, and one that did not still fails.
+    /// lookups, ranges, walks and the entries read, an index with no keys
+    /// and a field without one included, so that a program that ran within
+    /// its limit still does, and one that did not still fails. Not covered:
+    /// an index read as if sorted (out of order or with a key repeated, which
+    /// `an_unsorted_index_reads_as_sorted` checks for answers only), the
+    /// repetition scope's finders, a cartesian predicate, LookupValue by
+    /// three predicates or more, a value list cut at its most values, and an
+    /// index built on demand.
     #[test]
     fn whole_indexes_count_what_they_counted_before_listings() {
-        let source = Indexed::new(30, counted_index()).defined(21, 1);
-        let programs = counted_programs();
+        let source = counted_source();
+        let programs: Vec<(String, Vec<u8>)> = counted_programs()
+            .into_iter()
+            .map(|(name, program)| (name.to_string(), program))
+            .chain(more_counted_programs())
+            .collect();
         assert_eq!(programs.len(), COUNTED_BEFORE_LISTINGS.len());
         for ((name, program), (named, nodes, bytes)) in programs.iter().zip(COUNTED_BEFORE_LISTINGS)
         {
-            assert_eq!(*name, named);
+            assert_eq!(name, named);
             assert_eq!(charged(&source, program), Size { nodes, bytes }, "{name}");
         }
     }

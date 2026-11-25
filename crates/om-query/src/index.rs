@@ -77,9 +77,8 @@ pub struct Index<'f> {
 }
 
 enum Held<'f> {
-    /// The field has no such index: it reads as one without keys.
-    Absent,
-    /// The node held whole, its entries in order but for a last
+    /// The node held whole (a field without such an index reads as an
+    /// empty one: [`Index::absent`]), its entries in order but for a last
     /// [`om_collate::TOO_LONG_KEY`]: the first `len` are values' keys.
     Whole {
         node: Cow<'f, OwnedNode>,
@@ -92,7 +91,6 @@ enum Held<'f> {
 impl std::fmt::Debug for Index<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.held {
-            Held::Absent => f.write_str("Index::Absent"),
             Held::Whole { len, .. } => write!(f, "Index::Whole({len} entries)"),
             Held::Listed(_) => f.write_str("Index::Listed"),
         }
@@ -123,8 +121,10 @@ impl<'a> Entry<'a> {
     }
 
     /// The records under the entry, counting the entry as read. A listed
-    /// entry is read only now, a seek, from the listing that gave its key;
-    /// one the listing then does not hold is an error (the source broke).
+    /// entry is read only now, a seek, from the listing that gave its key,
+    /// within the work left ([`Listing::entry`]): one past it fails the
+    /// program at the work limit, as counting it would; one the listing then
+    /// does not hold is an error (the source broke).
     pub fn records(&self, work: &Work) -> Result<RidList, QueryError> {
         match self.at {
             At::Held { node, .. } => {
@@ -133,8 +133,14 @@ impl<'a> Entry<'a> {
             }
             At::Listed(listing) => {
                 work.spend(SEEK)?;
-                let node = listing
-                    .entry(&self.key)?
+                // Within the work left, so that an entry larger than the
+                // program may still read is refused before it is read
+                // whole, with the error counting it would give.
+                let node = match listing.entry(&self.key, work.left()) {
+                    Err(om_hbam::Error::TooLarge { .. }) => return Err(QueryError::Limit("work")),
+                    read => read?,
+                };
+                let node = node
                     .filter(|node| node.segment.as_slice() == &*self.key)
                     .ok_or_else(|| broken("a key it listed has no entry"))?;
                 work.spend(measure(&node).0)?;
@@ -203,9 +209,16 @@ fn below(key: &[u8], high: Bound<&[u8]>) -> bool {
 }
 
 impl<'f> Index<'f> {
-    /// The index of a field without one: no keys.
+    /// The index of a field without one: no keys, held whole, so that each
+    /// search of it counts as one of an empty index does (one key compared,
+    /// at least), as it counted before an index could be listed.
     fn absent() -> Self {
-        Self { held: Held::Absent }
+        Self {
+            held: Held::Whole {
+                node: Cow::Owned(OwnedNode::default()),
+                len: 0,
+            },
+        }
     }
 
     /// The index whose entries are `children`: listed as the source lists
@@ -313,7 +326,6 @@ impl<'f> Index<'f> {
     /// The entry under `key`, if the index holds it.
     pub fn get(&self, key: &[u8], work: &Work) -> Result<Option<Entry<'_>>, QueryError> {
         match &self.held {
-            Held::Absent => Ok(None),
             Held::Whole { node, len } => {
                 let entries = Self::held(node, *len);
                 let at = Self::partition(entries, 0, work, |k| k < key)?;
@@ -337,7 +349,6 @@ impl<'f> Index<'f> {
     /// The entry with the lowest key, if the index holds any.
     pub fn first(&self, work: &Work) -> Result<Option<Entry<'_>>, QueryError> {
         match &self.held {
-            Held::Absent => Ok(None),
             Held::Whole { node, len } => {
                 let entries = Self::held(node, *len);
                 Ok((!entries.is_empty()).then(|| Self::at(entries, 0)))
@@ -355,7 +366,6 @@ impl<'f> Index<'f> {
         work: &'w Work,
     ) -> Result<Scan<'a, 'w>, QueryError> {
         let walk = match &self.held {
-            Held::Absent => Walk::Done,
             Held::Whole { node, len } => {
                 let (start, end) = Self::bounds(Self::held(node, *len), range, work)?;
                 Walk::Held {
@@ -373,7 +383,6 @@ impl<'f> Index<'f> {
     /// keys were counted when it was read, the walk searches nothing.
     pub fn entries<'a, 'w>(&'a self, work: &'w Work) -> Scan<'a, 'w> {
         let walk = match &self.held {
-            Held::Absent => Walk::Done,
             Held::Whole { node, len } => Walk::Held {
                 entries: Self::held(node, *len),
                 positions: 0..*len,
@@ -406,7 +415,6 @@ impl<'f> Index<'f> {
     /// searches a scan makes; on a listed one, listed when the span is read.
     pub fn span(&self, range: KeyRange<'_>, work: &Work) -> Result<Span<'_>, QueryError> {
         Ok(Span(match &self.held {
-            Held::Absent => Run::Held(0..0),
             Held::Whole { node, len } => {
                 let (start, end) = Self::bounds(Self::held(node, *len), range, work)?;
                 Run::Held(start..end)
@@ -420,7 +428,6 @@ impl<'f> Index<'f> {
     /// their positions; on a listed one, by their keys.
     pub fn between(&self, low: Bound<&Entry<'_>>, high: Bound<&Entry<'_>>) -> Span<'_> {
         Span(match &self.held {
-            Held::Absent => Run::Held(0..0),
             Held::Whole { node, len } => {
                 let entries = Self::held(node, *len);
                 // An entry of another index (no caller gives one) is placed
@@ -454,7 +461,6 @@ impl<'f> Index<'f> {
     pub fn records_in(&self, spans: Vec<Span<'_>>, work: &Work) -> Result<RidList, QueryError> {
         let mut found = RidList::new();
         match &self.held {
-            Held::Absent => {}
             Held::Whole { node, len } => {
                 let entries = Self::held(node, *len);
                 let mut found_runs = Vec::with_capacity(spans.len());
@@ -566,6 +572,9 @@ fn listed_get<'a>(
     }
     let mut page = Vec::with_capacity(1);
     let more = listing.keys(Bound::Included(key), Direction::Forward, 1, &mut page)?;
+    if page.len() > 1 {
+        return Err(broken("a page with more keys than asked for").into());
+    }
     let Some(next) = page.into_iter().next() else {
         return match more {
             true => Err(broken("a page with no key said more follow").into()),
@@ -594,7 +603,6 @@ impl<'a> Lookups<'a> {
     /// key looked up before it.
     pub fn get(&mut self, key: &[u8], work: &Work) -> Result<Option<Entry<'a>>, QueryError> {
         match self.held {
-            Held::Absent => Ok(None),
             Held::Whole { node, len } => {
                 let entries = Index::held(node, *len);
                 let at =
@@ -783,6 +791,9 @@ impl<'a> Scan<'a, '_> {
                             true => Some(Err(broken("a page with no key said more follow").into())),
                             false => None,
                         };
+                    }
+                    if out.len() > *size {
+                        return Some(Err(broken("a page with more keys than asked for").into()));
                     }
                     *size = (*size * 2).min(PAGE);
                     page.extend(out);
@@ -1250,6 +1261,7 @@ mod tests {
     use super::{Entry, Index, KeyRange, Span};
     use crate::program::{Size, Work};
     use crate::source::{node_entry, node_keys, Capped, Children, Direction, Listing};
+    use crate::QueryError;
 
     /// A seeded source of numbers (splitmix64).
     fn numbers(seed: u64) -> impl FnMut() -> u64 {
@@ -1578,6 +1590,8 @@ mod tests {
         Stalled,
         /// Its keys, but no entry under any of them.
         Empty,
+        /// Its keys in order, one more a page than asked for.
+        Overfull,
     }
 
     struct Broken(OwnedNode, Breaks);
@@ -1601,11 +1615,16 @@ mod tests {
                 Breaks::Stalled if from == Bound::Unbounded => out.extend(keys.take(2)),
                 Breaks::Stalled => {}
                 Breaks::Empty => return Ok(node_keys(&self.0, from, direction, max, out)),
+                Breaks::Overfull => return Ok(node_keys(&self.0, from, direction, max + 1, out)),
             }
             Ok(true)
         }
 
-        fn entry<'a>(&'a self, key: &[u8]) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
+        fn entry<'a>(
+            &'a self,
+            key: &[u8],
+            _limit: Size,
+        ) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
             match self.1 {
                 Breaks::Empty => Ok(None),
                 _ => Ok(node_entry(&self.0, key)),
@@ -1614,25 +1633,26 @@ mod tests {
     }
 
     /// A listing that gives keys out of order, the same page again and
-    /// again, a page with no key that says more follow, or a key without
-    /// an entry never makes a read loop, nor ends one early as if the
-    /// index ended there: the lookup or scan that meets it fails.
+    /// again, a page with no key that says more follow, a page with more
+    /// keys than asked for, or a key without an entry never makes a read
+    /// loop, nor ends one early as if the index ended there, nor answers
+    /// from keys it was not asked for: the lookup or scan that meets it
+    /// fails.
     #[test]
     fn a_broken_listing_fails_the_read() {
         let work = Work::new(Size {
             nodes: 1_000,
             bytes: 1_000_000,
         });
-        let entry = |k: &[u8]| [1u64].into_iter().collect::<RidList>().to_node(k.to_vec());
-        let node = OwnedNode::list(
-            vec![0],
-            vec![entry(&[1]), entry(&[2]), entry(&[3]), entry(&[4])],
-        );
+        let entry = |k: u8| [1u64].into_iter().collect::<RidList>().to_node(vec![k]);
+        // More entries than a scan's first page asks for.
+        let node = OwnedNode::list(vec![0], (1..=12).map(entry).collect());
         for breaks in [
             Breaks::Reversed,
             Breaks::Repeated,
             Breaks::Stalled,
             Breaks::Empty,
+            Breaks::Overfull,
         ] {
             let index = Index::read(
                 Children::Listed(Box::new(Broken(node.clone(), breaks))),
@@ -1645,8 +1665,8 @@ mod tests {
                 .unwrap()
                 .map(|entry| entry.and_then(|e| e.records(&work)))
                 .collect();
-            // At most the four entries once, then the error.
-            assert!(read.len() <= 5, "{breaks:?}");
+            // At most the entries once, then the error.
+            assert!(read.len() <= 13, "{breaks:?}");
             assert!(read.last().unwrap().is_err(), "{breaks:?}: {read:?}");
             let spans = vec![index.span(all, &work).unwrap()];
             assert!(index.records_in(spans, &work).is_err(), "{breaks:?}");
@@ -1662,12 +1682,98 @@ mod tests {
         assert!(reversed.get(&[5], &work).is_err());
         // Asked for `03`, a page with no key that says more follow.
         let stalled = Index::read(
-            Children::Listed(Box::new(Broken(node, Breaks::Stalled))),
+            Children::Listed(Box::new(Broken(node.clone(), Breaks::Stalled))),
             &work,
         )
         .unwrap();
         assert!(stalled.get(&[3], &work).is_err());
         assert!(stalled.lookups().get(&[3], &work).is_err());
+        // Asked for one key, two in order: the lookup does not answer from
+        // the first.
+        let overfull = Index::read(
+            Children::Listed(Box::new(Broken(node, Breaks::Overfull))),
+            &work,
+        )
+        .unwrap();
+        assert!(overfull.get(&[3], &work).is_err());
+        assert!(overfull.lookups().get(&[3], &work).is_err());
+    }
+
+    /// A listing that notes the limit each entry was read within, and
+    /// refuses an entry past it, as a listing that builds entries does
+    /// (`Listing::entry`).
+    struct Limited<'n> {
+        node: &'n OwnedNode,
+        asked: &'n std::cell::RefCell<Vec<Size>>,
+    }
+
+    impl Listing for Limited<'_> {
+        fn keys<'a>(
+            &'a self,
+            from: Bound<&[u8]>,
+            direction: Direction,
+            max: usize,
+            out: &mut Vec<Cow<'a, [u8]>>,
+        ) -> om_hbam::Result<bool> {
+            Ok(node_keys(self.node, from, direction, max, out))
+        }
+
+        fn entry<'a>(
+            &'a self,
+            key: &[u8],
+            limit: Size,
+        ) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
+            self.asked.borrow_mut().push(limit);
+            let entry = node_entry(self.node, key);
+            match entry {
+                Some(node) if !crate::program::measure(&node).0.within(limit) => {
+                    Err(om_hbam::Error::TooLarge { limit: 0 })
+                }
+                entry => Ok(entry),
+            }
+        }
+    }
+
+    /// An entry's records are read within the work the program has left:
+    /// one larger fails the program at the work limit, the error counting
+    /// it would give, without being read whole, and one that fits is read.
+    #[test]
+    fn an_entry_past_the_work_left_fails_at_the_work_limit() {
+        let large: RidList = (1..=100_000).step_by(2).collect();
+        let node = OwnedNode::list(vec![0], vec![large.to_node(vec![7])]);
+        let entry_size = crate::program::measure(&node.children[0]).0;
+        let asked = std::cell::RefCell::new(Vec::new());
+        let listing = Limited {
+            node: &node,
+            asked: &asked,
+        };
+        let index = Index::read(Children::Listed(Box::new(listing)), &unlimited()).unwrap();
+        // The lookup's seek and key, the entry's seek, and less than the
+        // entry: refused at the work limit, asked within what was left.
+        let short = Size {
+            nodes: 3 + entry_size.nodes - 1,
+            bytes: 1 + entry_size.bytes,
+        };
+        let work = Work::new(short);
+        let found = index.get(&[7], &work).unwrap().unwrap();
+        let left = Size {
+            nodes: short.nodes - 3,
+            bytes: short.bytes - 1,
+        };
+        assert!(matches!(
+            found.records(&work),
+            Err(QueryError::Limit("work"))
+        ));
+        assert_eq!(*asked.borrow(), [left]);
+        // With the entry's whole work left, it is read.
+        let enough = Size {
+            nodes: 3 + entry_size.nodes,
+            bytes: 1 + entry_size.bytes,
+        };
+        let work = Work::new(enough);
+        let found = index.get(&[7], &work).unwrap().unwrap();
+        assert_eq!(found.records(&work).unwrap(), large);
+        assert_eq!(asked.borrow()[1], entry_size);
     }
 
     /// A listing that counts the entries read below its keys.
@@ -1687,9 +1793,13 @@ mod tests {
             self.listing.keys(from, direction, max, out)
         }
 
-        fn entry<'a>(&'a self, key: &[u8]) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
+        fn entry<'a>(
+            &'a self,
+            key: &[u8],
+            limit: Size,
+        ) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
             self.entries.set(self.entries.get() + 1);
-            self.listing.entry(key)
+            self.listing.entry(key, limit)
         }
     }
 

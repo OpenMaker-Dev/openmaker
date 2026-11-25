@@ -108,6 +108,15 @@ impl Work {
         self.done.get()
     }
 
+    /// What may still be counted before the limit refuses it.
+    pub(crate) fn left(&self) -> Size {
+        let done = self.done.get();
+        Size {
+            nodes: self.limit.nodes.saturating_sub(done.nodes),
+            bytes: self.limit.bytes.saturating_sub(done.bytes),
+        }
+    }
+
     /// Count `size`, or refuse it when it would pass the limit.
     pub(crate) fn spend(&self, size: Size) -> Result<(), QueryError> {
         let done = self.done.get().plus(size);
@@ -127,6 +136,13 @@ pub struct Size {
 }
 
 impl Size {
+    /// No limit: what a reader with no work budget asks within (the upkeep's
+    /// reads, `crate::upkeep`).
+    pub const UNLIMITED: Size = Size {
+        nodes: usize::MAX,
+        bytes: usize::MAX,
+    };
+
     /// One node, without its children.
     pub(crate) fn of(node: &OwnedNode) -> Self {
         Self {

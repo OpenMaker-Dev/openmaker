@@ -990,11 +990,12 @@ needs:
 |-------------|---------------|
 | IndexMatch, NotIndexMatch (6.3) | `begin` |
 | IndexRange | the run between the bounds |
-| FindDuplicates | every key (its answer needs each list's size) |
+| FindDuplicates | every key but the empty value's (its answer needs each list's size) |
 | ExistsInIndex (8.4) | the client's keys, sorted and looked up in turn (held whole, each search from where the last one ended) |
 | CreateValueListEx (8.7) | the run of keys that start with the prefix |
 | JoinProjection (9.2), LookupValue (8.6) | for `=`, each source key, its RID list read from where its lookup found it; for `≠`, `<`, `≤`, `>`, `≥`, one run per source row, since a key is below some source key when it is below the greatest, and so on (`≠` of one key: the runs on either side of it) |
-| Projection, SortList | every key (they invert the index) |
+| Projection | every key but the empty value's (it inverts the index) |
+| SortList | every key from the lowest, until every record sorted has one (it inverts the index, and stops there) |
 
 The lists are merged into one result a list at a time. With one predicate,
 JoinProjection gathers the runs of all rows first and reads each key once;
@@ -1019,8 +1020,8 @@ or one repeated) is read as if sorted, the records of a repeated key
 merged, and every lookup then answers as on the sorted index. A listed
 index is checked as it is read instead: a key that does not follow the
 last one in the read's direction (or lies outside the bound its page was
-asked from), a page with no key that says more follow, or a listed key
-without an entry fails the program, so a broken source can neither repeat
+asked from), a page with no key that says more follow, a page with more
+keys than asked for, or a listed key without an entry fails the program, so a broken source can neither repeat
 an entry, nor make a read loop, nor end one early as if the index ended
 there. The entry `ff 80` (long keys, above) is no value's key, so om-query
 leaves it out of every index it reads: no lookup, run, count or full read
@@ -1988,8 +1989,16 @@ checked); for each key looked up, and for each end of a run, the keys a
 binary search may compare (`log2 n + 1` of `n`, from where the last search
 ended for ExistsInIndex's keys); nothing for a walk of every key
 (FindDuplicates, Projection, SortList) or for the runs on either side of
-a key found (`≠`). A listed index: each page of keys, a node; each key a
-page gives, a node and its bytes; and each RID list read, a node more.
+a key found (`≠`); a field without the index reads as one without keys,
+each search of it counted as one key compared. A listed index: each page
+of keys, a node; each key the instruction takes from a page, a node and
+its bytes (a page can hold keys a scan that stops never takes, at most a
+page of them, fetched and not counted; OpenMaker Server's store engine
+also reads one child past a full page to say whether more follow); and
+each RID list read, a node more, read within the work the program has
+left, so that a list past it fails the program at the work limit before
+it is read whole. The read of an index's own node that finds whether the
+field has the index is not counted (one per index a program opens).
 Either way, each index entry whose RID list is read, with that list; a
 node of eight bytes per 64 records each time an instruction combines with
 the table's record list; each stored value read; and each node on an

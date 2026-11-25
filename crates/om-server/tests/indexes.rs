@@ -164,10 +164,12 @@ fn ship_finder(file_id: u32) -> Vec<u8> {
 }
 
 /// A find by an account whose set may view no record of Tasks reads Name's
-/// index as absent without reading it: under the test view, which refuses
-/// a find an index read whole (`Server::checking_reads`), it answers as the
-/// file engine does, no records, where the index read whole and then
-/// dropped by the view limits failed the comparison.
+/// index as absent without reading it, and NodeExists and GetKey answer
+/// for the table, its index container and the index from their heads:
+/// under the test view, which refuses a find an index, or a node above
+/// one, read whole (`Server::checking_reads`), each answers as the file
+/// engine does, where the index or a node above it read whole and then
+/// filtered by the view limits failed the comparison.
 #[test]
 fn a_find_on_a_table_the_account_may_not_view_reads_no_index() {
     use om_hbam::slot::uint_segment;
@@ -202,8 +204,49 @@ fn a_find_on_a_table_the_account_may_not_view_reads_no_index() {
         let reply = temp.query(&ship_finder(temp_file)).unwrap();
         assert!(find::found(&reply.slots).unwrap().is_empty());
     }
+    // The table and its index container are there for it, the container
+    // emptied, and Name's index is not: answered from the nodes' heads,
+    // never from what is below them, which the test view refuses a find.
+    use om_query::program::opcode::{GET_KEY, NODE_EXISTS};
+    let name = uint_segment(fixture::NAME);
+    let container: [&[u8]; 2] = [&tasks, &[1]];
+    let index: [&[u8]; 4] = [&tasks, &[1], &name, &[0]];
+    let mut answer = |op, path: &[&[u8]]| file_node_answer(&mut temp, temp_file, op, path);
+    assert_eq!(answer(NODE_EXISTS, &container), Some(vec![1, 1]));
+    assert_eq!(answer(GET_KEY, &container), None);
+    assert_eq!(answer(NODE_EXISTS, &index), Some(vec![1, 0]));
+    assert_eq!(answer(NODE_EXISTS, &[&tasks]), Some(vec![1, 1]));
     temp.disconnect().unwrap();
     admin.disconnect().unwrap();
+}
+
+/// What NodeExists (`op`, or GetKey) answers at `path` for `session`: the
+/// value at the result spot's `00`.
+fn file_node_answer(
+    session: &mut om_session::Session,
+    file_id: u32,
+    op: u8,
+    path: &[&[u8]],
+) -> Option<Vec<u8>> {
+    use om_hbam::OwnedNode;
+    use om_query::program::leaf;
+    let path: Vec<u8> = path
+        .iter()
+        .flat_map(|segment| std::iter::once(segment.len() as u8).chain(segment.iter().copied()))
+        .collect();
+    let mut query = OwnedNode::list(Vec::new(), Vec::new());
+    for (key, value) in [
+        (leaf::OPCODE, vec![op]),
+        (leaf::SRC, path),
+        (leaf::DEST, vec![1, 3, 1, 1]),
+        (leaf::FILE_ID, file_id.to_be_bytes().to_vec()),
+    ] {
+        query.put(&[&[1], &[1], &[key]], OwnedNode::leaf(Vec::new(), value));
+    }
+    let slots = session.query(&query.to_wire().unwrap()).unwrap().slots;
+    let tree = om_hbam::KeyTree::from_slots(om_hbam::SlotReader::new(&slots)).unwrap();
+    tree.node(&[&[1], &[0]])
+        .and_then(|node| node.value.map(<[u8]>::to_vec))
 }
 
 /// NodeExists and GetKey of Name's value index read the node alone, not
@@ -213,8 +256,7 @@ fn a_find_on_a_table_the_account_may_not_view_reads_no_index() {
 #[test]
 fn node_exists_on_an_index_reads_its_node_alone() {
     use om_hbam::slot::uint_segment;
-    use om_hbam::OwnedNode;
-    use om_query::program::{leaf, opcode};
+    use om_query::program::opcode;
     let file = fixture::TempFile::new("index-node", &[], true);
     let port = server::start(&file);
     let (mut session, file_id) = server::logged_in(port, "index-node");
@@ -229,25 +271,8 @@ fn node_exists_on_an_index_reads_its_node_alone() {
     let table = uint_segment(fixture::TABLE);
     let name = uint_segment(fixture::NAME);
     let index: [&[u8]; 4] = [&table, &[1], &name, &[0]];
-    let path: Vec<u8> = index
-        .iter()
-        .flat_map(|segment| std::iter::once(segment.len() as u8).chain(segment.iter().copied()))
-        .collect();
-    let answer = |session: &mut om_session::Session, op: u8| {
-        let mut query = OwnedNode::list(Vec::new(), Vec::new());
-        for (key, value) in [
-            (leaf::OPCODE, vec![op]),
-            (leaf::SRC, path.clone()),
-            (leaf::DEST, vec![1, 3, 1, 1]),
-            (leaf::FILE_ID, file_id.to_be_bytes().to_vec()),
-        ] {
-            query.put(&[&[1], &[1], &[key]], OwnedNode::leaf(Vec::new(), value));
-        }
-        let slots = session.query(&query.to_wire().unwrap()).unwrap().slots;
-        let tree = om_hbam::KeyTree::from_slots(om_hbam::SlotReader::new(&slots)).unwrap();
-        tree.node(&[&[1], &[0]])
-            .and_then(|node| node.value.map(<[u8]>::to_vec))
-    };
+    let answer =
+        |session: &mut om_session::Session, op: u8| file_node_answer(session, file_id, op, &index);
     assert_eq!(answer(&mut session, opcode::NODE_EXISTS), Some(vec![1, 1]));
     assert_eq!(answer(&mut session, opcode::GET_KEY), None);
     session.disconnect().unwrap();

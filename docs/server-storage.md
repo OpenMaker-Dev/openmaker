@@ -459,12 +459,21 @@ The readers that read through views:
   `View::subtree` of the one entry: `connection::ViewListing`), where no
   account filter reaches the node (`QuerySource::filtered`), and the node
   whole through `Source::node` otherwise; and `head`, a node without its
-  children (`View::node`), on the same terms. `om_query::Index` reads a
-  field's index so: a lookup by key is one page of one key and reads no
-  entry's records, a range or a full read pages through the keys it
-  passes (8 a page, growing to 256), an entry's records are read only when
-  an instruction takes that entry, and no instruction needs an entry by
-  its position (the module doc of `om-query`'s `index`). An index held
+  children, always from `View::node`: where a filter reaches the node,
+  from what the filter would leave of it (`ViewFilter::head`: missing, or
+  without its value where the filter empties it; a node with children is
+  a pushed list in either engine, so removing children leaves it one),
+  never from its subtree, but for the record a view limit below a record
+  is evaluated on. `om_query::Index` reads a field's index so: a lookup by
+  key is one page of one key and reads no entry's records, a range or a
+  full read pages through the keys it passes (8 a page, growing to 256),
+  an entry's records are read only when an instruction takes that entry,
+  within the work the program has left (`View::subtree` within
+  `om_query::memory_limit` of it, so that the store engine refuses an
+  entry past it before building it whole, and the program fails at its
+  work limit; `Noted` keeps no such refusal as a failed read), and no
+  instruction needs an entry by its position (the module doc of
+  `om-query`'s `index`). An index held
   whole (a file on disk, a source without listings, an index built on
   demand) is read as before, its order checked once, its keys found by
   binary search, and its work counted as before, instruction for

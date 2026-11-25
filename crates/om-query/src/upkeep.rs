@@ -32,6 +32,7 @@ use std::ops::Bound;
 
 use om_hbam::{OwnedNode, RidList};
 
+use crate::program::Size;
 use crate::source::{broken, out_of_order, Direction, Listing};
 
 /// The most keys a page asks for, after a first one of [`FIRST_PAGE`].
@@ -112,6 +113,9 @@ impl<'a> Iterator for Keys<'a> {
                     false => None,
                 };
             }
+            if out.len() > max {
+                return self.fail(broken("a page with more keys than asked for"));
+            }
             self.size = (self.size * 2).min(PAGE);
             self.page.extend(out);
         }
@@ -146,7 +150,7 @@ impl<'a> Iterator for Keys<'a> {
 /// hold is an error (the source broke).
 fn listed_entry<'a>(listing: &'a dyn Listing, key: &[u8]) -> om_hbam::Result<Cow<'a, OwnedNode>> {
     listing
-        .entry(key)?
+        .entry(key, Size::UNLIMITED)?
         .filter(|node| node.segment == key)
         .ok_or_else(|| broken("a key it listed has no entry"))
 }
@@ -182,7 +186,7 @@ pub fn entries_at<'a, 'k>(
         if out.contains_key(key) {
             continue;
         }
-        let entry = match listing.entry(key)? {
+        let entry = match listing.entry(key, Size::UNLIMITED)? {
             Some(node) if node.segment != key => return Err(broken("an entry under another key")),
             entry => entry,
         };
@@ -258,6 +262,8 @@ mod tests {
         Reversed,
         Repeated,
         Stalled,
+        /// Its keys in order, one more a page than asked for.
+        Overfull,
     }
 
     struct Broken {
@@ -269,7 +275,7 @@ mod tests {
         fn keys<'a>(
             &'a self,
             from: Bound<&[u8]>,
-            _direction: Direction,
+            direction: Direction,
             max: usize,
             out: &mut Vec<Cow<'a, [u8]>>,
         ) -> om_hbam::Result<bool> {
@@ -283,11 +289,18 @@ mod tests {
                 Breaks::Repeated => out.extend(keys.take(max.max(2))),
                 Breaks::Stalled if from == Bound::Unbounded => out.extend(keys.take(2)),
                 Breaks::Stalled => {}
+                Breaks::Overfull => {
+                    return Ok(node_keys(&self.node, from, direction, max + 1, out))
+                }
             }
             Ok(true)
         }
 
-        fn entry<'a>(&'a self, key: &[u8]) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
+        fn entry<'a>(
+            &'a self,
+            key: &[u8],
+            _limit: Size,
+        ) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
             Ok(node_entry(&self.node, key))
         }
     }
@@ -312,7 +325,11 @@ mod tests {
             Ok(node_keys(self.node, from, direction, max, out))
         }
 
-        fn entry<'a>(&'a self, key: &[u8]) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
+        fn entry<'a>(
+            &'a self,
+            key: &[u8],
+            _limit: Size,
+        ) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
             self.entries.set(self.entries.get() + 1);
             Ok(node_entry(self.node, key))
         }
@@ -460,10 +477,39 @@ mod tests {
             node: held.clone(),
             breaks: Breaks::Stalled,
         };
-        let first_two: BTreeMap<Vec<u8>, RidList> = built.into_iter().take(2).collect();
+        let first_two: BTreeMap<Vec<u8>, RidList> = built.clone().into_iter().take(2).collect();
         assert!(holds_exactly(&stalled, &first_two, plain).is_err());
         assert!(holds_more_than(&stalled, 2).is_err());
         assert!(holds_more_than(&stalled, 1).unwrap());
+        // A page with more keys than asked for: the count fails rather than
+        // count a key it did not ask for, as do the check and the sweep
+        // (over twelve entries, more than a first page asks for).
+        let overfull = Broken {
+            node: held.clone(),
+            breaks: Breaks::Overfull,
+        };
+        assert!(holds_more_than(&overfull, 0).is_err());
+        assert!(holds_more_than(&overfull, 2).is_err());
+        let twelve = index(
+            &(1..=12u8)
+                .map(|k| (vec![k], vec![u64::from(k)]))
+                .collect::<Vec<_>>()
+                .iter()
+                .map(|(k, ids)| (k.as_slice(), ids.as_slice()))
+                .collect::<Vec<_>>(),
+        );
+        let overfull = Broken {
+            node: twelve.clone(),
+            breaks: Breaks::Overfull,
+        };
+        let all: BTreeMap<Vec<u8>, RidList> = twelve
+            .children
+            .iter()
+            .map(|e| (e.segment.clone(), RidList::from_owned(e).unwrap()))
+            .collect();
+        assert!(holds_exactly(&overfull, &all, plain).is_err());
+        let read: Vec<_> = entries(&overfull, Bound::Unbounded, Direction::Forward).collect();
+        assert!(read.last().unwrap().is_err());
         // An entry under another key than the one asked for.
         struct Elsewhere(OwnedNode);
         impl Listing for Elsewhere {
@@ -477,7 +523,11 @@ mod tests {
                 Ok(node_keys(&self.0, from, direction, max, out))
             }
 
-            fn entry<'a>(&'a self, _key: &[u8]) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
+            fn entry<'a>(
+                &'a self,
+                _key: &[u8],
+                _limit: Size,
+            ) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
                 Ok(self.0.children.first().map(Cow::Borrowed))
             }
         }
