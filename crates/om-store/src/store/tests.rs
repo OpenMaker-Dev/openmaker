@@ -460,6 +460,7 @@ struct Reached {
     views: u64,
     held_view_checks: u64,
     checkpoints: u64,
+    refused_checkpoints: u64,
     kept: u64,
     restore_reads: u64,
     dropped: u64,
@@ -490,6 +491,9 @@ struct Run {
     fs: Arc<dyn Fs>,
     store: Option<Store>,
     plan: Rng,
+    /// Draws for the calls that must be refused without changing anything,
+    /// kept apart from `plan` so they do not move the run's other draws.
+    asks: Rng,
     gen: Gen,
     /// Every entry appended and not lost, by index.
     record: Vec<Built>,
@@ -563,6 +567,7 @@ impl Run {
             fs,
             store: None,
             plan: Rng::stream(seed, 21),
+            asks: Rng::stream(seed, 23),
             gen: Gen {
                 rng: Rng::stream(seed, 22),
                 names: 0,
@@ -1025,6 +1030,22 @@ impl Run {
     fn checkpoint(&mut self) {
         let seed = self.seed;
         if self.store.as_ref().is_some_and(|s| s.unpublished() > 0) {
+            // A checkpoint is only of a published entry: with entries
+            // waiting for their flush the store refuses and changes nothing.
+            if self.asks.below(3) == 0 {
+                let store = self.store.as_mut().expect("open");
+                let published = store.published();
+                let segments = store.log_segments();
+                let refused = store.checkpoint(None);
+                assert!(
+                    matches!(refused, Err(CheckpointFailed::Refused(_))),
+                    "seed {seed}: a checkpoint with entries waiting: {:?}",
+                    refused.map(|d| d.entry.index)
+                );
+                assert_eq!(store.published(), published, "seed {seed}");
+                assert_eq!(store.log_segments(), segments, "seed {seed}");
+                self.reached.refused_checkpoints += 1;
+            }
             self.flush();
         }
         let keep = (self.plan.below(4) == 0 && self.points.len() < 3).then(|| {
@@ -1129,6 +1150,7 @@ fn add(into: &mut Reached, from: Reached) {
         views,
         held_view_checks,
         checkpoints,
+        refused_checkpoints,
         kept,
         restore_reads,
         dropped,
@@ -1199,6 +1221,10 @@ fn the_store_survives_drawn_faults_against_the_model() {
             ("views", reached.views),
             ("held view checks", reached.held_view_checks),
             ("checkpoints", reached.checkpoints),
+            (
+                "checkpoints refused with entries waiting",
+                reached.refused_checkpoints,
+            ),
             ("restore points kept", reached.kept),
             ("restore points read", reached.restore_reads),
             ("restore points dropped", reached.dropped),

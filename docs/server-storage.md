@@ -501,12 +501,22 @@ checkpoint's copies when there is one.
 2. The file's executor runs operations one at a time against the
    **working state**: the published state plus the effects of every entry
    appended and not yet published. Before it appends an operation's entry
-   it reserves the page space that applying the entry will need; an
-   operation that cannot reserve is refused with nothing appended.
+   it reserves the page space that applying the entry will need, and
+   applies the entry to the working state in its one unit of work; an
+   operation that cannot reserve is refused with nothing appended. Then
+   the entry is appended to the log.
 3. The entry becomes durable (section 6.3). On a cluster it is also
    replicated until it is committed (section 7).
 4. The entry is **published**: views taken from now on include it, its
-   notices go out and its reply is sent.
+   notices go out and its reply is sent. Entries appended before one
+   flush are all published by it, or none.
+
+If anything fails after an entry's unit of work committed (its append,
+the flush, the marker), the working state is ahead of what is durable and
+cannot be taken back: the store stops and is opened again, which rebuilds
+the state from the durable log. `om_store::store` does these steps for
+one server, driven by its caller
+([server-storage-format.md](server-storage-format.md) section 6).
 
 A view never shows an entry that is not committed, so no client acts on
 data a crash or a change of leader can take away. Operations of different
@@ -518,10 +528,11 @@ its share of two flushes and the pages on its path.
 
 ### 6.6 Reading
 
-A view is a reference to a file's root at a published entry. Published
-pages never change, so the page cache never invalidates anything: it only
+A view is a reference to a file's root at a published entry, with a pin
+that keeps that version's pages while the view lives. Published pages
+never change, so the page cache never invalidates anything: it only
 evicts, and its size is fixed by configuration. A hosted file larger than
-memory is served from disk.
+memory is served from disk. A view never reads the working state.
 
 Encoded download replies are cached by file, path and the entry that last
 changed anything under the path. A layout or script that many clients
@@ -616,7 +627,11 @@ settled (server-storage-format.md 4.5).
    during step 4 what normal running frees, which is only what no
    checkpoint or restore point on disk reaches, so applying the entries
    again never needs more space than the first time
-   (server-storage-format.md 4.8).
+   (server-storage-format.md 4.8). When the pages waiting for a
+   checkpoint pass their budget during step 4, the last entry applied,
+   which is durable, is checkpointed and step 4 goes on.
+6. Write this start's own `session` entry (section 7.3), the first write
+   of every start, and publish it.
 
 If the log does not hold every entry through the marker, or neither
 checkpoint can be used, the server cannot produce what it confirmed. A

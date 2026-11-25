@@ -2144,3 +2144,164 @@ listings visited and the most held at once.
 - The decoder holds tree edits to the tree's bounds with the tree's own
   check (`tree::check_edits`), so the model, which shares the decoder,
   does not check those bounds a second time.
+
+## 6. The store
+
+How `om_store::store` joins `state` (section 1), the page file (section
+4), the log (section 3) and applying entries (section 5) on one server:
+the order of every write of its operations, and what a crash at each step
+leaves. Nothing here adds a byte format. The store is driven by its
+caller: no thread, timer or background work, so every step below is a
+call the simulated disk can stop.
+
+### 6.1 Creating
+
+1. the store folder's lock is taken; a folder with `state` holds a store
+   already, and is refused;
+2. a `pages` left by a creation that did not reach `state` is removed,
+   and the page file is created (4.6: checkpoint 1 at entry 0, written to
+   `pages.new`, flushed, renamed, the folder flushed);
+3. `state` is created (1.3: both copies in `state.new`, flushed, renamed,
+   the folder flushed);
+4. the store is opened (6.2), which writes the first start's entry.
+
+| A crash | leaves |
+|---|---|
+| before step 3 is done | no `state`: no store. A creation begun again removes the `pages` it finds |
+| after step 3 | a store, opened as any (6.2); the log is empty |
+
+### 6.2 Opening
+
+1. the lock, and `state` opened (1.3), which raises the start count in
+   both slots;
+2. the page file opened (4.6): the newest checkpoint that reads back, or
+   the one before it; its entry is the **start**;
+3. the log opened from the start (3.6), checked against the marker;
+4. the entries after the start applied again, each once, in order,
+   through the durable entry: each is reserved with the reserve allowed
+   (`Purpose::Recovery`), applied in its one unit of work, and the
+   reservation extended while the entry runs short. The log is not
+   retired meanwhile, and the store asks the page file for no reclaim and
+   no checkpoint but in one case: a reservation refused because the pages
+   waiting for a checkpoint are past their budget (4.8) has the last
+   entry applied, which is durable, checkpointed, and the entry reserved
+   again. The page file itself frees during the replay what normal
+   running frees (4.8), as its reservations do;
+5. the version the last entry made (or the checkpoint's, with none) is
+   pinned and is the published one;
+6. this start's own entry is appended and flushed (6.3): a `session`
+   entry that records the start count (server-storage.md 7.3), the first
+   write of every start.
+
+Steps 1 to 3 write what their own opens write. Step 4 writes nothing to
+disk but what a forced checkpoint writes. A crash at any step leaves what
+the piece's own table says, and the next open does the same work again:
+the entries step 4 applied are in memory only until a checkpoint, and are
+applied again. A crash in step 6 after the log took the start's entry
+can leave that entry durable; the failed open reports it
+(`OpenError::Start`), and the next open applies it as any entry.
+
+What the open cannot do is reported, typed, with what the administrator
+can do (`OpenError::remedy`): no store; no valid copy of `state`; no
+checkpoint that reads back; a log that does not hold, whole, every entry
+through its marker; a log that ends at a place it cannot read; a place at
+or before the marker it cannot read; an entry the log holds that cannot
+be applied (a page that does not check); no space to apply the log's
+entries. Two calls go past two of them, and nothing else does:
+`Store::accept_damage` (`Log::accept_damage`, 3.6 and server-storage.md
+6.12: the marker lowered to the last entry the log holds whole from the
+start, the cut count raised, the segments after dropped, in one `state`
+update written to both slots) and `Store::give_up_unreadable_end`
+(`Log::give_up_unreadable_end`, 3.9). Each is done from the moment its
+`state` update's first slot is flushed, whether or not the open goes on
+to succeed. When the open passed over a copy of `state` and the log kept
+no whole batch after the marker, the open succeeds and says that the last
+batch confirmed may be lost (`Opened::last_batch_may_be_lost`).
+
+### 6.3 Writing one entry
+
+`Store::append(file, payload)` gives the entry the next index and the
+store's term, and:
+
+1. asks the log whether it would take an entry of that size and term
+   (`Log::ready_for`, every refusal of an append, the next segment made
+   when it would need one): a refusal changes nothing;
+2. reserves pages for the entry (`Purpose::Entry`, never the reserve)
+   and applies it (`apply::apply`) in its one unit of work, which commits
+   at its end; a unit that runs short is dropped, the reservation
+   extended (doubling), and the entry applied again. A full disk, a
+   reservation refused for a checkpoint, a refused entry or a page that
+   cannot be read refuses the entry with nothing changed;
+3. pins the version the unit made, the newest then;
+4. appends the entry to the log's open batch, in memory, and checks that
+   the log hashed it as it was applied.
+
+Steps 1 and 2 write nothing to disk but what a reservation's growth of
+the page file writes (4.8, the file's own rules). From step 3 on, a
+failure stops the store: the unit's changes are in memory and cannot be
+taken back, so every later call is refused, and the store is opened
+again.
+
+### 6.4 A flush
+
+`Store::flush` writes the log's open batch and advances the marker (3.8),
+with the flush's last entry as the committed position (on one server
+every durable entry is committed), then **publishes** every entry the
+batch held, in order: the last one's pin becomes the published version,
+and each entry's notices and reply are handed back. All of the batch is
+published, or none. A failure of the write or of the marker stops the
+store.
+
+| A crash | leaves |
+|---|---|
+| before the batch's write | the entries in memory only: lost, never answered |
+| after the write, before the marker | the batch whole after the marker or torn; the next open keeps it whole (3.6) and applies it, or cuts it. Never answered |
+| after the marker's flush | the entries durable, answered or not: the next open applies them |
+
+### 6.5 Views
+
+A view is the published entry and its pin, which holds the version's
+roots and keeps its pages from reuse while the view lives; views share
+the pin of the version they are of. A view holds the page file, not the
+store: it lives across later writes, checkpoints, and the store itself.
+After the store is opened again, a view taken before is kept only by the
+checkpoints on disk (pins are in memory): once later checkpoints retire
+those, its pages can be reused, and a read of one fails its hash check
+instead of returning another page. A view of a restore point pins the
+point's version from its meta stream.
+
+### 6.6 A checkpoint
+
+`Store::checkpoint(keep_as)` is refused while entries are applied past
+the published one (flush first): a checkpoint is of the published entry
+only. Then:
+
+1. the page file's checkpoint of that entry (4.6), kept as a restore
+   point when named;
+2. the log retired up to the entry after the oldest checkpoint on disk or
+   restore point listed (3.10), never past it;
+3. a reclaim of dying pages, bounded.
+
+A crash leaves what 4.6 and 3.10 say; the next open starts from the
+newest checkpoint on disk, and the log still holds every entry after the
+oldest. A failed write stops the store.
+
+When a reservation is refused because the pages waiting for a checkpoint
+are past their budget, the caller flushes, checkpoints, and appends
+again: a checkpoint cannot be taken while an entry is applied and not
+published.
+
+### 6.7 Limits
+
+- The store does not keep a mark that a start passed over a copy of
+  `state` (a design change under review, not in section 1 or
+  server-storage.md yet): an open reports the possible loss once, and a
+  crash right after it, before anything else is written, leaves two
+  whole copies of `state`, so the next open sees nothing to report.
+- Recovery reserves a fixed few pages for each entry and extends them,
+  rather than the count each entry took the first time (`Reservation::taken`):
+  entries do not carry it. An entry the replay extends may take the
+  reserve (4.8).
+- The threaded front of the engine (an applying thread, group commit
+  across callers, background checkpoints, the limits of server-storage.md
+  6.11) is not built: the caller drives every step.
