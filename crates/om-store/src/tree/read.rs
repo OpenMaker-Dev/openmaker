@@ -9,7 +9,7 @@ use std::sync::Arc;
 use super::key::{self, Key};
 use super::{fault, Direction, Error, Node, Root};
 use crate::page::{
-    Fault, Hash, Page, PageKind, PageNo, PageStore, Refs, OVERFLOW_DATA, SPILL_INLINE,
+    Fault, Hash, ItemView, Page, PageKind, PageNo, PageStore, Refs, OVERFLOW_DATA, SPILL_INLINE,
 };
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
@@ -349,7 +349,11 @@ impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
 
     /// The whole key of item `i` of a leaf.
     pub(crate) fn item_key(&self, page: &Page, i: usize) -> Result<Vec<u8>> {
-        let item = page.item(i);
+        self.key_of(page, &page.item(i))
+    }
+
+    /// The whole key of `item`, an item of the leaf `page`.
+    fn key_of(&self, page: &Page, item: &ItemView<'_>) -> Result<Vec<u8>> {
         let (part, complete) = item.key_part();
         if complete {
             return Ok(part.to_vec());
@@ -366,7 +370,11 @@ impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
 
     /// The node item `i` of a leaf holds.
     pub(crate) fn item_node(&self, page: &Page, i: usize) -> Result<Node> {
-        let item = page.item(i);
+        self.node_of(page, &page.item(i))
+    }
+
+    /// The node `item`, an item of the leaf `page`, holds.
+    fn node_of(&self, page: &Page, item: &ItemView<'_>) -> Result<Node> {
         let value = match item.value_inline() {
             Some(value) => value.to_vec(),
             None => {
@@ -784,9 +792,9 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
     /// on the leaf's first step, and each item alone only when it is not
     /// within, or the comparison failed (the failure is then the item's own,
     /// if its comparison fails too).
-    fn within(&mut self) -> Result<Option<(Arc<Page>, usize)>> {
+    fn within(&mut self) -> Result<bool> {
         let Some((leaf, i)) = self.stack.last() else {
-            return Ok(None);
+            return Ok(false);
         };
         let pages = &self.tree.pages;
         let compare = |at: usize| -> Result<bool> {
@@ -817,29 +825,34 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
             }
         };
         let within = leaf_within || compare(*i)?;
-        let at = within.then(|| (leaf.clone(), *i));
         self.leaf_within = Some(leaf_within);
-        Ok(at)
+        Ok(within)
     }
 
-    /// Moves to the next item within the bounds and returns its leaf and
-    /// place, without reading its value.
-    fn step(&mut self) -> Result<Option<(Arc<Page>, usize)>> {
+    /// Moves to the next item within the bounds, without reading its
+    /// value: whether there is one, at the cursor's place ([`Cursor::at`]).
+    fn step(&mut self) -> Result<bool> {
         let moved = match self.state {
-            State::Done => return Ok(None),
+            State::Done => return Ok(false),
             State::Start => self.position(),
             State::Running => self.advance(),
         };
         self.state = State::Running;
         let at = match moved {
             Ok(true) => self.within(),
-            Ok(false) => Ok(None),
+            Ok(false) => Ok(false),
             Err(e) => Err(e),
         };
-        if !matches!(at, Ok(Some(_))) {
+        if !matches!(at, Ok(true)) {
             self.state = State::Done;
         }
         at
+    }
+
+    /// The leaf the cursor is in and its place there, lent: after a step
+    /// that found an item, that item's.
+    fn at(&self) -> Option<(&Page, usize)> {
+        self.stack.last().map(|(leaf, i)| (&**leaf, *i))
     }
 
     /// The leaf the cursor is in, to name in an error.
@@ -857,16 +870,17 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
     /// page), else read whole first. For a reader that needs only part of
     /// each key, or a copy into its own buffer.
     pub fn next_lent<T>(&mut self, f: impl FnOnce(&[u8], Node) -> T) -> Option<Result<T>> {
-        let item = self.step().and_then(|at| {
-            at.map(|(leaf, i)| {
-                let pages = &self.tree.pages;
-                let node = pages.item_node(&leaf, i)?;
-                match leaf.item(i).key_part() {
-                    (key, true) => Ok(f(key, node)),
-                    (_, false) => Ok(f(&pages.item_key(&leaf, i)?, node)),
-                }
-            })
-            .transpose()
+        let item = self.step().and_then(|found| {
+            let Some((leaf, i)) = self.at().filter(|_| found) else {
+                return Ok(None);
+            };
+            let pages = &self.tree.pages;
+            let item = leaf.item(i);
+            let node = pages.node_of(leaf, &item)?;
+            Ok(Some(match item.key_part() {
+                (key, true) => f(key, node),
+                (_, false) => f(&pages.key_of(leaf, &item)?, node),
+            }))
         });
         if item.is_err() {
             self.state = State::Done;
@@ -879,15 +893,16 @@ impl<'t, 's, S: PageStore + ?Sized> Iterator for Cursor<'t, 's, S> {
     type Item = Result<Item>;
 
     fn next(&mut self) -> Option<Result<Item>> {
-        let item = self.step().and_then(|at| {
-            at.map(|(leaf, i)| {
-                let pages = &self.tree.pages;
-                Ok(Item {
-                    key: Key(pages.item_key(&leaf, i)?),
-                    node: pages.item_node(&leaf, i)?,
-                })
-            })
-            .transpose()
+        let item = self.step().and_then(|found| {
+            let Some((leaf, i)) = self.at().filter(|_| found) else {
+                return Ok(None);
+            };
+            let pages = &self.tree.pages;
+            let item = leaf.item(i);
+            Ok(Some(Item {
+                key: Key(pages.key_of(leaf, &item)?),
+                node: pages.node_of(leaf, &item)?,
+            }))
         });
         if item.is_err() {
             self.state = State::Done;
@@ -926,7 +941,8 @@ impl<'t, 's, S: PageStore + ?Sized> Children<'t, 's, S> {
             self.tree.range(lower, bound, Direction::Backward)
         };
         // Only keys are read on the way: the node read is the child's own.
-        let Some((leaf, i)) = cursor.step()? else {
+        let found = cursor.step()?;
+        let Some((leaf, i)) = cursor.at().filter(|_| found) else {
             return Ok(None);
         };
         let orphan = || {
