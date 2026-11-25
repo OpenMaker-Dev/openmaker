@@ -2053,8 +2053,9 @@ fn edits_leave_what_owned_node_holds() {
         }
     }
     // Review of #732: a put under a leaf whose value is empty, which the
-    // file engine's `holds_value` lets through, leaves a list that keeps
-    // its empty value: both, empty.
+    // file engine's `holds_value` lets through, leaves an empty list: the
+    // empty value goes, as the file writer writes a list's empty value as
+    // nothing (`OwnedNode::ensure`).
     {
         let mut nodes = BTreeMap::new();
         let mut owned = OwnedNode::list(Vec::new(), Vec::new());
@@ -2069,7 +2070,7 @@ fn edits_leave_what_owned_node_holds() {
         );
         let mut got = Vec::new();
         flatten(&owned, &mut Vec::new(), &mut got);
-        assert_eq!(got[0], (vec![b"a".to_vec()], Node::Both(Vec::new())));
+        assert_eq!(got[0], (vec![b"a".to_vec()], Node::List));
         let want: Vec<(Path, Node)> = nodes.into_iter().collect();
         assert_eq!(got, want);
     }

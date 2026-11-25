@@ -595,12 +595,19 @@ fn put<S: PageStore + ?Sized>(
         return Err(internal("a put at the root"));
     };
     // Missing ancestors become empty lists; one that holds a value holds
-    // both (as `om_hbam::OwnedNode::ensure` does).
+    // both, but an empty value goes and leaves an empty list (as
+    // `om_hbam::OwnedNode::ensure` does: a file holds a key as a value or
+    // a list, and its writer writes a list's empty value as nothing).
     let mut key = Vec::new();
     for segment in ancestors {
         key::push_segment(&mut key, segment);
         match existing(cx, &tree.slot, tree.level, true, &key)? {
             None => set(
+                cx,
+                tree,
+                Op::Set(WItem::new(key.clone(), KIND_LIST, Vec::new())),
+            )?,
+            Some(Node::Value(v)) if v.is_empty() => set(
                 cx,
                 tree,
                 Op::Set(WItem::new(key.clone(), KIND_LIST, Vec::new())),

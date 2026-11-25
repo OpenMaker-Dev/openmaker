@@ -76,7 +76,8 @@ pub enum Edit {
     /// The node at `path` becomes `node`, with no children: whatever was
     /// there, and everything under it, is replaced. Missing ancestors are
     /// created as empty lists, and an ancestor that holds a value becomes
-    /// one that holds both, as `om_hbam::OwnedNode::put` does.
+    /// one that holds both (an empty value goes, leaving an empty list), as
+    /// `om_hbam::OwnedNode::put` does.
     Put { path: Vec<Vec<u8>>, node: Node },
     /// The node at `path` and everything under it are deleted. The empty
     /// path deletes every node; the root itself always exists.

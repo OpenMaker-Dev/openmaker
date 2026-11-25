@@ -389,12 +389,15 @@ impl Model {
 /// The node at `path` becomes `node`, alone: what was under it goes. The
 /// ancestors are made as `om_hbam::OwnedNode::ensure` makes them: a missing
 /// one is an empty list, one that holds a value becomes a list that keeps
-/// its value.
+/// its value, and one that holds an empty value an empty list.
 pub fn put(nodes: &mut BTreeMap<Path, Node>, path: &[Vec<u8>], node: Node) {
     for depth in 1..path.len() {
         let above = &path[..depth];
         match nodes.get(above) {
             None => {
+                nodes.insert(above.to_vec(), Node::List);
+            }
+            Some(Node::Value(v)) if v.is_empty() => {
                 nodes.insert(above.to_vec(), Node::List);
             }
             Some(Node::Value(v)) => {

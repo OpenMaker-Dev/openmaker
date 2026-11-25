@@ -445,8 +445,10 @@ number of separators at or below the key.
 
 - *Put a node* at a path with key `k`: for each proper ancestor,
   shallowest first, a missing one is set as an empty list (kind 1, no
-  value), and one that holds a value is changed to hold both (kind 3,
-  same value), as `om_hbam::OwnedNode::put` does; then the range
+  value), one that holds a value is changed to hold both (kind 3, same
+  value), and one that holds an empty value is set as an empty list, as
+  `om_hbam::OwnedNode::put` does (the file writer writes a list's empty
+  value as nothing); then the range
   `[k 00, k')` is deleted (`k 00`: `k` followed by one zero byte; the keys
   strictly under the path); then the node is set, unless the item with key
   `k` already has that kind and value.
@@ -1433,7 +1435,8 @@ before it left.
   **value**, or **both** (a list with a value). Whatever was at the path,
   and everything under it, is replaced by the node alone. Each missing
   ancestor is made as an empty list; an ancestor that holds a value
-  becomes both, keeping its value. A put of the node that is there
+  becomes both, keeping its value, and one that holds an empty value
+  becomes an empty list. A put of the node that is there
   already, with nothing under it, changes nothing.
 - **Delete** the node at a path and everything under it, however large,
   as one edit. Its parent stays, an empty list if it was its last child.
@@ -1454,7 +1457,7 @@ by these two edits:
 | `put(path, leaf)`: a record's cell, a last record id, a serial's next value, a modification count | put a value |
 | `put(path, subtree)`: a record, the record-id list `[T, 0d]`, a field catalog `[T, 03]`, an index `[T, 01, F, I]`, a container library, a catalog member op13 uploads | put the node, then each node under it in depth-first order (each put makes nothing the next one removes) |
 | `remove(path)`: a record, an index, a library, the deferred field list, a catalog member | delete |
-| `ensure(path)` alone | put a list at the path when it is missing; put both, with its value, when the path holds a value; nothing otherwise |
+| `ensure(path)` alone | put a list at the path when it is missing or holds an empty value; put both, with its value, when the path holds a value that is not empty; nothing otherwise |
 | `ensure(path).set_child(leaf)`, `library::store` | put a value below the path (the put makes the ancestors) |
 | changes in place through `at_mut`: `modcount::bump` and `library::adjust` set a leaf with `set_child`, and `adjust` removes a member it takes to zero | put a value; delete |
 | children dropped in place (`children.retain`, `children = kept`: a record's cells, a table's global repetitions) | delete each one dropped |
@@ -1462,9 +1465,12 @@ by these two edits:
 
 The file engine refuses a put under a node that holds a value that is not
 empty (`om_hbam::writer::holds_value`), but not under a leaf whose value
-is empty: that leaf becomes a list that keeps its empty value, which is
-both, with an empty value, here, as the put rule above makes it (the
-`OwnedNode` test checks this case). A node that is both, whose value
+is empty: that leaf becomes an empty list, its empty value gone, since a
+file holds a key as a value or a list and the file writer writes a
+list's empty value as nothing (`OwnedNode::ensure`); the put rule above
+makes the same (the `OwnedNode` test checks this case). A list that
+already carries an empty value, both with an empty value, keeps it
+([#754](https://github.com/OpenMaker-Dev/openmaker/issues/754)). A node that is both, whose value
 changes while its children stay, takes a put of the node and a put of
 each node under it; no path of the file engine found makes that change.
 
