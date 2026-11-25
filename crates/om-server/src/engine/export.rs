@@ -179,8 +179,12 @@ pub struct Exported {
     pub id: Option<FileId>,
 }
 
-/// Why an export failed. Nothing is left under the final name, nor under
-/// the temporary one.
+/// Why an export failed. What is left under the final name is what
+/// `crate::staged` leaves: nothing where the export was made unnamed and
+/// failed before its link; what was written, where it was made under its
+/// name (no unnamed files, or a link refused and the copy into the name
+/// stopped or failed), as copies always left it
+/// ([#761](https://github.com/OpenMaker-Dev/openmaker/issues/761)).
 #[derive(Debug)]
 pub enum ExportError {
     /// A read of the view failed.
@@ -397,15 +401,75 @@ pub fn write_walked(
     target: &mut File,
     progress: Progress<'_>,
 ) -> Result<(), ExportError> {
+    write_checked(
+        read.view,
+        read.derived.page_zero(),
+        change_number,
+        target,
+        progress,
+    )
+}
+
+/// [`write_walked`] for any view: `view` written into `target` with
+/// `page_zero`, the file's page 0 as loaded or imported, from
+/// `change_number`, and checked against a second walk of it.
+pub fn write_checked(
+    view: &dyn View,
+    page_zero: &[u8],
+    change_number: u64,
+    target: &mut File,
+    progress: Progress<'_>,
+) -> Result<(), ExportError> {
     let mut counted = Counted {
         file: target,
         progress,
         unreported: 0,
     };
-    let page_zero = hbam_writer::with_change_number(read.derived.page_zero(), change_number);
-    write_view(read.view, &page_zero, &mut counted)?;
+    let page_zero = hbam_writer::with_change_number(page_zero, change_number);
+    write_view(view, &page_zero, &mut counted)?;
     counted.report();
-    check(read.view, counted.file, &page_zero, change_number)
+    check(view, counted.file, &page_zero, change_number)
+}
+
+/// Write `view` with `page_zero` from `change_number` to `target`, checked
+/// ([`write_checked`]): the export of an engine whose versions no file on
+/// disk holds (the store engine's, `super::paged`). A folder's file is
+/// published once it checks. When it fails, what is under its name is
+/// what [`ExportError`] says
+/// ([#761](https://github.com/OpenMaker-Dev/openmaker/issues/761)).
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the store engine's export: nothing hosts on it yet"
+    )
+)]
+pub fn written(
+    view: &dyn View,
+    page_zero: &[u8],
+    change_number: u64,
+    target: Target<'_, '_>,
+    progress: Progress<'_>,
+) -> Result<Exported, ExportError> {
+    match target {
+        Target::Folder(to) => {
+            let (prepared, filled) = prepare(to)?.fill(to, |file| {
+                write_checked(view, page_zero, change_number, file, progress)
+            });
+            filled?;
+            prepared.publish(progress.stop)
+        }
+        Target::File(into) => {
+            if appends(into)? {
+                return Err(ExportError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "the export's file is open for appending",
+                )));
+            }
+            write_checked(view, page_zero, change_number, into, progress)?;
+            exported(into)
+        }
+    }
 }
 
 /// Every node of `view` but the root, in the order of a depth-first walk,

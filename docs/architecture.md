@@ -50,6 +50,7 @@ uses egui alone).
 | | `om-crypto` | Login credential obscuring and password hashing |
 | | `om-rctransaction` | The RCTransaction envelope inside `Perform` (header + LIFO body) |
 | File | `om-hbam` | The HBAM7 (`.fmp12`) container: pages, key space, packed slots; reader and writer |
+| | `om-store` | OpenMaker Server's store engine: a change log and copy-on-write page trees over a disk, clock and randomness reached through traits, with a simulator that injects crashes and storage faults ([server-storage.md](server-storage.md) section 6; formats in [server-storage-format.md](server-storage-format.md)) |
 | Engines | `om-collate` | Text index keys (DUCET 5.2.0) and word breaking |
 | | `om-formula` | Stored formula codec, source parser, compiler and printer |
 | | `om-layout` | Typed `FMLayoutPB` layouts, objects, styles and themes |
@@ -135,10 +136,13 @@ local files. [server-storage.md](server-storage.md) specifies the
 interface the rest of the server uses to reach a file's contents (views
 and write operations) and a second engine behind it, the store engine,
 with replication, design history, deploys and SQL on top. Of that design
-only the write operations are built, with the file engine behind them
-(`om-server/src/engine/`): every change the server makes to a hosted file
-or its lock table is one, and only the engine can take a file's store for
-writing.
+the write operations, views and exports are built, with the file engine
+behind them (`om-server/src/engine/`): every change the server makes to a
+hosted file or its lock table is one, and only the engine can take a
+file's store for writing. Of the store engine, `om-store` holds the
+state, the entries, the page trees and the page file, and `om-server`
+reads a file's tree in it as a view, imports an `.fmp12` into one and
+exports it (`engine::paged`); no file is hosted on it yet.
 
 **Host traits for the engines.** `om_calc::CalcHost`,
 `om_scripts::ScriptHost` and `om_sql::SqlSource` are what the engines need

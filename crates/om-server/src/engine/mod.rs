@@ -185,13 +185,23 @@ mod copies;
 pub(crate) mod export;
 mod file;
 mod overlay;
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the store engine's first code (docs/server-storage.md 5): no file is hosted on it yet"
+    )
+)]
+pub(crate) mod paged;
 mod reading;
 mod schema;
 mod state;
 mod transaction;
 mod view;
 
-#[cfg(test)]
+/// Debug builds only: they test switches only those have (failed saves,
+/// the test view), as `export`'s tests do.
+#[cfg(all(test, debug_assertions))]
 mod tests;
 
 use std::collections::BTreeMap;

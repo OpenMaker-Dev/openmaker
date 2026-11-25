@@ -7,8 +7,8 @@ OpenMaker's own design. FileMaker Server works differently inside
 ([hbam-writer.md](re/hbam-writer.md) 6.1), and nothing here is compared with
 it except the contract in section 2.
 
-**Status: design.** Only the file engine exists
-(`crates/om-server/src/store.rs`). Of the engine interface, the write
+**Status: design.** The file engine (`crates/om-server/src/store.rs`)
+hosts every file. Of the engine interface, the write
 operations are built: every change the server makes to a hosted file or
 its lock table goes through them, and every save's outcome is reported
 (section 5). Views are built, and every reader outside the operations'
@@ -19,9 +19,17 @@ transaction read an overlay view. `export` is built, and backups and the
 desktop's Save a Copy as make their copies with it. What the engine says
 of a file that is not a version's (whether it takes changes, its file on
 disk) it offers itself. The operations' own reads still hold the file
-engine's store (section 5, "Moving the other readers"). Still to come: `import` and `capabilities` (section 5),
-the store engine and everything in sections 6 to 12, which are specified
-here and not built.
+engine's store (section 5, "Moving the other readers"). Still to come:
+`import` and `capabilities` (section 5). Of the store engine, `om-store`
+holds the `state` file (section 6.1), the entries and applying them to
+the state's trees (6.2, 6.3), the page trees (6.4), the page file with
+its checkpoints, restore points and the open that chooses a checkpoint
+(6.7), and the simulator (12); `om-server` reads a file's tree in it as
+a view, imports an `.fmp12` into one and exports it again (section 5,
+"The store engine's file"). No file is hosted on it yet: the log's
+segments, the store behind the engine interface, groups, clones,
+replication and everything else in sections 6 to 12 are specified here
+and not built.
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) lists the
 work. A section is rewritten in place when its part is built.
 
@@ -203,7 +211,9 @@ version and walks a view otherwise, and backup schedules and the
 desktop's Save a Copy as make their copies with it. Server scripts and
 the operations' own reads still hold the store; "Moving the other
 readers" below lists them and the plan for them. `import` and
-`capabilities` are not built.
+`capabilities` are not built. Of the store engine, its view of one file,
+the import of an `.fmp12` into it and its export are ("The store engine's
+file", below); no file is hosted on it yet.
 
 **Views.** A view (`engine::View`) is one fixed version of one file's
 tree. Nothing a view returned changes later. It answers:
@@ -850,6 +860,108 @@ at any time from a running server, at a clean stop, and `om-server export`
   refused: a walk into it would put its pages in the wrong places. The
   only caller, the desktop's Save a Copy as, is Linux-only and passes its
   own unnamed file.
+
+**The store engine's file** (`engine::paged`). The store engine's first
+code in the server: one file held in a tree of `om-store`'s pages, read
+as a view, filled from an `.fmp12` and written back as one. No file is
+hosted on it, and nothing of its write side is built.
+
+- **The view** (`PagedView`) reads one version of a tree, named by its
+  root, through any page store (`om_store::page::PageStore`): the page
+  file, through the roots a pin hands over, or a store in memory. Every
+  page it reads is checked by the hash its parent holds; one that does
+  not read or check fails the read that reached it with
+  `ReadError::Unreadable`, naming the path read, and is never data. Each
+  call opens the version again from its root (the page store's cache
+  answers) and holds a page only while it reads it; what it returns is
+  owned. It answers every call as the file engine's view of the same
+  file does, page for page: the same children and walk steps in a page,
+  the same "more may follow" (a full page of children looks one child
+  further to say), and subtrees built with exactly as many places as
+  they hold, so that a limit counts them as it counts the file engine's
+  tree of the same file (`om_hbam::tree::memory` counts capacity). A
+  listing or walk that meets a read that fails partway gives what came
+  before it with "more may follow", never "no more" (a failed look-ahead
+  past a full page answers "more" too), and the next call reaches the
+  failed read first and fails, or reads what is there. Its version is the index of the
+  last entry that changed the tree, its root page's stamp, read when the
+  view is made; `changed_since` is the tree's own
+  ([server-storage-format.md](server-storage-format.md) 2.8). The `View`
+  trait needed no change.
+- **Import** (`paged::import`) reads an `.fmp12` with
+  `stream::NodeStream` and puts every node, with its kind and value,
+  empty lists included, into a new tree, in batches of at most 4,096
+  nodes and 4 MiB (checked before a node joins a batch; a node larger
+  than the byte limit alone is a batch of its own), each one unit of work
+  of the page store committed on its own (`paged::Units`), so that what
+  it holds does not grow with the file. It goes through no log and no
+  entry: its caller gives the entry indexes its batches take, and before
+  it writes anything it works out from the file's length that they all
+  fit below the last index an entry can have. When the store's write
+  path takes it, its batches become the parts of a group whose last entry
+  adds the file (sections 6.9, 6.10). What it accepts, an export gives
+  back: an export can be written, for a file whose export numbers fewer
+  than 2^32 pages (the writer's page numbers are 32 bits, and an export
+  can number more pages than its source, which matters only near the
+  format's 16 TiB) and whose change number has the room for them; it
+  holds the same nodes, kinds and values; and imported at the same entry
+  in the same batches, it has the same root hash (a page's hash covers
+  the entry that wrote it, so other entries or batches give another root
+  hash over the same nodes). That second import has two boundaries:
+  page 0's change number, which an export advances by the pages it
+  writes, so the export of a file within that many of the bound below
+  may itself be refused; and the entries, whose check is worked out from
+  the file's length, while an export can be a page or more longer than
+  its source, so at a first entry within a few pages' worth of the last
+  index an entry can have, the export's re-import may be refused. Accepted
+  means exportable once. So it refuses, typed (`paged::ImportError`) and
+  with the tree it made dropped again:
+  - a file that does not read, an encrypted one among them, whose pages
+    do not decode, and five shapes `om_hbam`'s streaming reader refuses
+    and the file engine's reader (`HbamFile`) reads: a leaf chain that
+    ends before its stream closes the root list (a file cut short), one
+    that goes on after it closed the root list, a page that does not push
+    again the path left open before it, a value given to a key after its
+    children, and a page larger than 64 KiB (`om_hbam::stream`). The file
+    engine hosts such a file from the tree its reader reads, exports the
+    file's own bytes while nothing changed, and a save writes the tree in
+    the writer's form. None of FileMaker's 66 templates is refused;
+  - a file holding what the file writer cannot write, or writes in
+    another shape: a list that carries an empty value
+    ([#754](https://github.com/OpenMaker-Dev/openmaker/issues/754)),
+    which the file engine keeps in memory and its writer writes as a bare
+    list, and a value over 1,000 bytes held whole, which the writer writes
+    in pieces. The file engine hosts such a file, read-only where its
+    writer cannot write it, and the store is to keep it as its original
+    image (section 6.10, not built);
+  - a node whose entry in an export's index could cost more than 1,019
+    bytes (section 6.11): past it the file writer's index can grow past
+    the 16 levels it writes, and an export would fail. The bound is
+    conservative, so some files past it could be written (a chain of five
+    empty lists with 219-byte segments). The file engine hosts such a
+    file, and its saves fail only where the index does;
+  - a page 0 the writer does not write: not one 4,096-byte page, or a
+    change number above `u64::MAX - u32::MAX`, which leaves no room for
+    the 2^32 pages an export may number from it. That is a worst case: a
+    file whose export numbers fewer pages is refused too. The file engine
+    hosts such a file, and a save of it fails, before it writes anything,
+    only when its pages pass the room the change number leaves;
+  - an item past the bounds of section 6.11, which no file the reader
+    reads holds.
+- **Page 0** comes back with the import (`Imported::page_zero`), as read.
+  The file engine keeps it in its derived state; the store keeps it in
+  the file's row of its own tree (server-storage-format.md 5.3), which
+  the entry that adds the file writes. Until the import goes through
+  entries, its caller holds it.
+- **Export** (`paged::export`) is the file engine's written export
+  (`export::write_checked`, which `write_walked` calls with a reading's
+  view and page 0): a walk into the streaming writer with the imported
+  page 0 and the change number it holds, read back and compared with a
+  second walk. It is the file engine's compacted copy of the same file,
+  byte for byte. A read that fails fails it; what is then left under the
+  export's name is what every export leaves ("Where an export goes",
+  above, and `engine::ExportError`;
+  [#761](https://github.com/OpenMaker-Dev/openmaker/issues/761)).
 
 **Derived state.** What readers need of a file besides its tree is one
 value, `derived::Derived`: the decoded catalog, the file's accounts, the
@@ -1801,31 +1913,52 @@ knows nothing of records, catalogs or the protocol.
 
 ### 6.1 On disk
 
-One store folder per server, used by one process at a time (a lock file):
+One store folder per server, used by one process at a time. It holds no
+symbolic links, and its names are lowercase ASCII, so that no two can be
+one file on a file system that ignores case (`om_store::sys`):
 
 ```text
+<store>/lock       locked by the running server (flock on Unix), never removed
 <store>/log/       the change log, in segments
 <store>/pages      the page file: superblock slots, then pages
 <store>/blobs/     container data by content hash (section 8)
 <store>/state      this server's id, its start count, its term and vote,
-                   the list of log segments, the marker (section 6.3),
+                   the run of log segments in use, the marker (section 6.3),
                    and whether it is in repair (section 7.5)
 ```
 
-The start count is raised and flushed each time the server starts, before
-it writes or sends anything else. `state` is written as two copies in
-turn, each with a number and a hash, and the valid copy with the highest
-number counts. A server without a valid copy does not know what it
-confirmed, and does not start (section 7.5).
+The start count is raised by one and flushed each time the server starts,
+before it writes or sends anything else; an open cut short can skip a
+value, and no value is issued twice. `state` holds two copies in fixed
+slots, each with a number and a hash, and the valid copy with the highest
+number counts. A marker advance writes the next number in place over the
+slot that does not hold the current copy and flushes: one write and one
+flush per commit batch. Every other change - the start count, the term
+and vote, the segment run, the repair record, a marker that goes back -
+is written to both slots, one after the other, each flushed, before it
+counts. Losing either slot therefore costs at most one marker advance:
+step 3 of section 6.7 re-establishes its index and hash from the log when
+the log's tail is whole, and its committed position equals the durable
+one on a single server and is learned again from the leader in a cluster
+(step 4, section 7.1). Losing a slot and the log's tail together loses
+that batch, and one slot changed on the device while a write to the
+other is cut short can leave no valid copy. An open first writes the
+copy it read back into its slot and flushes it, because an earlier
+process's failed write or flush can leave the system's cache showing a
+copy the device does not hold. A server
+without a valid copy does not know what it confirmed, and does not start
+(section 7.5). The format and what the copies protect against are in
+[server-storage-format.md](server-storage-format.md) section 1
+(`om_store::state`).
 
 ### 6.2 State and positions
 
 The **state** of a store at an entry is everything it answers from:
 
-- for each file: its tree, its page 0, its name and id, whether it is
-  read-only and the image kept for it (section 6.10), the list of its
-  container files stored outside the `.fmp12` (section 8), and its design
-  history (section 9);
+- for each file: its tree, its page 0, its name and id (the index of the
+  entry that added it), whether it is read-only and the image kept for
+  it (section 6.10), the list of its container files stored outside the
+  `.fmp12` (section 8), and its design history (section 9);
 - the lock table and the session table, with each server's highest start
   count (section 7.3);
 - the number of references to each blob (section 8);
@@ -1834,7 +1967,8 @@ The **state** of a store at an entry is everything it answers from:
 - the index, term and hash of the last entry applied.
 
 All of it is kept in trees in the page file, one per file and one for the
-rest. A checkpoint names every root in one superblock (section 6.7), so a
+rest ([server-storage-format.md](server-storage-format.md) section 5.3).
+A checkpoint names every root in one superblock (section 6.7), so a
 checkpoint is the whole state at one entry, and nothing the state needs
 lives only in memory or only in the log. Each server's map of its own free
 pages (section 6.7) is not part of the state: servers place pages
@@ -1854,13 +1988,13 @@ above it:
 
 Every change is first an **entry** in the log. An entry has an index (its
 position, counted from 1), a term (section 7.1), a kind, the file it
-belongs to, a payload, and a SHA-256 hash over the previous entry's hash
-and its own content. The chain of hashes shows a missing, reordered or
-altered entry.
+belongs to (by id), a payload, and a SHA-256 hash over the previous
+entry's hash and its own content. The chain of hashes shows a missing,
+reordered or altered entry.
 
 | Kind | Payload |
 |---|---|
-| change | one write operation's effects on one file: tree edits (put a leaf, put a list, delete a subtree), lock table edits, notices, the operation's id and its reply. It may be part of a group (section 6.9) |
+| change | one write operation's effects on one file: tree edits (put a leaf, a list or a list with a value in place of what was there; delete a subtree), lock table edits (set, remove, release a session's locks on the file), notices, the operation's session and sequence number, and its reply. It may be part of a group (section 6.9) |
 | session | a session opened or closed, or a server started (section 7.3) |
 | file | a file added, removed, renamed or cloned |
 | members | the cluster's servers, or the tree format version (section 7.6) |
@@ -1918,15 +2052,19 @@ commit them together.
 
 ### 6.4 Trees and pages
 
-Each tree is a B+tree of fixed-size pages (16 KiB) in the page file. A
+Each tree is a B+tree of fixed-size pages (16 KiB) in the page file,
+built by `om_store::tree` over the page store interface
+`om_store::page::PageStore`; the byte format and the shape rules are in
+[server-storage-format.md](server-storage-format.md) section 2. A
 file's keys are paths in an encoding that sorts as the key tree does: each
 segment's bytes with `00` written as `00 ff`, followed by `00 01`. A
 subtree is then one contiguous key range, in depth-first order. An item's
-value is a kind byte (list, value, or both) and the node's value. An item
-too large for a quarter of a page keeps its start in the page and the rest
-in overflow pages, hashed like any page. An index page holds, for each
-child, the shortest key that separates it from the child before, and that
-key spills to overflow pages by the same rule.
+value is a kind byte (list, value, or both) and the node's value. A path
+has at most 64 segments, which bounds the ancestors one edit can create.
+An item too large for a quarter of a page keeps its first 1,024 bytes in
+the page and the rest in overflow pages, hashed like any page. An index
+page holds, for each child, the shortest key that separates it from the
+child before, and that key spills to overflow pages by the same rule.
 
 Pages are **copy-on-write**: a change writes new pages for the leaf and
 for every page above it, and the old pages stay as they were. An index
@@ -1934,14 +2072,21 @@ page also holds, for each child, its page number, its hash and the index
 of the entry that last wrote it. A page's hash is SHA-256 over its items
 and, for an index page, over its children's hashes, without their page
 numbers. Each page also carries a checksum of all its bytes, page numbers
-included, so damage to a pointer is found in the page that holds it. So:
+included (SHA-256 over the page's hash and the bytes the hash leaves out,
+cut to 64 bits), so damage to a pointer is found in the page that holds
+it. So:
 
 - reading a page recomputes its hash from its bytes and checks it against
   the hash its parent holds, which finds damaged pages, pages written to
   the wrong place and pages never written. The `.fmp12` format has no such
   check (file-format.md 5);
 - the store can tell from a few pages whether anything under a path changed
-  since a given entry;
+  since a given entry: from the index pages along the two ends of the
+  path's key range, at most two a level, and no leaf. The answer is never
+  "no" when something under the path changed, and can be "yes" when only
+  another path in the same page did. The cache of section 6.6 and the
+  check of section 6.9 rely only on the first: a false "yes" costs a cache
+  miss or another pass;
 - a tree's root hash depends on its content and its shape, and not on
   where a server put its pages.
 
@@ -1949,18 +2094,32 @@ included, so damage to a pointer is found in the page that holds it. So:
 **tree format version**, which is part of the state. Every server applies
 entries with the same version, and the version changes only by a `members`
 entry once every member supports the new one (section 7.6). Applying an
-entry is deterministic, so every server has the same root hashes at the
-same entry. A tree is never rebuilt in another shape except by an entry.
+entry is deterministic: the shape is a function of the sequence of edits
+alone, never of page numbers, timing or what is cached, so every server
+has the same root hashes at the same entry. Every page an entry writes
+carries the entry's index, and an entry that changes a tree writes its
+root. A tree is never rebuilt in another shape except by an entry.
 
-The page cache is keyed by page number and hash, so a page number that is
-reused never returns the page that was there before.
+The trees keep their pages in the **page file** (`om_store::pagefile`;
+[server-storage-format.md](server-storage-format.md) section 4). Pages
+committed and not yet written by a checkpoint are held in memory apart
+from the **page cache**, which cannot evict them. The cache holds pages
+read from disk, up to a configured size, least recently used first out.
+It is keyed by page number and hash, so a page number that is reused
+never returns the page that was there before; a page never changes once
+it is on disk, and a number freed for reuse is dropped from the cache.
 
 The **superblock** names, for a checkpoint (section 6.7), the entry it
-covers, the roots of the state's trees and of the server's own map of free
-pages, and the restore points that are kept, with their roots. It carries
-a number and its own hash, and is written twice. There are four slots: a
-new checkpoint's two copies overwrite those of the older of the two
-checkpoints on disk.
+covers, the tree format version and the first page of the checkpoint's
+**meta stream**, by number and hash. The meta stream holds the roots of
+the state's trees by name, the restore points that are kept (each with
+its own meta stream) and the server's own map of free pages, and every
+page of it is checked by the hash that names it, so a copy of the
+superblock has a fixed size however many files the server hosts. A copy
+carries the checkpoint's number and its own hash, and is written twice.
+There are four slots in two pairs: a new checkpoint's two copies go into
+the pair the newest checkpoint does not hold, over the older
+checkpoint's copies when there is one.
 
 ### 6.5 Writing
 
@@ -2003,33 +2162,93 @@ large find or a SQL query sees one version while writes go on.
 A **checkpoint** writes the pages of the published state that are not on
 disk yet and the server's map of free pages, flushes them, then writes
 and flushes its superblock copies. Only published entries are ever
-checkpointed.
+checkpointed: the page file checkpoints its newest version, so the
+engine applies an entry to the trees when it publishes it, or pins the
+published version while it applies ahead and checkpoints only once
+everything applied is published. A checkpoint is of one exact version:
+it covers every change of its entry and of those before, and none after
+(the page file refuses the rest; server-storage-format.md 4.6). The
+engine calls the page file as 4.6 sets out: one caller applies entries
+in order, one at a time, with one open reservation and one unit of work
+an entry (everything the entry changes, in every tree, committed once;
+the page file holds each tree's root and changes it only then), and
+another checkpoints and reclaims. The one that checkpoints
+has the applier take no new entry for the moment of a checkpoint's first
+check and plan, and keeps a restore point only while no reservation is
+open; otherwise the page file refuses the checkpoint, or the keep, for
+as long as the applier does not pause. The order of the writes and
+flushes, and what a crash at each step leaves, are in
+server-storage-format.md 4.6.
 
 **What is kept.** The two newest checkpoints are kept whole, and so is
 every checkpoint held as a restore point (section 11), which each
 superblock lists. A checkpoint is retired when its superblock copies are
-overwritten, and a restore point when no superblock on disk lists it. A
-page is reused only when no superblock on disk names a checkpoint or
-restore point that uses it, and no clone, no state copy in progress and no
-view open in the process refers to it. The log is kept from the oldest
+overwritten, and a restore point when no superblock on disk lists it (a
+dropped restore point is no longer listed by the next checkpoint, and is
+retired by the one after it). A page is reused only when no superblock on
+disk names a checkpoint or restore point that uses it, and no clone, no
+state copy in progress and no view open in the process refers to it:
+every page that leaves the newest version is recorded with the version
+that wrote it and the one that released it, and is reused only when no
+checkpoint on disk, restore point listed, checkpoint being written or
+**pin** lies between the two. The engine pins the version a view, a
+state copy or a restore point reads, for as long as it uses it: the
+newest (`pin_newest`, also for an entry that changed nothing, which has
+no version of its own), or a checkpoint or restore point on disk. Pins
+are in memory, so after a restart only what the superblocks on disk name
+is kept. The log is kept from the oldest
 kept checkpoint, and further back while another server needs it
 (section 7.5). So when the newest checkpoint cannot be used, the one
 before it still has every page it names and every entry after it. The
 page file keeps a reserve that only recovery, checkpoints and the discard
 of a group may use, so that a store whose writes have run out of space can
-still start, checkpoint and free space.
+still start, checkpoint and free space; the room a checkpoint's meta
+stream needs is set aside beyond it. A reservation the disk cannot hold
+is refused before anything is written.
 
-The **map of free pages** records which pages are free and how many trees
-share each page (section 6.8). It is each server's own. Changes to it
-since a checkpoint are rebuilt by applying the log.
+The **map of free pages** records which pages are free, which are dying
+and from when to when they were reached, and how many trees share each
+page (section 6.8). It is each server's own, and is written whole in
+each checkpoint's meta stream, as of that checkpoint. A subtree dropped
+whole is released by its root and taken down lazily, a page at a time.
+Changes to the map since a checkpoint are rebuilt by applying the log:
+the same entries applied from the same checkpoint, with the same
+checkpoints, pins and reclaims between them, give the same map, page
+numbers included. A dying page that a map on disk still records as
+needing its bytes keeps them until every checkpoint on disk records it
+settled (server-storage-format.md 4.5).
 
 **Starting up.**
 
 1. Read `state`. With no valid copy the server does not start.
-2. Of the two checkpoints on disk, newest first, take the first whose
-   superblock copy is valid and whose tree roots read back with the hashes
-   it names. Deeper damage is page damage (section 6.12), found when a
-   page is read, and does not send the server back to an older checkpoint.
+2. Take the newest checkpoint on disk: the one with the highest-numbered
+   valid superblock copy, whose meta stream reads back and agrees with it
+   and whose tree roots read back with the hashes it names. The open
+   gives nothing up (#750). If the device fails a read of a slot or of
+   that checkpoint, or that checkpoint's bytes do not check, it writes
+   nothing and reports which checkpoint (or slot), why, and what giving
+   it up would lose: the restore points it lists that the checkpoint
+   before it does not. A read the device fails says nothing of the bytes,
+   which a later read may return whole, so the server is started again
+   later. Giving a checkpoint up and opening on the one before it is a
+   separate, explicit call, given the approval the report carries: what
+   to give up, what goes with it, and the checkpoint to land on, each
+   checkpoint named by an identity that differs when a number comes again
+   (unless the contents are the same in every byte, and then so is the
+   loss). The call does exactly
+   that or nothing, so the server records the report durably before it
+   makes the call, and the loss it recorded is the loss that can happen. The server is to make that call by
+   itself for damage, and leave it to an administrator for a read that
+   keeps failing; that part of the store is not built yet, so a store
+   whose newest checkpoint does not check does not start by itself. The
+   checkpoint used has its copy written into both of its slots, and the
+   other pair keeps only its predecessor's copy: what an open writes over
+   is a slot that held nothing usable (bytes that do not check, or a copy
+   of a checkpoint whose pages are free), and the explicit call writes
+   over the slots of what it gave up, before any of its pages can be
+   written over. Deeper damage is page damage (section 6.12), found when
+   a page is read, and does not send the server back to an older
+   checkpoint.
 3. Read the log from that checkpoint and check it against the marker: the
    entry at the marker's index must be there, whole, with the marker's
    hash, and so must every entry between the checkpoint and it. A
@@ -2042,7 +2261,11 @@ since a checkpoint are rebuilt by applying the log.
    the committed position. On one server that is every durable entry. A
    member of a cluster applies as far as the committed position its
    marker recorded and learns the rest from the leader (section 7.1).
-5. Free nothing, in the log or the page file, before step 4 is done.
+5. Free nothing in the log before step 4 is done. The page file frees
+   during step 4 what normal running frees, which is only what no
+   checkpoint or restore point on disk reaches, so applying the entries
+   again never needs more space than the first time
+   (server-storage-format.md 4.8).
 
 If the log does not hold every entry through the marker, or neither
 checkpoint can be used, the server cannot produce what it confirmed. A
@@ -2124,12 +2347,15 @@ its leaf pages in order without loading the file, and writes every node
 with its kind and value, empty lists included, as the parts of a group
 whose last entry makes the file visible. It refuses what the server
 refuses to host today (encrypted files, `crates/om-hbam/src/container.rs`)
-and a file with an item beyond the store's bounds (section 6.11).
+and a file with an item beyond the store's bounds (section 6.11). Built
+so far: the walk into a tree in batches, each a unit of work of the page
+store outside the log (`engine::paged::import`, section 5).
 
 A file holding content the writer cannot write (section 4) is hosted
 read-only, as today. The store keeps such a file's original image whole,
-checked by its hash, and its export is that image. A file that cannot be
-read to its end is refused.
+checked by its hash, and its export is that image. That is not built:
+import refuses such a file. A file that cannot be read to its end is
+refused.
 
 **Export** walks a view in key order into the bulk writer of
 [hbam-writer.md](re/hbam-writer.md) 7.2, which writes leaves, then index
@@ -2141,7 +2367,8 @@ comparing it with the view node by node, kinds included. `om-hbam` reads
 a file a page at a time (`stream::NodeStream`, which gives its nodes in
 key order, kinds included) and writes one a page at a time
 (`writer::NodeWriter`, which takes its nodes in key order, kinds included,
-and writes the bytes of `writer::rebuild`).
+and writes the bytes of `writer::rebuild`). Built for one file's view
+(`engine::paged::export`, section 5); none of the offers below is.
 
 Export is offered:
 
@@ -2162,6 +2389,25 @@ store take unbounded memory or disk:
 - an item's encoded path and its value are each at most 64 KiB, the
   largest value the format's length fields allow; import refuses a file
   beyond that;
+- a file's paths are held to the smaller of the store's bound above and
+  what the file writer writes (`om_hbam::writer`): segments of at most 219
+  bytes, 16 deep, and an entry of at most 1,019 bytes in the writer's
+  index (`MAX_INDEX_ENTRY`, a slot for each segment and 4 bytes, and 3
+  more for a list). Within that last bound every index page but the last
+  of its level holds four entries or more, since the writer closes a page
+  only when the next entry does not fit and four entries of 1,019 bytes
+  fill its 4,076 bytes, so 16 levels index 4^16 = 2^32 pages, every page
+  a file can number (the derivation is at `MAX_INDEX_ENTRY`). For four
+  entries it is tight: at 1,020 bytes four entries no longer fit a page.
+  For a file it is conservative: past it an index page may hold fewer
+  than four entries, and a file fails only when its index's fan-out is
+  too small for its pages (at two entries a page, 16 levels index 2^16
+  pages), so some files past it could be written. FileMaker's 66
+  templates reach 155 bytes,
+  the tests' fixtures 34. Import refuses a file past it, so that what the
+  store holds can always be exported; the store's write path will have to
+  keep every change within it too
+  ([#764](https://github.com/OpenMaker-Dev/openmaker/issues/764));
 - an entry is at most as large as the request limits the server already
   enforces allow (`ConnectionLimits::upload_memory`); larger work is a
   group, whose parts have a fixed largest size;
@@ -2172,9 +2418,10 @@ store take unbounded memory or disk:
   (section 6.5). A server that applies another's entries and runs out of
   space cannot refuse them: it stops and reports, and is in repair until
   it has space;
-- pages waiting for a checkpoint have a budget. Past it a checkpoint is
-  forced and operations wait. Pages a group's last entry creates may be
-  written before the checkpoint that names them;
+- pages waiting for a checkpoint have a budget. Past it the page file
+  refuses reservations as "checkpoint needed", a checkpoint is forced and
+  operations wait. Pages a group's last entry creates may be written
+  before the checkpoint that names them;
 - views have a limit in number, and one held longer than a configured
   time by a SQL query is ended, so that old pages can be reused;
 - a server too far behind for the log to be worth sending gets the state
@@ -2189,7 +2436,8 @@ store take unbounded memory or disk:
 | `state` has no valid copy | its hashes | the server does not start: it does not know what it confirmed. A cluster member comes back only as a new server (section 7.5). A single server is restored (section 11) |
 | A page is damaged, misplaced or missing | its parent's hash | on a cluster, fetch it (section 7.5). On one server, reads of that range fail, the file is marked damaged and the event is logged |
 | A blob or a kept original image is damaged or missing | the hashes in its reference, checked whenever it is read (section 8) | on a cluster, fetch it. On one server, the read or export fails and the event is logged; damaged bytes are never served or exported |
-| The newest checkpoint's superblock or roots cannot be read | hashes | use the checkpoint before it, which is kept whole (section 6.7) |
+| The newest checkpoint's meta stream or roots do not check | hashes | the open writes nothing and reports the checkpoint and the restore points giving it up would lose; an explicit call gives it up and opens on the checkpoint before, which is kept whole. The store is to make that call by itself, recording the report first; not built yet, so such a store does not start by itself (section 6.7) |
+| The device fails a read of a slot or of the checkpoint the open is choosing | the system's error | the open fails and writes nothing; start again later. A read that keeps failing is given up only by an administrator's explicit call, which opens on the checkpoint before and reports what it gave up (section 6.7) |
 | A flush fails | the system's error | stop the server at once and recover on restart. Never retry the flush: the system may already have dropped the data (PostgreSQL's 2018 finding). An entry the failed flush covered may be found whole on restart; its outcome was unknown to its client (section 2) |
 | The disk is full | a segment, page or reservation that cannot be allocated | refuse writes before appending anything, keep serving reads |
 | Slow damage | a background job that reads every page and entry and recomputes its hash | as for the fault found |
@@ -2263,10 +2511,11 @@ differ. They only need to apply edits the same way (section 6.4).
 
 - **Sessions.** A session is named by its server, that server's start count
   (section 6.1) and its connection; within a start a server numbers its
-  connections upward. A `session` entry opens it and one closes it. A
-  server writes a `session` entry when it starts, which closes every
-  session of its earlier starts and records the start count as that
-  server's highest; one that names a lower count does nothing. The state
+  connections upward. A `session` entry opens it and one closes it; one
+  that closes a session not open does nothing. A server writes a
+  `session` entry when it starts, which closes every session of its
+  earlier starts and records the start count as that server's highest;
+  one that names no higher count does nothing. The state
   keeps, for each server, that count and the highest connection number
   opened in it. An entry that opens a session is applied only when it names
   that count and a higher connection number, so a delayed or repeated entry
@@ -2281,8 +2530,12 @@ differ. They only need to apply edits the same way (section 6.4).
   session.
 - **Locks.** A lock belongs to a lock user as today (connection, session
   id and transaction, write-path.md 4.1) within a session as above, and
-  lock counts are kept per lock. Locks change only by entries, so every
-  server holds the same lock table and a new leader starts with it. On a
+  lock counts are kept per lock; the store keeps each lock under its
+  session and file, with its key, user and value as bytes it does not
+  interpret, so that closing a session, or removing a file, releases
+  them in the same entry (server-storage-format.md 5.3). Locks change
+  only by entries, so every server holds the same lock table and a new
+  leader starts with it. On a
   cluster a lock is granted when its entry is committed. A single server
   grants a lock when its entry is appended, without waiting for it to be
   durable, and views do not depend on it: if the server stops, every

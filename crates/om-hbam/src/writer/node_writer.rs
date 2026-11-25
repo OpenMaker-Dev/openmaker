@@ -832,6 +832,44 @@ mod tests {
         Ok(pages)
     }
 
+    /// `MAX_INDEX_ENTRY` (`super::super`) on one index page: four entries
+    /// without a shared prefix, each costing exactly the bound, fill a
+    /// page's body, so a page that refused an entry within the bound held
+    /// four; one byte more each, and the fourth does not fit.
+    #[test]
+    fn four_entries_at_the_index_bound_fill_a_page() {
+        use super::super::{index_entry_cost, MAX_INDEX_ENTRY};
+        // A leaf's separator of `cost` bytes: four 219-byte segments, the
+        // first one the entry's own, then one making up the rest (a
+        // segment of `n > 3` bytes takes `n + 2` with its code byte).
+        let entry = |first: u8, cost: usize| -> Vec<Segment> {
+            let mut path = vec![
+                vec![first; 219],
+                vec![0x61; 219],
+                vec![0x61; 219],
+                vec![0x61; 219],
+            ];
+            path.push(vec![0x62; cost - 4 * 221 - 2 - 4]);
+            assert_eq!(index_entry_cost(&path, false), cost);
+            path.into_iter().map(Segment::Key).collect()
+        };
+        assert_eq!(4 * MAX_INDEX_ENTRY, PAGE_SIZE - PAGE_HEADER_LEN);
+        for (cost, fit) in [(MAX_INDEX_ENTRY, 4), (MAX_INDEX_ENTRY + 1, 3)] {
+            let mut page = IndexPage::default();
+            let mut added = 0;
+            for first in 0..5u8 {
+                if !page
+                    .add(&entry(0x41 + first, cost), u32::from(first) + 2)
+                    .unwrap()
+                {
+                    break;
+                }
+                added += 1;
+            }
+            assert_eq!(added, fit, "entries of {cost} bytes");
+        }
+    }
+
     #[test]
     fn index_tries_match_the_spec_example() {
         // The start of Contacts/en's root (3.1): BH -> 2, then entries under

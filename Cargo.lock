@@ -4806,6 +4806,7 @@ dependencies = [
  "om-scripts",
  "om-scsu",
  "om-session",
+ "om-store",
  "om-transfer",
  "om-url",
  "rcgen 0.14.10",
@@ -4842,6 +4843,14 @@ dependencies = [
  "om-hbam",
  "om-scsu",
  "stacker",
+]
+
+[[package]]
+name = "om-store"
+version = "0.0.0"
+dependencies = [
+ "om-hbam",
+ "ring",
 ]
 
 [[package]]

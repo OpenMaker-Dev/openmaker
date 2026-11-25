@@ -45,6 +45,54 @@ pub const MAX_SEGMENT: usize = 219;
 /// bounds use it too.
 pub const MAX_DEPTH: usize = 16;
 
+/// The most the index entry of a page may cost for the writer's index to
+/// stay within the 16 levels it writes ([`MAX_DEPTH`] levels; 4.1, 7.2),
+/// whatever the keys: a quarter of a page body, 1,019 bytes. A tree none of
+/// whose nodes passes it ([`index_entry_cost`]) is indexed in at most 16
+/// levels. Why:
+///
+/// - An index entry is the first key of a page of the level below (3.2): on
+///   a leaf page, the path it pushes again and its first item, so a leaf's
+///   path, a list's path and a begin fence (its first item opens the list),
+///   a list's path and an end fence (its first item closes it), or the
+///   begin fence alone (the first page); on an index page, its first
+///   entry's. So no entry costs more than the largest
+///   [`index_entry_cost`] of a node of the tree.
+/// - The writer fills an index page in key order and closes it only when
+///   the next entry's slots do not fit in its 4,076-byte body
+///   (`node_writer::IndexPage::add`), and an entry adds at most its whole
+///   cost (each segment's slot: a code byte and its key, the last slot's
+///   4-byte page number; the slots it shares with the entry before it cost
+///   nothing). A page closed with `m` entries of at most `c` bytes each held
+///   `m * c` at most and refused at most `c` more: `m * c + c > 4,076`. With
+///   `c <= 1,019`, that is `m >= 4`.
+/// - So every index page but the last of its level holds four entries or
+///   more, level `L` has at most `ceil(n / 4^L)` pages for `n` leaf pages,
+///   and since page numbers are 32 bits, `n < 2^32 = 4^16`: level 16 has
+///   one page, the root.
+///
+/// Within the bound a tree never fails for its index, and the bound is
+/// tight for the four entries: four entries without a shared prefix that
+/// cost 1,019 bytes each fill a body exactly, and at 1,020 the fourth does
+/// not fit. Past it, an index page may hold fewer than four entries, and
+/// what makes a tree fail is too little fan-out over the whole index, not
+/// pages of one entry alone: at two entries a page, for one, 16 levels
+/// index 2^16 pages, so a file of more leaf pages whose entries all cost
+/// over 2,038 bytes passes the cap. The bound is conservative: a tree with
+/// a few nodes past it is written (a chain of five empty lists with
+/// 219-byte segments fits one leaf page), and the store engine's import,
+/// which refuses every node past it, refuses such a tree.
+pub const MAX_INDEX_ENTRY: usize = BODY / 4;
+
+/// The most the index entry of a page whose first key is at the node at
+/// `path` (a list or not) can cost ([`MAX_INDEX_ENTRY`]): a slot for each
+/// segment (a code byte and the key, `key_len`), a fence after a list's
+/// path (a code byte and two), and the entry's 4-byte page number.
+pub fn index_entry_cost<S: AsRef<[u8]>>(path: &[S], list: bool) -> usize {
+    let keys: usize = path.iter().map(|s| 1 + key_len(s.as_ref())).sum();
+    keys + if list { 3 } else { 0 } + 4
+}
+
 /// The change number (SCN) page 0 holds (5.1): where a writer of the
 /// file starts numbering its pages, and what it leaves there when it
 /// finishes. `None` for a page too short to hold one.
@@ -429,5 +477,87 @@ mod tests {
             unwritable(&parents, &leaf(vec![2], 1), 10)[0].path.len(),
             MAX_DEPTH
         );
+    }
+
+    /// The entries of an index page's body (3.1): its terminal slots.
+    fn index_entries(body: &[u8]) -> usize {
+        let (mut at, mut entries) = (0, 0);
+        while at < body.len() {
+            let code = body[at];
+            at += 1 + match (code >> 3) & 3 {
+                class @ 0..=2 => usize::from(class) + 1,
+                // A length byte, then the key, or a fence's sentinel.
+                _ => 1 + usize::from(body[at + 1]).max(1),
+            };
+            if code & 0x20 == 0 {
+                at += 4;
+                entries += 1;
+            }
+        }
+        entries
+    }
+
+    /// Below [`MAX_INDEX_ENTRY`] on the writer's own index: with every
+    /// node's entry near the bound (pages that start below four 219-byte
+    /// lists, 891 bytes at most), every index page but the last of its level
+    /// holds four entries or more, so each level has a quarter of the pages
+    /// of the one below at most. The bound itself is pinned on one index
+    /// page (`node_writer`'s `four_entries_at_the_index_bound_fill_a_page`).
+    #[test]
+    fn index_pages_hold_four_entries_within_the_bound() {
+        let superblock = {
+            let mut page = vec![0u8; PAGE_SIZE];
+            page[0x0f..0x14].copy_from_slice(crate::container::MAGIC);
+            page[0x14..0x18].copy_from_slice(&(PAGE_SIZE as u32).to_be_bytes());
+            page
+        };
+        let branches = (0..60u8)
+            .map(|b| {
+                let leaves = (1..=8u8)
+                    .map(|k| OwnedNode::leaf(vec![k], vec![b; 700]))
+                    .collect();
+                let chain = (0..3).fold(
+                    OwnedNode::list(vec![0x61; MAX_SEGMENT], leaves),
+                    |child, _| OwnedNode::list(vec![0x62; MAX_SEGMENT], vec![child]),
+                );
+                OwnedNode {
+                    segment: vec![0x41 + b; MAX_SEGMENT],
+                    ..chain
+                }
+            })
+            .collect();
+        let root = OwnedNode::list(Vec::new(), branches);
+        let mut most = 0;
+        let mut path = Vec::new();
+        fn walk(node: &OwnedNode, path: &mut Vec<Vec<u8>>, most: &mut usize) {
+            for child in &node.children {
+                path.push(child.segment.clone());
+                let list = child.push || !child.children.is_empty();
+                *most = (*most).max(index_entry_cost(path, list));
+                walk(child, path, most);
+                path.pop();
+            }
+        }
+        walk(&root, &mut path, &mut most);
+        assert!(
+            most > MAX_INDEX_ENTRY - 150 && most <= MAX_INDEX_ENTRY,
+            "{most}"
+        );
+        let file = crate::HbamFile::from_bytes(rebuild(&root, &superblock).unwrap()).unwrap();
+        // Each index level's pages, from the root's level down.
+        let mut levels: std::collections::BTreeMap<u16, Vec<usize>> = Default::default();
+        for number in 1..file.page_count() {
+            let page = file.page(number).unwrap();
+            if page.header.level > 0 {
+                let entries = index_entries(page.used);
+                levels.entry(page.header.level).or_default().push(entries);
+            }
+        }
+        assert!(levels.len() >= 3, "{levels:?}");
+        for (level, pages) in &levels {
+            let (last, full) = pages.split_last().unwrap();
+            assert!(*last >= 1, "level {level}");
+            assert!(full.iter().all(|n| *n >= 4), "level {level}: {pages:?}");
+        }
     }
 }
