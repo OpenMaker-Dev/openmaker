@@ -472,7 +472,8 @@ fn process_mb(pid: u32, name: &str) -> f64 {
 /// the finds on Name, an ExistsInIndex of [`BULK_KEYS`] keys no record
 /// holds, each just below the key most records hold (median of 5), with the
 /// peak resident memory during it alone. `OM_TIMING_SERVER` names another
-/// `om-server` binary to measure.
+/// `om-server` binary to measure; `OM_TIMING_READS=indexes` stops after the
+/// ExistsInIndex, for the reads of stored indexes alone.
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "a measurement for release builds; set OM_TIMING_FILE and OM_TIMING_STEP"]
@@ -695,6 +696,10 @@ fn engines() {
         "{engine} engine: resident {resident:.0} MB before it, peak during it {:.0} MB",
         process_mb(pid, "VmHWM:")
     );
+    if std::env::var("OM_TIMING_READS").is_ok_and(|reads| reads == "indexes") {
+        session.disconnect().unwrap();
+        return;
+    }
     let code = format!("=={}", generated_text(456, fixture::CODE));
     let by_code = finder_program(file_id, fixture::CODE, DataType::Text, &code);
     let first = timed(&mut || assert_eq!(records(&session.query(&by_code).unwrap()), 1));
