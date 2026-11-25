@@ -26,11 +26,16 @@ use std::fmt;
 use std::ops::Bound;
 
 use crate::entry::{
-    entry_hash, Entry, FileEvent, Kind, LockEdit, Members, Op, Payload, PayloadError, ServerId,
-    Session, SessionEvent,
+    decode_edits, encode_edits, entry_hash, Entry, FileEvent, Group, GroupEvent, GroupPath, Kind,
+    LockEdit, Members, Op, Payload, PayloadError, ServerId, Session, SessionEvent, Step,
 };
-use crate::page::{EntryPages, Hash, PageStore, StoreError, TreeName, FORMAT_VERSION};
-use crate::tree::{self, Direction, Edit, Node, Root, Tree};
+use crate::page::{EntryPages, Hash, PageStore, StoreError, TreeName, FORMAT_VERSION, MAX_VALUE};
+use crate::pagefile::entry_bound;
+use crate::tree::{self, key, Direction, Edit, Node, Root, Tree};
+
+/// The most groups open at once (`docs/server-storage-format.md` section
+/// 5.6): an opening part past it is refused.
+pub const MAX_OPEN_GROUPS: u64 = 256;
 
 /// The top-level segments of the store's own tree, and the segments under a
 /// file's row (format section 5.3). Each is one byte.
@@ -42,6 +47,17 @@ mod keys {
     pub const SERVERS: u8 = 0x05;
     pub const SESSIONS: u8 = 0x06;
     pub const LOCKS: u8 = 0x07;
+    pub const GROUPS: u8 = 0x0a;
+
+    /// Under `[GROUPS]`: each open group's row `[GROUPS, GROUP_ROWS, id]`,
+    /// and the groups that declared a path in a file
+    /// `[GROUPS, GROUP_FILES, file, id]`.
+    pub const GROUP_ROWS: u8 = 0x01;
+    pub const GROUP_FILES: u8 = 0x02;
+    /// Under a group's row: what it holds `[.., GROUP_HELD]`, and its
+    /// declared paths `[.., GROUP_PATHS, file, number]`.
+    pub const GROUP_HELD: u8 = 0x01;
+    pub const GROUP_PATHS: u8 = 0x02;
 
     pub const FILE_NAME: u8 = 0x01;
     pub const FILE_FLAGS: u8 = 0x02;
@@ -61,6 +77,9 @@ pub enum TreeId {
     Store,
     /// A file's tree, by the file's id.
     File(u64),
+    /// An open group's staging: its parts' edits, kept until the group is
+    /// closed or discarded (format section 5.3).
+    Group(u64),
 }
 
 impl TreeId {
@@ -70,8 +89,9 @@ impl TreeId {
         let name = match self {
             TreeId::Store => b"store".to_vec(),
             TreeId::File(id) => format!("file:{id}").into_bytes(),
+            TreeId::Group(id) => format!("group:{id}").into_bytes(),
         };
-        TreeName::new(name).expect("a name of at most 25 bytes")
+        TreeName::new(name).expect("a name of at most 26 bytes")
     }
 
     /// The tree a name names: only the names [`TreeId::name`] gives.
@@ -79,11 +99,16 @@ impl TreeId {
         if name == b"store" {
             return Some(TreeId::Store);
         }
-        let digits = name.strip_prefix(b"file:")?;
-        let canonical =
-            !digits.is_empty() && digits.iter().all(u8::is_ascii_digit) && digits[0] != b'0';
-        let id: u64 = std::str::from_utf8(digits).ok()?.parse().ok()?;
-        canonical.then_some(TreeId::File(id))
+        let id = |digits: &[u8]| -> Option<u64> {
+            let canonical =
+                !digits.is_empty() && digits.iter().all(u8::is_ascii_digit) && digits[0] != b'0';
+            let id: u64 = std::str::from_utf8(digits).ok()?.parse().ok()?;
+            canonical.then_some(id)
+        };
+        if let Some(digits) = name.strip_prefix(b"file:") {
+            return id(digits).map(TreeId::File);
+        }
+        id(name.strip_prefix(b"group:")?).map(TreeId::Group)
     }
 }
 
@@ -118,6 +143,30 @@ impl Position {
             hash: Hash(bytes[16..48].try_into().unwrap_or([0; 32])),
         })
     }
+}
+
+/// An open group's row (format section 5.3): the pages its parts hold for
+/// its later application, and how many parts it has.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GroupRow {
+    pub held: u64,
+    pub parts: u64,
+}
+
+/// What an entry does to the space its groups hold (format section 5.8),
+/// read from the state and the entry before it is applied: a part holds
+/// pages for its later application; the close draws on what its group
+/// holds; a discard (and an `empty` entry, for every open group) gives it
+/// back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GroupSpace {
+    pub hold: u64,
+    pub draw: u64,
+    pub release: u64,
+    /// The entry closes or discards a group: what it writes besides the
+    /// staged application (the group's rows, its reply) may take the
+    /// reserve, as recovery may.
+    pub ends: bool,
 }
 
 /// A file's row.
@@ -195,6 +244,26 @@ pub enum Refusal {
     },
     /// Lock edit number `edit` removes a lock that is not held.
     NoSuchLock { edit: usize },
+    /// An opening part's group id is not its own index.
+    GroupId { id: u64, index: u64 },
+    /// A part, a close or a discard names a group that is not open.
+    NoSuchGroup(u64),
+    /// An opening part would make more than [`MAX_OPEN_GROUPS`] open.
+    TooManyGroups,
+    /// An opening part declares a path at, above or below one that open
+    /// group `group` declared.
+    GroupOverlap { group: u64 },
+    /// A part or a close of group `group` is for a file the group declared
+    /// no path in.
+    GroupFile { group: u64, file: u64 },
+    /// A part's edit number `edit` is not at or below a path its group
+    /// declared.
+    OutsideGroup { edit: usize },
+    /// Edit number `edit` changes a path open group `group` declared, or
+    /// one above or below it.
+    InGroup { group: u64, edit: usize },
+    /// A file in which open group `group` declared a path is removed.
+    FileInGroup { group: u64 },
 }
 
 impl fmt::Display for Refusal {
@@ -230,6 +299,26 @@ impl fmt::Display for Refusal {
                 "sequence number {seq} does not follow {last} in session {session:?}"
             ),
             Refusal::NoSuchLock { edit } => write!(f, "lock edit {edit} removes a lock not held"),
+            Refusal::GroupId { id, index } => {
+                write!(f, "a group opened by entry {index} cannot have id {id}")
+            }
+            Refusal::NoSuchGroup(id) => write!(f, "group {id} is not open"),
+            Refusal::TooManyGroups => write!(f, "{MAX_OPEN_GROUPS} groups are open already"),
+            Refusal::GroupOverlap { group } => {
+                write!(f, "a declared path meets one open group {group} declared")
+            }
+            Refusal::GroupFile { group, file } => {
+                write!(f, "group {group} declared no path in file {file}")
+            }
+            Refusal::OutsideGroup { edit } => {
+                write!(f, "edit {edit} is outside the paths its group declared")
+            }
+            Refusal::InGroup { group, edit } => {
+                write!(f, "edit {edit} meets a path open group {group} declared")
+            }
+            Refusal::FileInGroup { group } => {
+                write!(f, "open group {group} declared a path in the file")
+            }
         }
     }
 }
@@ -411,6 +500,60 @@ fn lock_path(s: &Session, file: u64, key: &[u8], user: &[u8]) -> Path {
     p
 }
 
+fn group_row(id: u64) -> Path {
+    vec![
+        seg(keys::GROUPS),
+        seg(keys::GROUP_ROWS),
+        id.to_be_bytes().to_vec(),
+    ]
+}
+
+fn group_held(id: u64) -> Path {
+    let mut path = group_row(id);
+    path.push(seg(keys::GROUP_HELD));
+    path
+}
+
+fn group_files(id: u64) -> Path {
+    let mut path = group_row(id);
+    path.push(seg(keys::GROUP_PATHS));
+    path
+}
+
+fn group_paths(id: u64, file: u64) -> Path {
+    let mut path = group_files(id);
+    path.push(file.to_be_bytes().to_vec());
+    path
+}
+
+fn groups_in(file: u64) -> Path {
+    vec![
+        seg(keys::GROUPS),
+        seg(keys::GROUP_FILES),
+        file.to_be_bytes().to_vec(),
+    ]
+}
+
+fn held_value(row: GroupRow) -> Vec<u8> {
+    let mut out = row.held.to_le_bytes().to_vec();
+    out.extend_from_slice(&row.parts.to_le_bytes());
+    out
+}
+
+/// Whether one path is at, above or below the other: one is a prefix of
+/// the other, segment by segment.
+fn meets(a: &[Vec<u8>], b: &[Vec<u8>]) -> bool {
+    let n = a.len().min(b.len());
+    a[..n] == b[..n]
+}
+
+/// The path an edit changes (the ancestors a put makes are not counted).
+fn edit_path(edit: &Edit) -> &[Vec<u8>] {
+    match edit {
+        Edit::Put { path, .. } | Edit::Delete { path } => path,
+    }
+}
+
 fn server_value(row: ServerRow) -> Vec<u8> {
     let mut out = row.start.to_le_bytes().to_vec();
     out.extend_from_slice(&row.connection.to_le_bytes());
@@ -511,6 +654,88 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
             done?;
         }
         Ok(())
+    }
+
+    /// Open group `id`'s row, if it is open.
+    pub fn group(&self, id: u64) -> Result<Option<GroupRow>, Error> {
+        match self.value(&group_held(id))? {
+            None => Ok(None),
+            Some(v) if v.len() == 16 => Ok(Some(GroupRow {
+                held: le64(&v[..8]),
+                parts: le64(&v[8..]),
+            })),
+            Some(_) => Err(Error::Malformed("a group's row")),
+        }
+    }
+
+    /// The open groups, by id.
+    pub fn groups(&self) -> Result<Vec<(u64, GroupRow)>, Error> {
+        let mut ids = Vec::new();
+        self.each_child(&[seg(keys::GROUPS), seg(keys::GROUP_ROWS)], |segment, _| {
+            if segment.len() != 8 {
+                return Err(Error::Malformed("a group's id"));
+            }
+            ids.push(be64(&segment));
+            Ok(())
+        })?;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let row = self
+                .group(id)?
+                .ok_or(Error::Malformed("a group's row without what it holds"))?;
+            out.push((id, row));
+        }
+        Ok(out)
+    }
+
+    /// The open groups that declared a path in file `file`, by id.
+    pub fn groups_in(&self, file: u64) -> Result<Vec<u64>, Error> {
+        let mut out = Vec::new();
+        self.each_child(&groups_in(file), |segment, _| {
+            if segment.len() != 8 {
+                return Err(Error::Malformed("a group's id"));
+            }
+            out.push(be64(&segment));
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    /// The paths open group `id` declared in file `file`, in order.
+    pub fn group_paths(&self, id: u64, file: u64) -> Result<Vec<Path>, Error> {
+        let mut out = Vec::new();
+        self.each_child(&group_paths(id, file), |_, node| {
+            let Node::Value(encoded) = node else {
+                return Err(Error::Malformed("a group's path"));
+            };
+            out.push(key::decode(&encoded).ok_or(Error::Malformed("a group's path"))?);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    /// The files open group `id` declared a path in.
+    pub fn group_files(&self, id: u64) -> Result<Vec<u64>, Error> {
+        let mut out = Vec::new();
+        self.each_child(&group_files(id), |segment, _| {
+            if segment.len() != 8 {
+                return Err(Error::Malformed("a group's file"));
+            }
+            out.push(be64(&segment));
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    /// Every path open group `id` declared, by file and in order.
+    pub fn group_declared(&self, id: u64) -> Result<Vec<GroupPath>, Error> {
+        let mut out = Vec::new();
+        for file in self.group_files(id)? {
+            for path in self.group_paths(id, file)? {
+                out.push(GroupPath { file, path });
+            }
+        }
+        Ok(out)
     }
 
     /// The last entry applied: [`Position::START`] before entry 1.
@@ -780,6 +1005,340 @@ struct Plan {
     drop: Option<u64>,
     opened: Option<Session>,
     closed: Vec<Session>,
+    /// A part's edits, kept in its group's staging tree (made by the
+    /// opening part, which has no root yet).
+    stage: Option<Stage>,
+    /// A close's staged edits, applied to its files.
+    close: Option<Close>,
+    /// The groups whose staging trees are dropped.
+    discard: Vec<u64>,
+}
+
+/// What a close applies: its group's staged edits, each file's in order,
+/// with the file's root.
+struct Close {
+    group: u64,
+    files: Vec<(u64, Root, Vec<Edit>)>,
+}
+
+/// What a part adds to its group's staging tree.
+struct Stage {
+    group: u64,
+    root: Option<Root>,
+    items: Vec<Edit>,
+}
+
+/// The most bytes of a part's edits one item of the staging tree holds.
+const STAGE_CHUNK: usize = MAX_VALUE;
+
+/// A part's edits as items of its group's staging tree (format section
+/// 5.3): `[file, part, chunk]`, each a piece of the edits in a change's
+/// form, in order.
+fn stage_items(file: u64, part: u64, edits: &[Edit]) -> Result<Vec<Edit>, Error> {
+    if edits.is_empty() {
+        return Ok(Vec::new());
+    }
+    let bytes = encode_edits(edits).map_err(Refusal::Payload)?;
+    Ok(bytes
+        .chunks(STAGE_CHUNK)
+        .enumerate()
+        .map(|(i, chunk)| {
+            Edit::leaf(
+                vec![
+                    file.to_be_bytes().to_vec(),
+                    part.to_be_bytes().to_vec(),
+                    (i as u32).to_be_bytes().to_vec(),
+                ],
+                chunk.to_vec(),
+            )
+        })
+        .collect())
+}
+
+/// A group's staged edits, by file, each file's in the order of its parts.
+fn read_staged<S: PageStore + ?Sized>(
+    store: &S,
+    root: Root,
+) -> Result<BTreeMap<u64, Vec<Edit>>, Error> {
+    let malformed = || Error::Malformed("a group's staging");
+    let tree = Tree::open(store, root)?;
+    let mut out: BTreeMap<u64, Vec<Edit>> = BTreeMap::new();
+    let mut part: Option<(u64, u64, Vec<u8>)> = None;
+    let finish = |part: Option<(u64, u64, Vec<u8>)>,
+                  out: &mut BTreeMap<u64, Vec<Edit>>|
+     -> Result<(), Error> {
+        if let Some((file, _, bytes)) = part {
+            let edits = decode_edits(&bytes).map_err(|_| malformed())?;
+            out.entry(file).or_default().extend(edits);
+        }
+        Ok(())
+    };
+    let root_path: &[Vec<u8>] = &[];
+    for item in tree.walk(root_path) {
+        let item = item?;
+        let path = item.key.path();
+        if path.len() < 3 {
+            continue;
+        }
+        let (Node::Value(chunk), 3, 8, 8, 4) = (
+            item.node,
+            path.len(),
+            path[0].len(),
+            path[1].len(),
+            path[2].len(),
+        ) else {
+            return Err(malformed());
+        };
+        let (file, index) = (be64(&path[0]), be64(&path[1]));
+        match &mut part {
+            Some((f, i, bytes)) if *f == file && *i == index => bytes.extend_from_slice(&chunk),
+            _ => {
+                finish(part.take(), &mut out)?;
+                part = Some((file, index, chunk));
+            }
+        }
+    }
+    finish(part, &mut out)?;
+    Ok(out)
+}
+
+/// What a part holds for its later application: an upper bound on the
+/// pages applying its edits to its file's tree writes ([`entry_bound`]),
+/// at the tree's height now and one level more (format section 5.8). Zero
+/// for a file the state does not have (the part is refused).
+fn later_pages<S: PageStore + ?Sized>(store: &S, file: u64, edits: &[Edit]) -> Result<u64, Error> {
+    if edits.is_empty() {
+        return Ok(0);
+    }
+    let Some(root) = store.root(&TreeId::File(file).name()) else {
+        return Ok(0);
+    };
+    let height = Tree::open(store, root)?.height();
+    Ok(entry_bound(edits, height + 1))
+}
+
+/// What `entry` does to the space the open groups hold ([`GroupSpace`]),
+/// from the state `store` holds and the entry alone: the same on every
+/// server and every replay. An entry that does not decode holds nothing:
+/// it is refused when applied.
+pub fn group_space<S: PageStore + ?Sized>(
+    store: &S,
+    entry: &Entry<'_>,
+) -> Result<GroupSpace, Error> {
+    // Only a group's entries and an `empty` entry read the state here.
+    let groups = matches!(entry.kind, k if k == Kind::Empty.code() || k == Kind::Group.code())
+        || (entry.kind == Kind::Change.code() && entry.payload.get(1..9) != Some(&[0u8; 8][..]));
+    if !groups {
+        return Ok(GroupSpace::default());
+    }
+    let Ok(payload) = Payload::decode(entry.kind, entry.payload) else {
+        return Ok(GroupSpace::default());
+    };
+    let state = StoreTree::of(store)?;
+    let held = |id: u64| -> Result<u64, Error> { Ok(state.group(id)?.map_or(0, |g| g.held)) };
+    Ok(match payload {
+        Payload::Change(change) => match change.group {
+            Some(Group {
+                step: Step::Open(_) | Step::Part,
+                ..
+            }) => GroupSpace {
+                hold: later_pages(store, entry.file, &change.edits)?,
+                ..GroupSpace::default()
+            },
+            Some(Group {
+                id,
+                step: Step::Close,
+            }) => GroupSpace {
+                draw: held(id)?,
+                ends: true,
+                ..GroupSpace::default()
+            },
+            None => GroupSpace::default(),
+        },
+        Payload::Group(GroupEvent::Discard { id }) => GroupSpace {
+            release: held(id)?,
+            ends: true,
+            ..GroupSpace::default()
+        },
+        Payload::Empty => {
+            let groups = state.groups()?;
+            GroupSpace {
+                release: groups.iter().map(|(_, g)| g.held).sum(),
+                ends: !groups.is_empty(),
+                ..GroupSpace::default()
+            }
+        }
+        _ => GroupSpace::default(),
+    })
+}
+
+/// A change's group checks and staging (format section 5.6): an opening
+/// part's id and declared paths, a part's or a close's group; then each
+/// edit, which must be at or below a path its own group declared, and
+/// meet no path another open group declared in the file. A part's edits
+/// go to the staging tree, and a close's application is planned. Returns
+/// whether the change's edits were staged instead of applied.
+fn plan_group<S: PageStore + ?Sized>(
+    store: &S,
+    state: &StoreTree<'_, S>,
+    entry: &Entry<'_>,
+    change: &crate::entry::Change,
+    plan: &mut Plan,
+) -> Result<bool, Error> {
+    let file = entry.file;
+    let own: Option<(u64, Vec<Path>)> = match &change.group {
+        None => None,
+        Some(Group {
+            id,
+            step: Step::Open(paths),
+        }) => {
+            if *id != entry.index {
+                return Err(Refusal::GroupId {
+                    id: *id,
+                    index: entry.index,
+                }
+                .into());
+            }
+            if state.groups()?.len() as u64 >= MAX_OPEN_GROUPS {
+                return Err(Refusal::TooManyGroups.into());
+            }
+            for p in paths {
+                if state.file(p.file)?.is_none() {
+                    return Err(Refusal::NoSuchFile(p.file).into());
+                }
+            }
+            for p in paths {
+                for other in state.groups_in(p.file)? {
+                    if state
+                        .group_paths(other, p.file)?
+                        .iter()
+                        .any(|theirs| meets(&p.path, theirs))
+                    {
+                        return Err(Refusal::GroupOverlap { group: other }.into());
+                    }
+                }
+            }
+            let mine: Vec<Path> = paths
+                .iter()
+                .filter(|p| p.file == file)
+                .map(|p| p.path.clone())
+                .collect();
+            Some((*id, mine))
+        }
+        Some(Group { id, .. }) => {
+            if state.group(*id)?.is_none() {
+                return Err(Refusal::NoSuchGroup(*id).into());
+            }
+            Some((*id, state.group_paths(*id, file)?))
+        }
+    };
+    if let Some((id, mine)) = &own {
+        if mine.is_empty() {
+            return Err(Refusal::GroupFile { group: *id, file }.into());
+        }
+    }
+    let mut others = Vec::new();
+    for other in state.groups_in(file)? {
+        if own.as_ref().map(|(id, _)| *id) != Some(other) {
+            others.push((other, state.group_paths(other, file)?));
+        }
+    }
+    for (i, edit) in change.edits.iter().enumerate() {
+        let path = edit_path(edit);
+        if let Some((_, mine)) = &own {
+            if !mine.iter().any(|d| path.starts_with(d)) {
+                return Err(Refusal::OutsideGroup { edit: i }.into());
+            }
+        }
+        for (other, theirs) in &others {
+            if theirs.iter().any(|d| meets(path, d)) {
+                return Err(Refusal::InGroup {
+                    group: *other,
+                    edit: i,
+                }
+                .into());
+            }
+        }
+    }
+    let Some(group) = &change.group else {
+        return Ok(false);
+    };
+    let id = group.id;
+    let name = TreeId::Group(id).name();
+    if group.step == Step::Close {
+        // The close: every file's staged edits applied in its one step.
+        let root = store
+            .root(&name)
+            .ok_or(Error::MissingRoot(TreeId::Group(id)))?;
+        let mut files = Vec::new();
+        for (f, edits) in read_staged(store, root)? {
+            let root = store
+                .root(&TreeId::File(f).name())
+                .ok_or(Error::MissingRoot(TreeId::File(f)))?;
+            files.push((f, root, edits));
+        }
+        plan_discard(state, id, plan)?;
+        plan.discard.clear();
+        plan.close = Some(Close { group: id, files });
+        return Ok(false);
+    }
+    let (root, row) = match &group.step {
+        Step::Open(paths) => {
+            let mut files: Vec<u64> = paths.iter().map(|p| p.file).collect();
+            files.sort_unstable();
+            files.dedup();
+            for f in files {
+                let mut index = groups_in(f);
+                index.push(id.to_be_bytes().to_vec());
+                plan.store.push(Edit::leaf(index, Vec::new()));
+            }
+            for (n, p) in paths.iter().enumerate() {
+                let mut path = group_paths(id, p.file);
+                path.push((n as u16).to_be_bytes().to_vec());
+                plan.store.push(Edit::leaf(path, key::encode(&p.path)));
+            }
+            (None, GroupRow::default())
+        }
+        _ => (
+            Some(
+                store
+                    .root(&name)
+                    .ok_or(Error::MissingRoot(TreeId::Group(id)))?,
+            ),
+            state.group(id)?.unwrap_or_default(),
+        ),
+    };
+    let hold = later_pages(store, file, &change.edits)?;
+    plan.store.push(Edit::leaf(
+        group_held(id),
+        held_value(GroupRow {
+            held: row.held.saturating_add(hold),
+            parts: row.parts + 1,
+        }),
+    ));
+    plan.stage = Some(Stage {
+        group: id,
+        root,
+        items: stage_items(file, entry.index, &change.edits)?,
+    });
+    Ok(true)
+}
+
+/// The store-tree edits that end open group `id`, and its staging tree
+/// dropped.
+fn plan_discard<S: PageStore + ?Sized>(
+    state: &StoreTree<'_, S>,
+    id: u64,
+    plan: &mut Plan,
+) -> Result<(), Error> {
+    for file in state.group_files(id)? {
+        let mut index = groups_in(file);
+        index.push(id.to_be_bytes().to_vec());
+        plan.store.push(Edit::delete(index));
+    }
+    plan.store.push(Edit::delete(group_row(id)));
+    plan.discard.push(id);
+    Ok(())
 }
 
 /// The lock edits a change has made so far, by session, so that a later
@@ -934,6 +1493,27 @@ pub fn apply<S: PageStore + ?Sized>(store: &S, entry: &Entry<'_>) -> Result<Appl
     if let Some(id) = plan.drop {
         unit.drop_tree(&TreeId::File(id).name());
     }
+    if let Some(stage) = &plan.stage {
+        let name = TreeId::Group(stage.group).name();
+        let new = tree::apply(store, &mut unit, stage.root, entry.index, &stage.items)?;
+        match stage.root {
+            None => unit.add_tree(&name, new),
+            Some(old) if old != new => unit.set_root(&name, new),
+            Some(_) => {}
+        }
+    }
+    if let Some(Close { group, files }) = &plan.close {
+        for (id, root, edits) in files {
+            let new = tree::apply(store, &mut unit, Some(*root), entry.index, edits)?;
+            if new != *root {
+                unit.set_root(&TreeId::File(*id).name(), new);
+            }
+        }
+        unit.drop_tree(&TreeId::Group(*group).name());
+    }
+    for id in &plan.discard {
+        unit.drop_tree(&TreeId::Group(*id).name());
+    }
     let new = tree::apply(store, &mut unit, store_root, entry.index, &plan.store)?;
     match store_root {
         None => unit.add_tree(&TreeId::Store.name(), new),
@@ -965,6 +1545,9 @@ fn plan<S: PageStore + ?Sized>(
         drop: None,
         opened: None,
         closed: Vec::new(),
+        stage: None,
+        close: None,
+        discard: Vec::new(),
     };
     let kind = payload.kind();
     let field = || {
@@ -1046,7 +1629,10 @@ fn plan<S: PageStore + ?Sized>(
                 plan.store
                     .extend(session_row(&op.session, op.seq, &change.reply));
             }
-            plan.file = Some((file, root_of(file)?));
+            // A part's edits go to its group's staging, not to the file.
+            if !plan_group(store, state, entry, change, &mut plan)? {
+                plan.file = Some((file, root_of(file)?));
+            }
         }
         Payload::Session(event) => {
             if entry.file != 0 {
@@ -1128,6 +1714,9 @@ fn plan<S: PageStore + ?Sized>(
             FileEvent::Removed => {
                 let row = existing()?;
                 let id = entry.file;
+                if let Some(&group) = state.groups_in(id)?.first() {
+                    return Err(Refusal::FileInGroup { group }.into());
+                }
                 plan.store.push(Edit::delete(file_path(id)));
                 plan.store.push(Edit::delete(name_path(&row.name)));
                 state.each_file_lock_list(id, |list| {
@@ -1176,6 +1765,20 @@ fn plan<S: PageStore + ?Sized>(
             if entry.file != 0 {
                 return Err(field());
             }
+            // A new leader's first entry, and a single server's restart,
+            // discard every open group (format section 5.6).
+            for (id, _) in state.groups()? {
+                plan_discard(state, id, &mut plan)?;
+            }
+        }
+        Payload::Group(GroupEvent::Discard { id }) => {
+            if entry.file != 0 {
+                return Err(field());
+            }
+            if state.group(*id)?.is_none() {
+                return Err(Refusal::NoSuchGroup(*id).into());
+            }
+            plan_discard(state, *id, &mut plan)?;
         }
     }
     Ok(plan)

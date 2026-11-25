@@ -2161,46 +2161,105 @@ Some work must appear all at once and is too large for one entry: op73's
 deferred field work on a table, an index built for a find, a deploy's
 changes to records, an import, a restore. Such work is a **group**: change
 entries that name the group as its parts, and a last entry that closes it.
+Nothing observed of FileMaker works this way (it commits such work in
+pieces, below): groups, their entries, their rules and their bounds are
+OpenMaker's own design. The entries and what they do to the state are
+built (format sections 5.2 to 5.8, and 4.8 for space); which operations
+use a group, and what is marked *not built* below, are not.
 
+- **Entries.** The first part opens the group: the group's id is the
+  part's own index, and the part declares the paths the group changes,
+  one or more, in one or more files. Later parts add edits. Parts carry
+  tree edits only. The closing entry carries no edits of its own: it
+  applies the staged ones and may carry the operation it completes, with
+  its reply and notices. A `group` entry discards a group, and an `empty`
+  entry discards every open group.
 - **Staged, then applied.** A part is written, replicated and committed
-  like any entry. Applying it adds its effects to the group's staging
-  area in the state, not to the file's tree. The last entry applies the
-  staged effects, in order, in one step, and removes the staging area.
-  Every view shows the file as it was before the group or as it is after
-  it. Because the parts are in the state, a checkpoint or a state copy
-  taken while a group is open has all of it.
+  like any entry. Applying it adds its edits to the group's staging tree
+  in the state, not to the file's tree. The close applies each file's
+  staged edits, in order, with one tree apply, and drops the staging
+  tree, all in its one unit of work. Every view shows the file as it was
+  before the group or as it is after it. Because the parts are in the
+  state, a checkpoint taken while a group is open has all of it, and a
+  reopen finds the group whole or not at all.
+- **The staging is the parts' edits.** The staging tree, `group:` and the
+  group's id, keeps each part's edits as the change carries them, keyed
+  by file, part and chunk (format 5.3): a part appends at the tree's end,
+  and the close reads them back in order. A staged copy of each file's
+  tree, to which the parts would apply their edits and whose declared
+  subtrees the close would put in place of the file's, would make the
+  close cheapest: it would write only the paths down to those subtrees.
+  It needs one tree to share pages with another (a clone, 6.8, whose
+  shared pages no entry records yet) and a graft of key ranges between
+  trees, and neither is built; clones are outside this work. So the close
+  applies every staged edit. It writes what one entry with all of the
+  group's edits writes, each page once (format 2.7), which is less than
+  the parts' edits applied one entry at a time would write, and it holds
+  them all in memory while it does. For a group of N parts of one 4 KiB
+  put each, the close wrote 3 pages for N = 1, 109 for 100 and 10,672 for
+  10,000 (about one page a part;
+  [performance/store-groups.md](performance/store-groups.md)).
 - **What it changes.** A group declares the paths it changes. While it is
-  open, the leader produces no other entry that changes those paths or
-  anything above or below them.
-- **What it read.** A group also declares the paths its result depends
-  on, which other operations may still change: an index built for a find
-  depends on its table's records, and a record can be committed while it
-  is built. Before the leader appends the last entry it checks, in the
-  same step, whether anything under those paths changed since the group
-  began (section 6.4). If so it adds parts that bring the result up to
-  date and checks again, or discards the group and starts it over.
-- **Locks.** A group's first part takes the protocol locks its work
-  needs, in the lock table, for the session that owns the group: for op73
-  the table's exclusive lock (schema-path.md 7.2), for a deploy the locks
-  of section 9. They are held until the group's last entry or its
-  discard, each of which releases what the group took in the same entry.
-  No other session can take a conflicting lock in between, and the last
-  entry checks the group's preconditions in the same step that appends
-  it.
+  open, an entry that changes one of them, or anything above or below
+  one, is refused when it is applied, with a typed refusal, the same on
+  every server (format 5.6); so is the removal of a file it declared a
+  path in, and another group's open that declares a path meeting one of
+  its paths. An ancestor that a put makes, or that it changes from a
+  value to both, is not counted: it changes nothing at or below a
+  declared path. The leader is to produce no such entry; the refusal is
+  the check that it did not.
+- **What it read.** *Not built.* A group also declares the paths its
+  result depends on, which other operations may still change: an index
+  built for a find depends on its table's records, and a record can be
+  committed while it is built. Before the leader appends the last entry
+  it checks, in the same step, whether anything under those paths changed
+  since the group began (section 6.4). If so it adds parts that bring the
+  result up to date and checks again, or discards the group and starts it
+  over.
+- **Locks.** *Not built*: a close's lock edits are refused in this build.
+  A group's first part takes the protocol locks its work needs, in the
+  lock table, for the session that owns the group: for op73 the table's
+  exclusive lock (schema-path.md 7.2), for a deploy the locks of
+  section 9. They are held until the group's last entry or its discard,
+  each of which releases what the group took in the same entry. No other
+  session can take a conflicting lock in between, and the last entry
+  checks the group's preconditions in the same step that appends it.
 - **One leader, one term.** A group is opened and closed by one leader in
   one term. A new leader's `empty` entry discards every group left open,
-  and so does a restart of a single server, which begins a new term. The
-  leader can also discard a group by an entry, and does when the session
-  that owns it is closed.
+  and so does a restart: the store's open, when the state it recovered
+  has groups open, appends an `empty` entry before its start's entry
+  (format 6.2). The restart begins a new term, one above every term the
+  store recorded, in which that entry and the start's are written;
+  `state`'s term, which replication's votes use (section 7.1), is not
+  raised by it. The leader can also discard a
+  group by an entry; doing so when the session that owns the group is
+  closed is not built.
 - **One reply.** Only the last entry completes the operation: it carries
   the reply and the notices and advances the session's sequence number
   (section 7.3). A discarded group leaves nothing, so the same request
   sent again runs again. Work without a session, such as finishing
   deferred field work, starts again from what the file records as
   pending: for op73, the deferred list at `[T, 3, 1, fd]`, which the
-  group's last entry removes.
-- **Space.** Each part reserves the space for its staging and for its
-  later application before it is appended (section 6.5).
+  group's last entry removes. The close's reply is built; the operations
+  are not.
+- **Space.** Each part holds, before it is appended, the room for its
+  later application (format 4.8); its own staging is reserved as any
+  entry's is. The close takes what its group holds as its reservation,
+  and what it writes besides (its rows, its reply) may take the reserve,
+  as a discard's may. A discard, and an `empty` entry, give the holds
+  back, and the staging tree's pages go back to the free map as any
+  dropped tree's do. The holds are recorded in the group's row, so a
+  reopen holds them again before it replays, and the accounting holds
+  across checkpoints and reopens with a group left open. The bound held
+  is `entry_bound` of each part's edits at the file tree's height plus
+  one: our own choice, loose, and not a proof. It covers the close while
+  the file's tree grows at most a level beyond what the parts' own edits
+  are counted to add; a close that needs more extends from free pages
+  and the reserve as any entry does, and can be refused as full. One
+  4 KiB put holds 59 pages, about 55 times what its share of the close
+  writes, so a group of 10,000 such parts grows the page file to
+  9.9 GiB while it is open, and staging it took 18.4 s against 6.3 s
+  with no holds ([performance/store-groups.md](performance/store-groups.md)).
 
 FileMaker Server commits such a walk every 512 records under an exclusive
 lock (schema-path.md 7.2), so a crash can leave a table partly converted

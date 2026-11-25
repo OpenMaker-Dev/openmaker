@@ -136,6 +136,9 @@ pub struct Appended {
     pub position: Position,
     /// How many times its reservation was extended.
     pub extended: u32,
+    /// The pages its unit of work wrote, with the fixed room its trees
+    /// take in the tables ([`pagefile::Reservation::taken`]).
+    pub pages: u64,
 }
 
 /// An entry published: durable, in the version views are taken of. Its
@@ -288,9 +291,10 @@ pub enum OpenError {
     /// The log could not be opened otherwise: a place at or before the
     /// marker the device failed to read, a newer format, a disk failure.
     Log(LogError),
-    /// An entry the log holds cannot be applied again: the store cannot
-    /// produce the state it confirmed (a page that does not check, or an
-    /// entry that cannot be right).
+    /// An entry the log holds cannot be applied again, or the state at
+    /// entry `index` cannot be read: the store cannot produce the state it
+    /// confirmed (a page that does not check, or an entry that cannot be
+    /// right).
     Replay { index: u64, error: apply::Error },
     /// The device failed to read a page the replay needed.
     Unreadable(String),
@@ -502,6 +506,9 @@ impl std::error::Error for OpenError {}
 /// Why this start's own entry was not written ([`OpenError::Start`]).
 #[derive(Debug)]
 pub struct StartFailed {
+    /// The `empty` entry that discarded the groups left open, when the log
+    /// took one before the failure: a later open may find it durable.
+    pub discarded: Option<Position>,
     /// The entry, when the log took it before the failure: a later open
     /// may find it durable.
     pub written: Option<(Position, Payload)>,
@@ -553,6 +560,10 @@ pub struct Opened {
     pub replay_checkpoints: u64,
     /// The entry published after the replay: the durable one.
     pub recovered: Position,
+    /// The `empty` entry this start wrote before its own, which discarded
+    /// the groups the recovered state had open (section 6.9), when it had
+    /// any.
+    pub discarded: Option<Position>,
     /// This start's own `session` entry, published.
     pub started: Position,
     /// The copy of `state` this open passed over, damaged or unreadable,
@@ -784,6 +795,21 @@ fn device_read(e: &apply::Error) -> bool {
     )
 }
 
+/// Why the open could not read the rows of the state at entry `index` it
+/// needs (the groups left open, section 6.9): the device failing a read is
+/// [`OpenError::Unreadable`], as in the replay; a page that does not check,
+/// or a row this build cannot read, is the state the store cannot produce
+/// again, [`OpenError::Replay`] at that entry.
+fn state_unread(index: u64, error: apply::Error) -> OpenError {
+    match error {
+        e if device_read(&e) => OpenError::Unreadable(e.to_string()),
+        e @ (apply::Error::Tree(tree::Error::Page(_))
+        | apply::Error::MissingRoot(_)
+        | apply::Error::Malformed(_)) => OpenError::Replay { index, error: e },
+        e => OpenError::Disk(format!("the groups left open: {e}")),
+    }
+}
+
 /// Why an entry could not be applied, before anything of it took effect.
 enum NotApplied {
     Space(SpaceError),
@@ -793,25 +819,58 @@ enum NotApplied {
 /// Applies `entry` through a reservation of the page file, extended while
 /// the entry runs short (the unit that ran short changed nothing, and is
 /// begun again): the entry's unit is committed when this returns `Ok`.
+///
+/// A group's entries (section 6.9) move the space its parts hold
+/// ([`apply::group_space`]): a part holds the room for its later
+/// application before it is applied; the close's reservation is what its
+/// group holds, extended like any entry's for the rest; a discard, and an
+/// `empty` entry, give the holds back once committed. An entry not applied
+/// leaves the holds as they were.
 fn apply_entry(
     pages: &PageFile,
     entry: &Entry<'_>,
     purpose: Purpose,
-) -> Result<(Applied, u32), NotApplied> {
-    let res = pages
-        .reserve(entry.index, FIRST_RESERVATION, purpose)
+) -> Result<(Applied, u32, u64), NotApplied> {
+    let space = apply::group_space(pages, entry).map_err(NotApplied::Apply)?;
+    let purpose = match purpose {
+        Purpose::Entry if space.ends => Purpose::Discard,
+        purpose => purpose,
+    };
+    pages
+        .hold(entry.index, space.hold, purpose)
         .map_err(NotApplied::Space)?;
+    let reserved = if space.draw > 0 {
+        pages.reserve_held(entry.index, space.draw, purpose)
+    } else {
+        pages.reserve(entry.index, FIRST_RESERVATION, purpose)
+    };
+    let res = match reserved {
+        Ok(res) => res,
+        Err(e) => {
+            pages.unhold(space.hold);
+            return Err(NotApplied::Space(e));
+        }
+    };
+    let not_applied = |e| {
+        res.keep_held();
+        pages.unhold(space.hold);
+        e
+    };
     let mut extended = 0u32;
     let mut size = FIRST_RESERVATION;
     loop {
         match apply::apply(&res, entry) {
-            Ok(applied) => return Ok((applied, extended)),
+            Ok(applied) => {
+                pages.unhold(space.release);
+                return Ok((applied, extended, res.taken()));
+            }
             Err(apply::Error::Tree(tree::Error::Store(StoreError::Full))) => {
-                res.extend(size).map_err(NotApplied::Space)?;
+                res.extend(size)
+                    .map_err(|e| not_applied(NotApplied::Space(e)))?;
                 size = size.saturating_mul(2);
                 extended += 1;
             }
-            Err(e) => return Err(NotApplied::Apply(e)),
+            Err(e) => return Err(not_applied(NotApplied::Apply(e))),
         }
     }
 }
@@ -1384,6 +1443,19 @@ impl Store {
             term: checkpoint.entry.term,
             hash: checkpoint.entry.hash.0,
         });
+        // The groups the checkpoint's state has open hold the room for their
+        // later application again, as their parts held it (section 6.9).
+        let held: u64 = StoreTree::of(&*pages)
+            .and_then(|state| state.groups())
+            .map_err(|e| state_unread(start.index, e))?
+            .iter()
+            .map(|(_, g)| g.held)
+            .sum();
+        match pages.hold(start.index + 1, held, Purpose::Recovery) {
+            Ok(()) => {}
+            Err(e @ SpaceError::Full { .. }) => return Err(OpenError::NoSpace(e)),
+            Err(e) => return Err(OpenError::Disk(e.to_string())),
+        }
         // 4. The entries after the checkpoint, each once, in order, through
         // the durable entry; nothing freed in the log meanwhile.
         let durable = log.durable();
@@ -1448,7 +1520,14 @@ impl Store {
         // 5. The recovered version, pinned and published.
         let pin = pin_version(&pages, PinOf::Newest(last.index))
             .map_err(|e| OpenError::Disk(format!("the recovered version: {e}")))?;
-        let term = values.term.max(durable.term).max(1);
+        // Each start begins a new term (server-storage.md 6.9): above every
+        // term `state` and the log recorded, made durable by this start's
+        // first entries.
+        let term = values
+            .term
+            .max(durable.term)
+            .checked_add(1)
+            .ok_or(OpenError::Refused("the term is at its greatest value"))?;
         let mut store = Store {
             fs,
             config,
@@ -1471,12 +1550,37 @@ impl Store {
         // past the reserve), the recovered version, which is durable, is
         // checkpointed first, which retires the log and frees dying pages
         // as far as the checkpoints and restore points on disk allow.
+        // A restart discards every group left open, by the open's own
+        // `empty` entry, before this start's entry (section 6.9).
+        let groups_open = StoreTree::of(&*store.pages)
+            .and_then(|state| state.groups())
+            .map_err(|e| state_unread(last.index, e))?;
+        let discarded = if groups_open.is_empty() {
+            None
+        } else {
+            match store.append_as(0, &Payload::Empty, Purpose::Discard) {
+                Ok(appended) => Some(appended.position),
+                Err(error) => {
+                    return Err(OpenError::Start(Box::new(StartFailed {
+                        discarded: None,
+                        written: None,
+                        error,
+                    })))
+                }
+            }
+        };
         let start_count = values.start_count;
         let payload = Payload::Session(SessionEvent::Started {
             server: store.server,
             count: start_count,
         });
-        let failed = |written, error| OpenError::Start(Box::new(StartFailed { written, error }));
+        let failed = |written, error| {
+            OpenError::Start(Box::new(StartFailed {
+                discarded,
+                written,
+                error,
+            }))
+        };
         let mut checkpointed = false;
         let started = loop {
             match store.append_as(0, &payload, Purpose::Recovery) {
@@ -1523,6 +1627,7 @@ impl Store {
                 replayed,
                 replay_checkpoints,
                 recovered: last,
+                discarded,
                 started,
                 passed_over_state,
                 last_batch_may_be_lost,
@@ -1622,7 +1727,8 @@ impl Store {
         self.server
     }
 
-    /// The term entries are written in.
+    /// The term entries are written in: each start begins a new one, above
+    /// every term `state` and the log recorded.
     pub fn term(&self) -> u64 {
         self.term
     }
@@ -1708,7 +1814,7 @@ impl Store {
             payload: &bytes,
             hash,
         };
-        let (applied, extended) = match apply_entry(&self.pages, &entry, purpose) {
+        let (applied, extended, pages) = match apply_entry(&self.pages, &entry, purpose) {
             Ok(done) => done,
             Err(NotApplied::Space(e @ SpaceError::Full { .. })) => return Err(WriteError::Full(e)),
             Err(NotApplied::Space(e @ SpaceError::CheckpointNeeded { .. })) => {
@@ -1748,7 +1854,11 @@ impl Store {
             },
             applied,
         });
-        Ok(Appended { position, extended })
+        Ok(Appended {
+            position,
+            extended,
+            pages,
+        })
     }
 
     /// Writes the log's open batch and advances the marker, then publishes

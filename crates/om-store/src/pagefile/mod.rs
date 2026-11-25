@@ -776,6 +776,9 @@ pub struct Space {
     pub held: u64,
     /// Set aside for reservations and not taken yet.
     pub promised: u64,
+    /// Of `promised`, what the open groups hold for their later
+    /// application.
+    pub groups: u64,
     /// The reserve and the room for a checkpoint's meta stream.
     pub floor: u64,
     pub cached: u64,
@@ -908,6 +911,9 @@ struct Inner {
     held: BTreeSet<PageNo>,
     cache: Cache,
     promised: u64,
+    /// Of `promised`, what the open groups hold for their later application
+    /// (`docs/server-storage.md` section 6.9).
+    groups: u64,
     newest: Newest,
     newest_meta: BTreeSet<PageNo>,
     older: Option<Older>,
@@ -1357,6 +1363,7 @@ impl PageFile {
                 held: BTreeSet::new(),
                 cache: Cache::new(capacity),
                 promised: 0,
+                groups: 0,
                 newest,
                 newest_meta,
                 older,
@@ -1896,6 +1903,7 @@ impl PageFile {
             dirty: inner.dirty.len() as u64,
             held: inner.held.len() as u64,
             promised: inner.promised,
+            groups: inner.groups,
             floor: inner.floor(Purpose::Entry, &self.config),
             cached: inner.cache.len() as u64,
             shared: inner.map.shares().len() as u64,
@@ -2029,6 +2037,88 @@ impl PageFile {
             purpose,
             remaining: AtomicU64::new(pages),
             taken: AtomicU64::new(0),
+            from_groups: AtomicU64::new(0),
+        })
+    }
+
+    /// Holds `pages` for the later application of a group that entry
+    /// `entry`, one of its parts, belongs to (section 6.9): promised as a
+    /// reservation's pages are, and checked the same way, but kept past the
+    /// entry, until the entry that closes the group draws on them
+    /// ([`PageFile::reserve_held`]) or the group is discarded
+    /// ([`PageFile::unhold`]).
+    pub fn hold(&self, entry: u64, pages: u64, purpose: Purpose) -> Result<(), SpaceError> {
+        if pages == 0 {
+            return Ok(());
+        }
+        self.set_aside(entry, pages, purpose, false)?;
+        self.lock().groups += pages;
+        Ok(())
+    }
+
+    /// Gives back `pages` the open groups held: a group discarded, or a
+    /// part that was not applied. More than they hold is the store's own
+    /// accounting gone wrong: a test build stops on it, and a release
+    /// gives back what is held.
+    pub fn unhold(&self, pages: u64) {
+        let mut inner = self.lock();
+        debug_assert!(
+            pages <= inner.groups,
+            "giving back {pages} pages of the {} the groups hold",
+            inner.groups
+        );
+        let pages = pages.min(inner.groups);
+        inner.groups -= pages;
+        inner.promised -= pages;
+    }
+
+    /// A reservation for entry `entry`, the one that closes a group, of
+    /// `pages` its group holds: set aside already, so no room is looked
+    /// for. Checked as [`PageFile::reserve`] is otherwise. An entry not
+    /// applied gives them back to the group ([`Reservation::keep_held`]).
+    pub fn reserve_held(
+        &self,
+        entry: u64,
+        pages: u64,
+        purpose: Purpose,
+    ) -> Result<Reservation<'_>, SpaceError> {
+        let take = {
+            let mut inner = self.lock();
+            if inner.failed {
+                return Err(SpaceError::Failed);
+            }
+            if entry <= inner.cutoff() {
+                return Err(SpaceError::Refused(
+                    "an entry at or before a checkpoint's (on disk or being written)",
+                ));
+            }
+            if entry < inner.last_unit {
+                return Err(SpaceError::Refused("an entry before the last one applied"));
+            }
+            if inner.reservations.contains(&entry) {
+                return Err(SpaceError::Refused(
+                    "an entry with a reservation open: one at a time",
+                ));
+            }
+            // More than the groups hold is the store's own accounting gone
+            // wrong (as in `unhold`).
+            debug_assert!(
+                pages <= inner.groups,
+                "drawing {pages} pages of the {} the groups hold",
+                inner.groups
+            );
+            let take = pages.min(inner.groups);
+            inner.groups -= take;
+            inner.reservations.insert(entry);
+            take
+        };
+        Ok(Reservation {
+            file: self,
+            entry,
+            purpose,
+            remaining: AtomicU64::new(take),
+            taken: AtomicU64::new(0),
+            from_groups: AtomicU64::new(take),
         })
     }
 
@@ -3034,6 +3124,8 @@ pub struct Reservation<'f> {
     purpose: Purpose,
     remaining: AtomicU64,
     taken: AtomicU64,
+    /// What it drew from the open groups' holds ([`PageFile::reserve_held`]).
+    from_groups: AtomicU64,
 }
 
 impl fmt::Debug for Reservation<'_> {
@@ -3079,6 +3171,17 @@ impl Reservation<'_> {
     /// The page file.
     pub fn file(&self) -> &PageFile {
         self.file
+    }
+
+    /// The entry was not applied: what it drew from the open groups' holds,
+    /// as far as it is still set aside, goes back to them.
+    pub fn keep_held(&self) {
+        let back = self
+            .from_groups
+            .swap(0, Ordering::Relaxed)
+            .min(self.remaining.load(Ordering::Relaxed));
+        self.remaining.fetch_sub(back, Ordering::Relaxed);
+        self.file.lock().groups += back;
     }
 }
 

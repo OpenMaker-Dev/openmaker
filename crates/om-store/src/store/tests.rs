@@ -35,7 +35,8 @@ use std::collections::BTreeMap;
 use super::*;
 use crate::apply::{FileRow, LockRow, ServerRow, SessionRow};
 use crate::entry::{
-    Change, FileEvent, Kind, LockEdit, Mark, Members, Op, Purpose as MarkPurpose, Session,
+    Change, FileEvent, Group, GroupEvent, GroupPath, Kind, LockEdit, Mark, Members, Op,
+    Purpose as MarkPurpose, Session, Step,
 };
 use crate::model::{Model, Path};
 use crate::sim::{self, Fates, Fault, Rates, Rng, Sim};
@@ -332,6 +333,13 @@ impl Gen {
         if model.files.is_empty() || (model.files.len() < 4 && roll < 6) {
             return self.added(next_index);
         }
+        // Groups: opened now and then, and while one is open, a part, a
+        // close or a discard a third of the time.
+        if roll >= 97 || (!model.groups.is_empty() && self.rng.below(3) == 0) {
+            if let Some(drawn) = self.group(model, next_index) {
+                return drawn;
+            }
+        }
         let ids: Vec<u64> = model.files.keys().copied().collect();
         let file = ids[self.rng.below(ids.len() as u64) as usize];
         match roll {
@@ -360,6 +368,103 @@ impl Gen {
             91..=93 => (0, Payload::Members(Members::FormatVersion(1))),
             _ => (file, Payload::Change(self.change(model, file))),
         }
+    }
+
+    /// A group's entry (`docs/server-storage.md` section 6.9): an opening
+    /// part declaring one or two paths under `[e0, k]` and `[e1, k]` that
+    /// no open group declared; a part with edits under a declared path; a
+    /// close; or a discard.
+    fn group(&mut self, model: &Model, next_index: u64) -> Option<(u64, Payload)> {
+        let ids: Vec<u64> = model.files.keys().copied().collect();
+        let roll = self.rng.below(10);
+        if model.groups.is_empty() || (roll < 2 && model.groups.len() < 3) {
+            let taken: Vec<&GroupPath> = model.groups.values().flat_map(|g| &g.paths).collect();
+            let file = ids[self.rng.below(ids.len() as u64) as usize];
+            let k = (0..4u8).find(|&k| {
+                !taken.iter().any(|p| {
+                    p.file == file && p.path.first() == Some(&vec![0xe0]) && p.path[1] == [k]
+                })
+            })?;
+            let mut paths = vec![GroupPath {
+                file,
+                path: vec![vec![0xe0], vec![k]],
+            }];
+            if self.rng.below(3) == 0 {
+                let other = ids[self.rng.below(ids.len() as u64) as usize];
+                if !taken
+                    .iter()
+                    .any(|p| p.file == other && p.path == [vec![0xe1], vec![k]])
+                {
+                    paths.push(GroupPath {
+                        file: other,
+                        path: vec![vec![0xe1], vec![k]],
+                    });
+                }
+            }
+            let edits = self.group_edits(&paths[0].path);
+            return Some((
+                file,
+                Payload::Change(Change {
+                    group: Some(Group {
+                        id: next_index,
+                        step: Step::Open(paths),
+                    }),
+                    edits,
+                    ..Change::default()
+                }),
+            ));
+        }
+        let open: Vec<(&u64, &crate::model::Group)> = model.groups.iter().collect();
+        let (&id, group) = open[self.rng.below(open.len() as u64) as usize];
+        let declared = &group.paths[self.rng.below(group.paths.len() as u64) as usize];
+        Some(match roll {
+            0..=5 => {
+                let edits = self.group_edits(&declared.path);
+                (
+                    declared.file,
+                    Payload::Change(Change {
+                        group: Some(Group {
+                            id,
+                            step: Step::Part,
+                        }),
+                        edits,
+                        ..Change::default()
+                    }),
+                )
+            }
+            6..=8 => {
+                let mut close = self.change(model, declared.file);
+                close.edits.clear();
+                close.locks.clear();
+                close.group = Some(Group {
+                    id,
+                    step: Step::Close,
+                });
+                (declared.file, Payload::Change(close))
+            }
+            _ => (0, Payload::Group(GroupEvent::Discard { id })),
+        })
+    }
+
+    /// Edits under `base`: puts of small values or, now and then, of
+    /// values in overflow pages, and a delete.
+    fn group_edits(&mut self, base: &Path) -> Vec<Edit> {
+        let mut edits = Vec::new();
+        for _ in 0..1 + self.rng.below(2) {
+            let mut path = base.clone();
+            path.push(vec![self.rng.below(8) as u8]);
+            if self.rng.below(5) == 0 {
+                edits.push(Edit::delete(path));
+                continue;
+            }
+            let value = if self.rng.below(6) == 0 {
+                self.bytes(4500)
+            } else {
+                self.bytes(60)
+            };
+            edits.push(Edit::leaf(path, value));
+        }
+        edits
     }
 
     fn added(&mut self, next_index: u64) -> (u64, Payload) {
@@ -561,6 +666,28 @@ fn compare(view: &View, model: &Model, at: &str) -> Result<(), String> {
         .collect();
     want.sort();
     assert!(locks == want, "{at}: locks");
+    // The open groups: their ids, what they declared and how many parts
+    // they staged. No file shows a part of one: the file trees above are
+    // the model's, which keeps a group's edits aside until its close.
+    let groups = state.groups().map_err(|e| fail(&e))?;
+    let ids: Vec<u64> = groups.iter().map(|(id, _)| *id).collect();
+    let want: Vec<u64> = model.groups.keys().copied().collect();
+    assert_eq!(ids, want, "{at}: open groups");
+    for (id, row) in groups {
+        let group = &model.groups[&id];
+        let mut declared = group.paths.clone();
+        declared.sort_by_key(|p| p.file);
+        assert_eq!(
+            state.group_declared(id).map_err(|e| fail(&e))?,
+            declared,
+            "{at}: group {id}'s paths"
+        );
+        assert_eq!(
+            row.parts,
+            group.staged.len() as u64,
+            "{at}: group {id}'s parts"
+        );
+    }
     Ok(())
 }
 
@@ -703,6 +830,9 @@ struct Reached {
     chain_reported: u64,
     chain_damaged: u64,
     chain_excused: u64,
+    /// Groups closed by an entry, and those a restart discarded.
+    groups_closed: u64,
+    groups_discarded_by_a_restart: u64,
     /// Incidents seen, by path; acknowledgements; places of the journal
     /// that did not check.
     incidents: BTreeMap<&'static str, u64>,
@@ -865,6 +995,14 @@ impl Run {
     /// The store stopped, or the process ends.
     fn stop(&mut self, power_loss: bool) {
         self.note(format!("stop, power loss {power_loss}"));
+        // Now and then the device damages the newest checkpoint's meta
+        // stream while an older checkpoint is on disk, which the store
+        // gives up by itself at the next open (format section 4.7): drawn
+        // damage lands there too rarely for the seeds to reach it.
+        let meta = self.store.as_ref().and_then(|store| {
+            let kept = store.checkpoints();
+            (kept.len() >= 2 && self.plan.below(24) == 0).then(|| kept[0].meta.0)
+        });
         self.store = None;
         self.views.clear();
         if power_loss {
@@ -872,6 +1010,12 @@ impl Run {
             self.reached.power_losses += 1;
         } else {
             self.reached.stops += 1;
+        }
+        if let Some(page) = meta {
+            let at = page * crate::page::PAGE_SIZE as u64 + self.plan.below(64);
+            if self.sim.damage(pagefile::FILE, at, 1).is_ok() {
+                self.note(format!("damage at {at}, the newest checkpoint's meta page"));
+            }
         }
         self.sim.restart();
     }
@@ -1010,6 +1154,28 @@ impl Run {
             assert_eq!(last.hash, durable.hash, "seed {seed}: entry {}", last.index);
         }
         self.published = model_at(&self.record, durable.index, Some(&self.published));
+        // The groups left open, discarded by the open's own `empty` entry.
+        let mut durable = durable;
+        if let Some(discarded) = opened.discarded {
+            assert!(
+                !self.published.groups.is_empty(),
+                "seed {seed}: a discard with no group open"
+            );
+            let empty = Built::new(&durable, store.term(), 0, &Payload::Empty);
+            assert_eq!(
+                empty.hash, discarded.hash,
+                "seed {seed}: the open's discard"
+            );
+            self.published.apply(&empty.entry()).unwrap();
+            self.record.push(empty);
+            self.reached.groups_discarded_by_a_restart += 1;
+            durable = discarded;
+        } else {
+            assert!(
+                self.published.groups.is_empty(),
+                "seed {seed}: a group left open by a restart"
+            );
+        }
         // This start's own entry.
         let start = Built::new(
             &durable,
@@ -1177,6 +1343,7 @@ impl Run {
             }
         }
         self.store = Some(store);
+        self.check_held("after the open");
         self.check_published("after the open");
     }
 
@@ -1288,6 +1455,26 @@ impl Run {
     }
 
     /// The published version against the model.
+    /// The page file holds what the open groups' rows of the newest state
+    /// say they hold (section 6.9): a part's hold stays until its group
+    /// closes or is discarded, a reopen holds it again, and nothing more is
+    /// held.
+    fn check_held(&self, at: &str) {
+        let Some(store) = &self.store else { return };
+        if self.lying || store.stopped().is_some() {
+            return;
+        }
+        if let Ok(groups) = StoreTree::of(&*store.pages).and_then(|s| s.groups()) {
+            let held: u64 = groups.iter().map(|(_, g)| g.held).sum();
+            assert_eq!(
+                store.space().groups,
+                held,
+                "seed {}: pages held for groups {at}",
+                self.seed
+            );
+        }
+    }
+
     fn check_published(&mut self, at: &str) {
         if self.lying {
             return;
@@ -1392,18 +1579,31 @@ impl Run {
                 Err(OpenError::Start(failed)) if failed.written.is_some() => {
                     let (at, payload) = failed.written.expect("written");
                     // The start's own entry is in the log, and may be found
-                    // durable by the next open.
-                    let index = at.index as usize;
+                    // durable by the next open; so may the `empty` entry
+                    // before it that discarded the groups left open.
+                    let index = at.index as usize - usize::from(failed.discarded.is_some());
                     if self.lying && index > self.record.len() + 1 {
                         continue;
                     }
                     assert!(index >= 1 && index <= self.record.len() + 1, "seed {seed}");
                     self.record.truncate(index - 1);
-                    let prev = self.record.last().map_or(Position::START, |b| Position {
-                        index: b.index,
-                        term: b.term,
-                        hash: b.hash,
-                    });
+                    let last = |record: &[Built]| {
+                        record.last().map_or(Position::START, |b| Position {
+                            index: b.index,
+                            term: b.term,
+                            hash: b.hash,
+                        })
+                    };
+                    if let Some(discarded) = failed.discarded {
+                        let empty =
+                            Built::new(&last(&self.record), discarded.term, 0, &Payload::Empty);
+                        assert!(
+                            self.lying || empty.hash == discarded.hash,
+                            "seed {seed}: the open's discard"
+                        );
+                        self.record.push(empty);
+                    }
+                    let prev = last(&self.record);
                     let built = Built::new(&prev, at.term, 0, &payload);
                     assert!(
                         self.lying || built.hash == at.hash,
@@ -1557,6 +1757,17 @@ impl Run {
                 self.reached.extended += u64::from(appended.extended);
                 self.reached.appended += 1;
                 *self.reached.kinds.entry(built.kind).or_default() += 1;
+                if let Payload::Change(Change {
+                    group:
+                        Some(Group {
+                            step: Step::Close, ..
+                        }),
+                    ..
+                }) = &payload
+                {
+                    self.reached.groups_closed += 1;
+                }
+                self.check_held("after an append");
                 let outcome = self.appended.apply(&built.entry()).unwrap();
                 let mut built = built;
                 built.effects = Some((outcome.opened, outcome.closed));
@@ -1868,6 +2079,8 @@ fn add(into: &mut Reached, from: Reached) {
         chain_reported,
         chain_damaged,
         chain_excused,
+        groups_closed,
+        groups_discarded_by_a_restart,
         acknowledged,
         journal_damaged
     );
@@ -1955,6 +2168,11 @@ fn the_store_survives_drawn_faults_against_the_model() {
                 reached.fallback_reported,
             ),
             ("acknowledgements", reached.acknowledged),
+            ("groups closed", reached.groups_closed),
+            (
+                "groups discarded by a restart",
+                reached.groups_discarded_by_a_restart,
+            ),
         ] {
             assert!(n > 0, "no {what}: {reached:?}");
         }
@@ -2014,7 +2232,7 @@ fn the_store_survives_a_crash_at_every_step() {
         let (mut store, opened) = match Store::open(fs.clone(), CONFIG) {
             Ok(opened) => opened,
             Err(OpenError::Start(failed)) if failed.written.is_some() => {
-                let StartFailed { written, error } = *failed;
+                let StartFailed { written, error, .. } = *failed;
                 let (at, payload) = written.expect("written");
                 // The start's entry reached the log: it may be durable.
                 record.truncate(at.index as usize - 1);
@@ -2146,6 +2364,297 @@ fn the_store_survives_a_crash_at_every_step() {
         }
     }
     assert!(crashes > 0);
+}
+
+/// How a group's life in [`a_group_survives_a_crash_at_every_step`] ends.
+#[derive(Clone, Copy, Debug)]
+enum Ending {
+    Close,
+    Discard,
+}
+
+/// One group's life (section 6.9), with a crash placed at each of its
+/// steps in turn, settled as drawn: the group opened with a part,
+/// a change beside it, a flush, a checkpoint with the group open, a part
+/// that spills and a batch, a flush, and the group closed or discarded,
+/// flushed and checkpointed. After any stop the store answers as the
+/// model at its durable entry with the open's discard taken; no view, at
+/// any point, shows a part of the group; and nothing stays held for it,
+/// across a second reopen too.
+#[test]
+fn a_group_survives_a_crash_at_every_step() {
+    group_crashed_at_every_step(false);
+}
+
+#[test]
+#[ignore = "long: every step of a group's life, closed and discarded, each settled three ways (about 2 minutes in debug)"]
+fn long_a_group_survives_a_crash_at_every_step() {
+    group_crashed_at_every_step(true);
+}
+
+fn group_crashed_at_every_step(every_fate: bool) {
+    fn script(
+        sim: &Sim,
+        record: &mut Vec<Built>,
+        acked: &mut usize,
+        ending: Ending,
+    ) -> Result<(), String> {
+        let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+        let (mut store, opened) = match Store::open(fs, CONFIG) {
+            Ok(opened) => opened,
+            Err(OpenError::Start(failed)) if failed.written.is_some() => {
+                let StartFailed { written, error, .. } = *failed;
+                let (at, payload) = written.expect("written");
+                record.truncate(at.index as usize - 1);
+                let prev = record.last().map_or(Position::START, |b| Position {
+                    index: b.index,
+                    term: b.term,
+                    hash: b.hash,
+                });
+                record.push(Built::new(&prev, at.term, 0, &payload));
+                return Err(error.to_string());
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        assert!(opened.discarded.is_none(), "no group was open");
+        record.truncate(opened.recovered.index as usize);
+        record.push(Built::new(
+            &opened.recovered,
+            store.term(),
+            0,
+            &Payload::Session(SessionEvent::Started {
+                server: store.server(),
+                count: opened.start_count,
+            }),
+        ));
+        *acked = record.len();
+        let mut model = model_at(record, record.len() as u64, None);
+        fn append(
+            store: &mut Store,
+            model: &mut Model,
+            record: &mut Vec<Built>,
+            file: u64,
+            payload: Payload,
+        ) -> Result<(), String> {
+            let built = Built::new(&model.applied, store.term(), file, &payload);
+            store.append(file, &payload).map_err(|e| e.to_string())?;
+            model.apply(&built.entry()).unwrap();
+            record.push(built);
+            Ok(())
+        }
+        fn flushed(store: &mut Store, model: &Model) -> Result<(), String> {
+            store.flush().map_err(|e| e.to_string())?;
+            let view = store.view().map_err(|e| e.to_string())?;
+            compare(&view, model, "a view").map_err(|e| e.to_string())
+        }
+        let file = store.next_index();
+        let added = Payload::File(FileEvent::Added {
+            name: b"f".to_vec(),
+            flags: 0,
+            page0: Vec::new(),
+        });
+        append(&mut store, &mut model, record, file, added)?;
+        append(&mut store, &mut model, record, file, put(b"a", &[1; 300]))?;
+        let group = store.next_index();
+        let declared = vec![b"g".to_vec()];
+        let at = |i: u8| vec![b"g".to_vec(), vec![i]];
+        let part = |step: Step, edits: Vec<Edit>| {
+            Payload::Change(Change {
+                group: Some(Group { id: group, step }),
+                edits,
+                ..Change::default()
+            })
+        };
+        let open = part(
+            Step::Open(vec![GroupPath {
+                file,
+                path: declared.clone(),
+            }]),
+            vec![Edit::leaf(at(0), vec![2; 300])],
+        );
+        append(&mut store, &mut model, record, file, open)?;
+        append(&mut store, &mut model, record, file, put(b"b", &[3; 300]))?;
+        flushed(&mut store, &model)?;
+        *acked = record.len();
+        store.checkpoint(None).map_err(|e| e.to_string())?;
+        let spill = part(Step::Part, vec![Edit::leaf(at(1), vec![4; 20_000])]);
+        append(&mut store, &mut model, record, file, spill)?;
+        let batch = part(
+            Step::Part,
+            (2..60u8)
+                .map(|i| Edit::leaf(at(i), vec![i; 200]))
+                .chain([Edit::delete(at(0))])
+                .collect(),
+        );
+        append(&mut store, &mut model, record, file, batch)?;
+        flushed(&mut store, &model)?;
+        *acked = record.len();
+        match ending {
+            Ending::Close => append(
+                &mut store,
+                &mut model,
+                record,
+                file,
+                part(Step::Close, Vec::new()),
+            )?,
+            Ending::Discard => append(
+                &mut store,
+                &mut model,
+                record,
+                0,
+                Payload::Group(GroupEvent::Discard { id: group }),
+            )?,
+        }
+        flushed(&mut store, &model)?;
+        *acked = record.len();
+        store.checkpoint(None).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    let setup = |sim: &Sim| -> Vec<Built> {
+        let (store, opened) = made(sim);
+        let start = Built::new(
+            &Position::START,
+            store.term(),
+            0,
+            &Payload::Session(SessionEvent::Started {
+                server: store.server(),
+                count: opened.start_count,
+            }),
+        );
+        drop(store);
+        sim.restart();
+        vec![start]
+    };
+    // After a stop: the model at the durable entry, the open's `empty`
+    // entry when a group was open, and its start; nothing held, no staging
+    // tree.
+    let settled = |store: &Store, opened: &Opened, record: &[Built], what: &str| {
+        let durable = opened.recovered.index;
+        let mut model = model_at(record, durable, None);
+        let mut prev = opened.recovered;
+        match (model.groups.is_empty(), opened.discarded) {
+            (true, None) => {}
+            (false, Some(at)) => {
+                let empty = Built::new(&prev, store.term(), 0, &Payload::Empty);
+                assert_eq!(empty.hash, at.hash, "{what}: the open's empty entry");
+                model.apply(&empty.entry()).unwrap();
+                prev = at;
+            }
+            (open, discarded) => {
+                panic!("{what}: groups open {}, discarded {discarded:?}", !open)
+            }
+        }
+        assert!(model.groups.is_empty(), "{what}");
+        let start = Built::new(
+            &prev,
+            store.term(),
+            0,
+            &Payload::Session(SessionEvent::Started {
+                server: store.server(),
+                count: opened.start_count,
+            }),
+        );
+        assert_eq!(start.hash, opened.started.hash, "{what}: the start's entry");
+        model.apply(&start.entry()).unwrap();
+        compare(&store.view().unwrap(), &model, what).unwrap();
+        let space = store.space();
+        assert_eq!((space.groups, space.promised), (0, 0), "{what}: held");
+        assert!(
+            !crate::page::PageStore::trees(&*store.pages)
+                .iter()
+                .any(|(name, _)| name.as_bytes().starts_with(b"group:")),
+            "{what}: a staging tree left"
+        );
+        model
+    };
+    for ending in [Ending::Close, Ending::Discard] {
+        let base = {
+            let sim = Sim::new(41);
+            let mut record = setup(&sim);
+            let begin = sim.steps();
+            let mut acked = 0;
+            script(&sim, &mut record, &mut acked, ending).unwrap();
+            (begin, sim.steps())
+        };
+        let (mut crashes, mut left_open) = (0, 0);
+        for step in base.0 + 1..=base.1 {
+            let step = step - base.0;
+            let fates: &[Fates] = if every_fate {
+                &[Fates::KeepAll, Fates::LoseAll, Fates::Drawn]
+            } else {
+                &[Fates::Drawn]
+            };
+            for &fates in fates {
+                let sim = Sim::new(41);
+                let mut record = setup(&sim);
+                let mut acked = record.len();
+                sim.set_crash_fates(fates);
+                sim.place(sim.steps() + step, Fault::Crash);
+                if script(&sim, &mut record, &mut acked, ending).is_ok() {
+                    continue;
+                }
+                crashes += 1;
+                let what = format!("{ending:?}: crash at step {step}, {fates:?}");
+                let (store, opened) = reopened(&sim).unwrap_or_else(|e| panic!("{what}: {e}"));
+                let durable = opened.recovered.index as usize;
+                assert!(durable >= acked, "{what}: {durable} < {acked}");
+                assert!(durable <= record.len(), "{what}");
+                record.truncate(durable);
+                left_open += u64::from(opened.discarded.is_some());
+                settled(&store, &opened, &record, &what);
+                // Opened again: the discard is durable, nothing to hold.
+                drop(store);
+                let (store, again) = reopened(&sim).unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert!(again.discarded.is_none(), "{what}: discarded twice");
+                let space = store.space();
+                assert_eq!((space.groups, space.promised), (0, 0), "{what}: held again");
+            }
+        }
+        eprintln!("{ending:?}: {crashes} crashes, {left_open} opens discarded the group");
+        assert!(crashes > 0 && left_open > 0, "{ending:?}");
+    }
+}
+
+/// A group left open by every stop, through checkpoints and reopens: each
+/// open discards it, gives back what its parts held and its staging pages,
+/// and the page file does not grow from cycle to cycle.
+#[test]
+fn groups_left_open_by_restarts_take_no_space() {
+    let sim = Sim::new(42);
+    let (mut store, _) = made(&sim);
+    let file = add_file(&mut store, "f");
+    let mut ends = Vec::new();
+    for cycle in 0..12u8 {
+        let group = store.next_index();
+        let edits = (0..40u8)
+            .map(|i| Edit::leaf(vec![b"g".to_vec(), vec![i]], vec![cycle; 400]))
+            .collect();
+        let open = Payload::Change(Change {
+            group: Some(Group {
+                id: group,
+                step: Step::Open(vec![GroupPath {
+                    file,
+                    path: vec![b"g".to_vec()],
+                }]),
+            }),
+            edits,
+            ..Change::default()
+        });
+        store.append(file, &open).unwrap();
+        store.flush().unwrap();
+        assert!(store.space().groups > 0, "cycle {cycle}: the part holds");
+        store.checkpoint(None).unwrap();
+        drop(store);
+        let (again, opened) = reopened(&sim).unwrap();
+        store = again;
+        assert!(opened.discarded.is_some(), "cycle {cycle}");
+        let space = store.space();
+        assert_eq!((space.groups, space.promised), (0, 0), "cycle {cycle}");
+        store.checkpoint(None).unwrap();
+        ends.push(store.space().end);
+    }
+    // Steady once the first cycles' pages are free again.
+    assert!(ends[11] <= ends[3], "the page file grew: {ends:?}");
 }
 
 #[test]

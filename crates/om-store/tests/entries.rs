@@ -17,9 +17,9 @@ use om_store::apply::{
     TreeId,
 };
 use om_store::entry::{
-    entry_hash, Change, Entry, Feature, FileEvent, Kind, LockEdit, Mark, Members, Op, Payload,
-    PayloadError, Purpose, ServerId, Session, SessionEvent, MAX_LOCK_KEY, MAX_NAME, MAX_PAGE0,
-    MAX_REPLY,
+    decode_edits, entry_hash, Change, Entry, Feature, FileEvent, Group, GroupEvent, GroupPath,
+    Kind, LockEdit, Mark, Members, Op, Payload, PayloadError, Purpose, ServerId, Session,
+    SessionEvent, Step, MAX_LOCK_KEY, MAX_NAME, MAX_PAGE0, MAX_REPLY,
 };
 use om_store::model::{self, File, Model};
 use om_store::page::{
@@ -64,6 +64,28 @@ impl Rng {
     fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
         &items[self.below(items.len())]
     }
+}
+
+/// Whether one path is a prefix of the other, segment by segment: an edit
+/// at one changes the other or something above or below it.
+fn meets(a: &[Vec<u8>], b: &[Vec<u8>]) -> bool {
+    a.starts_with(b) || b.starts_with(a)
+}
+
+fn edit_path(edit: &Edit) -> &Path {
+    match edit {
+        Edit::Put { path, .. } | Edit::Delete { path } => path,
+    }
+}
+
+/// The paths the open groups declared in `file`.
+fn declared(model: &Model, file: u64) -> impl Iterator<Item = &Path> {
+    model
+        .groups
+        .values()
+        .flat_map(|g| &g.paths)
+        .filter(move |p| p.file == file)
+        .map(|p| &p.path)
 }
 
 fn env(name: &str, default: u64) -> u64 {
@@ -166,6 +188,12 @@ struct Reached {
     names_reused: u64,
     replies: u64,
     notices: u64,
+    groups_opened: u64,
+    group_parts: u64,
+    groups_closed: u64,
+    groups_discarded: u64,
+    groups_ended_by_empty: u64,
+    changes_beside_groups: u64,
 }
 
 impl Reached {
@@ -200,6 +228,15 @@ impl Reached {
             ("names reused", self.names_reused),
             ("replies", self.replies),
             ("notices", self.notices),
+            ("groups opened", self.groups_opened),
+            ("parts of groups", self.group_parts),
+            ("groups closed", self.groups_closed),
+            ("groups discarded", self.groups_discarded),
+            ("groups ended by an empty entry", self.groups_ended_by_empty),
+            (
+                "changes to a file with a group open",
+                self.changes_beside_groups,
+            ),
         ];
         for kind in Kind::ALL {
             assert!(
@@ -238,8 +275,12 @@ impl Gen {
         let (file, payload) = self.payload(model);
         *self.reached.kinds.entry(payload.kind()).or_default() += 1;
         if payload.kind() == Kind::Empty {
-            // A new leader's first entry, in a new term.
+            // A new leader's first entry, in a new term: every open group
+            // discarded.
             self.term += 1;
+            if !model.groups.is_empty() {
+                self.reached.groups_ended_by_empty += 1;
+            }
         }
         seal(&model.applied, self.term, file, &payload)
     }
@@ -248,6 +289,13 @@ impl Gen {
         let roll = self.rng.below(100);
         if model.files.is_empty() || (model.files.len() < 3 && roll < 8) {
             return self.added(model);
+        }
+        // Groups: opened now and then, and while one is open, one of its
+        // entries a fifth of the time.
+        if roll >= 97 || (!model.groups.is_empty() && self.rng.percent(20)) {
+            if let Some(drawn) = self.group(model) {
+                return drawn;
+            }
         }
         match roll {
             0..=54 => self.change(model),
@@ -319,7 +367,16 @@ impl Gen {
     }
 
     fn removed(&mut self, model: &Model) -> (u64, Payload) {
-        let ids: Vec<u64> = model.files.keys().copied().collect();
+        // Not a file an open group declared a path in: that is refused.
+        let ids: Vec<u64> = model
+            .files
+            .keys()
+            .copied()
+            .filter(|f| declared(model, *f).next().is_none())
+            .collect();
+        if ids.is_empty() {
+            return self.change(model);
+        }
         let id = *self.rng.pick(&ids);
         self.reached.files_removed += 1;
         if model.locks.keys().any(|l| l.file == id) {
@@ -423,6 +480,13 @@ impl Gen {
     fn change(&mut self, model: &Model) -> (u64, Payload) {
         let ids: Vec<u64> = model.files.keys().copied().collect();
         let id = *self.rng.pick(&ids);
+        (id, Payload::Change(self.change_in(model, id, true)))
+    }
+
+    /// A change to file `id`; with `edits` false, one without tree or lock
+    /// edits (a group's close). Its edits meet no path an open group
+    /// declared in the file: those are refused.
+    fn change_in(&mut self, model: &Model, id: u64, edits: bool) -> Change {
         let open: Vec<(Session, u64)> = model
             .sessions
             .iter()
@@ -448,12 +512,127 @@ impl Gen {
             change.notices.push(self.rng.bytes(n));
             self.reached.notices += 1;
         }
+        if !edits {
+            return change;
+        }
         if !open.is_empty() {
             let sessions: Vec<Session> = open.iter().map(|(s, _)| *s).collect();
             self.locks(model, id, &sessions, &mut change.locks);
         }
         self.edits(&model.files[&id], &mut change.edits);
-        (id, Payload::Change(change))
+        let theirs: Vec<&Path> = declared(model, id).collect();
+        if !theirs.is_empty() {
+            self.reached.changes_beside_groups += 1;
+            change
+                .edits
+                .retain(|e| !theirs.iter().any(|d| meets(edit_path(e), d)));
+        }
+        change
+    }
+
+    /// A group's entry (`docs/server-storage.md` section 6.9), or `None`
+    /// when none can be drawn: an opening part declaring one or two paths
+    /// that meet no open group's, a part under one of its group's paths in
+    /// a file, a close, or a discard.
+    fn group(&mut self, model: &Model) -> Option<(u64, Payload)> {
+        let ids: Vec<u64> = model.files.keys().copied().collect();
+        if model.groups.is_empty() || (self.rng.percent(20) && model.groups.len() < 4) {
+            let mut paths: Vec<GroupPath> = Vec::new();
+            for _ in 0..self.rng.range(1, 2) {
+                let file = *self.rng.pick(&ids);
+                let nodes: Vec<&Path> = model.files[&file].nodes.keys().collect();
+                let path: Path = if !nodes.is_empty() && self.rng.percent(60) {
+                    let p = *self.rng.pick(&nodes);
+                    p[..p.len().min(1 + self.rng.below(2))].to_vec()
+                } else {
+                    vec![self.segment()]
+                };
+                let taken = model
+                    .groups
+                    .values()
+                    .flat_map(|g| &g.paths)
+                    .chain(&paths)
+                    .any(|g| g.file == file && meets(&g.path, &path));
+                if !taken && check_edits(&[Edit::delete(path.clone())]).is_ok() {
+                    paths.push(GroupPath { file, path });
+                }
+            }
+            let first = paths.first()?.clone();
+            let edits = self.group_edits(&first.path);
+            self.reached.groups_opened += 1;
+            self.reached.group_parts += 1;
+            return Some((
+                first.file,
+                Payload::Change(Change {
+                    group: Some(Group {
+                        id: model.applied.index + 1,
+                        step: Step::Open(paths),
+                    }),
+                    edits,
+                    ..Change::default()
+                }),
+            ));
+        }
+        let open: Vec<(&u64, &model::Group)> = model.groups.iter().collect();
+        let (&id, group) = *self.rng.pick(&open);
+        let at = self.rng.pick(&group.paths).clone();
+        Some(match self.rng.below(10) {
+            0..=5 => {
+                self.reached.group_parts += 1;
+                let edits = self.group_edits(&at.path);
+                (
+                    at.file,
+                    Payload::Change(Change {
+                        group: Some(Group {
+                            id,
+                            step: Step::Part,
+                        }),
+                        edits,
+                        ..Change::default()
+                    }),
+                )
+            }
+            6..=8 => {
+                self.reached.groups_closed += 1;
+                let mut close = self.change_in(model, at.file, false);
+                close.group = Some(Group {
+                    id,
+                    step: Step::Close,
+                });
+                (at.file, Payload::Change(close))
+            }
+            _ => {
+                self.reached.groups_discarded += 1;
+                (0, Payload::Group(GroupEvent::Discard { id }))
+            }
+        })
+    }
+
+    /// Edits at or below `base`: puts of nodes under it or at it, deletes
+    /// of it or below it, and now and then a batch.
+    fn group_edits(&mut self, base: &Path) -> Vec<Edit> {
+        let mut edits = Vec::new();
+        let n = if self.rng.percent(5) {
+            self.rng.range(50, 200)
+        } else {
+            self.rng.range(0, 4)
+        };
+        for _ in 0..n {
+            let mut path = base.clone();
+            for _ in 0..self.rng.below(3) {
+                path.push(self.segment());
+            }
+            let edit = if self.rng.percent(80) {
+                let node = self.node();
+                Edit::Put { path, node }
+            } else {
+                Edit::delete(path)
+            };
+            if check_edits(std::slice::from_ref(&edit)).is_ok() {
+                edits.push(edit);
+            }
+        }
+        edits
     }
 
     fn locks(&mut self, model: &Model, file: u64, open: &[Session], out: &mut Vec<LockEdit>) {
@@ -627,6 +806,7 @@ impl Gen {
 struct Roots {
     store: Root,
     files: BTreeMap<u64, Root>,
+    groups: BTreeMap<u64, Root>,
 }
 
 impl Roots {
@@ -634,6 +814,7 @@ impl Roots {
     fn iter(&self) -> impl Iterator<Item = (TreeId, Root)> + '_ {
         std::iter::once((TreeId::Store, self.store))
             .chain(self.files.iter().map(|(id, r)| (TreeId::File(*id), *r)))
+            .chain(self.groups.iter().map(|(id, r)| (TreeId::Group(*id), *r)))
     }
 }
 
@@ -644,12 +825,16 @@ fn roots_of<S: PageStore + ?Sized>(store: &S) -> Roots {
             hash: Hash::default(),
         },
         files: BTreeMap::new(),
+        groups: BTreeMap::new(),
     };
     for (name, root) in store.trees() {
         match TreeId::from_name(name.as_bytes()).expect("a tree the state names") {
             TreeId::Store => roots.store = root,
             TreeId::File(id) => {
                 roots.files.insert(id, root);
+            }
+            TreeId::Group(id) => {
+                roots.groups.insert(id, root);
             }
         }
     }
@@ -762,6 +947,55 @@ fn compare<S: PageStore + ?Sized>(store: &S, model: &Model, at: &str) {
         locks.len(),
         want.len()
     );
+    // The open groups: their rows, what they declared, and what their
+    // staging trees hold, part by part, decoded; a staging tree for each
+    // open group and none other. The file trees above hold none of it.
+    let groups = state.groups().unwrap();
+    assert_eq!(
+        groups.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        model.groups.keys().copied().collect::<Vec<_>>(),
+        "{at}: open groups"
+    );
+    assert_eq!(
+        roots.groups.keys().collect::<Vec<_>>(),
+        model.groups.keys().collect::<Vec<_>>(),
+        "{at}: staging trees"
+    );
+    for (id, row) in groups {
+        let group = &model.groups[&id];
+        assert_eq!(row.parts, group.staged.len() as u64, "{at}: group {id}");
+        let mut paths = group.paths.clone();
+        paths.sort_by_key(|p| p.file);
+        assert_eq!(state.group_declared(id).unwrap(), paths, "{at}: group {id}");
+        // Items [file, part, chunk], under the lists their puts made: a
+        // part's chunks, joined, are its edits in the change encoding.
+        let mut parts: BTreeMap<(u64, u64), Vec<u8>> = BTreeMap::new();
+        for (path, node) in walk_all(store, roots.groups[&id]) {
+            let [file, part, _] = &path[..] else {
+                assert!(
+                    path.len() < 3 && node.value().is_empty(),
+                    "{at}: group {id}"
+                );
+                continue;
+            };
+            let n = |b: &[u8]| u64::from_be_bytes(b.try_into().unwrap());
+            parts
+                .entry((n(part), n(file)))
+                .or_default()
+                .extend_from_slice(node.value());
+        }
+        let staged: Vec<(u64, Vec<Edit>)> = parts
+            .into_iter()
+            .map(|((_, file), bytes)| (file, decode_edits(&bytes).unwrap()))
+            .collect();
+        let want: Vec<(u64, Vec<Edit>)> = group
+            .staged
+            .iter()
+            .filter(|(_, edits)| !edits.is_empty())
+            .cloned()
+            .collect();
+        assert!(staged == want, "{at}: group {id}'s staged edits");
+    }
 }
 
 /// One seed: generated entries applied to the trees and to the model, the
@@ -840,6 +1074,12 @@ fn add(into: &mut Reached, from: Reached) {
     into.names_reused += from.names_reused;
     into.replies += from.replies;
     into.notices += from.notices;
+    into.groups_opened += from.groups_opened;
+    into.group_parts += from.group_parts;
+    into.groups_closed += from.groups_closed;
+    into.groups_discarded += from.groups_discarded;
+    into.groups_ended_by_empty += from.groups_ended_by_empty;
+    into.changes_beside_groups += from.changes_beside_groups;
 }
 
 /// The issue's first check: seeded sequences of entries of every kind,
@@ -957,6 +1197,7 @@ impl Fixture {
             ));
         }
         let change = Change {
+            group: None,
             op: Some(Op {
                 session: f.alice,
                 seq: 1,
@@ -1024,6 +1265,7 @@ impl Fixture {
 
 fn change_of(session: Option<(Session, u64)>, locks: Vec<LockEdit>, edits: Vec<Edit>) -> Payload {
     Payload::Change(Change {
+        group: None,
         op: session.map(|(session, seq)| Op { session, seq }),
         reply: Vec::new(),
         notices: Vec::new(),
@@ -1156,7 +1398,10 @@ fn entries_that_cannot_be_right_are_refused() {
     );
     f.refused(
         &group,
-        Refusal::Payload(PayloadError::Unsupported(Feature::Group)),
+        Refusal::Payload(PayloadError::Tag {
+            field: "group step",
+            tag: 0,
+        }),
     );
     let clone = Built::raw(
         &last,
@@ -1400,6 +1645,186 @@ fn entries_that_cannot_be_right_are_refused() {
 /// A state whose tree format version this build does not know, a later
 /// one or 0 (review of #732), is applied no further, by `apply` or the
 /// model.
+/// A group's entries that cannot be right, and the entries a group's
+/// declared paths refuse (`docs/server-storage.md` section 6.9): each
+/// refused with its typed refusal by `apply` and by the model alike, and
+/// nothing written. A path meets a declared one when either is a prefix
+/// of the other, segment by segment, on the same file.
+#[test]
+fn group_entries_that_cannot_be_right_are_refused() {
+    let mut f = Fixture::new();
+    let file = f.file;
+    let other = f.model.applied.index + 1;
+    f.push(
+        other,
+        Payload::File(FileEvent::Added {
+            name: b"Orders".to_vec(),
+            flags: 0,
+            page0: Vec::new(),
+        }),
+    );
+    let p = |segments: &[&[u8]]| -> Path { segments.iter().map(|s| s.to_vec()).collect() };
+    let declared = p(&[b"T", &[5]]);
+    let group = |id: u64, step: Step, edits: Vec<Edit>| {
+        Payload::Change(Change {
+            group: Some(Group { id, step }),
+            edits,
+            ..Change::default()
+        })
+    };
+    let open = |id: u64, paths: Vec<(u64, Path)>, edits: Vec<Edit>| {
+        let paths = paths
+            .into_iter()
+            .map(|(file, path)| GroupPath { file, path })
+            .collect();
+        group(id, Step::Open(paths), edits)
+    };
+    // The group, open over [T, 5] of the first file.
+    let g = f.model.applied.index + 1;
+    f.push(
+        file,
+        open(
+            g,
+            vec![(file, declared.clone())],
+            vec![Edit::leaf(p(&[b"T", &[5], b"x"]), b"staged".to_vec())],
+        ),
+    );
+    // Changes that meet it, at, above and below, as a put or a delete, and
+    // as the second edit after one beside it: refused, naming the edit.
+    let beside = Edit::leaf(p(&[b"T", &[6]]), b"beside".to_vec());
+    for path in [
+        declared.clone(),
+        p(&[b"T"]),
+        p(&[b"T", &[5], &[0, 9]]),
+        p(&[b"T", &[5], &[0, 9], b"deeper"]),
+        Vec::new(),
+    ] {
+        for edit in [
+            Edit::leaf(path.clone(), b"v".to_vec()),
+            Edit::delete(path.clone()),
+        ] {
+            if check_edits(std::slice::from_ref(&edit)).is_err() {
+                continue;
+            }
+            let built = f.seal(file, &change_of(None, Vec::new(), vec![edit.clone()]));
+            f.refused(&built, Refusal::InGroup { group: g, edit: 0 });
+            let built = f.seal(
+                file,
+                &change_of(None, Vec::new(), vec![beside.clone(), edit.clone()]),
+            );
+            f.refused(&built, Refusal::InGroup { group: g, edit: 1 });
+        }
+    }
+    // A part outside its paths (beside, above), or for a file it declared
+    // nothing in; a close for such a file.
+    for path in [p(&[b"T", &[6], b"x"]), p(&[b"T"])] {
+        let built = f.seal(
+            file,
+            &group(g, Step::Part, vec![Edit::leaf(path, b"v".to_vec())]),
+        );
+        f.refused(&built, Refusal::OutsideGroup { edit: 0 });
+    }
+    let built = f.seal(
+        other,
+        &group(
+            g,
+            Step::Part,
+            vec![Edit::leaf(declared.clone(), b"v".to_vec())],
+        ),
+    );
+    f.refused(
+        &built,
+        Refusal::GroupFile {
+            group: g,
+            file: other,
+        },
+    );
+    let built = f.seal(other, &group(g, Step::Close, Vec::new()));
+    f.refused(
+        &built,
+        Refusal::GroupFile {
+            group: g,
+            file: other,
+        },
+    );
+    // Another group declaring a path that meets it, at, above or below,
+    // even beside a path that meets nothing.
+    let next = f.model.applied.index + 1;
+    for path in [declared.clone(), p(&[b"T"]), p(&[b"T", &[5], b"x"])] {
+        let built = f.seal(
+            file,
+            &open(
+                next,
+                vec![(other, declared.clone()), (file, path)],
+                Vec::new(),
+            ),
+        );
+        f.refused(&built, Refusal::GroupOverlap { group: g });
+    }
+    // An opening part whose id is not its index; a path in no file.
+    let built = f.seal(file, &open(next + 1, vec![(file, p(&[b"U"]))], Vec::new()));
+    f.refused(
+        &built,
+        Refusal::GroupId {
+            id: next + 1,
+            index: next,
+        },
+    );
+    let built = f.seal(
+        file,
+        &open(next, vec![(file, p(&[b"U"])), (99, p(&[b"U"]))], Vec::new()),
+    );
+    f.refused(&built, Refusal::NoSuchFile(99));
+    // An opening part with none of its paths in the entry's file.
+    let built = f.seal(file, &open(next, vec![(other, p(&[b"U"]))], Vec::new()));
+    f.refused(&built, Refusal::GroupFile { group: next, file });
+    // Parts, closes and discards of a group not open.
+    for payload in [
+        group(next, Step::Part, Vec::new()),
+        group(next, Step::Close, Vec::new()),
+        Payload::Group(GroupEvent::Discard { id: next }),
+    ] {
+        let on = if payload.kind() == Kind::Group {
+            0
+        } else {
+            file
+        };
+        f.refused(&f.seal(on, &payload), Refusal::NoSuchGroup(next));
+    }
+    // The file it declared a path in, removed.
+    let built = f.seal(file, &Payload::File(FileEvent::Removed));
+    f.refused(&built, Refusal::FileInGroup { group: g });
+    // The same paths in the other file, and beside it in this one, are
+    // free: a change beside it is taken, and so is a second group there.
+    f.push(file, change_of(None, Vec::new(), vec![beside]));
+    let second = f.model.applied.index + 1;
+    f.push(
+        other,
+        open(second, vec![(other, declared.clone())], Vec::new()),
+    );
+    // Discarded, the group frees its paths: what met it is taken.
+    f.push(0, Payload::Group(GroupEvent::Discard { id: g }));
+    f.push(
+        file,
+        change_of(None, Vec::new(), vec![Edit::delete(p(&[b"T"]))]),
+    );
+    // At most MAX_OPEN_GROUPS open.
+    for i in 1..om_store::apply::MAX_OPEN_GROUPS {
+        let id = f.model.applied.index + 1;
+        f.push(
+            file,
+            open(id, vec![(file, vec![i.to_be_bytes().to_vec()])], Vec::new()),
+        );
+    }
+    let id = f.model.applied.index + 1;
+    let built = f.seal(file, &open(id, vec![(file, p(&[b"V"]))], Vec::new()));
+    f.refused(&built, Refusal::TooManyGroups);
+    // An `empty` entry ends every one.
+    f.push(0, Payload::Empty);
+    assert!(f.model.groups.is_empty());
+    compare(&f.store, &f.model, "after the empty entry");
+}
+
 #[test]
 fn a_state_of_an_unknown_tree_format_version_takes_no_entry() {
     for version in [0, 2] {
@@ -1444,6 +1869,7 @@ fn a_dropped_unit_of_work_leaves_nothing() {
             (
                 f.file,
                 Payload::Change(Change {
+                    group: None,
                     op: Some(Op {
                         session: f.alice,
                         seq: 2,
@@ -1615,6 +2041,7 @@ fn payloads_round_trip() {
         connection: 1,
     };
     let change = Change {
+        group: None,
         op: Some(Op { session: s, seq: 3 }),
         reply: vec![1; MAX_REPLY],
         notices: vec![Vec::new(), vec![0, 1, 2]],
@@ -1920,7 +2347,7 @@ fn malformed_payloads_are_refused() {
         );
     }
     assert_eq!(Payload::decode(0, &[]), Err(PayloadError::UnknownKind(0)));
-    assert_eq!(Payload::decode(7, &[]), Err(PayloadError::UnknownKind(7)));
+    assert_eq!(Payload::decode(8, &[]), Err(PayloadError::UnknownKind(8)));
     let huge = vec![0u8; om_store::entry::MAX_PAYLOAD + 1];
     assert!(matches!(
         Payload::decode(Kind::Change.code(), &huge),
@@ -2309,6 +2736,7 @@ fn a_start_reads_no_reply_of_the_sessions_it_closes() {
         push(
             1,
             Payload::Change(Change {
+                group: None,
                 op: Some(Op { session, seq: 1 }),
                 reply: vec![connection as u8; MAX_REPLY],
                 ..Change::default()

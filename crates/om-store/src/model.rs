@@ -15,9 +15,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::apply::{Position, Refusal};
+use crate::apply::{Position, Refusal, MAX_OPEN_GROUPS};
 use crate::entry::{
-    entry_hash, Entry, FileEvent, Kind, LockEdit, Members, Payload, ServerId, Session, SessionEvent,
+    entry_hash, Entry, FileEvent, Group as GroupOf, GroupEvent, GroupPath, Kind, LockEdit, Members,
+    Payload, ServerId, Session, SessionEvent, Step,
 };
 use crate::page::FORMAT_VERSION;
 use crate::tree::Node;
@@ -55,6 +56,31 @@ pub struct Model {
     /// Each open session's last completed sequence number and its reply.
     pub sessions: BTreeMap<Session, (u64, Vec<u8>)>,
     pub locks: BTreeMap<LockId, Vec<u8>>,
+    /// The open groups, by id.
+    pub groups: BTreeMap<u64, Group>,
+}
+
+/// An open group: the paths it declared, and its parts' edits, each with
+/// its file, in order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Group {
+    pub paths: Vec<GroupPath>,
+    pub staged: Vec<(u64, Vec<crate::tree::Edit>)>,
+}
+
+impl Group {
+    /// The paths it declared in `file`.
+    fn paths_in(&self, file: u64) -> impl Iterator<Item = &Path> {
+        self.paths
+            .iter()
+            .filter(move |p| p.file == file)
+            .map(|p| &p.path)
+    }
+}
+
+/// Whether one path is at, above or below the other.
+fn meets(a: &[Vec<u8>], b: &[Vec<u8>]) -> bool {
+    a.starts_with(b) || b.starts_with(a)
 }
 
 /// A change's lock edits so far, for one session: whether it released the
@@ -90,7 +116,77 @@ impl Model {
             servers: BTreeMap::new(),
             sessions: BTreeMap::new(),
             locks: BTreeMap::new(),
+            groups: BTreeMap::new(),
         }
+    }
+
+    /// A change's group checks (format section 5.6), in `apply`'s order.
+    fn check_group(&self, entry: &Entry<'_>, change: &crate::entry::Change) -> Result<(), Refusal> {
+        let file = entry.file;
+        let own: Option<(u64, Vec<Path>)> = match &change.group {
+            None => None,
+            Some(GroupOf {
+                id,
+                step: Step::Open(paths),
+            }) => {
+                if *id != entry.index {
+                    return Err(Refusal::GroupId {
+                        id: *id,
+                        index: entry.index,
+                    });
+                }
+                if self.groups.len() as u64 >= MAX_OPEN_GROUPS {
+                    return Err(Refusal::TooManyGroups);
+                }
+                if let Some(p) = paths.iter().find(|p| !self.files.contains_key(&p.file)) {
+                    return Err(Refusal::NoSuchFile(p.file));
+                }
+                for p in paths {
+                    for (other, group) in &self.groups {
+                        if group.paths_in(p.file).any(|theirs| meets(&p.path, theirs)) {
+                            return Err(Refusal::GroupOverlap { group: *other });
+                        }
+                    }
+                }
+                let mine = paths
+                    .iter()
+                    .filter(|p| p.file == file)
+                    .map(|p| p.path.clone())
+                    .collect();
+                Some((*id, mine))
+            }
+            Some(GroupOf { id, .. }) => {
+                let group = self.groups.get(id).ok_or(Refusal::NoSuchGroup(*id))?;
+                Some((*id, group.paths_in(file).cloned().collect()))
+            }
+        };
+        if let Some((id, mine)) = &own {
+            if mine.is_empty() {
+                return Err(Refusal::GroupFile { group: *id, file });
+            }
+        }
+        for (i, edit) in change.edits.iter().enumerate() {
+            let path = match edit {
+                crate::tree::Edit::Put { path, .. } | crate::tree::Edit::Delete { path } => path,
+            };
+            if let Some((_, mine)) = &own {
+                if !mine.iter().any(|d| path.starts_with(d)) {
+                    return Err(Refusal::OutsideGroup { edit: i });
+                }
+            }
+            for (other, group) in &self.groups {
+                if own.as_ref().map(|(id, _)| id) == Some(other) {
+                    continue;
+                }
+                if group.paths_in(file).any(|theirs| meets(path, theirs)) {
+                    return Err(Refusal::InGroup {
+                        group: *other,
+                        edit: i,
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Applies `entry`, or says why it cannot be right and changes nothing.
@@ -221,6 +317,7 @@ impl Model {
                         }
                     }
                 }
+                self.check_group(entry, change)?;
                 // Then they are made, in order.
                 for edit in &change.locks {
                     out.steps += 1;
@@ -275,15 +372,51 @@ impl Model {
                     self.sessions
                         .insert(op.session, (op.seq, change.reply.clone()));
                 }
-                let nodes = &mut self
-                    .files
-                    .get_mut(&file)
-                    .ok_or(Refusal::NoSuchFile(file))?
-                    .nodes;
-                for edit in &change.edits {
-                    match edit {
-                        crate::tree::Edit::Put { path, node } => put(nodes, path, node.clone()),
-                        crate::tree::Edit::Delete { path } => delete(nodes, path),
+                // A part's edits are staged; a close applies the staged
+                // edits, in order; other edits go to the file at once.
+                let mut apply: Vec<(u64, Vec<crate::tree::Edit>)> = Vec::new();
+                match &change.group {
+                    None => apply.push((file, change.edits.clone())),
+                    Some(GroupOf {
+                        id,
+                        step: Step::Open(paths),
+                    }) => {
+                        self.groups.insert(
+                            *id,
+                            Group {
+                                paths: paths.clone(),
+                                staged: vec![(file, change.edits.clone())],
+                            },
+                        );
+                    }
+                    Some(GroupOf {
+                        id,
+                        step: Step::Part,
+                    }) => {
+                        if let Some(group) = self.groups.get_mut(id) {
+                            group.staged.push((file, change.edits.clone()));
+                        }
+                    }
+                    Some(GroupOf {
+                        id,
+                        step: Step::Close,
+                    }) => {
+                        if let Some(group) = self.groups.remove(id) {
+                            apply = group.staged;
+                        }
+                    }
+                }
+                for (file, edits) in apply {
+                    let nodes = &mut self
+                        .files
+                        .get_mut(&file)
+                        .ok_or(Refusal::NoSuchFile(file))?
+                        .nodes;
+                    for edit in &edits {
+                        match edit {
+                            crate::tree::Edit::Put { path, node } => put(nodes, path, node.clone()),
+                            crate::tree::Edit::Delete { path } => delete(nodes, path),
+                        }
                     }
                 }
             }
@@ -350,6 +483,13 @@ impl Model {
                 }
                 FileEvent::Removed => {
                     let id = self.the_file(entry, Kind::File)?;
+                    if let Some((group, _)) = self
+                        .groups
+                        .iter()
+                        .find(|(_, g)| g.paths.iter().any(|p| p.file == id))
+                    {
+                        return Err(Refusal::FileInGroup { group: *group });
+                    }
                     self.files.remove(&id);
                     self.locks.retain(|lock, _| lock.file != id);
                     out.removed = Some(id);
@@ -380,7 +520,16 @@ impl Model {
                     self.the_file(entry, Kind::Mark)?;
                 }
             }
-            Payload::Empty => Self::no_file_field(entry, Kind::Empty)?,
+            Payload::Empty => {
+                Self::no_file_field(entry, Kind::Empty)?;
+                self.groups.clear();
+            }
+            Payload::Group(GroupEvent::Discard { id }) => {
+                Self::no_file_field(entry, Kind::Group)?;
+                if self.groups.remove(id).is_none() {
+                    return Err(Refusal::NoSuchGroup(*id));
+                }
+            }
         }
         Ok(out)
     }

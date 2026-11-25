@@ -1942,6 +1942,28 @@ rebuilt for them when those entries are applied again (4.7).
   carry it, and recovery and followers reserve exactly that.
   `Reservation::extend` adds to a reservation whose units ran out (the
   apply that ran out changed nothing).
+- **Holds for groups** (server-storage.md 6.9). Before a group's part
+  is applied, the store holds, for the close that will apply it, the
+  pages section 5.8 says (`PageFile::hold`): set aside as a
+  reservation's pages are, judged against the same floor and grown for
+  the same way, but kept past the entry, counted in `Space::groups` and
+  recorded in the group's row. A close takes what its group holds as its
+  reservation (`PageFile::reserve_held`), extended like any; what it
+  writes besides, its rows and its reply, may take the reserve, and so
+  may a discard's (`Purpose::Discard`). A discard, and an `empty` entry
+  for every open group, give the holds back once committed; an entry not
+  applied leaves the holds as they were. A page file keeps no holds on
+  disk: the store's recovery holds again, before the replay, what the
+  checkpoint's state records for its open groups (6.2 step 4), so the
+  replay's parts and closes find what the first run held. The bound
+  is our own and not a proof: it covers the close when the file's tree
+  at the close is at most one level taller than at each part, beyond the
+  `1 + log2(sets)` levels each part's own edits are counted to add. A
+  close that needs more takes it as any entry extends, from free pages
+  and the reserve, and can be refused as full. It is loose: a 4 KiB put
+  holds 59 pages and its close writes about one, so a group of 10,000
+  such parts grows the page file by 9 GiB while it is open, and that
+  space stays in the file.
 - **Pages waiting for a checkpoint** have a budget (16,384 pages, 256 MiB,
   by default): once as many pages of the newest version wait in memory,
   a reservation is refused with "checkpoint needed" until a checkpoint
@@ -2004,7 +2026,7 @@ payload without interpreting them. Here they mean:
 |---|---|
 | index | its place in the log, counted from 1 |
 | term | the leader's term; never below the previous entry's |
-| kind | 1 change, 2 session, 3 file, 4 members, 5 mark, 6 empty. Any other code is refused |
+| kind | 1 change, 2 session, 3 file, 4 members, 5 mark, 6 empty, 7 group. Any other code is refused |
 | file | the **id** of the file the entry belongs to, or 0 for none. A file's id is the index of the `file` entry that added it, so ids are never reused, and every server gives a file the same id |
 | payload | 5.2 |
 | hash | SHA-256 over the previous entry's hash and the entry's bytes before the hash, as section 3.4 writes them: index, term and file (8 bytes each), kind (2), two zero bytes, the payload's length (4), the payload. Before entry 1 the previous hash is 32 zero bytes (`om_store::entry::entry_hash`) |
@@ -2014,7 +2036,7 @@ The file field must fit the kind, or the entry is refused (5.6):
 | Kind | File field |
 |---|---|
 | change | a file the state has |
-| session, members, empty | 0 |
+| session, members, empty, group | 0 |
 | file, added | the entry's own index |
 | file, removed or renamed | a file the state has |
 | mark | 0, or a file the state has |
@@ -2036,7 +2058,7 @@ start count (8) and the connection number (8).
 | Field | Bytes |
 |---|---|
 | version | 1 |
-| group | 8: the group the change is part of (server-storage.md 6.9), 0 for none. Reserved: anything else is refused as unsupported |
+| group | 8: the id of the group the change is part of (server-storage.md 6.9), 0 for none. When it is not 0, a step (1): 1 **open**, then the paths the group declares, a count (4, 1 to 64) and for each a file's id (8) and a path (its number of segments (1), 0 to 64, then each segment `len2`); 2 **part**; 3 **close** |
 | op | 1: 0 for none, 1 for an operation, then its session (32) and sequence number (8) |
 | reply | `len4`, at most 65,535 bytes; empty when there is no op |
 | notices | count, at most 65,536; each `len4`, at most 65,535 bytes |
@@ -2046,6 +2068,17 @@ start count (8) and the connection number (8).
 A tree edit is held to the tree's bounds (2.1) as it is decoded: at most
 64 segments, an encoded path of at most 65,535 bytes, a value of at most
 65,535 bytes, and no put at the empty path.
+
+A change in a group is held to its step as it is decoded: a part (an
+open or a part) carries tree edits only, with no operation, reply,
+notices or lock edits; a close carries no tree edits and no lock edits,
+and may carry the operation it completes, with its reply and notices; an
+open declares at least one path, each of at most 64 segments and an
+encoded key of at most 65,535 bytes (the path with no segment declares
+the whole file); and the id is never 0. Payload version 1 reserved the
+group field, and builds before groups refused any group but 0 as
+unsupported, so the version stays 1: such a build refuses a group's
+entries rather than reading them otherwise.
 
 **session** (kind 2): version, then a tag: 1 **opened** and a session; 2
 **closed** and a session; 3 **started**, a server's id (16) and its start
@@ -2065,6 +2098,9 @@ and refused as unsupported.
 comparison) and a name (`len2`, 1 to 1,024 bytes).
 
 **empty** (kind 6): no bytes.
+
+**group** (kind 7): version, then a tag: 1 **discard** and the group's
+id (8, not 0).
 
 Nothing may follow the last field. Decoding checks every length against
 its bound and against the bytes left before it takes anything, never
@@ -2088,6 +2124,7 @@ page file keeps them, outside any tree:
 |---|---|---|
 | the store's own | `store` | 5.3's table below |
 | a file's | `file:` and the id in decimal | exactly the file's key tree, nothing else |
+| an open group's staging | `group:` and the group's id in decimal | the edits of its parts, below |
 
 No item of any tree holds a page number, so a root hash depends on
 content alone: servers that place pages differently have the same root
@@ -2111,6 +2148,10 @@ little-endian.
 | `[06, server, start connection, 01]` | value: its last completed sequence number (8), 0 for none |
 | `[06, server, start connection, 02]` | value: that operation's reply, empty for none |
 | `[07, server, start connection, file, lock]` | value: a lock's value. `lock` is the key's length (2, big-endian), the key, then the user |
+| `[0a, 01, id]` | list: an open group's row, there exactly while it is open; `id` is the group's id (8) |
+| `[0a, 01, id, 01]` | value: the pages its parts hold for its close (8) and the number of its parts (8) (5.8) |
+| `[0a, 01, id, 02, file, n]` | value: the group's declared path number `n` (2) in file `file` (8), as a key (2.1) |
+| `[0a, 02, file, id]` | value, empty: group `id` declared a path in file `file`; the index the checks of 5.6 read |
 
 A file's row is the list `[03, id]`, made by its first child, and so is a
 session's. A session's sequence number and reply are leaves under its
@@ -2134,16 +2175,24 @@ it applies.
 With the largest key and user, a lock's path is at most 34,911 bytes
 encoded, within the 65,535 of 2.1.
 
+A group's staging tree holds each part's tree edits as the change
+carries them (5.2: their count, then each), cut into chunks of at most
+65,535 bytes, the largest value: the item `[file, part, chunk]` holds
+chunk number `chunk` (4) of the part whose entry's index is `part` (8),
+in file `file` (8). Read in key order, the chunks join into each part's
+edits, a file's parts in the order of their entries. A part with no
+edits writes no item, and the tree, made by the group's first part,
+exists while the group is open. No other entry reads or writes it.
+
 ### 5.4 Reserved
 
-- In a change: the group field (5.2).
 - In a `file` entry: tag 4, a clone. In a `members` entry: tag 2, the
   members.
 - In the store's own tree: under a file's row, segments `04` (its
   container files, server-storage.md 8), `05` (its design history, 9),
   `06` (its kept original image, 6.10) and `07` (the file it was cloned
-  from, 6.8); at the top, `08` (the members), `09` (blob reference
-  counts, 8) and `0a` (open groups, 6.9).
+  from, 6.8); at the top, `08` (the members) and `09` (blob reference
+  counts, 8).
 
 A build that meets a reserved form in an entry refuses the entry (5.6).
 
@@ -2237,7 +2286,32 @@ Then, by kind:
   counting this entry's earlier lock edits (*no such lock*). Then: the
   lock edits are made under the entry's file, the session's row records
   the sequence number and the reply, and the tree edits (5.5) are applied
-  to the file's tree.
+  to the file's tree, unless the change is a group's part (below).
+- **A change and the open groups** (server-storage.md 6.9). Two paths
+  *meet* when one is a prefix of the other, segment by segment: an edit at
+  one changes the other or something above or below it. A path an edit
+  changes is the one it puts or deletes; the ancestors a put makes, or
+  changes to hold both, are not counted, since they change no item at or
+  below a declared path. Checked after the lock edits, in this order:
+  - an open's id must be its own index (*group id*), at most 256 groups
+    may be open after it (*too many groups*), each path it declares must
+    be in a file the state has (*no such file*), and none may meet a path
+    an open group declared in that file (*group overlap*);
+  - a part or a close must name an open group (*no such group*), and an
+    open, a part or a close must be for a file its group declared a path
+    in (*group file*);
+  - each edit of an open or a part must be at or below a path its group
+    declared in the entry's file (*outside group*, naming the edit);
+  - no edit of any change may meet a path another open group declared in
+    the entry's file (*in group*, naming the group and the edit).
+
+  An open writes the group's row, its declared paths and the index rows
+  of its files (5.3), and makes the staging tree. An open or a part writes
+  nothing to the file's tree: its edits are added to the staging tree,
+  and the row counts one more part and the pages it holds (5.8). A close
+  applies each file's staged edits, in the order of their parts, to the
+  file's tree, deletes the group's rows and drops the staging tree, and
+  records its operation, reply and notices as any change does.
 - **session.** *Opened* is applied only when the server's row records
   the session's start count and the session's connection number is above
   the highest recorded; then the session's row is made with sequence
@@ -2257,12 +2331,15 @@ Then, by kind:
   entry. *Removed*: the row, the name and every session's locks on the
   file are deleted, and the file's tree is dropped. *Renamed*: the new
   name must be free (*name taken*, also when it is the file's own); the
-  row's name and the name rows change.
+  row's name and the name rows change. A file in which an open group
+  declared a path is not removed (*file in group*).
 - **members.** The version must be one this build knows (*unknown format
   version*) and not below the state's (*format version lowered*, which
   cannot arise while 1 is the only version); it is recorded.
-- **mark** and **empty** change nothing else. An `empty` entry, a new
-  leader's first, would discard the open groups; no build yet has any.
+- **group.** *Discard*: the group must be open (*no such group*); its
+  rows are deleted and its staging tree dropped, and nothing of it shows.
+- **empty** discards every open group, as a discard each: a new leader's
+  first entry, and a restart's (6.2). **mark** changes nothing else.
 
 Last, every entry records itself as the last applied.
 
@@ -2273,7 +2350,12 @@ the state and the entry, so every server, given the same state, refuses
 the same entry in the same way: an entry repeated, skipped or out of
 order; a broken chain or a term that goes back; an unknown kind,
 payload version or tag; a malformed payload or one beyond a bound; a
-group, a clone or a members list; a state or a `members` entry of a tree
+clone or a members list; a group's id that is not its open's index, or of
+a group not open; a 257th open group; a declared path that meets an open
+group's; a part or close for a file its group declared no path in; a
+part's edit outside its group's paths; an edit that meets a path another
+open group declared; the removal of a file an open group declared a path
+in; a state or a `members` entry of a tree
 format version this build does not know, or a lower version; a file
 field that does not fit; a file that does not exist; a name taken; an
 operation or a lock edit for a session that is not open; a sequence
@@ -2293,8 +2375,12 @@ unit (`set_root`). A file's tree made is the empty tree written into the
 unit (`tree::apply` from nothing) and named with `add_tree`; a file's
 tree removed is named with `drop_tree`, and the page store releases the
 root it holds for it. The store's own tree is made the same way by entry
-1: before it the store holds no tree. Each tree is changed at most once
-per entry, so no tree reads a page of the unit before it is committed.
+1: before it the store holds no tree. A group's staging tree is made by
+its open with `add_tree`, changed by each part with `set_root`, and
+dropped by its close or discard with `drop_tree`. Each tree is changed
+at most once per entry (a close, which carries no edits of its own,
+changes each of its files' trees once, with all their staged edits), so
+no tree reads a page of the unit before it is committed.
 `apply` writes or releases no root on its own account, and the trees it
 changed are read from the page store, which holds every tree's name and
 root.
@@ -2334,14 +2420,41 @@ listings visited and the most held at once.
   edit (under 100 bytes) for each session that has a list for the file
   and nothing for the others, and releases the file's tree with one
   release, whatever its size.
-- **A session's close, an opening, a rename, a mark, an empty or a
-  members entry** read and write a fixed number of rows.
+- **A session's close, an opening, a rename, a mark or a members
+  entry** read and write a fixed number of rows.
+- **A change while groups are open** reads the index of the groups with
+  paths in its file and each one's paths there (at most 64 a group, 256
+  groups), and compares each edit's path with them: the work is linear
+  in edits times paths. A change in a file no group declared a path in
+  reads one row.
+- **A group's open or part** reads the group's row and paths in its
+  file, and the height of the file's tree. It writes its edits into the
+  staging tree, as the change carries them, at the tree's end (each
+  part's index is above every earlier one), and the row. It holds
+  `entry_bound(edits, height + 1)` pages of the file's tree for the
+  close (4.8), recorded in the row.
+- **A close** reads the whole staging tree and holds every staged edit,
+  decoded, at once: memory is linear in the group's size (about 150 MiB
+  more for 10,000 parts of 4 KiB, server-storage.md 6.9). It applies each
+  file's edits with one `tree::apply`, so it writes what one entry with
+  all of them writes (2.7: each page once, in place of once a part), and
+  drops the staging tree with one release.
+- **A discard, and an `empty` entry with groups open,** list the open
+  groups (at most 256) and their files, delete their rows, and drop each
+  staging tree with one release, whatever its size.
 
 ### 5.9 Limits
 
-- Groups, clones, the members list, blob reference counts, design
-  history, container file lists and the kept original image are not
-  built; their entries are refused (5.4).
+- Clones, the members list, blob reference counts, design history,
+  container file lists and the kept original image are not built; their
+  entries are refused (5.4).
+- Groups are their entries and their effect on the state. Which
+  operations use a group, the check of what a group read
+  (server-storage.md 6.9), the protocol locks a group takes, a close's
+  lock edits (refused in this build) and replication's handling are not
+  built. No observation of FileMaker is behind a group's fields in 5.2,
+  the rules of 5.6 for them or their bounds (64 paths, 256 open groups):
+  they are OpenMaker's own design.
 - A file's flags and page 0 are set when it is added; no entry changes
   them later.
 - The bounds of 5.2 (names, replies, lock keys and users, counts) are
@@ -2458,9 +2571,20 @@ store whose `state` is gone, reported for a restore (server-storage.md
    waiting for a checkpoint are past their budget (4.8) has the last
    entry applied, which is durable, checkpointed, and the entry reserved
    again. The page file itself frees during the replay what normal
-   running frees (4.8), as its reservations do;
+   running frees (4.8), as its reservations do. Before the first entry,
+   the pages the checkpoint's open groups hold, which the checkpoint's
+   state records, are held again (4.8);
 5. the version the last entry made (or the checkpoint's, with none) is
-   pinned and is the published one;
+   pinned and is the published one. When its state has groups open, an
+   `empty` entry is appended, which discards them all (5.6,
+   server-storage.md 6.9), before this start's entry and flushed with
+   it. It is reserved as a discard (it may take the reserve), and a
+   failure fails the open with `OpenError::Start`, which says whether
+   the log took the `empty` entry (`StartFailed::discarded`). Each
+   start begins a new term, one above every term `state` and the log
+   recorded, and writes its entries in it: the `empty` entry and this
+   start's entry make it durable when they are. `state`'s own term, for
+   replication's votes (server-storage.md 7.1), is not raised;
 6. this start's own entry is appended and flushed (6.3): a `session`
    entry that records the start count (server-storage.md 7.3), the first
    write of every start. It is part of the recovery for space: it is
@@ -2650,7 +2774,10 @@ nothing changed. Then it:
 2. reserves pages for the entry (`Purpose::Entry`, never the reserve)
    and applies it (`apply::apply`) in its one unit of work, which commits
    at its end; a unit that runs short is dropped, the reservation
-   extended (doubling), and the entry applied again. A full disk, a
+   extended (doubling), and the entry applied again. A group's part
+   first holds its pages for the close, a close's reservation is what its
+   group holds, and a close or a discard may take the reserve (4.8,
+   `apply::group_space`). A full disk, a
    reservation refused for a checkpoint, a refused entry or a page that
    cannot be read refuses the entry with nothing changed;
 3. pins the newest version (`PageFile::pin_newest`), which is the one
