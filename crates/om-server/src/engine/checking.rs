@@ -17,8 +17,6 @@
 //! (one not moved onto the transaction) is not checked
 //! ([`Check::by_store`]).
 
-use std::fmt::Debug;
-
 use om_hbam::OwnedNode;
 use om_store::tree::{Edit, Node};
 
@@ -155,7 +153,7 @@ impl Check {
 
     /// `ours`, the file engine's answer to a read, against the answer the
     /// starting tree with the writes laid over it gives (`read`).
-    pub(crate) fn read<T: PartialEq + Debug>(
+    pub(crate) fn read<T: PartialEq>(
         &self,
         what: &str,
         path: &[&[u8]],
@@ -167,10 +165,10 @@ impl Check {
         }
         let start = TreeView::new(&self.start, self.version);
         let theirs = read(&Overlay::new(&start, &self.covers));
+        // Paths only: an account's node holds its password's verifier.
         assert!(
             *ours == theirs,
-            "an operation's {what} of {path:02x?} differs from its starting tree with its writes:\n\
-             file engine: {ours:?}\nstarting tree with the writes: {theirs:?}"
+            "an operation's {what} of {path:02x?} differs from its starting tree with its writes"
         );
     }
 
@@ -187,10 +185,10 @@ impl Check {
             apply(&mut tree, edit);
         }
         if let Some(path) = first_difference(&tree, store.tree()) {
+            let written: Vec<&[Vec<u8>]> = self.edits.iter().map(edit_path).collect();
             panic!(
-                "an operation changed the tree beyond its writes, first at {path:02x?}: its \
-                 writes were {:?}",
-                self.edits
+                "an operation changed the tree beyond its writes, first at {path:02x?}; it wrote \
+                 at {written:02x?}"
             );
         }
         if !self.edits.is_empty() {
@@ -215,6 +213,12 @@ impl Check {
                  decoded again: {decoded:?}"
             );
         }
+    }
+}
+
+fn edit_path(edit: &Edit) -> &[Vec<u8>] {
+    match edit {
+        Edit::Put { path, .. } | Edit::Delete { path } => path,
     }
 }
 
