@@ -2057,3 +2057,120 @@ fn client_supports(options: &Options, id: u16) -> bool {
         is_supported(id, options.client)
     }
 }
+
+#[cfg(test)]
+mod host_error_tests {
+    use super::*;
+    use crate::{Calculation, Script, ScriptStep};
+    use om_calc::eval::{CalcHost, NullHost, VarScope, Variables};
+    use om_calc::{Date, Locale};
+
+    /// A host that meets error 802 in step `in_step` it begins (a server
+    /// session whose read failed), and holds `scripts`.
+    struct Host {
+        calc: NullHost,
+        scripts: Vec<Arc<Script>>,
+        in_step: u32,
+        begun: u32,
+        asked: u32,
+    }
+
+    impl CalcHost for Host {
+        fn locale(&self) -> &Locale {
+            self.calc.locale()
+        }
+        fn today(&self) -> Date {
+            self.calc.today()
+        }
+        fn variables(&mut self, scope: VarScope) -> &mut Variables {
+            self.calc.variables(scope)
+        }
+    }
+    impl Navigation for Host {}
+    impl Records for Host {}
+    impl Fields for Host {}
+    impl FoundSets for Host {}
+    impl Windows for Host {}
+    impl Dialogs for Host {}
+    impl Files for Host {}
+    impl Network for Host {}
+    impl Accounts for Host {}
+    impl Platform for Host {}
+    impl ScriptHost for Host {
+        fn script(&mut self, _file: FileId, id: u64) -> Option<Arc<Script>> {
+            self.scripts.iter().find(|s| s.id == id).cloned()
+        }
+        fn before_step(&mut self) {
+            self.begun += 1;
+            self.asked = 0;
+        }
+        /// Asked once after `before_step` and once after the step: the
+        /// second is the step's.
+        fn take_step_error(&mut self) -> Option<ErrorCode> {
+            self.asked += 1;
+            (self.begun == self.in_step && self.asked >= 2).then_some(ErrorCode(802))
+        }
+    }
+
+    fn calc(text: &str) -> Calculation {
+        let names = om_formula::NameTable::default();
+        let compiled = om_formula::compile(text, &om_formula::Context::new(&names))
+            .unwrap_or_else(|e| panic!("{text}: {e:?}"));
+        Calculation::new(
+            Some(om_formula::formatted::encode(&compiled.tokens)),
+            om_formula::polish::encode(&compiled.expr),
+        )
+    }
+
+    fn exit_with(text: &str) -> ScriptStep {
+        let mut step = ScriptStep::new(103);
+        step.set_calculation(0, Some(&calc(text)));
+        step
+    }
+
+    fn perform(script: u64) -> ScriptStep {
+        let mut step = ScriptStep::new(1);
+        step.set_script_key(crate::StoredKey::from_serial_id(script));
+        step
+    }
+
+    fn script(id: u64, steps: Vec<ScriptStep>) -> Arc<Script> {
+        let mut script = Script {
+            id,
+            name: format!("Script {id}"),
+            ..Default::default()
+        };
+        script.insert_steps(0, steps).expect("nests");
+        Arc::new(script)
+    }
+
+    /// A run the host ends (`ScriptHost::take_step_error`) has no result
+    /// (`Runtime::final_result`): not the one the Exit Script the host met
+    /// its error in gave, at the top or in a subscript for its caller, and
+    /// no step runs after it.
+    #[test]
+    fn a_run_the_host_ends_has_no_result() {
+        let scripts = vec![
+            script(1, vec![exit_with("\"top\"")]),
+            script(2, vec![perform(3), exit_with("Get ( ScriptResult )")]),
+            script(3, vec![exit_with("\"sub\"")]),
+        ];
+        for (top, in_step) in [(1, 1), (2, 2)] {
+            let mut host = Host {
+                calc: NullHost::new(Locale::en_us(), Date::from_ymd(2026, 1, 2).unwrap()),
+                scripts: scripts.clone(),
+                in_step,
+                begun: 0,
+                asked: 0,
+            };
+            let mut runtime = Runtime::new(Options::new(crate::Client::Server));
+            runtime
+                .perform_script(&mut host, ScriptCall::new(0, top))
+                .expect("starts");
+            runtime.run(&mut host);
+            assert!(runtime.final_result().is_none(), "script {top}");
+            assert_eq!(runtime.final_error(), ErrorCode(802), "script {top}");
+            assert_eq!(host.begun, in_step, "script {top}: no step after it");
+        }
+    }
+}
