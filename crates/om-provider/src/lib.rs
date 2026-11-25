@@ -689,10 +689,17 @@ impl NativeProvider {
             .ok_or_else(|| DataError::new("No hosted file is open."))
     }
 
-    /// Whether the open file is one on this computer that cannot be
-    /// written ([`om_server::LocalHost::is_read_only`]).
+    /// Whether the open file cannot be written: its host said so at Open,
+    /// as FileMaker Server does for a file it hosts read only
+    /// (network-protocol.md 5.6.4), or it is one on this computer that
+    /// cannot be written ([`om_server::LocalHost::is_read_only`]).
     fn read_only(&self) -> bool {
-        self.session.is_some() && self.local.as_ref().is_some_and(|l| l.is_read_only())
+        self.session.as_ref().is_some_and(|session| {
+            session
+                .opened_file()
+                .is_some_and(|opened| opened.reply.read_only)
+                || self.local.as_ref().is_some_and(|l| l.is_read_only())
+        })
     }
 
     /// Give up this provider's lease of the local file's host: the host
@@ -706,7 +713,7 @@ impl NativeProvider {
         }
     }
 
-    /// Refuse a change to a read-only local file before anything is sent:
+    /// Refuse a change to a read-only file before anything is sent:
     /// FileMaker's error 6, "File is read-only".
     fn require_writable(&self) -> Result<(), DataError> {
         if self.read_only() {

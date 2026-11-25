@@ -1274,7 +1274,7 @@ end, network-protocol.md 4.2) (obs, `Call`):
 | 1 | `Call` argument 8: in PSOS with callback the client callback id (the key of the client's callback map) (only if the connection's protocol version is 9 or more) | u32 BE |
 | 2 | `Call` argument 7 (same condition; inf: the callback file-user id) | u32 BE |
 | 3 | script parameter | `Push(Text, max 1,000,000)` (styled text) or an empty unistring when there is no parameter |
-| 4 | script key | its bytes, then a 1-byte length of them (Pascal string pushed bytes-first). The bytes FileMaker Pro sends are a counted key, one byte of length and then the script's serial key (`HBSerialKey<7>`, file-metadata.md 1) (inf; observed for scripts 10 and 11 only, `01 0a` and `01 0b`, in OpenMaker Server's log, not in a packet capture: see the notes) |
+| 4 | script key | its bytes, then a 1-byte length of them (Pascal string pushed bytes-first). The bytes FileMaker Pro sends are a counted key, one byte of length and then the script's serial key (`HBSerialKey<7>`, file-metadata.md 1) (observed for scripts 10 and 11 only, `01 0a` and `01 0b`, in OpenMaker Server's log and in packet captures to FileMaker Server; inferred for other ids: see the notes) |
 | 5 | flags | u16 BE; bit 0 = asynchronous (do not wait) (DWARF `kAsyncFlag` = 1) |
 
 A parameter longer than 1,000,000 characters fails before sending with 513
@@ -1293,6 +1293,17 @@ Reply (header-less result stack, network-protocol.md 5.6.3), in push order
 
 The client treats a reply body of length 0-1 or over 1 MiB as error 3
 (obs).
+
+Captured (2026-11-25, FileMaker Pro 26.0.3 to FileMaker Server 26.0.3,
+the sessions of network-protocol.md 5.6.4): Perform Script on Server of
+scripts 10 and 11, once on a file hosted read only and once on the
+writable control. Each request is 17 bytes after its header: both ids 0,
+an empty parameter, the key `01 0a` or `01 0b` and its length `02`, flags
+0 (the client waits). FileMaker Server answered each with the 10-byte
+result of an empty extended error, an empty result and error 0, on both
+files alike (obs). Three of the four replies' back channels carried one
+notification with attention `0x2000` (write-path.md 6.3 and 4.3), on both
+files; what it tells the client is not established.
 
 ### 11.3 Server side
 
@@ -2592,10 +2603,10 @@ step):
 (op30, op105), `om-server` (`scripts`: the engine and its `ServerHost`),
 `om-session` (`perform_script_on_server`, `poll`) and `om-provider`
 (`DataProvider::perform_script_on_server` and friends); the record rules
-are the desktop client's, shared in `om-data` (`rules`). Nothing here was
-captured from FileMaker on the wire; every point below marked (inf) needs
-the capture listed at the end. The script key FileMaker Pro sends for two
-scripts was seen once, as OpenMaker Server logged the request it decoded
+are the desktop client's, shared in `om-data` (`rules`). Every point
+below marked (inf) needs the capture listed at the end. The script key
+FileMaker Pro sends for two scripts was seen as OpenMaker Server logged the
+request it decoded, and then in packet captures against FileMaker Server
 (below).
 
 Wire (11.2, 11.4)
@@ -2607,8 +2618,10 @@ Wire (11.2, 11.4)
   starter file with Perform Script on Server, sent the key bytes `01 0a` and
   `01 0b` to OpenMaker Server, as the server's log showed the request it
   decoded (the run of #673,
-  [#828](https://github.com/OpenMaker-Dev/openmaker/issues/828)); no packet
-  capture of the request exists. Inferred from those two: the key is a
+  [#828](https://github.com/OpenMaker-Dev/openmaker/issues/828)). Packet
+  captures of FileMaker Pro 26.0.3 calling scripts 10 and 11 on FileMaker
+  Server 26.0.3 show the same bytes, which FileMaker Server ran and
+  answered with error 0 (11.2). Inferred from those two: the key is a
   counted key, one byte of length and then the serial key the script
   catalog stores the script under (file-metadata.md 1), for every id; for
   ids of 128 and up, whose serial key is two bytes or more, that is

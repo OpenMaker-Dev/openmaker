@@ -1426,6 +1426,22 @@ records, a slot's file on disk for backups (`Slot::saved_file`) and for a close
 the same file (`hosting::hosted_as`). Whether a file is closing, and which
 slot serves it, are the hosting's (`Slot`), as before.
 
+**A file hosted read-only at Open.** The Open reply says that the file is
+hosted read-only, whatever holds it so (`Engine::read_only`), as FileMaker
+Server says it (re/network-protocol.md 5.6.4). FileMaker Pro then refuses
+each change itself and sends none (re/write-path.md 1.6), and OpenMaker's
+desktop client refuses them as for a read-only local file
+([desktop-client.md](desktop-client.md), "Hosts and their files"). Its
+second Open of such a file, which carries the first reply's session value,
+is answered with the first reply again, nonce included, and changes
+nothing in the session, as FileMaker Server answers it; any other Open of
+a file the session has open starts it anew (FileMaker Server's answer
+there is unmeasured). A file that becomes read-only after a client opened
+it is not announced to that client: the Open reply is the only place the
+protocol is known to say it, so the client's writes meet the refusals
+below. No lock is refused for it: FileMaker Server granted the one lock
+FileMaker Pro took on a file it hosts read-only.
+
 **Writes to a file hosted read-only.** No request that would change a
 file hosted read-only is answered with the reply of a change that
 happened. A write request is admitted once (`connection::writable`, which
@@ -1471,8 +1487,10 @@ that the script started). A script sets a global field all the same: its
 value is the session's, and needs no record, lock or save. On the
 desktop, Change Password answers an unwritten error and a window's saved
 found set is not kept, which only the log says. These answers are
-OpenMaker's choice; what FileMaker Server answers for a file it serves
-read-only, and what FileMaker Pro does with each, is unmeasured
+OpenMaker's choice; what FileMaker Server answers to such a write on a
+file it serves read-only is unmeasured, since FileMaker Pro, told at Open,
+sends none, and so is what FileMaker Pro does with each refusal on a file
+that became read-only after it opened it
 ([#790](https://github.com/OpenMaker-Dev/openmaker/issues/790)).
 
 Nor do op13, op14 and op70 answer done for what they did not store or

@@ -55,7 +55,7 @@ mod perform;
 mod query;
 mod security_catalog;
 pub use perform::{
-    build_open, build_request_notification, parse_login_reply, parse_open_reply,
+    build_open, build_request_notification, open_transaction, parse_login_reply, parse_open_reply,
     parse_open_request, parse_perform_reply, parse_request_notification, LoginReply, OpenReply,
     OpenRequest, PerformError, PerformReply, RequestNotification,
 };

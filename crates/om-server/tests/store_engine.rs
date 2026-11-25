@@ -15,10 +15,10 @@ mod server;
 
 use std::time::{Duration, Instant};
 
-use fixture::{TempFile, FILE, NAME, TABLE};
+use fixture::{TempFile, ACCOUNT, FILE, INTERNAL_CREATION, NAME, PASSWORD, TABLE};
 use om_hbam::slot::uint_segment;
 use om_hbam::{serial, OwnedNode};
-use om_protocol::{authoring, container, schema, write, Resume};
+use om_protocol::{authoring, container, schema, write, LoginEnvironment, Resume};
 use om_scripts::{Script, ScriptStep};
 use om_server::{FileStatus, Notice};
 use om_session::Session;
@@ -87,15 +87,56 @@ fn a_file_hosted_from_the_store_reads_as_from_the_file_engine() {
 /// be compared with a read-only file's. Its field catalog comes back too.
 fn read_only_tasks(tag: &str, scripts: &[Script]) -> (TempFile, OwnedNode) {
     let mut root = fixture::tree(scripts, true);
-    let t = uint_segment(TABLE);
-    let mut catalog = root.at(&[&t, &[3]]).unwrap().clone();
-    catalog.remove(&[&[5], &uint_segment(NAME)]);
-    catalog.put(
-        &[&[1], &[0xfd], &uint_segment(NAME)],
-        OwnedNode::leaf(Vec::new(), 0x1e1u32.to_be_bytes().to_vec()),
-    );
-    root.put(&[&t, &[3]], catalog.clone());
+    let catalog = fixture::defer_undoable_work(&mut root);
     (TempFile::from_tree(tag, &root), catalog)
+}
+
+/// network-protocol.md 5.6.4: FileMaker Server answers the Open of a file
+/// it hosts read only with the reply's read-only bool set, and FileMaker
+/// Pro then refuses every change itself. Each engine sets it for a file it
+/// holds read only, whatever the cause (field work no server can do on the
+/// file engine; every file on the store engine), and not for a writable
+/// file. FileMaker Pro's own sequence on such a file goes through on both:
+/// Open, at once Open again with the first reply's session value under
+/// transaction id 2, answered with the first reply byte for byte, Login
+/// with that reply's nonce, and a read.
+#[test]
+fn a_file_hosted_read_only_is_opened_as_filemaker_pro_opens_it() {
+    let (file, _) = read_only_tasks("store-engine-open", &[]);
+    let writable = TempFile::from_tree("store-engine-open-writable", &fixture::tree(&[], true));
+    let store = StoreDir::new("open");
+    let (by_file, _) = start_hosting(&[(FILE, &file)], |s| s);
+    let (by_store, _) = start_on_store(&[(FILE, &file)], &store.0, |s| s);
+    for port in [by_file, by_store] {
+        opened_as_filemaker_pro(port, true);
+    }
+    opened_as_filemaker_pro(server::start(&writable), false);
+}
+
+/// Open [`FILE`] on `port` as FileMaker Pro opened a file hosted read only
+/// (spec 5.6.4), its reply's read-only bool `read_only`, then log in and
+/// read its records.
+fn opened_as_filemaker_pro(port: u16, read_only: bool) {
+    let mut session = server::connected(port, "opened twice");
+    let first = session.open_file("127.0.0.1", FILE).unwrap();
+    assert_eq!(first.read_only, read_only, "{first:?}");
+    let again = session
+        .perform(&om_protocol::open_transaction(
+            "127.0.0.1",
+            FILE,
+            first.session_value,
+            2,
+        ))
+        .unwrap();
+    // The Login derives its key from the first reply's nonce: a server that
+    // answered the second Open with another refuses it.
+    let environment = LoginEnvironment::for_remote_file("127.0.0.1", FILE);
+    let login = session
+        .login(ACCOUNT, PASSWORD, INTERNAL_CREATION, &environment)
+        .unwrap();
+    assert!(login.is_success(), "{login:?}");
+    assert_eq!(again, first.to_result(), "the second Open's reply");
+    assert!(!records_of(&mut session, TABLE).is_empty());
 }
 
 /// One file hosted by both engines, a session logged in to each: the file

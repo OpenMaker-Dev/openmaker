@@ -191,6 +191,43 @@ fn hosted_read_only_root_offers_no_edits_and_preserves_the_owner_value() {
     assert_eq!(denied.code, Some(200), "{denied:?}");
 }
 
+/// A file whose host says at Open that it holds it read only
+/// (network-protocol.md 5.6.4; here for field work no server can do)
+/// offers no edits, and a change is refused with 6, "File is read-only",
+/// before anything is sent, as FileMaker Pro refuses each change itself.
+#[test]
+fn a_file_hosted_read_only_offers_no_edits_and_sends_no_change() {
+    let mut tree = fixture::tree(&[], true);
+    fixture::defer_undoable_work(&mut tree);
+    let host = related::Host::new("hosted-read-only", vec![(fixture::FILE, tree)]);
+    let mut provider = host.open(fixture::FILE);
+    let layout = fixture::LAYOUT as u32;
+    let page = provider.records(layout, 0, 1).unwrap();
+    let count = page.fields.iter().position(|f| f.name == "Count").unwrap();
+    let capabilities = provider.record_capabilities(layout).unwrap();
+    assert!(!capabilities.update, "{capabilities:?}");
+    assert!(!capabilities.can_edit(&page.fields[count]));
+    assert!(!capabilities.create && !capabilities.delete);
+    let refused = provider
+        .update_record(
+            layout,
+            page.records[0].id,
+            [("Count".into(), Some("99".into()))].into(),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code, Some(6), "{refused:?}");
+    let sent: Vec<u8> = host
+        .captures
+        .transactions()
+        .iter()
+        .filter_map(|(_, transaction)| transaction.first().copied())
+        .collect();
+    assert!(
+        !sent.iter().any(|op| [13, 14, 60, 70, 71].contains(op)),
+        "{sent:?}"
+    );
+}
+
 #[test]
 fn missing_account_reference_never_borrows_another_accounts_set() {
     let known = security::tree(&[], security::CUSTOM_KEY);

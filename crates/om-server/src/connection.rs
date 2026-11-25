@@ -363,6 +363,9 @@ struct OpenFile {
     hosted: Arc<Hosted>,
     /// The per-file nonce sent in the Open reply (the first Login nonce half).
     nonce: u32,
+    /// The session value sent in the Open reply, which FileMaker Pro sends
+    /// back when it opens the file again (`open`).
+    session_value: u64,
     /// The file's account this session logged in as, as it was at the
     /// Login. FileMaker keeps a client's privileges until it opens the file
     /// again, whatever changes its account or privilege set meanwhile
@@ -1658,7 +1661,6 @@ impl ScriptGate {
     }
 }
 
-/// op78 Open: hand out a fresh per-file nonce (spec 5.6.4).
 /// GetFileList (op77), as FileMaker Server answers FileMaker Pro's Hosts
 /// window (network-protocol.md 5.3): the files this server publishes
 /// ([`crate::Server::listing_file`], the same files its own listing
@@ -1778,6 +1780,9 @@ fn file_list_within(
 const FILE_LIST_ID: u8 = 0x01;
 const FILE_LIST_NAME: u8 = 0x10;
 
+/// op78 Open (spec 5.6.4): a fresh per-file nonce and session value, and
+/// whether the file is hosted read only; FileMaker Pro's second Open of a
+/// file hosted read only gets the first reply again.
 fn open(
     shared: &Shared,
     peer: &str,
@@ -1814,16 +1819,32 @@ fn open(
     // no longer served. A file that is closing, closed or opening is
     // refused as one the server does not host (OpenMaker's choice; what
     // FileMaker Server answers is unmeasured).
-    let nonce = u32::from_be_bytes(shared.random());
     let admitted = slot.admit(|hosted| {
+        // FileMaker Pro opens a file hosted read only a second time at
+        // once, before its Login, with the first reply's session value as
+        // its handle, and FileMaker Server answers it the first reply again,
+        // the nonce the Login uses included (spec 5.6.4): so does this
+        // server, for the same hosting of the file, and the file stays open
+        // as it is. Any other Open of a file the session has open starts it
+        // anew (what FileMaker Server does then is unmeasured).
+        if let Some(open) = session.open.get(&hosted.id).filter(|open| {
+            request.file_handle != 0
+                && request.file_handle == open.session_value
+                && Arc::ptr_eq(&open.hosted, hosted)
+        }) {
+            return (hosted.clone(), open.nonce, open.session_value, true);
+        }
         if session.open.contains_key(&hosted.id) {
             clear_file_session(shared, session, hosted.id);
         }
+        let nonce = u32::from_be_bytes(shared.random());
+        let session_value = u64::from_be_bytes(shared.random());
         session.open.insert(
             hosted.id,
             OpenFile {
                 hosted: hosted.clone(),
                 nonce,
+                session_value,
                 account: None,
                 close: CloseStep::None,
                 withheld: Default::default(),
@@ -1832,9 +1853,9 @@ fn open(
         shared
             .clients
             .opened(session.connection_id, hosted.id, &hosted.name);
-        hosted.clone()
+        (hosted.clone(), nonce, session_value, false)
     });
-    let hosted = match admitted {
+    let (hosted, nonce, session_value, again) = match admitted {
         Ok(hosted) => hosted,
         Err(status) => {
             info!(
@@ -1845,19 +1866,28 @@ fn open(
             return Ok(OpenReply::error_result(OPEN_FILE_MISSING, None));
         }
     };
-    info!("{peer}: opened {:?} as file {}", hosted.name, hosted.id);
+    let again = if again { " again" } else { "" };
+    info!(
+        "{peer}: opened {:?}{again} as file {}",
+        hosted.name, hosted.id
+    );
     Ok(OpenReply {
         status: 0,
         server_message: shared.identity.name.clone(),
         file_nonce: nonce,
-        flag: false,
+        // Whatever holds it read only, as FileMaker Server tells FileMaker
+        // Pro, which then refuses each change itself and sends none (spec
+        // 5.6.4). A file that becomes read only later is not announced:
+        // its writes are refused where they would be stored.
+        read_only: shared.engine.read_only(&hosted).is_some(),
         file_id: hosted.id,
-        // The values FileMaker Server 26 sends; their meaning is not established.
+        // The values FileMaker Server 26 sends; their meaning is not
+        // established. The flags word was 0x00810000 in later captures.
         file_aa4: 9,
         marker: 0,
         file_text: String::new(),
         flags: 0x00a1_0000,
-        session_value: u64::from_be_bytes(shared.random()),
+        session_value,
     }
     .to_result())
 }

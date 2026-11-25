@@ -236,6 +236,51 @@ preflight and immutable peer snapshots (#1198) are its own implementation
 choice, tested with synthetic files, not observed FileMaker behavior. No
 new wire operation or commit-order parity is inferred from that test.
 
+### 1.6 A file hosted read only: FileMaker Pro sends no change (observed)
+
+FileMaker Pro 26.0.3 against FileMaker Server 26.0.3 on 2026-11-25, the
+same steps in two sessions: on a copy of a small test file hosted read
+only, whose Open reply had the read-only bool set (network-protocol.md
+5.6.4), and on the same file writable, the control. What FileMaker Pro
+showed is from the run's notes
+([#829](https://github.com/OpenMaker-Dev/openmaker/issues/829), comment of
+2026-11-25); what it sent is from the captures, which are private.
+
+| The user's act | FileMaker Pro, file hosted read only | Sent to the server |
+|---|---|---|
+| Open | no message; New, Duplicate and Delete Record, Replace Field Contents, Import Records, the Script Workspace and Save Layout are disabled | Open twice (network-protocol.md 5.6.4), Login, the usual reads |
+| Click into a field | nothing | nothing |
+| First key | "This action cannot be performed because this file is not modifiable." | nothing (the control: op60 of the record, type 9) |
+| Leave the record | nothing | nothing |
+| Manage Database: create a field | the same alert; OK then asks to save, and Save shows the alert again | op60 of `[08]`, type 9, granted, and 40 s later its release (op62); none of the other requests of schema-path.md 2.1 |
+| Layout mode: drag an object | the same alert; Save Layout is disabled | nothing |
+| A script that sets a field and commits | the same alert | nothing |
+| Perform Script on Server, two scripts | no dialog | op30 each, answered with error 0 and an empty result, as on the writable file (script-runtime.md 11.2) |
+
+The whole session on the file hosted read only sent no op13, op14, op15,
+op61, op65, op70, op71, op73, op82, op87 or op103. Its op62s are the
+release of `[08]` and the close of the file (4.3). The control's session
+sent 16 op13, 5 op14, 2 op15, 24 op60, 13 op61, 5 op70, 3 op71 and 2
+op73.
+
+The lock on `[08]`: waiter `00000001 6b08xxxx`, timeout `ffffffff`, want
+mod count 0, path `[08]`, argument 0, the host's file id, a transaction
+id, type 9. FileMaker Server answered `00 00`, granted with no
+modification count (4.2), and the release, op62 of `[08]` type 9 with
+attention 0, with the header echo (4.3). So the refusal is FileMaker
+Pro's own: FileMaker Server grants the lock on a file it hosts read only.
+What it answers to a change sent anyway is unmeasured: FileMaker Pro sent
+none.
+
+**The control's commits.** Each of its five op70 came straight after an
+op14 (consecutive requests), and no op70 was sent without one: the run
+deleted no record, which commits with op70 alone (section 7). Its steps
+were marked by hand, so the per-step counts mislead: the record lock of
+the step that edited a field falls under that step, and the record's
+commit (op14, op70) under the step marked three later, whose first
+requests are that commit, op103 and an op71; the two steps between, one that changed nothing and one that
+restored the text, sent nothing. The totals are unaffected.
+
 ## 2. Record ids and the "temporary id 0x8000" (High)
 
 **There is no temporary record id when op71 works.** op71 asks the server for
@@ -1324,6 +1369,11 @@ subtree with the next `table-states` file.
     FileMaker Pro downloads after each code, whether its found sets change as
     6.5 reads from the code, how often FileMaker Server's push pass runs,
     and what FileMaker Server does with a client whose `Notify` calls fail.
+11. A file hosted read only (1.6): what FileMaker Server answers to a
+    change a client sends anyway, whether a file can become read only
+    while a client has it open, and what a server script's Set Field and
+    Commit Records report there
+    ([#790](https://github.com/OpenMaker-Dev/openmaker/issues/790)).
 
 **What the maintainer can do to close 3 and 4:** with the capture relay running
 (README, "Live observations"), open test project in FileMaker Pro on the Mac,

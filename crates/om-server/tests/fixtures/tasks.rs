@@ -1210,6 +1210,21 @@ pub const CHANGE_PASSWORD_STATUS: [u8; 9] = [0x08, 0x90, 0x00, 0x41, 0x80, 0x00,
 /// (`55 03`), layouts view only with their records modifiable (`de`),
 /// scripts executable and value lists view only (`d6`), other privileges
 /// `03 04`.
+/// Defer field work for Name, whose definition goes, which no server can
+/// do: OpenMaker Server's file engine hosts such a file read-only
+/// (`ReadOnlyCause::DeferredWork`). The table's field catalog as changed.
+pub fn defer_undoable_work(root: &mut OwnedNode) -> OwnedNode {
+    let t = uint_segment(TABLE);
+    let mut catalog = root.at(&[&t, &[3]]).unwrap().clone();
+    catalog.remove(&[&[5], &uint_segment(NAME)]);
+    catalog.put(
+        &[&[1], &[0xfd], &uint_segment(NAME)],
+        OwnedNode::leaf(Vec::new(), 0x1e1u32.to_be_bytes().to_vec()),
+    );
+    root.put(&[&t, &[3]], catalog.clone());
+    catalog
+}
+
 pub fn put_data_entry_only(root: &mut OwnedNode) {
     let set: &[u8] = &[2];
     root.put(

@@ -164,19 +164,7 @@ fn logged_in_reading(
     password: &str,
     read_status: bool,
 ) -> (Session, u32) {
-    let client = rcgen::generate_simple_self_signed(vec!["client".to_string()]).unwrap();
-    let mut session = Session::connect(
-        "127.0.0.1",
-        port,
-        client.cert.pem().as_bytes(),
-        client.signing_key.serialize_pem().as_bytes(),
-        "127.0.0.1",
-        &MachineInfo {
-            machine_name: name.into(),
-            ..MachineInfo::default()
-        },
-    )
-    .unwrap();
+    let mut session = connected(port, name);
     let open = session.open_file("127.0.0.1", file).unwrap();
     if read_status {
         assert_eq!(
@@ -201,6 +189,24 @@ fn logged_in_reading(
     );
     assert_eq!(session.perform(&register).unwrap(), [0, 0]);
     (session, open.file_id)
+}
+
+/// A session connected to the server on `port` as machine `name`, with
+/// no file open.
+pub fn connected(port: u16, name: &str) -> Session {
+    let client = rcgen::generate_simple_self_signed(vec!["client".to_string()]).unwrap();
+    Session::connect(
+        "127.0.0.1",
+        port,
+        client.cert.pem().as_bytes(),
+        client.signing_key.serialize_pem().as_bytes(),
+        "127.0.0.1",
+        &MachineInfo {
+            machine_name: name.into(),
+            ..MachineInfo::default()
+        },
+    )
+    .unwrap()
 }
 
 /// The records of `table` as a client downloads them: id -> (cell id,

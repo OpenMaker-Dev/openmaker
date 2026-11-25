@@ -19,23 +19,39 @@ use crate::{build_perform, Opcode};
 /// filepath string, filename string, host string, `u16 version(8)`. Target file
 /// and key in the header are 0 (the file is not open yet). Spec 5.5.
 pub fn build_open(request_id: u32, connection_id: u32, host: &str, filename: &str) -> Vec<u8> {
-    let mut builder = Builder::new(Opcode::OpenFile as u8);
     // The captured Open used transaction id 1 (id 0 is never seen on the wire).
-    builder.header_mut().transid_lo = 1;
-    let txn = builder
-        .push_u64(0) // file handle (assigned by the reply)
+    let txn = open_transaction(host, filename, 0, 1);
+    build_perform(request_id, connection_id, b"", &txn)
+}
+
+/// The Open (op78) transaction of [`build_open`], with `file_handle` and
+/// the header's `transaction_id`: a first Open sends handle 0 under id 1;
+/// FileMaker Pro opens a file hosted read only a second time at once, with
+/// the first reply's session value as the handle, under id 2
+/// (network-protocol.md 5.6.4).
+pub fn open_transaction(
+    host: &str,
+    filename: &str,
+    file_handle: u64,
+    transaction_id: u32,
+) -> Vec<u8> {
+    let mut builder = Builder::new(Opcode::OpenFile as u8);
+    builder.header_mut().transid_lo = transaction_id;
+    builder
+        .push_u64(file_handle)
         .push_string("") // file path (empty in observed traffic)
         .push_string(filename) // e.g. "test project.fmp12"
         .push_string(host) // dialed host
         .push_u16(8) // protocol/version constant
-        .finish();
-    build_perform(request_id, connection_id, b"", &txn)
+        .finish()
 }
 
 /// A parsed Open (op78) request (the server side).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenRequest {
-    /// The client's file handle (0 before the file is open).
+    /// The client's file handle: 0 before the file is open, the first
+    /// reply's session value when FileMaker Pro opens a file hosted read
+    /// only again (spec 5.6.4).
     pub file_handle: u64,
     pub file_path: String,
     /// The hosted file name, e.g. `test project.fmp12`.
@@ -203,8 +219,10 @@ pub struct OpenReply {
     pub server_message: String,
     /// `file[0x3ac]`: half of the login key-derivation nonce (spec 4.3 / 5.6.4).
     pub file_nonce: u32,
-    /// `file[0xc]` flag.
-    pub flag: bool,
+    /// `file[0xc]`: the file is open read only. FileMaker Server sets it
+    /// for a file it hosts read only, and FileMaker Pro then refuses every
+    /// change itself (spec 5.6.4).
+    pub read_only: bool,
     /// `file[0xaa0]`: the server's id for the opened file. Later transactions on
     /// the file carry it as the header `file_id`, and Login pushes it last.
     pub file_id: u32,
@@ -214,7 +232,8 @@ pub struct OpenReply {
     pub marker: u8,
     /// `file[0x170]` string (empty in observed traffic).
     pub file_text: String,
-    /// A flags word (`0x00a10000` in observed traffic).
+    /// A flags word: `0x00a10000` or `0x00810000` in observed traffic,
+    /// the difference not understood (spec 5.6.4).
     pub flags: u32,
     /// `file[0xc08]`: the session/incarnation value.
     pub session_value: u64,
@@ -231,7 +250,7 @@ impl OpenReply {
             .push_u8(self.marker)
             .push_u16(self.file_aa4)
             .push_u32(self.file_id)
-            .push_bool(self.flag)
+            .push_bool(self.read_only)
             .push_u32(self.file_nonce)
             .push_string(&self.server_message)
             .push_u16(self.status)
@@ -247,7 +266,7 @@ impl OpenReply {
             status,
             server_message: server_name.to_owned(),
             file_nonce: 0,
-            flag: true,
+            read_only: true,
             file_id: 0,
             file_aa4: 9,
             marker: 0,
@@ -297,7 +316,7 @@ fn open_fields(s: &mut ResultReader<'_>, status: u16) -> Result<OpenReply, Perfo
         status,
         server_message: s.pop_string()?,
         file_nonce: s.pop_u32()?,
-        flag: s.pop_bool()?,
+        read_only: s.pop_bool()?,
         file_id: s.pop_u32()?,
         file_aa4: s.pop_u16()?,
         marker: s.pop_u8()?,
@@ -421,7 +440,7 @@ mod tests {
             status: 0,
             server_message: "server".into(),
             file_nonce: 0xA1B2_C3D4,
-            flag: false,
+            read_only: false,
             file_id: 132,
             file_aa4: 9,
             marker: 0,
@@ -450,6 +469,54 @@ mod tests {
         assert_eq!(OpenReply::refused(1638, "server").to_result(), captured);
         // Its string is the server's name, not a message.
         assert_eq!(parse_open_reply(&captured), Err(PerformError::Server(1638)));
+    }
+
+    #[test]
+    fn open_replies_of_a_file_hosted_read_only_and_a_writable_one_match_capture() {
+        // FileMaker Server 26.0.3's replies to FileMaker Pro 26.0.3's first
+        // Open of a file hosted read only and of the writable control
+        // (spec 5.6.4), each 55 bytes. The server's name is replaced by a
+        // neutral name of the same length (SCSU, XOR 0x5A), and the nonce
+        // and session value by neutral values; the rest is as captured.
+        let server = "FileMaker Server Test";
+        let name: Vec<u8> = server.bytes().map(|b| b ^ 0x5a).collect();
+        let reply = |file: u8, read_only: u8| {
+            [
+                &[0x11, 0x11, 0x22, 0x22, 0x33, 0x33, 0x44, 0x44][..], // session value
+                &[0x00, 0x81, 0x00, 0x00],                             // flags
+                &[0x00, 0x00, 0x00, 0x00],                             // file_text, empty
+                &[0x00],                                               // marker
+                &[0x00, 0x09],                                         // file[0xaa4]
+                &[0x00, 0x00, 0x00, file],                             // file id
+                &[read_only],                                          // file[0xc]
+                &[0xa1, 0xb2, 0xc3, 0xd4],                             // nonce
+                &name,
+                &[0x00, 0x00, 0x00, 0x15], // the name's length
+                &[0x00, 0x00],             // status
+            ]
+            .concat()
+        };
+        for (captured, file, read_only) in [(reply(0x07, 1), 7, true), (reply(0x0c, 0), 12, false)]
+        {
+            assert_eq!(captured.len(), 55);
+            let open = parse_open_reply(&captured).unwrap();
+            assert_eq!(
+                open,
+                OpenReply {
+                    status: 0,
+                    server_message: server.into(),
+                    file_nonce: 0xa1b2_c3d4,
+                    read_only,
+                    file_id: file,
+                    file_aa4: 9,
+                    marker: 0,
+                    file_text: String::new(),
+                    flags: 0x0081_0000,
+                    session_value: 0x1111_2222_3333_4444,
+                }
+            );
+            assert_eq!(open.to_result(), captured);
+        }
     }
 
     #[test]
