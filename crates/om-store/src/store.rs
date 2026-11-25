@@ -56,7 +56,8 @@
 //! entry replayed, which is durable, is checkpointed and the replay goes
 //! on. What cannot be opened is reported,
 //! typed, with what the administrator can do ([`OpenError`]); the two
-//! explicit "accept the loss" calls ([`Store::accept_damage`],
+//! explicit "accept the loss" calls ([`Store::accept_damage`], which
+//! carries out what [`Store::plan_damage`] showed, and
 //! [`Store::give_up_unreadable_end`]) are the only way past a damaged log
 //! and an unreadable end.
 
@@ -823,14 +824,17 @@ impl Store {
 
     /// Opens a store whose log does not hold, whole, every entry through
     /// its marker, accepting the loss of what it no longer holds: the
-    /// administrator's command of section 6.12 on a single server, decided
-    /// from the checkpoint the store opens on by the rule of
-    /// [`Log::accept_damage`]: kept, the chain from that checkpoint through
-    /// every segment that still reads; given up, the rest, set aside in
-    /// `log/` and never removed; refused when the framing before the
-    /// checkpoint's entry is broken, or nothing would change. What was given
-    /// up is in [`Opened::gave_up`], or, when the open fails after deciding,
-    /// in [`OpenError::AfterGivingUp`].
+    /// administrator's command of section 6.12 on a single server. It
+    /// carries out `plan`, what [`Store::plan_damage`] showed: the plan is
+    /// made again from the checkpoint the store opens on, and the call
+    /// refuses with nothing in the log changed when the two differ
+    /// ([`LogError::PlanChanged`]; plan again). The rule is
+    /// [`Log::plan_damage`]'s: kept, the chain from that checkpoint as far
+    /// as it checks and the open's own walk goes; given up, the rest, set
+    /// aside in `log/` and never removed; refused when the walk cannot say
+    /// where the checkpoint's successor begins, or nothing would change.
+    /// What was given up is in [`Opened::gave_up`], or, when the open fails
+    /// after deciding, in [`OpenError::AfterGivingUp`].
     pub fn accept_damage(
         fs: Arc<dyn Fs>,
         config: Config,
