@@ -120,7 +120,7 @@ both appearances: `WINDOW_CLOSE` `#FF5F57`, `WINDOW_MINIMIZE` `#FEBC2E`,
 | `MENU_FILL` | Menus and popovers | `#F5F5F5` | `#2C2C2C` |
 | `SEARCH_FILL` | Search fields in bars | `#EEEEEE` | `#3A3A3A` |
 | `BAR_BG` | Button strips under lists, bars inside dialogs | `#ECECEC` | `#2B2B2B` |
-| `SIDEBAR_BG` | Sidebars: Hosts (measured) | `#E3E3E4` | `#2A2A2A` |
+| `SIDEBAR_BG` | Sidebars (measured in FileMaker's Hosts window) | `#E3E3E4` | `#2A2A2A` |
 | `CAPSULE_FILL` | Capsule buttons: Home's Create and Open (measured) | `#ECECEC` | `#3A3A3A` |
 | `NAV_SELECTION` | The selected page in Home's sidebar (measured in an inactive window) | `#E9E9EB` | `#353537` |
 | `LAYOUT_BAR_BG` | The layout bar (measured) | `#DEDEDF` | `#262626` |
@@ -260,15 +260,20 @@ popovers a smaller one (offset 4, blur 14, black at 18%).
   row is `SELECTED` with `ON_ACCENT` text, or `HOVER_FILL` when the list does
   not have keyboard focus.
 - **Sidebar.** `SIDEBAR_BG` with `CONTROL_RADIUS` rows; the selected row is
-  `SELECTED` with `ON_ACCENT` text, a hovered row `HOVER_FILL`. Hosts uses
-  it.
+  `SELECTED` with `ON_ACCENT` text, a hovered row `HOVER_FILL`.
 - **Home.** FileMaker's own launcher look, measured: white surfaces
   (`CONTENT_BG`) with `SEPARATOR` rules; `CAPSULE_FILL` capsule buttons
   with `TEXT` labels, `HOVER_FILL` when pressed; sidebar pages in `CAPTION`
   with `ICON` glyphs, the selected one on `NAV_SELECTION`; tabs in
   `CAPTION`, the selected one underlined 2 pt in `ACCENT`; and a frameless
   table of 50 pt rows, `TEXT` names and locations, a selected row
-  `SELECTED` with `ON_ACCENT` text.
+  `SELECTED` with `ON_ACCENT` text. Its Hosts section, OpenMaker's own,
+  follows the same rules: a `SMALL` semibold `CAPTION` caption with an
+  `ICON` plus on a `HOVER_FILL` square under the pointer, hosts as sidebar
+  pages, and host pages whose table has a Name column only, with an `ICON`
+  refresh button and a `SEARCH_FILL` Search Files field on the tabs' line.
+  An empty or failed list centers its `CAPTION` text over a capsule
+  button.
 - **Menu.** `MENU_FILL`, `HAIRLINE` outline and separators, `MENU_RADIUS`,
   22 pt rows; the hovered or open row is `HIGHLIGHT` with `ON_ACCENT` text.
 - **Messages.** Error text is `RED_INK`. An error banner is `RED_TINT` with

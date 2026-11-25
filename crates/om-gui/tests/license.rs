@@ -90,11 +90,11 @@ fn harness(storage: &Arc<Mutex<Storage>>, opened: &Arc<Mutex<Vec<Option<String>>
         })
 }
 
+/// Open Network File's fields, replacing what they hold from the last open.
 fn fill_connection(app: &mut common::App) {
-    common::fill(app, "Host", "example.test");
-    common::fill(app, "File", "Contacts.fmp12");
-    common::fill(app, "Account", "Admin");
-    common::fill(app, "Password", "test-password");
+    common::replace(app, "Path", "fmnet:/example.test/Contacts.fmp12");
+    common::replace(app, "Account Name", "Admin");
+    common::replace(app, "Password", "test-password");
 }
 
 fn open(app: &mut common::App) {
@@ -108,6 +108,7 @@ fn saved_license_survives_restart_and_removal_clears_future_connections() {
     let storage = Arc::new(Mutex::new(Storage::default()));
     let opened = Arc::new(Mutex::new(Vec::new()));
     let mut app = harness(&storage, &opened);
+    common::open_menu(&mut app, "OpenMaker");
     common::click(&mut app, "FileMaker License...");
     common::wait_for_label(&mut app, "No license is saved.");
     assert!(app
@@ -172,7 +173,7 @@ fn unavailable_storage_never_blocks_a_connection_and_clears_any_previous_key() {
     common::open_menu(&mut app, "File");
     common::click(&mut app, "Close");
     common::wait_until(&mut app, "closed", |app| !app.state().is_open());
-    common::click(&mut app, "Use saved license");
+    common::click(&mut app, "Use saved FileMaker license");
     open(&mut app);
     assert_eq!(opened.lock().unwrap().as_slice(), &[None, None]);
     // The dialog can read the store again once it answers.
@@ -203,6 +204,7 @@ fn failed_saves_and_removals_preserve_the_old_key_and_allow_retry() {
     }));
     let opened = Arc::new(Mutex::new(Vec::new()));
     let mut app = harness(&storage, &opened);
+    common::open_menu(&mut app, "OpenMaker");
     common::click(&mut app, "FileMaker License...");
     common::wait_for_label(
         &mut app,
@@ -246,6 +248,7 @@ fn render_license_dialog() {
     let storage = Arc::new(Mutex::new(Storage::default()));
     let opened = Arc::new(Mutex::new(Vec::new()));
     let mut app = harness(&storage, &opened);
+    common::open_menu(&mut app, "OpenMaker");
     common::click(&mut app, "FileMaker License...");
     common::wait_for_label(&mut app, "No license is saved.");
     common::fill(&mut app, "License key", "synthetic-key-for-mask-check");

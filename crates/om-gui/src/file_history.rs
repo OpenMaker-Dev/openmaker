@@ -1,7 +1,7 @@
 //! The desktop's Recent and Favorites lists (Home and File > Recent,
-//! File > Favorites) and their per-user settings. A saved file identifies a
-//! destination only: account names and passwords belong to the open flow
-//! and are never stored here.
+//! File > Favorites), Home's saved hosts, and their per-user settings. A
+//! saved file or host identifies a destination only: account names and
+//! passwords belong to the open flow and are never stored here.
 
 use std::path::{Path, PathBuf};
 
@@ -45,10 +45,7 @@ impl SavedFile {
     pub fn location(&self) -> String {
         match self {
             Self::Local { path } => path.display().to_string(),
-            Self::Hosted { host, port, .. } if *port == crate::connect::DEFAULT_PORT => {
-                host.clone()
-            }
-            Self::Hosted { host, port, .. } => format!("{host}:{port}"),
+            Self::Hosted { host, port, .. } => location(host, *port),
         }
     }
 
@@ -59,6 +56,55 @@ impl SavedFile {
             Self::Local { path } => path.to_str().is_some(),
             Self::Hosted { .. } => true,
         }
+    }
+}
+
+/// A host saved under Home's Hosts: where it is, and what the sidebar calls
+/// it. One address and port is one host; the address is compared in any
+/// case, as host names are.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SavedHost {
+    pub address: String,
+    pub port: u16,
+    /// Shown in the sidebar instead of the address; empty for none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+}
+
+impl SavedHost {
+    /// The host and port, as a listing is asked of them.
+    pub fn server(&self) -> (String, u16) {
+        (self.address.clone(), self.port)
+    }
+
+    /// Whether this is the host at `address` and `port`.
+    pub fn is(&self, address: &str, port: u16) -> bool {
+        self.port == port && self.address.eq_ignore_ascii_case(address)
+    }
+
+    /// Its address, with the port when it is not FileMaker's.
+    pub fn location(&self) -> String {
+        location(&self.address, self.port)
+    }
+
+    /// What the sidebar and the host's page call it.
+    pub fn label(&self) -> String {
+        match self.name.trim() {
+            "" => self.location(),
+            name => name.to_owned(),
+        }
+    }
+}
+
+/// `address`, with `:port` when the port is not FileMaker's.
+pub(crate) fn location(address: &str, port: u16) -> String {
+    if port == crate::connect::DEFAULT_PORT {
+        address.to_owned()
+    } else if address.contains(':') {
+        // An IPv6 address, bracketed so its colons are not the port's.
+        format!("[{address}]:{port}")
+    } else {
+        format!("{address}:{port}")
     }
 }
 
@@ -86,13 +132,32 @@ pub(crate) enum Change {
     Opened(SavedFile),
     SetFavorite(SavedFile, bool),
     RemoveRecent(SavedFile),
+    /// Save `host` under Hosts, in place of the host at `replacing` when it
+    /// edits one, and in place of any other with its address and port.
+    SaveHost {
+        replacing: Option<(String, u16)>,
+        host: SavedHost,
+    },
+    /// Save `host` under Hosts unless one at its address and port is
+    /// saved: Open Network File's Add to Hosts, which leaves a name
+    /// another instance gave it.
+    AddHost(SavedHost),
+    /// Forget the saved host at this address and port.
+    RemoveHost(String, u16),
 }
 
 impl Change {
     /// Whether the user asked for this change directly (a star, a Remove),
     /// rather than it following from an open or a tab switch.
     pub fn requested(&self) -> bool {
-        matches!(self, Self::SetFavorite(..) | Self::RemoveRecent(_))
+        matches!(
+            self,
+            Self::SetFavorite(..)
+                | Self::RemoveRecent(_)
+                | Self::SaveHost { .. }
+                | Self::AddHost(_)
+                | Self::RemoveHost(..)
+        )
     }
 }
 
@@ -102,6 +167,7 @@ pub(crate) struct History {
     tab: Tab,
     recent: Vec<SavedFile>,
     favorites: Vec<SavedFile>,
+    hosts: Vec<SavedHost>,
     /// Changes that could not be saved, in order: the next save replays
     /// them onto the file's history.
     #[serde(skip)]
@@ -120,6 +186,11 @@ impl History {
             Tab::Recent => &self.recent,
             Tab::Favorites => &self.favorites,
         }
+    }
+
+    /// The saved hosts, in the order they were added.
+    pub fn hosts(&self) -> &[SavedHost] {
+        &self.hosts
     }
 
     pub fn load(path: &Path) -> Result<Self, DataError> {
@@ -199,6 +270,42 @@ impl History {
             Change::SetFavorite(_, true) => {}
             Change::SetFavorite(file, false) => self.favorites.retain(|entry| *entry != file),
             Change::RemoveRecent(file) => self.recent.retain(|entry| *entry != file),
+            Change::SaveHost { replacing, host } => {
+                let replaced = replacing.and_then(|(address, port)| {
+                    self.hosts.iter().position(|saved| saved.is(&address, port))
+                });
+                let at = replaced.or_else(|| {
+                    self.hosts
+                        .iter()
+                        .position(|saved| saved.is(&host.address, host.port))
+                });
+                let Some(at) = at else {
+                    self.hosts.push(host);
+                    return;
+                };
+                // In the edited host's place; any other entry for the same
+                // address and port goes.
+                let (address, port) = host.server();
+                self.hosts[at] = host;
+                let mut index = 0;
+                self.hosts.retain(|saved| {
+                    let keep = index == at || !saved.is(&address, port);
+                    index += 1;
+                    keep
+                });
+            }
+            Change::AddHost(host) => {
+                if !self
+                    .hosts
+                    .iter()
+                    .any(|saved| saved.is(&host.address, host.port))
+                {
+                    self.hosts.push(host);
+                }
+            }
+            Change::RemoveHost(address, port) => {
+                self.hosts.retain(|saved| !saved.is(&address, port))
+            }
         }
     }
 }
@@ -268,6 +375,47 @@ mod tests {
         assert_eq!(restored.tab(), Tab::Favorites);
         assert_eq!(restored.files(Tab::Recent), std::slice::from_ref(&hosted));
         assert_eq!(restored.files(Tab::Favorites), &[hosted]);
+
+        // Saved hosts merge the same way. An edit keeps the host's place,
+        // and one that gives it another's address and port replaces both.
+        let host = |address: &str, port: u16, name: &str| SavedHost {
+            address: address.into(),
+            port,
+            name: name.into(),
+        };
+        let save = |history: &mut History, replacing: Option<&SavedHost>, saved: &SavedHost| {
+            let change = Change::SaveHost {
+                replacing: replacing.map(SavedHost::server),
+                host: saved.clone(),
+            };
+            history.change(Some(&path), change).unwrap();
+        };
+        let staging = host("staging.example.test", 5004, "");
+        let production = host("fms.example.test", 5003, "Production");
+        save(&mut first, None, &staging);
+        save(&mut second, None, &production);
+        let named = host("STAGING.example.test", 5004, "Staging");
+        save(&mut first, None, &named);
+        assert_eq!(first.hosts(), &[named.clone(), production.clone()]);
+        let moved = host("fms.example.test", 5003, "Moved");
+        save(&mut second, Some(&named), &moved);
+        second
+            .change(
+                Some(&path),
+                Change::RemoveHost("nowhere.example.test".into(), 5003),
+            )
+            .unwrap();
+        // Open Network File's Add to Hosts leaves a host saved meanwhile,
+        // and its name, as it was.
+        first
+            .change(
+                Some(&path),
+                Change::AddHost(host("fms.example.test", 5003, "")),
+            )
+            .unwrap();
+        let restored = History::load(&path).unwrap();
+        assert_eq!(restored.hosts(), &[moved]);
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("account"));
     }
 
     #[test]

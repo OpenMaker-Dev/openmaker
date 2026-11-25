@@ -229,18 +229,21 @@ impl Hosted {
         provider
     }
 
-    /// Fill in the Hosts dialog for this server.
+    /// Fill in Open Network File for this server's file.
     pub fn fill_form(&self, app: &mut App) {
         // These loopback servers do not require a client license. Tests must
         // never access the developer's real credential store.
-        if app.query_by_label("Use saved license").is_some() {
-            common::click(app, "Use saved license");
+        if app.query_by_label("Use saved FileMaker license").is_some() {
+            common::click(app, "Use saved FileMaker license");
         }
-        common::fill(app, "Host", &self.connection.host);
-        replace(app, "Port", &self.connection.port.to_string());
-        common::fill(app, "File", &self.connection.file);
-        common::fill(app, "Account", &self.connection.account);
-        common::fill(app, "Password", &self.connection.password);
+        let connection = &self.connection;
+        let path = format!(
+            "fmnet:/{}:{}/{}",
+            connection.host, connection.port, connection.file
+        );
+        common::replace(app, "Path", &path);
+        common::replace(app, "Account Name", &connection.account);
+        common::replace(app, "Password", &connection.password);
     }
 }
 

@@ -105,6 +105,11 @@ pub fn find_text_field<'a>(app: &'a App, label: &'a str) -> Option<egui_kittest:
         .or_else(|| app.query_by_role_and_label(Role::PasswordInput, label))
 }
 
+/// The text or password field labelled `label`, once it shows.
+pub fn wait_for_text_field(app: &mut App, label: &str) {
+    wait_until(app, label, |app| find_text_field(app, label).is_some());
+}
+
 /// The text or password field labelled `label`.
 pub fn text_field<'a>(app: &'a App, label: &'a str) -> egui_kittest::Node<'a> {
     app.query_by_role_and_label(Role::TextInput, label)
@@ -144,12 +149,35 @@ pub fn file_line(path: &std::path::Path) -> String {
     }
 }
 
-/// Type into the text field labelled `label`.
+/// Type into the text field labelled `label`, once it shows: a dialog's
+/// fields appear a frame or two after the click that opens it.
 pub fn fill(app: &mut App, label: &str, text: &str) {
+    if find_text_field(app, label).is_none() {
+        wait_for_text_field(app, label);
+    }
     text_field(app, label).focus();
     app.step();
     text_field(app, label).type_text(text);
     app.run_steps(2);
+}
+
+/// Replace the text of the field labelled `label`; with "", empty it.
+pub fn replace(app: &mut App, label: &str, text: &str) {
+    text_field(app, label).focus();
+    app.step();
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    if text.is_empty() {
+        app.key_press(egui::Key::Backspace);
+    } else {
+        app.event(egui::Event::Text(text.into()));
+    }
+    app.run_steps(2);
+}
+
+/// File > Open...: the chooser of a file on this computer.
+pub fn show_open_file(app: &mut App) {
+    open_menu(app, "File");
+    click(app, "Open...");
 }
 
 /// Commit the window's record as a user does without leaving it:
@@ -210,17 +238,14 @@ pub fn click(app: &mut App, label: &str) {
     app.run_steps(2);
 }
 
-/// From launch: fill in the server in the Hosts dialog, list its files, pick
-/// one, and open it, waiting until its first layout is on screen. That is
-/// "Contact Details", which Form view draws from the mock's geometry (parts
-/// and object boxes, no record values).
+/// From launch: open the mock's file in Open Network File, waiting until
+/// its first layout is on screen. That is "Contact Details", which Form view
+/// draws from the mock's geometry (parts and object boxes, no record
+/// values).
 pub fn connect_to_mock(app: &mut App) {
-    fill(app, "Host", "fms.example.com");
-    fill(app, "Account", "admin");
+    fill(app, "Path", "fmnet:/fms.example.com/Contacts.fmp12");
+    fill(app, "Account Name", "admin");
     fill(app, "Password", "secret");
-    click(app, "List files");
-    wait_for_label(app, "Contacts.fmp12");
-    click(app, "Contacts.fmp12");
     click(app, "Open");
     wait_for_label(app, "Body");
 }
