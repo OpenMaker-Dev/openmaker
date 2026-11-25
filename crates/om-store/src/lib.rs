@@ -6,5 +6,8 @@
 //! The crate knows paths, values, files, entries and pages. It knows nothing
 //! of records, catalogs or the protocol.
 
+pub mod apply;
+pub mod entry;
+pub mod model;
 pub mod page;
 pub mod tree;

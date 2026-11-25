@@ -1,0 +1,1193 @@
+//! The state in trees, and applying one entry to it
+//! (`docs/server-storage.md` sections 6.2, 6.3 and 7.3). The layout and
+//! the rules are `docs/server-storage-format.md` section 5.
+//!
+//! The state is a set of named trees ([`TreeId`]): the store's own tree,
+//! and one tree per file holding exactly the file's key tree. The caller
+//! keeps their roots by name ([`Roots`]; the page file keeps them in its
+//! checkpoints, outside any tree). The store's own tree holds the files'
+//! rows, the session table with each server's start count, the lock table,
+//! the tree format version and the last entry applied ([`StoreTree`] reads
+//! it). No item of any tree holds a page number, so a root hash depends on
+//! content alone.
+//!
+//! [`apply`] is a function of the state and the entry alone: it reads the
+//! state, decides everything the entry does or refuses it, and only then
+//! writes, every tree's changes through one unit of work of the page store,
+//! committed once. An entry that cannot be right is refused
+//! ([`Error::Refused`]) before anything is written, and every server
+//! refuses it the same way; any error leaves the store and the roots as
+//! they were.
+
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::ops::Bound;
+use std::sync::Arc;
+
+use crate::entry::{
+    entry_hash, Entry, FileEvent, Kind, LockEdit, Members, Op, Payload, PayloadError, ServerId,
+    Session, SessionEvent,
+};
+use crate::page::{
+    EntryPages, Fault, Hash, Page, PageNo, PageStore, Release, StoreError, FORMAT_VERSION,
+};
+use crate::tree::{self, Direction, Edit, Node, Root, Tree};
+
+/// The top-level segments of the store's own tree, and the segments under a
+/// file's row (format section 5.3). Each is one byte.
+mod keys {
+    pub const APPLIED: u8 = 0x01;
+    pub const FORMAT: u8 = 0x02;
+    pub const FILES: u8 = 0x03;
+    pub const NAMES: u8 = 0x04;
+    pub const SERVERS: u8 = 0x05;
+    pub const SESSIONS: u8 = 0x06;
+    pub const LOCKS: u8 = 0x07;
+
+    pub const FILE_NAME: u8 = 0x01;
+    pub const FILE_FLAGS: u8 = 0x02;
+    pub const FILE_PAGE0: u8 = 0x03;
+}
+
+type Path = Vec<Vec<u8>>;
+
+/// One of the state's trees.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TreeId {
+    /// The store's own tree.
+    Store,
+    /// A file's tree, by the file's id.
+    File(u64),
+}
+
+impl TreeId {
+    /// The tree's name, as the page file keeps it: `store`, or `file:`
+    /// followed by the file's id in decimal.
+    pub fn name(&self) -> Vec<u8> {
+        match self {
+            TreeId::Store => b"store".to_vec(),
+            TreeId::File(id) => format!("file:{id}").into_bytes(),
+        }
+    }
+
+    /// The tree a name names: only the names [`TreeId::name`] gives.
+    pub fn from_name(name: &[u8]) -> Option<TreeId> {
+        if name == b"store" {
+            return Some(TreeId::Store);
+        }
+        let digits = name.strip_prefix(b"file:")?;
+        let canonical =
+            !digits.is_empty() && digits.iter().all(u8::is_ascii_digit) && digits[0] != b'0';
+        let id: u64 = std::str::from_utf8(digits).ok()?.parse().ok()?;
+        canonical.then_some(TreeId::File(id))
+    }
+}
+
+/// The roots of the state's trees, which the caller keeps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Roots {
+    pub store: Root,
+    pub files: BTreeMap<u64, Root>,
+}
+
+impl Roots {
+    pub fn get(&self, tree: TreeId) -> Option<Root> {
+        match tree {
+            TreeId::Store => Some(self.store),
+            TreeId::File(id) => self.files.get(&id).copied(),
+        }
+    }
+
+    /// Every tree with its root, the store's first.
+    pub fn iter(&self) -> impl Iterator<Item = (TreeId, Root)> + '_ {
+        std::iter::once((TreeId::Store, self.store))
+            .chain(self.files.iter().map(|(id, r)| (TreeId::File(*id), *r)))
+    }
+}
+
+/// An entry's place in the log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Position {
+    pub index: u64,
+    pub term: u64,
+    pub hash: Hash,
+}
+
+impl Position {
+    /// Before entry 1.
+    pub const START: Position = Position {
+        index: 0,
+        term: 0,
+        hash: Hash([0; 32]),
+    };
+
+    fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(48);
+        out.extend_from_slice(&self.index.to_le_bytes());
+        out.extend_from_slice(&self.term.to_le_bytes());
+        out.extend_from_slice(&self.hash.0);
+        out
+    }
+
+    fn decode(bytes: &[u8]) -> Option<Position> {
+        (bytes.len() == 48).then(|| Position {
+            index: le64(&bytes[..8]),
+            term: le64(&bytes[8..16]),
+            hash: Hash(bytes[16..48].try_into().unwrap_or([0; 32])),
+        })
+    }
+}
+
+/// A file's row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileRow {
+    pub name: Vec<u8>,
+    pub flags: u32,
+    pub page0: Vec<u8>,
+}
+
+/// A server's row: its highest start count, and the highest connection
+/// number opened in that start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ServerRow {
+    pub start: u64,
+    pub connection: u64,
+}
+
+/// An open session's row: the last sequence number it completed (0 for
+/// none) and that operation's reply.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionRow {
+    pub seq: u64,
+    pub reply: Vec<u8>,
+}
+
+/// A lock held.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LockRow {
+    pub session: Session,
+    pub file: u64,
+    pub key: Vec<u8>,
+    pub user: Vec<u8>,
+    pub value: Vec<u8>,
+}
+
+/// Why an entry cannot be right. Every server refuses such an entry the same
+/// way, with nothing changed, and the caller stops the store: applying
+/// never guesses and never skips part of an entry. The checks run in the
+/// order of format section 5.6, and the first that fails is the one
+/// reported.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The entry is not the one after the last applied: repeated, skipped or
+    /// out of order.
+    NotNext { last: u64, index: u64 },
+    /// Its term is below the last applied entry's.
+    TermBehind { last: u64, term: u64 },
+    /// Its hash does not continue the last applied entry's.
+    Chain { expected: Hash, found: Hash },
+    /// The state's tree format version, or the one a `members` entry
+    /// names, is not one this build knows.
+    UnknownFormatVersion(u8),
+    /// A `members` entry names a lower tree format version than the
+    /// state's.
+    FormatVersionLowered { current: u8, version: u8 },
+    /// The payload does not decode: a kind or payload version this build
+    /// does not know, malformed bytes, something beyond a bound, or
+    /// something reserved ([`PayloadError::Unsupported`]).
+    Payload(PayloadError),
+    /// The entry's file field does not fit its kind.
+    FileField { kind: Kind, file: u64 },
+    /// The entry names a file the state does not have.
+    NoSuchFile(u64),
+    /// A file is added or renamed to a name a file has.
+    NameTaken(Vec<u8>),
+    /// A change names a session that is not open, for its operation or a
+    /// lock edit.
+    SessionNotOpen(Session),
+    /// A change's sequence number is not the one after its session's last.
+    Sequence {
+        session: Session,
+        last: u64,
+        seq: u64,
+    },
+    /// Lock edit number `edit` removes a lock that is not held.
+    NoSuchLock { edit: usize },
+}
+
+impl fmt::Display for Refusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Refusal::NotNext { last, index } => {
+                write!(f, "entry {index} is not the one after entry {last}")
+            }
+            Refusal::TermBehind { last, term } => {
+                write!(f, "term {term} is below the last entry's term {last}")
+            }
+            Refusal::Chain { expected, found } => {
+                write!(f, "hash {found} does not continue the chain ({expected})")
+            }
+            Refusal::UnknownFormatVersion(v) => {
+                write!(f, "tree format version {v} is not one this build knows")
+            }
+            Refusal::FormatVersionLowered { current, version } => {
+                write!(
+                    f,
+                    "tree format version {version} is below the state's {current}"
+                )
+            }
+            Refusal::Payload(e) => e.fmt(f),
+            Refusal::FileField { kind, file } => {
+                write!(f, "a {kind:?} entry cannot name file {file}")
+            }
+            Refusal::NoSuchFile(id) => write!(f, "file {id} does not exist"),
+            Refusal::NameTaken(name) => write!(f, "a file is named {}", name.escape_ascii()),
+            Refusal::SessionNotOpen(s) => write!(f, "session {s:?} is not open"),
+            Refusal::Sequence { session, last, seq } => write!(
+                f,
+                "sequence number {seq} does not follow {last} in session {session:?}"
+            ),
+            Refusal::NoSuchLock { edit } => write!(f, "lock edit {edit} removes a lock not held"),
+        }
+    }
+}
+
+/// Why an entry was not applied. Whatever the error, nothing changed: the
+/// roots given still name the state, and the page store is as it was.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    /// The entry cannot be right ([`Refusal`]).
+    Refused(Refusal),
+    /// A page could not be read or the page store failed: this server's own
+    /// trouble, not the entry's.
+    Tree(tree::Error),
+    /// The roots given hold no tree for a file the state has.
+    MissingRoot(TreeId),
+    /// The store's tree holds a row this build cannot read.
+    Malformed(&'static str),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::Refused(r) => write!(f, "entry refused: {r}"),
+            Error::Tree(e) => e.fmt(f),
+            Error::MissingRoot(t) => write!(f, "no root given for tree {t:?}"),
+            Error::Malformed(why) => write!(f, "the store's tree is malformed: {why}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl From<tree::Error> for Error {
+    fn from(e: tree::Error) -> Error {
+        Error::Tree(e)
+    }
+}
+
+impl From<StoreError> for Error {
+    fn from(e: StoreError) -> Error {
+        Error::Tree(tree::Error::Store(e))
+    }
+}
+
+impl From<Refusal> for Error {
+    fn from(r: Refusal) -> Error {
+        Error::Refused(r)
+    }
+}
+
+/// What the entry's unit of work did, as it passed through: numbers taken,
+/// pages written, and pages released as copied or dropped. A dropped page
+/// stands for everything under it, which is not counted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pages {
+    pub allocated: u64,
+    pub written: u64,
+    pub copied: u64,
+    pub dropped: u64,
+}
+
+/// What applying an entry did, for the caller to keep and publish.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Applied {
+    pub position: Position,
+    /// The entry's payload. A change's notices and reply, with its
+    /// operation's session and sequence number, are delivered when the
+    /// entry is published.
+    pub payload: Payload,
+    /// The trees whose root changed, made ones included, with their new
+    /// roots. The store's own tree is always among them.
+    pub changed: Vec<(TreeId, Root)>,
+    /// Trees made by the entry: a file added.
+    pub made: Vec<TreeId>,
+    /// Trees dropped by the entry, with the root they had: a file removed.
+    pub dropped: Vec<(TreeId, Root)>,
+    /// The session the entry opened. An opening that changed nothing is
+    /// `None`.
+    pub opened: Option<Session>,
+    /// The sessions the entry closed, with their locks.
+    pub closed: Vec<Session>,
+    pub pages: Pages,
+}
+
+impl Applied {
+    /// Brings `roots` to the state after the entry.
+    pub fn update(&self, roots: &mut Roots) {
+        for (tree, root) in &self.changed {
+            match tree {
+                TreeId::Store => roots.store = *root,
+                TreeId::File(id) => {
+                    roots.files.insert(*id, *root);
+                }
+            }
+        }
+        for (tree, _) in &self.dropped {
+            if let TreeId::File(id) = tree {
+                roots.files.remove(id);
+            }
+        }
+    }
+
+    /// The notices to deliver.
+    pub fn notices(&self) -> &[Vec<u8>] {
+        match &self.payload {
+            Payload::Change(c) => &c.notices,
+            _ => &[],
+        }
+    }
+
+    /// The operation the entry completed, and its reply.
+    pub fn reply(&self) -> Option<(&Op, &[u8])> {
+        match &self.payload {
+            Payload::Change(c) => c.op.as_ref().map(|op| (op, c.reply.as_slice())),
+            _ => None,
+        }
+    }
+}
+
+/// The state before entry 1: an empty store tree, written as of entry 0,
+/// and no file.
+pub fn create<S: PageStore + ?Sized>(store: &S) -> Result<Roots, Error> {
+    Ok(Roots {
+        store: tree::create(store, 0)?,
+        files: BTreeMap::new(),
+    })
+}
+
+fn le64(b: &[u8]) -> u64 {
+    let mut a = [0u8; 8];
+    a.copy_from_slice(&b[..8]);
+    u64::from_le_bytes(a)
+}
+
+fn be64(b: &[u8]) -> u64 {
+    let mut a = [0u8; 8];
+    a.copy_from_slice(&b[..8]);
+    u64::from_be_bytes(a)
+}
+
+fn seg(b: u8) -> Vec<u8> {
+    vec![b]
+}
+
+/// A session within its server: start count and connection, big-endian, so
+/// that a server's sessions sort by start, then connection.
+fn session_segment(s: &Session) -> Vec<u8> {
+    let mut out = Vec::with_capacity(16);
+    out.extend_from_slice(&s.start.to_be_bytes());
+    out.extend_from_slice(&s.connection.to_be_bytes());
+    out
+}
+
+/// A lock within a session's locks on a file: the key's length (2 bytes,
+/// big-endian), the key, then the user.
+fn lock_segment(key: &[u8], user: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + key.len() + user.len());
+    // `entry` holds a lock key to 16 KiB.
+    out.extend_from_slice(&(key.len() as u16).to_be_bytes());
+    out.extend_from_slice(key);
+    out.extend_from_slice(user);
+    out
+}
+
+fn file_path(id: u64) -> Path {
+    vec![seg(keys::FILES), id.to_be_bytes().to_vec()]
+}
+
+fn file_field(id: u64, field: u8) -> Path {
+    vec![seg(keys::FILES), id.to_be_bytes().to_vec(), seg(field)]
+}
+
+fn name_path(name: &[u8]) -> Path {
+    vec![seg(keys::NAMES), name.to_vec()]
+}
+
+fn server_path(server: &ServerId) -> Path {
+    vec![seg(keys::SERVERS), server.to_vec()]
+}
+
+fn server_sessions(server: &ServerId) -> Path {
+    vec![seg(keys::SESSIONS), server.to_vec()]
+}
+
+fn session_path(s: &Session) -> Path {
+    vec![seg(keys::SESSIONS), s.server.to_vec(), session_segment(s)]
+}
+
+fn server_locks(server: &ServerId) -> Path {
+    vec![seg(keys::LOCKS), server.to_vec()]
+}
+
+fn session_locks(s: &Session) -> Path {
+    vec![seg(keys::LOCKS), s.server.to_vec(), session_segment(s)]
+}
+
+fn file_locks(s: &Session, file: u64) -> Path {
+    let mut p = session_locks(s);
+    p.push(file.to_be_bytes().to_vec());
+    p
+}
+
+fn lock_path(s: &Session, file: u64, key: &[u8], user: &[u8]) -> Path {
+    let mut p = file_locks(s, file);
+    p.push(lock_segment(key, user));
+    p
+}
+
+fn server_value(row: ServerRow) -> Vec<u8> {
+    let mut out = row.start.to_le_bytes().to_vec();
+    out.extend_from_slice(&row.connection.to_le_bytes());
+    out
+}
+
+fn session_value(seq: u64, reply: &[u8]) -> Vec<u8> {
+    let mut out = seq.to_le_bytes().to_vec();
+    out.extend_from_slice(reply);
+    out
+}
+
+/// The store's own tree, read as the tables it holds. Every row is checked
+/// as it is read; one this build cannot read is [`Error::Malformed`].
+pub struct StoreTree<'s, S: ?Sized> {
+    tree: Tree<'s, S>,
+}
+
+impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
+    pub fn open(store: &'s S, root: Root) -> Result<Self, Error> {
+        Ok(StoreTree {
+            tree: Tree::open(store, root)?,
+        })
+    }
+
+    /// The value at `path`, if a value is there.
+    fn value(&self, path: &[Vec<u8>]) -> Result<Option<Vec<u8>>, Error> {
+        match self.tree.get(path)? {
+            None => Ok(None),
+            Some(Node::Value(v)) => Ok(Some(v)),
+            Some(_) => Err(Error::Malformed("a list where a row's value belongs")),
+        }
+    }
+
+    fn children(&self, path: &[Vec<u8>]) -> Result<Vec<(Vec<u8>, Node)>, Error> {
+        let mut out = Vec::new();
+        for child in self
+            .tree
+            .children(path, Bound::Unbounded, Direction::Forward)
+        {
+            out.push(child?);
+        }
+        Ok(out)
+    }
+
+    /// The last entry applied: [`Position::START`] before entry 1.
+    pub fn applied(&self) -> Result<Position, Error> {
+        match self.value(&[seg(keys::APPLIED)])? {
+            None => Ok(Position::START),
+            Some(v) => Position::decode(&v).ok_or(Error::Malformed("the last entry applied")),
+        }
+    }
+
+    /// The tree format version entries are applied with: 1 until a
+    /// `members` entry sets it.
+    pub fn format_version(&self) -> Result<u8, Error> {
+        match self.value(&[seg(keys::FORMAT)])? {
+            None => Ok(1),
+            Some(v) if v.len() == 1 => Ok(v[0]),
+            Some(_) => Err(Error::Malformed("the tree format version")),
+        }
+    }
+
+    pub fn file(&self, id: u64) -> Result<Option<FileRow>, Error> {
+        let Some(name) = self.value(&file_field(id, keys::FILE_NAME))? else {
+            return Ok(None);
+        };
+        let flags = self
+            .value(&file_field(id, keys::FILE_FLAGS))?
+            .filter(|f| f.len() == 4)
+            .ok_or(Error::Malformed("a file's flags"))?;
+        let page0 = self
+            .value(&file_field(id, keys::FILE_PAGE0))?
+            .ok_or(Error::Malformed("a file's page 0"))?;
+        Ok(Some(FileRow {
+            name,
+            flags: u32::from_le_bytes([flags[0], flags[1], flags[2], flags[3]]),
+            page0,
+        }))
+    }
+
+    /// Every file, by id.
+    pub fn files(&self) -> Result<Vec<(u64, FileRow)>, Error> {
+        let mut out = Vec::new();
+        for (segment, _) in self.children(&[seg(keys::FILES)])? {
+            if segment.len() != 8 {
+                return Err(Error::Malformed("a file's id"));
+            }
+            let id = be64(&segment);
+            let row = self
+                .file(id)?
+                .ok_or(Error::Malformed("a file without a name"))?;
+            out.push((id, row));
+        }
+        Ok(out)
+    }
+
+    /// The id of the file named `name`.
+    pub fn file_named(&self, name: &[u8]) -> Result<Option<u64>, Error> {
+        match self.value(&name_path(name))? {
+            None => Ok(None),
+            Some(v) if v.len() == 8 => Ok(Some(le64(&v))),
+            Some(_) => Err(Error::Malformed("a name's file")),
+        }
+    }
+
+    pub fn server(&self, server: &ServerId) -> Result<Option<ServerRow>, Error> {
+        match self.value(&server_path(server))? {
+            None => Ok(None),
+            Some(v) if v.len() == 16 => Ok(Some(ServerRow {
+                start: le64(&v[..8]),
+                connection: le64(&v[8..]),
+            })),
+            Some(_) => Err(Error::Malformed("a server's row")),
+        }
+    }
+
+    pub fn servers(&self) -> Result<Vec<(ServerId, ServerRow)>, Error> {
+        let mut out = Vec::new();
+        for (segment, _) in self.children(&[seg(keys::SERVERS)])? {
+            let server: ServerId = segment
+                .as_slice()
+                .try_into()
+                .map_err(|_| Error::Malformed("a server's id"))?;
+            let row = self
+                .server(&server)?
+                .ok_or(Error::Malformed("a server's row"))?;
+            out.push((server, row));
+        }
+        Ok(out)
+    }
+
+    pub fn session(&self, s: &Session) -> Result<Option<SessionRow>, Error> {
+        match self.value(&session_path(s))? {
+            None => Ok(None),
+            Some(v) if v.len() >= 8 => Ok(Some(SessionRow {
+                seq: le64(&v[..8]),
+                reply: v[8..].to_vec(),
+            })),
+            Some(_) => Err(Error::Malformed("a session's row")),
+        }
+    }
+
+    /// The open sessions of `server`.
+    fn sessions_of(&self, server: &ServerId) -> Result<Vec<(Session, SessionRow)>, Error> {
+        let mut out = Vec::new();
+        for (segment, node) in self.children(&server_sessions(server))? {
+            let (Node::Value(v), 16) = (node, segment.len()) else {
+                return Err(Error::Malformed("a session's row"));
+            };
+            if v.len() < 8 {
+                return Err(Error::Malformed("a session's row"));
+            }
+            let session = Session {
+                server: *server,
+                start: be64(&segment[..8]),
+                connection: be64(&segment[8..]),
+            };
+            out.push((
+                session,
+                SessionRow {
+                    seq: le64(&v[..8]),
+                    reply: v[8..].to_vec(),
+                },
+            ));
+        }
+        Ok(out)
+    }
+
+    /// Every open session.
+    pub fn sessions(&self) -> Result<Vec<(Session, SessionRow)>, Error> {
+        let mut out = Vec::new();
+        for (segment, _) in self.children(&[seg(keys::SESSIONS)])? {
+            let server: ServerId = segment
+                .as_slice()
+                .try_into()
+                .map_err(|_| Error::Malformed("a server's id"))?;
+            out.extend(self.sessions_of(&server)?);
+        }
+        Ok(out)
+    }
+
+    /// The value of a lock, if it is held.
+    pub fn lock(
+        &self,
+        session: &Session,
+        file: u64,
+        key: &[u8],
+        user: &[u8],
+    ) -> Result<Option<Vec<u8>>, Error> {
+        self.value(&lock_path(session, file, key, user))
+    }
+
+    /// Every lock held, in the order of the tree: by session, then file,
+    /// then key and user. The layer above builds its lookup by key from
+    /// this at startup.
+    pub fn locks(&self) -> Result<Vec<LockRow>, Error> {
+        let mut out = Vec::new();
+        for item in self.tree.walk(&[seg(keys::LOCKS)]) {
+            let item = item?;
+            let path = item.key.path();
+            if path.len() < 5 {
+                // The lists of servers, sessions and files.
+                if item.node != Node::List {
+                    return Err(Error::Malformed("a value above a lock"));
+                }
+                continue;
+            }
+            let (Node::Value(value), 5, 16, 16, 8) = (
+                item.node,
+                path.len(),
+                path[1].len(),
+                path[2].len(),
+                path[3].len(),
+            ) else {
+                return Err(Error::Malformed("a lock's row"));
+            };
+            let ku = &path[4];
+            let key_len = ku
+                .get(..2)
+                .map(|b| usize::from(u16::from_be_bytes([b[0], b[1]])))
+                .filter(|n| 2 + n <= ku.len())
+                .ok_or(Error::Malformed("a lock's key"))?;
+            out.push(LockRow {
+                session: Session {
+                    server: path[1].as_slice().try_into().unwrap_or_default(),
+                    start: be64(&path[2][..8]),
+                    connection: be64(&path[2][8..]),
+                },
+                file: be64(&path[3]),
+                key: ku[2..2 + key_len].to_vec(),
+                user: ku[2 + key_len..].to_vec(),
+                value,
+            });
+        }
+        Ok(out)
+    }
+
+    /// The sessions that hold anything under a file's locks: the paths of
+    /// their lists for the file.
+    fn file_lock_lists(&self, file: u64) -> Result<Vec<Path>, Error> {
+        let mut out = Vec::new();
+        for (server, _) in self.children(&[seg(keys::LOCKS)])? {
+            let above = vec![seg(keys::LOCKS), server];
+            for (session, _) in self.children(&above)? {
+                let mut path = above.clone();
+                path.push(session);
+                path.push(file.to_be_bytes().to_vec());
+                if self.tree.get(&path)?.is_some() {
+                    out.push(path);
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// What an entry does, decided before anything is written.
+struct Plan {
+    /// Edits of the store's tree, in order.
+    store: Vec<Edit>,
+    /// The file whose tree the change's edits go to, and its root.
+    file: Option<(u64, Root)>,
+    make: Option<u64>,
+    drop: Option<(u64, Root)>,
+    opened: Option<Session>,
+    closed: Vec<Session>,
+}
+
+/// Applies `entry` to the state `roots` name, through `store`, and says what
+/// changed ([`Applied::update`] brings `roots` along).
+///
+/// The entry must be the next one: its index one more than the last
+/// applied, its term not below that entry's, and its hash
+/// [`entry_hash`] over that entry's hash and its own bytes. Every check
+/// (format section 5.6) is made from reads of the state before anything is
+/// written; then each tree's changes go through one unit of work of
+/// `store`, committed once. An error at any point leaves the store as it
+/// was, and `roots` still names the state.
+pub fn apply<S: PageStore + ?Sized>(
+    store: &S,
+    roots: &Roots,
+    entry: &Entry<'_>,
+) -> Result<Applied, Error> {
+    let state = StoreTree::open(store, roots.store)?;
+    let last = state.applied()?;
+    if last.index.checked_add(1) != Some(entry.index) {
+        return Err(Refusal::NotNext {
+            last: last.index,
+            index: entry.index,
+        }
+        .into());
+    }
+    if entry.term < last.term {
+        return Err(Refusal::TermBehind {
+            last: last.term,
+            term: entry.term,
+        }
+        .into());
+    }
+    let expected = entry_hash(
+        &last.hash,
+        entry.index,
+        entry.term,
+        entry.kind,
+        entry.file,
+        entry.payload,
+    );
+    if expected != entry.hash {
+        return Err(Refusal::Chain {
+            expected,
+            found: entry.hash,
+        }
+        .into());
+    }
+    let version = state.format_version()?;
+    if version > FORMAT_VERSION {
+        return Err(Refusal::UnknownFormatVersion(version).into());
+    }
+    let payload = Payload::decode(entry.kind, entry.payload).map_err(Refusal::Payload)?;
+    let mut plan = plan(&state, roots, entry, &payload, version)?;
+    let position = Position {
+        index: entry.index,
+        term: entry.term,
+        hash: entry.hash,
+    };
+    plan.store
+        .push(Edit::leaf(vec![seg(keys::APPLIED)], position.encode()));
+    drop(state);
+
+    // Everything is decided; now the writes, all in one unit.
+    let joint = Joint::begin(store)?;
+    let mut changed = Vec::new();
+    let mut made = Vec::new();
+    let mut dropped = Vec::new();
+    if let Some(id) = plan.make {
+        let root = tree::create(&joint, entry.index)?;
+        changed.push((TreeId::File(id), root));
+        made.push(TreeId::File(id));
+    }
+    if let (Some((id, root)), Payload::Change(change)) = (plan.file, &payload) {
+        if !change.edits.is_empty() {
+            let new = tree::apply(&joint, root, entry.index, &change.edits)?;
+            if new != root {
+                changed.push((TreeId::File(id), new));
+            }
+        }
+    }
+    if let Some((id, root)) = plan.drop {
+        joint.release(root.page, &root.hash, Release::Dropped)?;
+        dropped.push((TreeId::File(id), root));
+    }
+    let new = tree::apply(&joint, roots.store, entry.index, &plan.store)?;
+    changed.push((TreeId::Store, new));
+    let pages = joint.commit()?;
+    Ok(Applied {
+        position,
+        payload,
+        changed,
+        made,
+        dropped,
+        opened: plan.opened,
+        closed: plan.closed,
+        pages,
+    })
+}
+
+/// Decides what the entry does, from reads of the state alone.
+fn plan<S: PageStore + ?Sized>(
+    state: &StoreTree<'_, S>,
+    roots: &Roots,
+    entry: &Entry<'_>,
+    payload: &Payload,
+    version: u8,
+) -> Result<Plan, Error> {
+    let mut plan = Plan {
+        store: Vec::new(),
+        file: None,
+        make: None,
+        drop: None,
+        opened: None,
+        closed: Vec::new(),
+    };
+    let kind = payload.kind();
+    let field = || {
+        Error::Refused(Refusal::FileField {
+            kind,
+            file: entry.file,
+        })
+    };
+    // The file the entry names, which must exist.
+    let existing = || -> Result<FileRow, Error> {
+        if entry.file == 0 {
+            return Err(field());
+        }
+        state
+            .file(entry.file)?
+            .ok_or(Error::Refused(Refusal::NoSuchFile(entry.file)))
+    };
+    let root_of = |id: u64| {
+        roots
+            .files
+            .get(&id)
+            .copied()
+            .ok_or(Error::MissingRoot(TreeId::File(id)))
+    };
+    match payload {
+        Payload::Change(change) => {
+            existing()?;
+            let file = entry.file;
+            let mut open = BTreeMap::new();
+            let mut is_open = |s: &Session| -> Result<bool, Error> {
+                if let Some(&o) = open.get(s) {
+                    return Ok(o);
+                }
+                let o = state.session(s)?.is_some();
+                open.insert(*s, o);
+                Ok(o)
+            };
+            if let Some(op) = &change.op {
+                let Some(row) = state.session(&op.session)? else {
+                    return Err(Refusal::SessionNotOpen(op.session).into());
+                };
+                if row.seq.checked_add(1) != Some(op.seq) {
+                    return Err(Refusal::Sequence {
+                        session: op.session,
+                        last: row.seq,
+                        seq: op.seq,
+                    }
+                    .into());
+                }
+            }
+            // Which locks this entry has set or removed so far, and the
+            // sessions whose locks on the file it released.
+            let mut held: BTreeMap<Path, bool> = BTreeMap::new();
+            let mut released: BTreeSet<Session> = BTreeSet::new();
+            for (i, edit) in change.locks.iter().enumerate() {
+                let session = edit.session();
+                if !is_open(session)? {
+                    return Err(Refusal::SessionNotOpen(*session).into());
+                }
+                match edit {
+                    LockEdit::Set {
+                        session,
+                        key,
+                        user,
+                        value,
+                    } => {
+                        let path = lock_path(session, file, key, user);
+                        held.insert(path.clone(), true);
+                        plan.store.push(Edit::leaf(path, value.clone()));
+                    }
+                    LockEdit::Remove { session, key, user } => {
+                        let path = lock_path(session, file, key, user);
+                        let is_held = match held.get(&path) {
+                            Some(&h) => h,
+                            None => {
+                                !released.contains(session)
+                                    && state.lock(session, file, key, user)?.is_some()
+                            }
+                        };
+                        if !is_held {
+                            return Err(Refusal::NoSuchLock { edit: i }.into());
+                        }
+                        held.insert(path.clone(), false);
+                        plan.store.push(Edit::delete(path));
+                    }
+                    LockEdit::ReleaseFile { session } => {
+                        let list = file_locks(session, file);
+                        held.retain(|p, _| !p.starts_with(&list));
+                        released.insert(*session);
+                        plan.store.push(Edit::delete(list));
+                    }
+                }
+            }
+            if let Some(op) = &change.op {
+                plan.store.push(Edit::leaf(
+                    session_path(&op.session),
+                    session_value(op.seq, &change.reply),
+                ));
+            }
+            plan.file = Some((file, root_of(file)?));
+        }
+        Payload::Session(event) => {
+            if entry.file != 0 {
+                return Err(field());
+            }
+            match event {
+                SessionEvent::Opened(s) => {
+                    // Only in the start the server recorded, and above every
+                    // connection opened in it: a delayed or repeated opening
+                    // changes nothing.
+                    let row = state.server(&s.server)?;
+                    if let Some(row) =
+                        row.filter(|r| r.start == s.start && s.connection > r.connection)
+                    {
+                        plan.store.push(Edit::leaf(
+                            server_path(&s.server),
+                            server_value(ServerRow {
+                                start: row.start,
+                                connection: s.connection,
+                            }),
+                        ));
+                        plan.store
+                            .push(Edit::leaf(session_path(s), session_value(0, &[])));
+                        plan.opened = Some(*s);
+                    }
+                }
+                SessionEvent::Closed(s) => {
+                    if state.session(s)?.is_some() {
+                        plan.store.push(Edit::delete(session_path(s)));
+                        plan.store.push(Edit::delete(session_locks(s)));
+                        plan.closed.push(*s);
+                    }
+                }
+                SessionEvent::Started { server, count } => {
+                    let recorded = state.server(server)?.map_or(0, |r| r.start);
+                    if *count > recorded {
+                        plan.closed = state
+                            .sessions_of(server)?
+                            .into_iter()
+                            .map(|(s, _)| s)
+                            .collect();
+                        plan.store.push(Edit::delete(server_sessions(server)));
+                        plan.store.push(Edit::delete(server_locks(server)));
+                        plan.store.push(Edit::leaf(
+                            server_path(server),
+                            server_value(ServerRow {
+                                start: *count,
+                                connection: 0,
+                            }),
+                        ));
+                    }
+                }
+            }
+        }
+        Payload::File(event) => match event {
+            FileEvent::Added { name, flags, page0 } => {
+                if entry.file != entry.index {
+                    return Err(field());
+                }
+                if state.file_named(name)?.is_some() {
+                    return Err(Refusal::NameTaken(name.clone()).into());
+                }
+                let id = entry.index;
+                plan.store
+                    .push(Edit::leaf(file_field(id, keys::FILE_NAME), name.clone()));
+                plan.store.push(Edit::leaf(
+                    file_field(id, keys::FILE_FLAGS),
+                    flags.to_le_bytes().to_vec(),
+                ));
+                plan.store
+                    .push(Edit::leaf(file_field(id, keys::FILE_PAGE0), page0.clone()));
+                plan.store
+                    .push(Edit::leaf(name_path(name), id.to_le_bytes().to_vec()));
+                plan.make = Some(id);
+            }
+            FileEvent::Removed => {
+                let row = existing()?;
+                let id = entry.file;
+                plan.store.push(Edit::delete(file_path(id)));
+                plan.store.push(Edit::delete(name_path(&row.name)));
+                for list in state.file_lock_lists(id)? {
+                    plan.store.push(Edit::delete(list));
+                }
+                plan.drop = Some((id, root_of(id)?));
+            }
+            FileEvent::Renamed { name } => {
+                let row = existing()?;
+                if state.file_named(name)?.is_some() {
+                    return Err(Refusal::NameTaken(name.clone()).into());
+                }
+                let id = entry.file;
+                plan.store
+                    .push(Edit::leaf(file_field(id, keys::FILE_NAME), name.clone()));
+                plan.store.push(Edit::delete(name_path(&row.name)));
+                plan.store
+                    .push(Edit::leaf(name_path(name), id.to_le_bytes().to_vec()));
+            }
+        },
+        Payload::Members(Members::FormatVersion(v)) => {
+            if entry.file != 0 {
+                return Err(field());
+            }
+            if *v > FORMAT_VERSION {
+                return Err(Refusal::UnknownFormatVersion(*v).into());
+            }
+            if *v < version {
+                return Err(Refusal::FormatVersionLowered {
+                    current: version,
+                    version: *v,
+                }
+                .into());
+            }
+            plan.store
+                .push(Edit::leaf(vec![seg(keys::FORMAT)], vec![*v]));
+        }
+        Payload::Mark(_) => {
+            if entry.file != 0 {
+                existing()?;
+            }
+        }
+        Payload::Empty => {
+            if entry.file != 0 {
+                return Err(field());
+            }
+        }
+    }
+    Ok(plan)
+}
+
+/// One unit of work of the page store for a whole entry, shared by every
+/// tree the entry changes. Each tree's [`EntryPages`] ([`Part`]) passes its
+/// calls through to the one unit, and its commit does nothing: the unit is
+/// committed once, after the last tree, so that the entry takes effect
+/// whole or not at all. Dropped without that commit, it has had no effect.
+///
+/// Each tree is applied through it at most once per entry, so no tree reads
+/// a page the unit has written and not committed.
+struct Joint<'s, S: PageStore + ?Sized + 's> {
+    store: &'s S,
+    unit: RefCell<S::Entry<'s>>,
+    pages: Cell<Pages>,
+}
+
+impl<'s, S: PageStore + ?Sized + 's> Joint<'s, S> {
+    fn begin(store: &'s S) -> Result<Self, StoreError> {
+        Ok(Joint {
+            store,
+            unit: RefCell::new(store.begin()?),
+            pages: Cell::new(Pages::default()),
+        })
+    }
+
+    fn with<T>(
+        &self,
+        f: impl FnOnce(&mut S::Entry<'s>) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        // Nothing the unit does calls back here, so the cell is free.
+        let mut unit = self
+            .unit
+            .try_borrow_mut()
+            .map_err(|_| StoreError::Failed("the entry's unit is in use".into()))?;
+        f(&mut unit)
+    }
+
+    fn count(&self, f: impl FnOnce(&mut Pages)) {
+        let mut pages = self.pages.get();
+        f(&mut pages);
+        self.pages.set(pages);
+    }
+
+    fn release(&self, number: PageNo, hash: &Hash, how: Release) -> Result<(), StoreError> {
+        self.with(|u| u.release(number, hash, how))?;
+        self.count(|p| match how {
+            Release::Copied => p.copied += 1,
+            Release::Dropped => p.dropped += 1,
+        });
+        Ok(())
+    }
+
+    fn commit(self) -> Result<Pages, StoreError> {
+        let pages = self.pages.get();
+        self.unit.into_inner().commit()?;
+        Ok(pages)
+    }
+}
+
+impl<'s, S: PageStore + ?Sized + 's> PageStore for Joint<'s, S> {
+    type Entry<'a>
+        = Part<'a, 's, S>
+    where
+        Self: 'a;
+
+    fn read(&self, number: PageNo, hash: &Hash) -> Result<Arc<Page>, Fault> {
+        self.store.read(number, hash)
+    }
+
+    fn begin(&self) -> Result<Part<'_, 's, S>, StoreError> {
+        Ok(Part { joint: self })
+    }
+}
+
+/// One tree's view of the entry's unit.
+struct Part<'a, 's, S: PageStore + ?Sized + 's> {
+    joint: &'a Joint<'s, S>,
+}
+
+impl<'s, S: PageStore + ?Sized + 's> EntryPages for Part<'_, 's, S> {
+    fn allocate(&mut self) -> Result<PageNo, StoreError> {
+        let number = self.joint.with(|u| u.allocate())?;
+        self.joint.count(|p| p.allocated += 1);
+        Ok(number)
+    }
+
+    fn write(&mut self, page: Arc<Page>) -> Result<(), StoreError> {
+        self.joint.with(|u| u.write(page))?;
+        self.joint.count(|p| p.written += 1);
+        Ok(())
+    }
+
+    fn release(&mut self, number: PageNo, hash: &Hash, how: Release) -> Result<(), StoreError> {
+        self.joint.release(number, hash, how)
+    }
+
+    /// The tree's part is done; the entry's unit commits once for all of
+    /// them ([`Joint::commit`]).
+    fn commit(self) -> Result<(), StoreError> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tree_names_round_trip() {
+        for tree in [TreeId::Store, TreeId::File(1), TreeId::File(u64::MAX)] {
+            assert_eq!(TreeId::from_name(&tree.name()), Some(tree));
+        }
+        for name in [
+            &b"file:"[..],
+            b"file:01",
+            b"file:0",
+            b"file:+1",
+            b"file:18446744073709551616",
+            b"stor",
+            b"file:1 ",
+        ] {
+            assert_eq!(TreeId::from_name(name), None, "{}", name.escape_ascii());
+        }
+    }
+}
