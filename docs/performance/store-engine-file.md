@@ -63,6 +63,8 @@ the shares below are of self time by symbol, sorted into the categories under
   store is the checks alone, without a disk or a page cache.
 - **Decode** (`decode`): what import does before it writes, the stream read and
   each node's checks, with nothing applied.
+- **Listing** (at the end of `reads`, and in `file-reads`): the table's 200,000
+  records listed through `View::children`, a page of children at a time.
 - **Export** (`export`): the pinned tree written as an `.fmp12` and read back.
 - **The file engine** (`file-reads`): the file loaded whole, then the same reads.
 - **Timings** are the median of three runs. The host had other work on it
@@ -130,5 +132,116 @@ What that says:
 
 ## Changes
 
-Each change was measured with the same method before and after; its row gives the
-medians.
+Each change was measured before and after with the same steps. From the second
+on, the binaries before and after ran interleaved, one process at a time, so that
+the host's load moved both alike: five rounds, ten for changes 4 and 5. A walk's
+"warm" is the mean of a run's three warm passes (`OM_PAGED_PASSES=4`, 1 GiB
+cache). The rows give medians.
+
+| Change | Measure | Before | After |
+|---|---|---:|---:|
+| 1. An append path in `tree::apply` | Import | 9.53 s | 4.31 s |
+| 2. A walk's keys lent from their pages | Walk, first pass / warm | 998 / 402 ms | 955 / 391 ms |
+| 3. Import's checks on borrowed parts | Decode and checks / import | 838 ms / 4.24 s | 346 ms / 3.54 s |
+| 4. The far bound compared once per leaf | Walk, first pass / warm | 988 / 401 ms | 932 / 358 ms |
+| 5. Each walked item read once, its leaf lent | Walk, first pass / warm | 916 / 354 ms | 860 / 308 ms |
+| 6. The leaf's edge compared on its second step | Walk, first pass / warm; listing | 853 / 307 ms; 319 ms | 873 / 313 ms; 310 ms |
+
+1. **The append path.** A put whose key is past the tree's greatest key finds its
+   ancestors at or below that key present (they are that key or its ancestors),
+   those above it missing, and nothing at or under its own key. It sets the
+   missing ancestors as lists, then the node: the primitives the general put
+   applies, in the same order, without the lookups that decide them (an import's
+   keys arrive in that order). The tree is the same: a seeded test compares the
+   root hashes of both paths over random ordered inputs with disorder mixed in
+   (swaps, duplicates, deletes, an ancestor put again), in every split into
+   batches of short sequences and random splits of long ones, on `MemStore` and on
+   the page file; the import's tree here is the same 8,490 pages. Measured with
+   the steps of "Reproduce", three runs each, before interleaving was used; the
+   reads did not change.
+2. **Lent keys.** `Cursor::next_lent` lends a key from its page when the page
+   holds it whole, and the walk copies it into one of two buffers it swaps, rather
+   than allocating every key. The last segment is still copied: the step owns it.
+3. **Borrowed checks.** `tree::check_put` and `writer::unwritable_key` make the
+   checks of `check_edits` and `unwritable` on borrowed parts, so import no longer
+   copies each node's path and value to check them. A test compares
+   `unwritable_key` with `unwritable` on the writer's refusal cases.
+4. **The far bound per leaf.** A leaf's keys are in order, so when its last item
+   (first, going backward) is within the cursor's far bound, every item of it is;
+   each item is compared alone only in a leaf whose edge is not within, or whose
+   comparison failed.
+5. **One read of each item.** The cursor parsed each item's header three times
+   (for the bound, the node and the key) and cloned its leaf's `Arc` for every
+   item; it now parses it once and lends the leaf.
+6. **The edge on the second step.** Change 4 made a cursor that takes one step
+   (`Children` makes one per child) compare two items; it compares one again. No
+   difference was measured on the walk, the listing or the export (2.28, 2.23 and
+   2.26 s interleaved, for the binaries of changes 1, 5 and 6).
+
+## After (all six changes)
+
+| | Before | After | File engine |
+|---|---:|---:|---:|
+| Walk of the table, first pass, 64 MiB cache | 893 ms | 833 ms | 72 ms |
+| Walk, again, 64 MiB cache | 831 ms | 773 ms | |
+| Walk, first pass, 1 GiB cache | 959 ms | 850 ms | |
+| Walk, warm (1 GiB cache, all in it) | 393 ms | 309 ms | |
+| Walk in memory, checking pages once / trusting | 911 / 443 ms | 811 / 322 ms | |
+| 1,000 records, 64 MiB cache | 36 ms | 36 ms | 3.4 ms |
+| 1,000 records, warm | 5.8 ms | 5.7 ms | |
+| 200,000 records listed, 64 MiB cache / warm | | 737 / 311 ms | 6 ms |
+| Import | 9.5 s (decode and checks 0.85 s) | 3.5 s (0.39 s) | 1.4 s (load) |
+| Export | 2.28 s | 2.26 s | |
+
+The reads on the page file (the walk, the records and the listing) ran
+interleaved with the binary of change 1, whose reads are those before the
+changes, five rounds, as did the export. The rest is three runs each as in
+"Before", at change 5: change 6 changed neither import nor, measurably, the reads.
+A later run of every step at the final code had the host loaded by other work
+(load averages 5 to 7, the file engine's load 1.65 s against 1.37 s) and is not
+used.
+
+Profiles (share of self time), as before:
+
+| Category | Reads, 1 cold and 7 warm passes, before / after | Import, before / after |
+|---|---:|---:|
+| Allocation | 36.7% / 41.5% | 22.6% / 31.0% |
+| Tree descents and compares | 30.3% / 19.8% | 53.0% / 24.0% |
+| The view | 5.4% / 6.2% | |
+| Hashing | 8.4% / 11.1% | 6.9% / 16.9% |
+| Key decoding | 7.1% / 7.0% | 0.1% / 0.0% |
+| Kernel | 5.5% / 6.1% | 4.6% / 9.7% |
+| Copies | 2.4% / 2.7% | 1.5% / 2.6% |
+| Cache and page store | 1.3% / 2.1% | 3.9% / 0.2% |
+| Page checks and parsing | 0.6% / 0.7% | 0.4% / 2.1% |
+| Import's checks | | 2.5% / 3.0% |
+| Stream reader | | 1.0% / 2.2% |
+
+`Cursor::next_lent`, whose symbol names the view's closure, is counted with the
+tree. The import's hashing includes the measurement's own check of the tree
+after it, which hashes every page once more.
+
+## What is left, and why it stays
+
+- **A warm walk is four times the file engine's**, and 41% of it is allocation:
+  each node's value and last segment, allocated because the view's answers are
+  owned (a step can borrow only from the view, and a page in the cache can be
+  evicted while the step lives) and freed by the reader. Making them lent would
+  change the `View` contract that every engine and reader shares. Reading each
+  item from its leaf takes 20%, finding each node's depth and last segment in its
+  key 7%, and the view's own steps 6%.
+- **A cursor kept between a walk's pages** would save the descent the view makes
+  for each page of 256 nodes: about 1% of a warm walk's samples, so it was not
+  made.
+- **Cold reads** are the hash on a cache miss, which stays (docs/server-storage.md
+  6.4): with a cache smaller than the tree every pass is cold, and scattered
+  reads are cold reads (36 ms for 1,000 records with 64 MiB).
+- **Import** is now the tree's writing: each node's path and value copied from
+  the stream into an owned edit, its key encoded and its item built (allocation,
+  31%), finding the tree's right edge and splitting pages (24%), and hashing every
+  page written. Going further would mean edits that borrow from the stream through
+  `tree::apply`, a change to `om-store`'s `Edit`.
+- **Listing a node's children** costs a descent from the root for every child:
+  311 ms for 200,000 records against the file engine's 6 ms. It was not part of
+  this measurement at first and is a change to `om-store`'s `Children`:
+  [#767](https://github.com/OpenMaker-Dev/openmaker/issues/767).
