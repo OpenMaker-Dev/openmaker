@@ -735,11 +735,11 @@ pub enum Reply {
     ReleaseLock,
     /// op65 is answered with the request's own header (write-path.md 4.4).
     ReleaseLocks,
-    /// Whether the subtree changed the file (not where the file held it
-    /// already, or cannot hold it; op13's reply is the same either way,
-    /// schema-path.md 3.3); or why it was not stored: the storage error of
-    /// a save that failed, or the refusal of a file hosted read-only, which
-    /// op13 answers as a save that failed (#737).
+    /// The subtree stored (`true`; the engine's refusal of an operation it
+    /// does not hold aside, never `false`); or why it was not: the storage
+    /// error of a save that failed, or the refusal of a file hosted
+    /// read-only or of a destination the file cannot hold, which op13
+    /// answers as a save that failed (#737).
     UploadToCatalog(Result<bool, StorageError>),
     /// op86's reply is what its program answered when it ran; this is
     /// only whether its writes were refused because the file became

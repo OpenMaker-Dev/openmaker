@@ -10,10 +10,11 @@ use super::{ChangeSchema, Environment, Transaction, UpdateTable, UploadToCatalog
 /// The refusal of a write to a file hosted read-only.
 const READ_ONLY: &str = "the file is hosted read-only";
 
-/// op13: whether the subtree changed the file (`false`: it held it
-/// already). On a file hosted read-only, decided here under the write lock,
-/// nothing is stored and the upload is refused, which the request's reply
-/// must not take for a write that had nothing to do (#737).
+/// op13: the subtree stored. Refused, with nothing stored, on a file hosted
+/// read-only, decided here under the write lock, and where the file cannot
+/// hold it (what the file writer cannot write there, or a change to a
+/// value the upload does not name, `om_hbam::writer::put_refusals`): the
+/// request's reply must not say done for either (#737).
 pub(super) fn upload_to_catalog(
     op: UploadToCatalog,
     tx: &mut Transaction<'_>,
@@ -21,7 +22,10 @@ pub(super) fn upload_to_catalog(
     if tx.is_read_only() {
         return Err(READ_ONLY);
     }
-    Ok(tx.put_subtree(&op.path, op.node))
+    match tx.put_subtree(&op.path, op.node) {
+        true => Ok(true),
+        false => Err("the file cannot hold it there"),
+    }
 }
 
 /// op86's writes, after the program ran: refused, with nothing stored, when
