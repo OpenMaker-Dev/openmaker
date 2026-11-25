@@ -4176,6 +4176,21 @@ fn forge_newest_table(pf: &PageFile, edit: impl FnOnce(&mut Vec<(TreeName, Root)
         let inner = pf.lock();
         (inner.newest.sb, inner.newest.pair)
     };
+    let root = forge_table(pf, sb, edit);
+    let copy = superblock::encode(&Superblock { meta: root, ..sb });
+    for s in pair_slots(pair) {
+        pf.file.write_at((s * SLOT) as u64, &copy).unwrap();
+    }
+    pf.file.flush().unwrap();
+}
+
+/// Rewrites the tree table in the meta stream of checkpoint `sb`, into the
+/// same pages; returns the stream's new first page.
+fn forge_table(
+    pf: &PageFile,
+    sb: Superblock,
+    edit: impl FnOnce(&mut Vec<(TreeName, Root)>),
+) -> (PageNo, Hash) {
     let (stream, pages) = pf.read_meta(sb.meta).unwrap();
     let mut meta = Meta::decode(&stream).unwrap();
     edit(&mut meta.trees);
@@ -4193,11 +4208,8 @@ fn forge_newest_table(pf: &PageFile, edit: impl FnOnce(&mut Vec<(TreeName, Root)
             .write_at(page.number() * PAGE, page.bytes())
             .unwrap();
     }
-    let copy = superblock::encode(&Superblock { meta: root, ..sb });
-    for s in pair_slots(pair) {
-        pf.file.write_at((s * SLOT) as u64, &copy).unwrap();
-    }
     pf.file.flush().unwrap();
+    root
 }
 
 /// Review of #744, round 2 (P0): a checkpoint whose table names one root
@@ -4359,4 +4371,30 @@ fn a_checkpoint_whose_meta_page_is_dying_is_refused() {
     }
     assert_eq!(pf.next_checkpoint(), next);
     assert!(!pf.failed());
+}
+
+/// Review of #744, round 3: a pin of an older checkpoint applies to its
+/// table the rule open applies to the newest: one root page named by two
+/// trees, which the map does not record as shared, refuses the pin, as a
+/// stream that breaks a rule of the reader's.
+#[test]
+fn a_pin_refuses_a_table_with_one_root_for_two_trees() {
+    let sim = Sim::new(69);
+    let (t0, t1) = (tree_name(0), tree_name(1));
+    let (_fs, pf, trees) = gated(&sim, config(), std::slice::from_ref(&t0));
+    let a = trees[0].1;
+    let res = pf.reserve(2, 64, Purpose::Entry).unwrap();
+    let edits = [Edit::leaf(vec![b"k".to_vec()], vec![2; 10])];
+    edit_tree(&res, &t0, &edits).unwrap();
+    drop(res);
+    pf.checkpoint(entry_id(2), None).unwrap();
+    // Entry 1's checkpoint is the older one; its table, rewritten as #719
+    // could have written it, names tree 0's root for tree 1 too.
+    let older = pf.lock().older.unwrap().sb;
+    let meta = forge_table(&pf, older, |trees| trees.push((t1, a)));
+    pf.lock().older.as_mut().unwrap().sb.meta = meta;
+    match pf.pin(1) {
+        Err(PinError::Meta(MetaFault::Malformed(why))) => assert_eq!(why, SHARED_ROOT),
+        other => panic!("{other:?}"),
+    }
 }
