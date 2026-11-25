@@ -161,9 +161,14 @@ pub trait PageStore {
 ///   entry wrote; `drop_tree` drops a tree, and the store releases the root
 ///   it holds for it (as [`Release::Dropped`]); `rename_tree` gives a tree
 ///   another name; `set_root` gives a tree a root this entry wrote, the
-///   old one having been released by this entry. They take effect in the
-///   order given, at commit. A tree is named by the store's own record of
-///   it, so a caller gives the store no root of a tree it already holds.
+///   old one having been released by this entry (as either kind). They
+///   take effect in the order given, at commit. Within one entry a tree's
+///   root is given at most once (`add_tree` or `set_root`), `drop_tree`
+///   names a tree that existed when the entry began and that the entry gave
+///   no root, and a page released that is a tree's root is the old root of
+///   a tree the entry gives a new one; a unit that breaks this is refused
+///   whole. A tree is named by the store's own record of it, so a caller
+///   gives the store no root of a tree it already holds.
 /// - **Committing.** `commit` makes all of it take effect together: the
 ///   written pages become readable and reached, the releases are applied
 ///   in the order given, and numbers allocated and not written are given

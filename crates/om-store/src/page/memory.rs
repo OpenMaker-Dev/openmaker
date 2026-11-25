@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::{
-    EntryPages, Fault, Hash, Page, PageNo, PageStore, Release, Root, StoreError, TreeName,
+    EntryPages, Fault, Hash, Page, PageKind, PageNo, PageStore, Release, Root, StoreError, TreeName,
 };
 
 /// How a [`MemStore`] numbers new pages.
@@ -343,35 +343,103 @@ impl EntryPages for MemEntry<'_> {
         if inner.fails() {
             return Err(injected());
         }
-        // The changes to the trees, checked against the trees as they are
-        // before anything takes effect; a dropped tree's root is released.
+        // The changes to the trees and the releases, checked as the page
+        // file checks them (`EntryPages`), before anything takes effect: a
+        // root given is a tree's page this unit wrote, given to one tree at
+        // most once; a tree given a new root had its old root released by
+        // this unit, and a page released that is a tree's root is such an
+        // old root; a tree dropped is one the unit gave no root, and its
+        // root is released here; a page is released once, is stored, has
+        // the hash given, and is not one this unit allocated.
+        let refused = |why: String| Err(StoreError::Failed(why));
+        let written: BTreeMap<PageNo, &Arc<Page>> =
+            self.pages.iter().map(|p| (p.number(), p)).collect();
         let mut trees = inner.trees.clone();
+        let mut named = BTreeSet::new();
+        let mut replaced: BTreeMap<PageNo, Hash> = BTreeMap::new();
+        let mut drops = Vec::new();
         for change in &self.names {
-            let refused = |why: &str| Err(StoreError::Failed(why.to_owned()));
+            let mut new_root = |root: &Root| {
+                written
+                    .get(&root.page)
+                    .is_some_and(|p| p.hash() == root.hash && p.kind() != PageKind::Overflow)
+                    && named.insert(root.page)
+            };
             match change {
                 NameChange::Add(name, root) => {
-                    if trees.insert(name.clone(), *root).is_some() {
-                        return refused(&format!("tree {name} exists"));
+                    if trees.contains_key(name) {
+                        return refused(format!("tree {name} exists"));
                     }
+                    if !new_root(root) {
+                        return refused(format!("the root of {name} is not a tree's page this unit wrote, or named twice"));
+                    }
+                    trees.insert(name.clone(), *root);
                 }
                 NameChange::Drop(name) => match trees.remove(name) {
-                    Some(root) => self.released.push((root.page, root.hash, Release::Dropped)),
-                    None => return refused(&format!("no tree {name}")),
+                    Some(old) if !written.contains_key(&old.page) => {
+                        drops.push((old.page, old.hash, Release::Dropped))
+                    }
+                    Some(_) => {
+                        return refused(format!(
+                            "tree {name} was made or given a root by this unit"
+                        ))
+                    }
+                    None => return refused(format!("no tree {name}")),
                 },
                 NameChange::Rename(from, to) => {
                     let Some(root) = trees.remove(from) else {
-                        return refused(&format!("no tree {from}"));
+                        return refused(format!("no tree {from}"));
                     };
                     if trees.insert(to.clone(), root).is_some() {
-                        return refused(&format!("tree {to} exists"));
+                        return refused(format!("tree {to} exists"));
                     }
                 }
-                NameChange::SetRoot(name, root) => match trees.get_mut(name) {
-                    Some(r) => *r = *root,
-                    None => return refused(&format!("no tree {name}")),
-                },
+                NameChange::SetRoot(name, root) => {
+                    let Some(old) = trees.get(name).copied() else {
+                        return refused(format!("no tree {name}"));
+                    };
+                    if written.contains_key(&old.page) {
+                        return refused(format!(
+                            "tree {name} was made or given a root by this unit"
+                        ));
+                    }
+                    if !new_root(root) {
+                        return refused(format!("the root of {name} is not a tree's page this unit wrote, or named twice"));
+                    }
+                    replaced.insert(old.page, old.hash);
+                    trees.insert(name.clone(), *root);
+                }
             }
         }
+        let root_pages: BTreeSet<PageNo> = inner.trees.values().map(|r| r.page).collect();
+        let mut seen = BTreeSet::new();
+        for (number, hash, _) in self.released.iter().chain(&drops) {
+            let stored = inner.pages.get(number).is_some_and(|s| match &s.page {
+                Some(page) => page.hash() == *hash,
+                None => Page::verify(*number, hash, s.bytes.clone()).is_ok(),
+            });
+            if !seen.insert(*number) || self.allocated.contains(number) || !stored {
+                return refused(format!(
+                    "page {number} released twice, unstored, its own, or with another hash"
+                ));
+            }
+        }
+        for (number, hash, _) in &self.released {
+            if root_pages.contains(number) && replaced.get(number) != Some(hash) {
+                return refused(format!(
+                    "page {number}, a tree's root, released without a new root"
+                ));
+            }
+        }
+        if let Some(old) = replaced
+            .keys()
+            .find(|n| !self.released.iter().any(|(r, _, _)| r == *n))
+        {
+            return refused(format!(
+                "page {old}, a tree's root, replaced but not released"
+            ));
+        }
+        self.released.append(&mut drops);
         inner.trees = trees;
         for page in self.pages.drain(..) {
             let number = page.number();

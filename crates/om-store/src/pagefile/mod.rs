@@ -70,7 +70,7 @@
 //! | a checkpoint that keeps a restore point, and an open reservation | no: the checkpoint is refused | the point counts in the room kept for meta streams from the first check, so a reservation opened after it is judged as a reopen on that checkpoint would judge it; one opened before was not |
 //! | a checkpoint and a checkpoint, a reclaim or a restore point's drop | no: the second waits | `io`; so whether a reclaim settles a page before or after a checkpoint, and so the hold it gives, is the order of the two calls |
 //! | a reclaim and a reserve, a unit, a read or a pin | yes | `inner` for each page's step; pages a reclaim frees are those no kept version reaches when it decides, under `inner` |
-//! | a pin or unpin and anything | yes | the pin table; a pin counts from when it is taken, and holds the roots of the version it pins when that is the newest or the newest checkpoint's ([`Pin::roots`]); a checkpoint being written keeps its own version itself |
+//! | a pin or unpin and anything | yes; a pin of an older checkpoint or a restore point waits for a checkpoint, a reclaim or a restore point's drop (`io`) | the pin table; a pin counts from when it is taken, and holds the roots of the version it pins ([`Pin::roots`]): from memory, or for an older checkpoint or a restore point from its meta stream, read while `io` is held so that no reclaim or checkpoint reuses those pages first; a pin of the version a checkpoint is writing is refused, and that checkpoint keeps its own version itself |
 //! | open | nothing runs on a page file before its open returns | two opens of one store folder are kept apart by the store folder's lock, which the caller holds |
 //!
 //! So the caller that checkpoints has the caller that applies take no new
@@ -151,7 +151,7 @@ pub struct RestorePoint {
     pub entry: EntryId,
     pub version: Version,
     /// The first page of the checkpoint's meta stream, which names its
-    /// trees ([`PageFile::trees_of`]).
+    /// trees: a pin of the restore point reads them from it.
     pub meta: (PageNo, Hash),
 }
 
@@ -265,6 +265,8 @@ const FAILED: &str = "an earlier write or flush of the page file failed; the sto
 pub enum CheckpointError {
     /// The call breaks a rule; nothing was written.
     Refused(&'static str),
+    /// A tree's root on disk does not read back; nothing was written.
+    Root { tree: TreeName, fault: PageFault },
     /// No space for the checkpoint's meta stream; nothing was written.
     Space(SpaceError),
     /// A write or flush failed. What reached the disk is unknown, and the
@@ -279,6 +281,9 @@ impl fmt::Display for CheckpointError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CheckpointError::Refused(why) => write!(f, "checkpoint refused: {why}"),
+            CheckpointError::Root { tree, fault } => {
+                write!(f, "the root of tree {tree} does not read back: {fault}")
+            }
             CheckpointError::Space(e) => write!(f, "{e}"),
             CheckpointError::Disk(e) => write!(f, "{e}"),
             CheckpointError::Failed => f.write_str(FAILED),
@@ -513,12 +518,18 @@ pub struct KeptCheckpoint {
     pub meta: (PageNo, Hash),
 }
 
-/// A version kept from reuse while the pin lives (section 6.7). Pins are
-/// in memory only.
+/// The trees of a version, by name, with their roots.
+type Roots = Arc<Vec<(TreeName, Root)>>;
+
+/// The pins alive, by version: how many, and the roots of the version.
+type Pins = Arc<Mutex<BTreeMap<Version, (usize, Roots)>>>;
+
+/// A version kept from reuse while the pin lives (section 6.7), with the
+/// roots of its trees. Pins are in memory only.
 pub struct Pin {
-    pins: Arc<Mutex<BTreeMap<Version, usize>>>,
+    pins: Pins,
     version: Version,
-    roots: Option<Vec<(TreeName, Root)>>,
+    roots: Roots,
 }
 
 impl Pin {
@@ -527,13 +538,18 @@ impl Pin {
         self.version.entry
     }
 
-    /// The trees of the version pinned, with their roots, taken in the
-    /// same hold as the pin: for the newest version, or the newest
-    /// checkpoint's. A view of another kept version reads them from its
-    /// checkpoint ([`PageFile::trees_of`] with its meta stream).
-    pub fn roots(&self) -> Option<&[(TreeName, Root)]> {
-        self.roots.as_deref()
+    /// The trees of the version pinned, by name, with their roots.
+    pub fn roots(&self) -> &[(TreeName, Root)] {
+        &self.roots
     }
+}
+
+/// Where the roots of a version to pin come from.
+enum Source {
+    /// Memory.
+    Roots(Roots),
+    /// The meta stream of a checkpoint on disk.
+    Meta((PageNo, Hash)),
 }
 
 impl fmt::Debug for Pin {
@@ -545,7 +561,7 @@ impl fmt::Debug for Pin {
 impl Drop for Pin {
     fn drop(&mut self) {
         let mut pins = lock(&self.pins);
-        if let Some(n) = pins.get_mut(&self.version) {
+        if let Some((n, _)) = pins.get_mut(&self.version) {
             *n -= 1;
             if *n == 0 {
                 pins.remove(&self.version);
@@ -628,7 +644,7 @@ pub struct PageFile {
     file: Box<dyn File>,
     config: Config,
     inner: Mutex<Inner>,
-    pins: Arc<Mutex<BTreeMap<Version, usize>>>,
+    pins: Pins,
     /// Held by a checkpoint and by growth of the file, so that neither runs
     /// alongside the other.
     io: Mutex<()>,
@@ -1437,11 +1453,12 @@ impl PageFile {
         Ok(page)
     }
 
-    /// A dying page's bytes for a reclaim: from memory when no checkpoint
-    /// wrote it, otherwise read from the file and checked, never from the
-    /// cache, so that what a reclaim decides (including whether a read
-    /// fails) does not depend on what readers cached.
-    fn read_dying(&self, number: PageNo, hash: &Hash) -> Result<Arc<Page>, Fault> {
+    /// A page's bytes from memory when no checkpoint wrote it, otherwise
+    /// read from the file and checked, never from the cache: what a reclaim
+    /// decides (including whether a read fails) does not depend on what
+    /// readers cached, and a checkpoint learns that a root on disk reads
+    /// back, not that a copy of it was once cached.
+    fn read_uncached(&self, number: PageNo, hash: &Hash) -> Result<Arc<Page>, Fault> {
         let end = {
             let inner = self.lock();
             if let Some(page) = inner.in_memory(number, hash) {
@@ -1605,37 +1622,92 @@ impl PageFile {
         })
     }
 
-    /// Keep entry `entry`'s version from reuse while the pin lives. The
-    /// entry must be the newest version's (every unit of it committed, and
-    /// none of a later entry; an entry that changed nothing has the version
-    /// of the one before it), or one a checkpoint, restore point or pin
-    /// keeps now: an older version may be partly reused already.
+    /// Keep entry `entry`'s version from reuse while the pin lives, and
+    /// hand over the roots of its trees ([`Pin::roots`]). The entry must be
+    /// the newest version's (every unit of it committed, and none of a
+    /// later entry; an entry that changed nothing has the version of the
+    /// last one that did), or one a checkpoint, restore point or pin keeps
+    /// now: an older version may be partly reused already. The roots come
+    /// from memory, or, for an older checkpoint or a restore point, from its
+    /// meta stream, read as part of taking the pin. A pin whose roots cannot
+    /// be had (the version a checkpoint is still writing, a meta stream that
+    /// does not read back) is refused.
     pub fn pin(&self, entry: u64) -> Result<Pin, &'static str> {
-        let inner = self.lock();
-        let kept = self.kept(&inner);
-        if entry < inner.last_unit
-            && !kept
-                .checkpoints
-                .iter()
-                .chain(&kept.pins)
-                .any(|v| v.entry == entry)
         {
-            return Err("a version that is neither the newest nor kept");
+            let inner = self.lock();
+            if let Source::Roots(roots) = self.pin_source(&inner, entry)? {
+                return Ok(self.register(entry, roots));
+            }
         }
-        let version = Version::at(entry);
-        let roots = if entry == inner.last_unit {
-            Some(inner.trees.iter().map(|(n, r)| (n.clone(), *r)).collect())
-        } else if entry == inner.newest.sb.entry.index {
-            Some(inner.newest.trees.clone())
-        } else {
-            None
+        // An older checkpoint or a restore point: its table is read from
+        // its meta stream while `io` is held, which a reclaim, a checkpoint
+        // and a restore point's drop hold too, so none of them can free,
+        // reuse or retire those pages before the pin keeps the version.
+        let _io = lock(&self.io);
+        let meta = match self.pin_source(&self.lock(), entry)? {
+            Source::Roots(roots) => return Ok(self.register(entry, roots)),
+            Source::Meta(meta) => meta,
         };
-        *lock(&self.pins).entry(version).or_default() += 1;
-        Ok(Pin {
+        let (stream, _) = self
+            .read_meta(meta)
+            .map_err(|_| "the version's meta stream does not read back")?;
+        let trees = Meta::decode(&stream)
+            .map_err(|_| "the version's meta stream is malformed")?
+            .trees;
+        let _inner = self.lock();
+        Ok(self.register(entry, Arc::new(trees)))
+    }
+
+    /// Where the roots of entry `entry`'s version come from, if it may be
+    /// pinned: the newest version (an entry at or after the last unit
+    /// committed has its version), the newest checkpoint's, a version
+    /// another pin holds, or an older checkpoint or a restore point on
+    /// disk. The version a checkpoint is writing is refused: its roots are
+    /// the checkpoint's own until it is on disk.
+    fn pin_source(&self, inner: &Inner, entry: u64) -> Result<Source, &'static str> {
+        if entry >= inner.last_unit {
+            let roots = inner.trees.iter().map(|(n, r)| (n.clone(), *r)).collect();
+            return Ok(Source::Roots(Arc::new(roots)));
+        }
+        if entry == inner.newest.sb.entry.index {
+            return Ok(Source::Roots(Arc::new(inner.newest.trees.clone())));
+        }
+        if let Some((_, (_, roots))) = lock(&self.pins).iter().find(|(v, _)| v.entry == entry) {
+            return Ok(Source::Roots(roots.clone()));
+        }
+        if let Some(older) = inner.older.filter(|o| o.sb.entry.index == entry) {
+            return Ok(Source::Meta(older.sb.meta));
+        }
+        let retiring = inner.older.map_or(&[][..], |_| &inner.newest.retiring[..]);
+        if let Some(rp) = inner
+            .newest
+            .restore_points
+            .iter()
+            .chain(retiring)
+            .find(|rp| rp.entry.index == entry)
+        {
+            return Ok(Source::Meta(rp.meta));
+        }
+        if inner.in_progress.is_some_and(|v| v.entry == entry) {
+            return Err(
+                "the version a checkpoint is writing: pin it once the checkpoint is on disk",
+            );
+        }
+        Err("a version that is neither the newest nor kept")
+    }
+
+    /// Adds a pin of entry `entry`'s version, whose trees are `roots` (the
+    /// version's roots already pinned, if it is).
+    fn register(&self, entry: u64, roots: Roots) -> Pin {
+        let version = Version::at(entry);
+        let mut pins = lock(&self.pins);
+        let (n, roots) = pins.entry(version).or_insert((0, roots));
+        *n += 1;
+        Pin {
             pins: self.pins.clone(),
             version,
-            roots,
-        })
+            roots: roots.clone(),
+        }
     }
 
     /// Frees what can be freed among at most `budget` dying pages, taken in
@@ -1694,7 +1766,7 @@ impl PageFile {
                 continue;
             }
             out.read += 1;
-            match self.read_dying(n, &hash) {
+            match self.read_uncached(n, &hash) {
                 Ok(page) => {
                     let mut inner = self.lock();
                     if inner.map.pending().get(&n).is_some_and(|r| r.hash == hash) {
@@ -1803,6 +1875,26 @@ impl PageFile {
             });
             Fixed(self)
         };
+        // Every tree's root that is not in memory is read back from the
+        // file and checked before anything is written: this checkpoint's
+        // copies replace the older checkpoint's, so the newest must be
+        // usable first, or a root on disk that no longer reads back would
+        // be named by both checkpoints left on disk.
+        let roots: Vec<(TreeName, Root)> = {
+            let inner = self.lock();
+            inner.trees.iter().map(|(n, r)| (n.clone(), *r)).collect()
+        };
+        for (name, root) in &roots {
+            self.read_uncached(root.page, &root.hash)
+                .map_err(|fault| CheckpointError::Root {
+                    tree: name.clone(),
+                    fault: PageFault {
+                        page: root.page,
+                        hash: root.hash,
+                        fault,
+                    },
+                })?;
+        }
         // Short of room for the meta stream: free what can be freed first
         // (the checkpoint before last's meta stream, retired by the last).
         let short = {
@@ -2613,10 +2705,8 @@ impl EntryPages for Unit<'_> {
                     if self.pages.contains_key(&old.page) {
                         return refused("a tree this unit made or gave a root is given another");
                     }
-                    if *root != old {
-                        new_root(root)?;
-                        replaced.insert(old.page, old.hash);
-                    }
+                    new_root(root)?;
+                    replaced.insert(old.page, old.hash);
                     view.insert(n.clone(), Some(*root));
                 }
             }
@@ -2627,7 +2717,7 @@ impl EntryPages for Unit<'_> {
         // A tree's root is released only as the old root of a tree this
         // unit gives a new one, and every such old root is released.
         for r in &self.released {
-            let accounted = r.how == Release::Copied && replaced.get(&r.number) == Some(&r.hash);
+            let accounted = replaced.get(&r.number) == Some(&r.hash);
             if inner.root_pages.contains_key(&r.number) && !accounted {
                 return Err(store_failed(format!(
                     "page {} released: the root of a tree this unit gives no new root",
@@ -2654,9 +2744,13 @@ impl EntryPages for Unit<'_> {
                 || inner.held.contains(&r.number)
                 || inner.newest_meta.contains(&r.number)
                 || !inner.map.in_use(r.number)
+                || inner
+                    .dirty
+                    .get(&r.number)
+                    .is_some_and(|p| p.hash() != r.hash)
             {
                 return Err(store_failed(format!(
-                    "page {} released though it is not in use",
+                    "page {} released though it is not in use, or with another hash",
                     r.number
                 )));
             }

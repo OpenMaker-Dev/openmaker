@@ -1200,6 +1200,10 @@ impl<'r> Run<'r> {
                 }
             }
             Err(CheckpointError::Space(_)) => self.reached.checkpoints_failed += 1,
+            Err(CheckpointError::Root { fault, .. }) => {
+                self.allow_read_failure(&fault.to_string());
+                self.fail();
+            }
             Err(CheckpointError::Disk(_) | CheckpointError::Failed) => {
                 self.reached.checkpoints_failed += 1;
                 self.fail();
@@ -2774,6 +2778,8 @@ struct Trip {
     stopped: bool,
     /// The next write panics, as a `File` implementation might.
     panic_write: bool,
+    /// Reads of this page fail, as a device's would.
+    fail_read: Option<PageNo>,
 }
 
 /// An `Fs` over the simulator whose `pages` file, once armed, stops at its
@@ -2867,6 +2873,12 @@ impl GatedFile {
 
 impl File for GatedFile {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> sys::Result<usize> {
+        if let Some(n) = self.trip.lock().unwrap().fail_read {
+            let at = n * PAGE;
+            if offset <= at && at < offset + buf.len() as u64 {
+                return Err(sys::Error::new(ErrorKind::Read, sys::Op::Read, "pages"));
+            }
+        }
         self.inner.read_at(offset, buf)
     }
     fn write_at(&self, offset: u64, data: &[u8]) -> sys::Result<()> {
@@ -3747,4 +3759,301 @@ fn an_entry_extended_past_the_budget_finishes() {
     pf.checkpoint(entry_id(3), None).unwrap();
     let tree = Tree::open(&pf, root).unwrap();
     assert!(tree.get(&[&1000u32.to_be_bytes()]).unwrap().is_some());
+}
+
+/// Review of #744 (P0): a checkpoint reads back from the file every tree's
+/// root that is not in memory before it writes anything, and is refused,
+/// naming the tree, when one does not: its copies would replace the older
+/// checkpoint's, leaving both checkpoints on disk naming a root that does
+/// not read back. The store then opens on the checkpoint before.
+#[test]
+fn a_checkpoint_reads_the_roots_on_disk_back_before_it_writes() {
+    let sim = Sim::new(61);
+    let name = tree_name(0);
+    let (fs, pf, trees) = gated(&sim, config(), std::slice::from_ref(&name));
+    let res = pf.reserve(2, 64, Purpose::Entry).unwrap();
+    let edits = [Edit::leaf(vec![b"k".to_vec()], vec![2; 10])];
+    let b = edit_tree(&res, &name, &edits).unwrap();
+    drop(res);
+    pf.checkpoint(entry_id(2), None).unwrap();
+    // B is on disk now, and its page no longer reads back.
+    fs.trip.lock().unwrap().fail_read = Some(b.page);
+    let next = pf.next_checkpoint();
+    let refused = pf.checkpoint(entry_id(2), None);
+    assert!(
+        matches!(&refused, Err(CheckpointError::Root { tree, .. }) if *tree == name),
+        "{refused:?}"
+    );
+    assert_eq!(pf.next_checkpoint(), next, "nothing was written");
+    assert!(!pf.failed());
+    // The device damages it for good: the store opens on the checkpoint
+    // before, which names A.
+    drop(pf);
+    sim.damage(FILE, b.page * PAGE + 100, 8).unwrap();
+    sim.restart();
+    let (pf, opened) = PageFile::open(&sim.fs(), &sim.fs().lock().unwrap(), config()).unwrap();
+    assert_eq!(opened.entry, entry_id(1));
+    assert_eq!(pf.trees(), trees);
+}
+
+/// Review of #744 (P1): a release of a page still in memory is checked
+/// against its hash: a release with another hash is refused, and the unit
+/// changes nothing.
+#[test]
+fn a_release_with_another_hash_is_refused() {
+    let sim = Sim::new(62);
+    let name = tree_name(0);
+    let (_fs, pf, _) = gated(&sim, config(), std::slice::from_ref(&name));
+    let res = pf.reserve(2, 64, Purpose::Entry).unwrap();
+    let big = [Edit::leaf(vec![b"k".to_vec()], vec![2; 20_000])];
+    let root = edit_tree(&res, &name, &big).unwrap();
+    drop(res);
+    let overflow = overflow_page(&pf, root);
+    let before = (pf.trees(), pf.map_image());
+    let res = pf.reserve(3, 4, Purpose::Entry).unwrap();
+    let mut unit = res.begin().unwrap();
+    unit.release(overflow.0, &Hash::of(b"another page"), Release::Copied)
+        .unwrap();
+    let refused = unit.commit().err();
+    assert!(
+        matches!(&refused, Some(StoreError::Failed(why)) if why.contains("another hash")),
+        "{refused:?}"
+    );
+    assert_eq!((pf.trees(), pf.map_image()), before, "nothing changed");
+}
+
+/// An overflow page of the tree `root` names.
+fn overflow_page<S: PageStore + ?Sized>(store: &S, root: Root) -> (PageNo, Hash) {
+    tree::check(store, root)
+        .unwrap()
+        .pages
+        .into_iter()
+        .find(|(n, h)| store.read(*n, h).unwrap().kind() == PageKind::Overflow)
+        .expect("an overflow page")
+}
+
+/// A tree call of a table-driven case (below).
+#[derive(Clone, Copy, Debug)]
+enum TreeCall {
+    /// A tree made, empty.
+    Make(&'static str),
+    /// A tree's edits applied, and its new root given.
+    Edit(&'static str),
+    /// A tree replaced by an empty one: its old root released as given.
+    Replace(&'static str, Release),
+    /// A tree given a second root, an empty one, in the unit.
+    SetAgain(&'static str),
+    /// A tree given the root it has.
+    Same(&'static str),
+    Drop(&'static str),
+    Rename(&'static str, &'static str),
+    /// A tree made with another tree's root.
+    MakeFrom(&'static str, &'static str),
+    /// A tree's root released, and no new root given.
+    ReleaseRoot(&'static str),
+    /// Tree `a`'s overflow page released with another hash.
+    WrongHash,
+    /// Tree `a`'s overflow page released twice.
+    ReleaseTwice,
+}
+
+/// Makes trees `a` and `b`, empty, as entry `entry`: one unit.
+fn make_a_and_b<S: PageStore + ?Sized>(store: &S, entry: u64) {
+    let mut unit = store.begin().unwrap();
+    for name in ["a", "b"] {
+        let root = tree::apply(store, &mut unit, None, entry, &[]).unwrap();
+        unit.add_tree(&TreeName::new(name).unwrap(), root);
+    }
+    unit.commit().unwrap();
+}
+
+/// Gives tree `a` a large value as entry `entry`: one unit. Returns its
+/// overflow page.
+fn grow_a<S: PageStore + ?Sized>(store: &S, entry: u64) -> (PageNo, Hash) {
+    let a = TreeName::new("a").unwrap();
+    let old = store.root(&a).unwrap();
+    let big = [Edit::leaf(vec![b"k".to_vec()], vec![2; 20_000])];
+    let mut unit = store.begin().unwrap();
+    let root = tree::apply(store, &mut unit, Some(old), entry, &big).unwrap();
+    unit.set_root(&a, root);
+    unit.commit().unwrap();
+    overflow_page(store, root)
+}
+
+/// Runs `calls` in one unit of `store`, as entry `entry`, and commits it.
+fn run_tree_calls<S: PageStore + ?Sized>(
+    store: &S,
+    entry: u64,
+    calls: &[TreeCall],
+    overflow: (PageNo, Hash),
+) -> Result<(), String> {
+    let name = |n: &str| TreeName::new(n).unwrap();
+    let mut current: BTreeMap<TreeName, Root> = store.trees().into_iter().collect();
+    let mut unit = store.begin().map_err(|e| e.to_string())?;
+    let edits = [Edit::leaf(vec![b"e".to_vec()], vec![3; 10])];
+    for call in calls {
+        match *call {
+            TreeCall::Make(n) => {
+                let root =
+                    tree::apply(store, &mut unit, None, entry, &[]).map_err(|e| e.to_string())?;
+                unit.add_tree(&name(n), root);
+                current.insert(name(n), root);
+            }
+            TreeCall::Edit(n) => {
+                let old = current[&name(n)];
+                let root = tree::apply(store, &mut unit, Some(old), entry, &edits)
+                    .map_err(|e| e.to_string())?;
+                unit.set_root(&name(n), root);
+                current.insert(name(n), root);
+            }
+            TreeCall::Replace(n, how) => {
+                let root =
+                    tree::apply(store, &mut unit, None, entry, &[]).map_err(|e| e.to_string())?;
+                let old = current[&name(n)];
+                unit.release(old.page, &old.hash, how)
+                    .map_err(|e| e.to_string())?;
+                unit.set_root(&name(n), root);
+                current.insert(name(n), root);
+            }
+            TreeCall::SetAgain(n) => {
+                let root =
+                    tree::apply(store, &mut unit, None, entry, &[]).map_err(|e| e.to_string())?;
+                unit.set_root(&name(n), root);
+                current.insert(name(n), root);
+            }
+            TreeCall::Same(n) => unit.set_root(&name(n), current[&name(n)]),
+            TreeCall::Drop(n) => {
+                unit.drop_tree(&name(n));
+                current.remove(&name(n));
+            }
+            TreeCall::Rename(f, t) => {
+                unit.rename_tree(&name(f), &name(t));
+                if let Some(root) = current.remove(&name(f)) {
+                    current.insert(name(t), root);
+                }
+            }
+            TreeCall::MakeFrom(n, other) => unit.add_tree(&name(n), current[&name(other)]),
+            TreeCall::ReleaseRoot(n) => {
+                let old = current[&name(n)];
+                unit.release(old.page, &old.hash, Release::Copied)
+                    .map_err(|e| e.to_string())?;
+            }
+            TreeCall::WrongHash => unit
+                .release(overflow.0, &Hash::of(b"another page"), Release::Copied)
+                .map_err(|e| e.to_string())?,
+            TreeCall::ReleaseTwice => {
+                for _ in 0..2 {
+                    unit.release(overflow.0, &overflow.1, Release::Copied)
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+        }
+    }
+    unit.commit().map_err(|e| e.to_string())
+}
+
+/// Review of #744 (P1 and P2): `MemStore` and the page file accept and
+/// refuse the same units of tree calls: within one unit a tree's root is
+/// given at most once (`add_tree` or `set_root`), and only a page the unit
+/// wrote; `drop_tree` names a tree that existed when the unit began and
+/// that the unit gave no root; a tree replaced whole may release its old
+/// root either way; a page is released once, with its hash.
+#[test]
+fn memstore_and_the_page_file_accept_and_refuse_the_same_units() {
+    use TreeCall::*;
+    let cases: &[(&[TreeCall], bool)] = &[
+        (&[Make("c")], true),
+        (&[Make("a")], false),
+        (&[Drop("a")], true),
+        (&[Drop("c")], false),
+        (&[Rename("a", "c")], true),
+        (&[Rename("a", "b")], false),
+        (&[Edit("a")], true),
+        (&[Edit("a"), SetAgain("a")], false),
+        (&[Make("c"), Drop("c")], false),
+        (&[Edit("a"), Drop("a")], false),
+        (&[Replace("a", Release::Dropped)], true),
+        (&[Replace("a", Release::Copied)], true),
+        (&[Same("a")], false),
+        (&[Rename("a", "c"), Edit("c")], true),
+        (&[Edit("a"), Rename("a", "c")], true),
+        (&[Drop("a"), Make("a")], true),
+        (&[ReleaseRoot("a")], false),
+        (&[MakeFrom("c", "b")], false),
+        (&[WrongHash], false),
+        (&[ReleaseTwice], false),
+    ];
+    for (i, (calls, ok)) in cases.iter().enumerate() {
+        // The page file: one reservation an entry.
+        let sim = Sim::new(70 + i as u64);
+        let fs = sim.fs();
+        let lock = fs.lock().unwrap();
+        let pf = PageFile::create(&fs, &lock, config()).unwrap();
+        make_a_and_b(&pf.reserve(1, 64, Purpose::Entry).unwrap(), 1);
+        let overflow = grow_a(&pf.reserve(2, 64, Purpose::Entry).unwrap(), 2);
+        let res = pf.reserve(3, 64, Purpose::Entry).unwrap();
+        let on_file = run_tree_calls(&res, 3, calls, overflow);
+        drop(res);
+        // `MemStore`.
+        let mem = MemStore::new(Numbering::Sequential);
+        make_a_and_b(&mem, 1);
+        let overflow = grow_a(&mem, 2);
+        let in_memory = run_tree_calls(&mem, 3, calls, overflow);
+        assert_eq!(
+            on_file.is_ok(),
+            *ok,
+            "the page file, {calls:?}: {on_file:?}"
+        );
+        assert_eq!(in_memory.is_ok(), *ok, "MemStore, {calls:?}: {in_memory:?}");
+    }
+}
+
+/// Review of #744 (P1): the version of an entry with no unit of its own is
+/// the version of the last unit before it; a pin of it gets those roots.
+#[test]
+fn a_pin_of_an_entry_without_a_unit_has_the_roots_before_it() {
+    let sim = Sim::new(63);
+    let fs = sim.fs();
+    let lock = fs.lock().unwrap();
+    let pf = PageFile::create(&fs, &lock, config()).unwrap();
+    let res = pf.reserve(1, 5, Purpose::Entry).unwrap();
+    make_tree(&res, &tree_name(0)).unwrap();
+    drop(res);
+    let pin = pf.pin(2).unwrap();
+    assert_eq!(pin.roots(), &pf.trees()[..]);
+    assert_eq!(pin.roots().len(), 1);
+}
+
+/// Review of #744 (P1): a pin of an older checkpoint carries the roots of
+/// its trees, read from its meta stream as the pin is taken; they stay with
+/// the pin, and its trees stay readable, after later checkpoints and
+/// reclaims have reused that meta stream's pages.
+#[test]
+fn a_pin_of_an_older_checkpoint_carries_its_roots() {
+    let sim = Sim::new(64);
+    let name = tree_name(0);
+    let (_fs, pf, trees) = gated(&sim, config(), std::slice::from_ref(&name));
+    let edits = |v: u8| [Edit::leaf(vec![b"k".to_vec()], vec![v; 10])];
+    let res = pf.reserve(2, 64, Purpose::Entry).unwrap();
+    let first = edit_tree(&res, &name, &edits(1)).unwrap();
+    drop(res);
+    let _ = trees;
+    pf.checkpoint(entry_id(2), None).unwrap();
+    let res = pf.reserve(3, 64, Purpose::Entry).unwrap();
+    edit_tree(&res, &name, &edits(2)).unwrap();
+    drop(res);
+    pf.checkpoint(entry_id(3), None).unwrap();
+    // Entry 2's checkpoint is the older one on disk now.
+    let pin = pf.pin(2).unwrap();
+    assert_eq!(pin.roots(), &[(name.clone(), first)][..]);
+    for index in 4..12 {
+        let res = pf.reserve(index, 64, Purpose::Entry).unwrap();
+        edit_tree(&res, &name, &edits(index as u8)).unwrap();
+        drop(res);
+        pf.checkpoint(entry_id(index), None).unwrap();
+        while !pf.reclaim(1 << 20).drained {}
+    }
+    assert_eq!(pin.roots(), &[(name, first)][..]);
+    let read = Tree::open(&pf, first).unwrap().get(&[b"k"]).unwrap();
+    assert_eq!(read, Some(Node::Value(vec![1; 10])));
 }
