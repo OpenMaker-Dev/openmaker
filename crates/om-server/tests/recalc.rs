@@ -12,6 +12,8 @@
 mod fixture;
 #[path = "fixtures/server.rs"]
 mod server;
+#[path = "fixtures/transfer.rs"]
+mod transfer;
 
 use std::path::Path;
 
@@ -552,6 +554,20 @@ fn tasks_tree_for_writes(tag: &str, read_only: bool) -> (TempFile, OwnedNode) {
     let delete_record = stepped(9, "Delete", vec![om_scripts::ScriptStep::new(9)]);
     let replace = stepped(10, "Replace", vec![replace_count_with("7")]);
     let serial = stepped(11, "Serial", vec![set_next_serial("40")]);
+    // The two records exported to the session's temporary folder, which a
+    // read-only file allows, and imported back as new records.
+    let import = stepped(
+        13,
+        "Import",
+        vec![
+            transfer::export(
+                &["rows.tab"],
+                &[NAME, COUNT],
+                om_transfer::FileType::TabSeparated,
+            ),
+            transfer::import(&["rows.tab"], &[NAME, COUNT], false),
+        ],
+    );
     // A global set and read in the next step: the session's own value.
     let global = script(
         12,
@@ -571,6 +587,7 @@ fn tasks_tree_for_writes(tag: &str, read_only: bool) -> (TempFile, OwnedNode) {
         replace,
         serial,
         global,
+        import,
     ];
     let mut root = fixture::tree(&scripts, true);
     fixture::add_photo(&mut root);
@@ -632,7 +649,7 @@ fn last_ids(session: &mut Session, path: &Path) -> (Vec<u8>, Option<Vec<u8>>) {
     let read = read_back(session, &[uint_segment(TABLE), vec![0]]).1;
     let on_disk = om_hbam::HbamFile::open(path).ok().and_then(|file| {
         let node = file.subtree(&[&uint_segment(TABLE), &[0]]).ok()??;
-        node.value.as_deref().map(<[u8]>::to_vec)
+        node.value.map(<[u8]>::to_vec)
     });
     (read, on_disk)
 }
@@ -1228,6 +1245,16 @@ fn write_rows(root: &OwnedNode) -> Vec<Row> {
             }),
             engine: true,
         },
+        Row {
+            what: "op30 a server script's Import Records",
+            prepare: none(),
+            send: Box::new(|session, _| run_script(session, 13)),
+            refused: script_failed,
+            made: Box::new(|session, answer, _| {
+                !script_failed(answer) && records_of(session, TABLE).len() == 4
+            }),
+            engine: true,
+        },
         // Refused with 3 at the step, also when the file becomes read-only
         // after the script checked it (the engine refuses it first then):
         // never 800 from a save tried and failed.
@@ -1317,6 +1344,7 @@ fn every_write_to_a_file_hosted_read_only_is_refused() {
 /// Set Field fails with 3 where the script sees it (script 4 keeps Set
 /// Field's error before its commit), and a script that sets a field and
 /// ends reports 3, never 0 with its edit dropped when the session ends.
+/// So do the other steps that would change the file.
 #[test]
 fn a_server_script_opens_no_record_on_a_file_hosted_read_only() {
     let (read_only, _) = tasks_tree_for_writes("recalc-script-read-only", true);
@@ -1333,7 +1361,18 @@ fn a_server_script_opens_no_record_on_a_file_hosted_read_only() {
         "{}",
         String::from_utf8_lossy(&left_open)
     );
+    // New Record, Delete Record, Replace Field Contents, Set Next Serial
+    // Value and Import Records: each step 3, and its commit nothing to do.
+    for script in [8, 9, 10, 11, 13] {
+        let answer = run_script(&mut client, script).unwrap();
+        assert!(
+            answer.ends_with(b"|3|0"),
+            "script {script}: {}",
+            String::from_utf8_lossy(&answer)
+        );
+    }
     assert_eq!(cell(&records_of(&mut client, TABLE), 1, COUNT), Some("3"));
+    assert_eq!(records_of(&mut client, TABLE).len(), 2);
 }
 
 /// A global field's value is the session's own: on a file hosted
