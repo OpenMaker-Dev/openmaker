@@ -55,7 +55,7 @@ writes version 2.
 | 57 | 8 | how many log segments are in use |
 | 65 | 8 | marker: the index of the last entry of the last flushed batch (section 6.3) |
 | 73 | 32 | marker: that entry's hash |
-| 105 | 8 | marker: the highest committed index the server has heard of |
+| 105 | 8 | marker: the committed position: the last entry of this server's log known to be committed, never past the marker's index (3.8) |
 | 113 | 1 | 1 while the server is in repair (section 7.5), otherwise 0 |
 | 114 | 8 | the repair's required end, or zero |
 | 122 | 8 | the cut count: how many times the log was cut back over entries the marker covered (section 3.9); it never goes down |
@@ -549,9 +549,9 @@ current cut count:
    its header (first index: the batch's first entry there; previous hash
    and term: the entry before) followed by the second batch;
 3. one `state` update: the marker (the last entry's index and hash, and the
-   highest committed position heard, which never goes down) and, when step
-   2 ran, the run with the spare added. The marker alone is a marker
-   advance (one write and one flush of `state`); with the run, both slots.
+   committed position, which never goes down) and, when step 2 ran, the
+   run with the spare added. The marker alone is a marker advance (one
+   write and one flush of `state`); with the run, both slots.
 
 A synchronous write is on the device when it returns (`O_DSYNC` on Linux;
 elsewhere each write is followed by `sync_data`), so that it is the log's
@@ -575,6 +575,27 @@ whole at the next open; the failed call reported nothing durable.
 marker advance in `state`. Giving a committed position, through either
 call, confirms it for cuts (3.9).
 
+**The committed position is bounded by the log's own entries.** What a
+caller gives is the last entry of this log known to be committed: on a
+single server the last entry of the flush; on a cluster the lower of the
+leader's committed position and the last entry of this log known to match
+the leader's (Raft's rule for a follower's commit index). `flush_batch`
+refuses one past the last entry it makes durable, and `set_committed` one
+past the durable entry, with nothing written and the log going on. The
+bound matters because a cut is refused at or before the committed
+position: a follower that recorded its leader's committed position while
+its own log held stale entries from before it (never committed, from an
+old term) would refuse, for good, the cut that removes them; and a
+position past the log's end would protect entries the log does not hold
+while letting a cut after it remove what lies between. So every `state`
+update keeps the committed position at or before the marker's index, when
+the copy it starts from does: a flush and `set_committed` by the bound; a
+cut lowers the marker only to the entry before an index past the
+committed position; an open, giving up and retiring move the marker
+forward or leave it; the first open of a version 1 copy writes its values
+unchanged. A copy this log did not write may hold a committed position
+past its marker: the open keeps it as it is, and every cut is refused.
+
 ### 3.9 A cut
 
 `Log::cut` removes the entries from an index on (server-storage.md 7.1).
@@ -582,8 +603,8 @@ call, confirms it for cuts (3.9).
 **What it refuses**, with nothing changed: every cut until the caller has
 given a committed position since the log was opened
 (`LogError::CommittedUnconfirmed`), because the one the marker recorded
-can be one advance behind (1.5); then an index at or before the highest
-committed position heard, at or before the entry the log was opened from,
+can be one advance behind (1.5); then an index at or before the committed
+position recorded (3.8), at or before the entry the log was opened from,
 or at or before the one before the oldest entry its last retirement still
 needed, which are all committed; and an index before the first entry the
 log holds. On a single server nothing cuts; on a cluster the caller learns
@@ -629,14 +650,30 @@ nothing at or after its index changes nothing and says so.
 **A log that ends at an unreadable place** (3.6) has no durable entry past
 its end, and takes no appends. A cut at or before its durable entry is the
 cut above: the log then ends before the place, the batch that follows the
-new end carries an older cut count, and no walk reads as far as the place
-again, so appends go on. A cut at any index after the durable entry gives
-up what may follow the place, as below.
+new end carries an older cut count, and appends go on from the new end. A
+cut from the entry after the durable one gives up what may follow the
+place, as below; it is judged by the same refusals as any cut, and once a
+committed position is confirmed it always passes them (the committed
+position is at or before the durable entry, 3.8). A cut from an index
+further on removes nothing, as on any log that holds nothing there, and
+the log still ends unreadable: a cut never removes anything before its
+index.
+
+**After a cut of durable entries that ends the log before a place that
+failed to read** (whether the place was given up behind a fresh segment,
+which the cut drops, or the cut was the first thing done about it), what
+is certain is that nothing written before that cut is part of the log
+again: it carries an older cut count. The place itself is not settled.
+Appends continue in that segment and are written over it in time, with
+synchronous writes like every batch. An open that then cannot read there
+at or before the marker fails `LogError::Unreadable`, as for any place;
+one whose end falls on it ends unreadable again, and it is given up again.
 
 **Giving up an unreadable end** (`Log::give_up_unreadable_end`, and a cut
-past the durable entry of a log that ends at an unreadable place)
-discards whatever may follow the place, for good, whatever an open can
-read there later. Raising the cut count alone would not do: the next open
+from the entry after the durable one of a log that ends at an unreadable
+place) discards whatever may follow the place, for good, whatever an open
+can read there later: it carries an older cut count. Raising the cut count
+alone would not do: the next open
 would still read the bytes after the last entry to decide whether a batch
 begins there, and fail on the same place. So the log continues in a fresh
 segment that a walk moves to from the last entry, by rule 1 of 3.5, before
@@ -649,10 +686,11 @@ it reads anything more of the segment it ended in:
    count by one; the marker stays at the last verified entry. **It is
    done from the moment the first slot's flush returns**, as a cut is.
 
-Appends then go to the fresh segment. What lay past the last verified
-entry in the segment the log ended in is never read again; a batch there
-that an open could read later carries an older cut count too. The
-operation is refused, with nothing written, when the log does not end at
+Appends then go to the fresh segment, and walks read nothing more of the
+segment the log ended in past the last verified entry, until a later cut
+of durable entries drops the fresh segment and takes the log back into
+that segment (above, "After a cut of durable entries"). The operation is
+refused, with nothing written, when the log does not end at
 an unreadable place, when the entry the caller names (index and hash) is
 not the last one the open verified, and when `state` lists segments after
 the one the log ends in. No write of this log leaves that. Every `state`

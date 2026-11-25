@@ -352,8 +352,9 @@ a batch: a header with its first index, its entry count, its length and a
 hash, then the entries. Appends wait for no timer: one flush covers every
 entry appended while the previous flush ran. After a batch's flush
 succeeds, the server records the **marker** in `state` (section 6.1) and
-flushes it: the index and hash of the batch's last entry, and the highest
-committed position it has heard of. An entry is **durable** when the
+flushes it: the index and hash of the batch's last entry, and its
+committed position: the last entry of its own log known to be committed.
+An entry is **durable** when the
 marker covers it. Only then is it acknowledged to a client or to another
 server, or counted in a vote. A commit waits for two flushes, one of the
 log and one of `state`; a batch that reaches a new segment waits for two
@@ -368,15 +369,22 @@ follower cuts only with a committed position given since it last
 started: after a restart the one its marker recorded can be one advance
 behind (a lost copy of `state`, section 6.1), so until the leader gives
 it again the log refuses every cut, and then any at or before it. What
-the caller supplies must cover everything it has ever been told was
-committed: in a cluster the current leader's committed position, never a
-value of the follower's own choosing. On a single server nothing cuts.
+the caller supplies is never a value of the follower's own choosing, and
+never past its own log: on a cluster the lower of the current leader's
+committed position and the last entry of the follower's log known to match
+the leader's (Raft's rule for a follower's commit index); on a single
+server the last entry of the flush. The log refuses a committed position
+past its own entries. The bound is what lets a follower cut stale entries
+it holds from an old term: had it recorded the leader's committed
+position while they were in its log, it would refuse the cut that removes
+them for good. On a single server nothing cuts.
 
 **An unreadable end.** When the log cannot read a place after its marker,
 it ends there for that start, cuts nothing and takes no appends
 ([server-storage-format.md](server-storage-format.md) section 3.6). On a
-cluster the leader's consistency check has the follower cut there, under
-the rule above. On a single server the store stops and reports (section
+cluster the leader's consistency check has the follower cut from the entry
+after the last one it read, under the rule above; a cut from further on
+removes nothing. On a single server the store stops and reports (section
 6.12), and the administrator opens it again later, restores, or accepts
 the loss of whatever may follow that place. Accepting it discards only what
 lies after the last entry the start verified, never an entry the marker
@@ -730,9 +738,10 @@ in `om-store`, with these rules as the paper gives them:
 - A leader that cannot reach a majority steps down.
 - The members in force for a server are those of the latest `members`
   entry in its log, committed or not (section 7.6).
-- Beyond the paper: a server records, in its marker, the highest
-  committed position it has heard of. It does not stand for election, and
-  does not vote for a candidate, whose log ends before that position.
+- Beyond the paper: a server records, in its marker, its committed
+  position: the last entry of its own log known to be committed (section
+  6.3). It does not stand for election, and does not vote for a candidate,
+  whose log ends before that position.
 
 A server that restarts publishes only what it knows is committed
 (section 6.7). Entries after that may be replaced by a later leader.
