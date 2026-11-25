@@ -491,9 +491,10 @@ everything applied is published. A checkpoint is of one exact version:
 it covers every change of its entry and of those before, and none after
 (the page file refuses the rest; server-storage-format.md 4.6). The
 engine calls the page file as 4.6 sets out: one caller applies entries
-in order, one at a time, with one open reservation an entry and one
-entry's units open at a time (one unit a tree, or one for the whole
-entry), and another checkpoints and reclaims. The one that checkpoints
+in order, one at a time, with one open reservation and one unit of work
+an entry (everything the entry changes, in every tree, committed once;
+the page file holds each tree's root and changes it only then), and
+another checkpoints and reclaims. The one that checkpoints
 has the applier take no new entry for the moment of a checkpoint's first
 check and plan, and keeps a restore point only while no reservation is
 open; otherwise the page file refuses the checkpoint, or the keep, for

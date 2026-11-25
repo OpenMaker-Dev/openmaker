@@ -386,17 +386,23 @@ key's overflow pages as far as the child's key goes, and no further.
 pages it reaches, reading the store and changing nothing in it. The copy
 keeps items and separators in their pages and compares them as reads do;
 it reads a key whole only for the two keys at a leaf split's boundary and
-the first and last keys a delete removes. Then, in
-one entry of the page store (`om_store::page::EntryPages`), it writes
-every page of the working copy, children before parents, each stamped
-with the entry's index, releases every page the old version reached and
-the new one does not (replaced by a copy, or dropped with everything
-under it), and commits. A failure at any point leaves the store as it
-was, so the entry can be applied again. An entry that changes nothing
-writes nothing and keeps the root. An entry's index must be above the
-last entry that changed the tree (the root page's), so stamps only grow.
-The page store's guarantees, including what clones need, are in the
-documentation of `PageStore` and `EntryPages`.
+the first and last keys a delete removes. Then, into the entry's unit of
+work of the page store (`om_store::page::EntryPages`), which the caller
+opens once for the whole entry, it writes every page of the working
+copy, children before parents, each stamped with the entry's index, and
+releases every page the old version reached and the new one does not
+(replaced by a copy, or dropped with everything under it); it returns
+the new root and commits nothing. A tree the entry makes starts empty
+and is always written, if only as one empty leaf. The unit names the
+trees too: the caller gives it each changed tree's new root and the
+trees the entry makes, drops and renames, and commits once; the store
+holds each tree's name and root and changes them only then. A failure at
+any point leaves the store as it was once the unit is dropped, so the
+entry can be applied again. An entry that changes an existing tree in
+nothing writes nothing and keeps its root. An entry's index must be
+above the last entry that changed the tree (the root page's), so stamps
+only grow. The page store's guarantees, including what clones need, are
+in the documentation of `PageStore` and `EntryPages`.
 
 ### 2.7 The shape rules
 
@@ -816,19 +822,19 @@ rebuilt for them when those entries are applied again (4.7).
   folder flushed. So `pages` exists only whole. A `pages.new` left by a
   creation that did not finish is removed first.
 - **The callers' contract.** One caller applies entries, in order, one
-  entry at a time: it reserves the entry, runs its units (each one
-  tree's changes, or the whole entry's: several trees' pages and
-  releases with the entry's changes to the set of trees, committed
-  once), and is done with the entry before it starts the next; it may
-  reserve later entries ahead and runs their units in their turn.
-  Another caller checkpoints and reclaims; readers come at any time. The
-  page file refuses what falls outside this, and makes each check in the
-  same hold of its lock as the change the check guards:
+  entry at a time: it reserves the entry, runs the entry's one unit of
+  work (every tree's pages and releases, the trees made, dropped and
+  renamed, and each changed tree's new root, committed once), and is done
+  with the entry before it starts the next; it may reserve later entries
+  ahead. Another caller checkpoints and reclaims; readers come at any
+  time. The page file refuses what falls outside this, and makes each
+  check in the same hold of its lock as the change the check guards:
   1. an entry has one open reservation at a time: a second, while the
      first is open, is refused (one after the first is dropped is not);
-  2. units of one entry are open at a time: a unit of another entry
-     while one is open is refused, as is one of an entry before the last
-     one committed;
+  2. an entry has one unit of work, and one unit is open at a time: a
+     unit while another is open is refused, and so is one for an entry
+     that has committed one (or one before it); a unit dropped, or whose
+     commit was refused, may be begun again;
   3. a reservation is checked, its pages promised and it is opened in one
      hold, so a checkpoint sees it open or it sees the checkpoint's entry
      fixed;
@@ -845,45 +851,36 @@ rebuilt for them when those entries are applied again (4.7).
      included; a checkpoint left by a panic makes the page file refuse
      every later write until it is opened again, since its plan may have
      changed the map in memory;
-  6. the page file counts the changes to the set of trees committed; a
-     unit that changes the set (makes, drops or renames a tree) or drops
-     a page is refused whole at commit if the count moved since the unit
-     began, so overlapping changes by units of one entry give one result
-     whatever order they commit in, or the later is refused. A released
-     page still in memory must have the hash the unit released it with
-     (a byte-identical page passes: a hash covers a page's content, not
-     its number);
+  6. the page file holds each tree's name and root, and only a unit's
+     commit changes them. A root a unit names, for a tree it makes or
+     gives a new root, must be a tree's page (not an overflow page) the
+     unit wrote; a tree given a new root must have had its old root
+     released by the unit, and a page the unit releases that is a tree's
+     root must be the old root of a tree it gives a new one; a tree
+     dropped is named, and the page file releases the root it holds for
+     it. A unit that breaks any of this is refused whole;
   7. the restore point a checkpoint keeps counts in the floor (4.8) from
      its first check, and a checkpoint that keeps one is refused while
-     any reservation is open;
-  8. a checkpoint checks every root it is given as an open will (a tree's
-     page, not an overflow page, written at or before `E`), whether the
-     root is in memory or on disk.
+     any reservation is open.
 
-  The page file is specified and tested for the caller that applies one
-  entry at a time, normally through one unit; several units of one entry
-  are allowed, and what is claimed for them is exactly what these rules
-  state. Since a unit of a later entry committed between a checkpoint's
-  first check and its plan refuses the checkpoint (4), and a keep is
-  refused while any reservation is open (7), the caller that checkpoints
-  has the caller that applies take no new entry for the moment of a
-  checkpoint's first check and plan, and holds no reservation open when
-  it keeps a restore point; otherwise both refusals repeat for as long as
-  the applier does not pause.
+  Since a unit of a later entry committed between a checkpoint's first
+  check and its plan refuses the checkpoint (4), and a keep is refused
+  while any reservation is open (7), the caller that checkpoints has the
+  caller that applies take no new entry for the moment of a checkpoint's
+  first check and plan, and holds no reservation open when it keeps a
+  restore point; otherwise both refusals repeat for as long as the
+  applier does not pause.
 - **A checkpoint** of the newest version, at entry `E` (every unit
-  committed so far is of `E` or earlier), given every tree's root: the
-  trees given must be exactly the trees that exist, those of the newest
-  checkpoint and those made, dropped and renamed since by units (a
-  change to the set of trees is part of a unit of its entry, checked and
-  committed with it). The writer keeps every limit the reader enforces
+  committed so far is of `E` or earlier), of the trees as the page file
+  holds them: it takes no roots from its caller. The writer keeps every
+  limit the reader enforces
   (trees, restore points, names, numbers), and the meta stream goes
   through the reader's own decoding before any byte of it is written.
   Short of free pages for its meta stream, it reclaims first.
   1. the pages the roots reach that are only in memory are found (a page
      on disk never refers to one in memory); a page in memory of the
-     newest version that no root reaches, a root that left the newest
-     version, or a tree of the newest checkpoint that is neither given
-     nor dropped refuses the checkpoint, with nothing written;
+     newest version that no root reaches (a unit wrote a page no tree
+     names) refuses the checkpoint, with nothing written;
   2. the dying pages in memory that were dropped are taken down (after a
      restart only the disk is left to read them from), the newest
      checkpoint's meta pages die at the new version, and the meta stream
@@ -1333,12 +1330,12 @@ the lower count or a remove; the release of a session's locks on one file
 
 ### 5.6 Applying an entry
 
-`om_store::apply::apply` takes the state's roots and an entry, and
-returns what changed: the trees whose roots changed with their new roots,
-the trees made and dropped, the sessions opened and closed, the
-payload (whose notices and reply, with the operation's session and
-sequence number, the caller delivers when the entry is published), and
-what the unit of work took (5.7). What it costs is 5.8. It reads only the state and the entry:
+`om_store::apply::apply` takes the page store, which holds the state's
+trees by name with their roots, and an entry, and returns the sessions
+opened and closed and the payload (whose notices and reply, with the
+operation's session and sequence number, the caller delivers when the
+entry is published); the trees it changed are the store's to report
+(5.7). What it costs is 5.8. It reads only the state and the entry:
 no clock, no randomness, nothing of page numbers, caching or what else
 is in memory. Every check below is made from reads of the state before
 anything is written. The checks, in this order, the first that fails
@@ -1408,25 +1405,25 @@ field that does not fit; a file that does not exist; a name taken; an
 operation or a lock edit for a session that is not open; a sequence
 number that is not the next; a remove of a lock not held. A failure that
 is the server's own (a page it cannot read, a page store that fails, a
-root the caller did not give) is reported apart from these, and leaves
-the store as it was too.
+file's tree the store does not hold) is reported apart from these, and
+leaves the store as it was too.
 
 ### 5.7 One unit of work
 
-The page store's unit of work (`EntryPages`) is one tree's in its
-interface. `apply` gives every tree an entry changes (the store's own,
-the file's, a file's tree made or dropped) one shared unit: each tree's
-commit passes, and the unit is committed once, after the last tree, so
-an entry takes effect whole or not at all, and a unit dropped at any
-point leaves nothing. Each tree is changed at most once per entry, so no
-tree reads a page of the unit before it is committed.
-
-A file's tree is made by writing its empty root (as `tree::create`) and
-dropped by releasing its root as `Dropped` in the entry's unit; `apply`
-reports both by name, so that the caller tells the page file which trees
-exist. It also reports what passed through the unit: numbers allocated,
-pages written, and pages released as copied or dropped. A dropped page
-stands for everything under it, which the unit does not count.
+Everything an entry changes goes through the page store's one unit of
+work for the entry (`EntryPages`), committed once, so an entry takes
+effect whole or not at all, and a unit dropped at any point leaves
+nothing. Each tree the entry changes applies its edits into the unit
+and hands back its new root (`tree::apply`), which `apply` names in the
+unit (`set_root`). A file's tree made is the empty tree written into the
+unit (`tree::apply` from nothing) and named with `add_tree`; a file's
+tree removed is named with `drop_tree`, and the page store releases the
+root it holds for it. The store's own tree is made the same way by entry
+1: before it the store holds no tree. Each tree is changed at most once
+per entry, so no tree reads a page of the unit before it is committed.
+`apply` writes or releases no root on its own account, and the trees it
+changed are read from the page store, which holds every tree's name and
+root.
 
 ### 5.8 What one entry costs
 
