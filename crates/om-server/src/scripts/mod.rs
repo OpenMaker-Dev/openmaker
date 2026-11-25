@@ -768,6 +768,7 @@ mod tests {
         let engine = crate::engine::FileEngine::default();
         // Every read answered through both views (`engine::copies`).
         engine.check_reads();
+        engine.check_writes();
         let hosting = Hosting::load(
             &[HostedFile {
                 name: fixture::FILE.into(),

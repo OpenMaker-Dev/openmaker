@@ -24,7 +24,7 @@ use om_data::containers::keys::MEMBERS;
 
 use crate::connection::ACCESS_DENIED;
 use crate::derived::Derived;
-use crate::engine::{Environment, Read, ReadError, StoreContainerData, Transaction};
+use crate::engine::{Environment, Read, ReadError, StoreContainerData, Transaction, View};
 use crate::hosting::Hosted;
 use crate::library::{self, BinaryData, Stored, LIBRARY};
 use crate::thumbnail::{self, Key, Thumbnail, MAX_SIDE};
@@ -110,8 +110,7 @@ pub fn store_upload(
     if tx.is_read_only() {
         return upload_reply(ACCESS_DENIED, Vec::new(), String::new());
     }
-    let Some(path) = table_segment(&table).and_then(|t| library_path(tx.view().derived(), t))
-    else {
+    let Some(path) = table_segment(&table).and_then(|t| library_path(&tx.derived(), t)) else {
         return upload_reply(TABLE_MISSING, Vec::new(), String::new());
     };
     let unique_id = || {
@@ -119,7 +118,7 @@ pub fn store_upload(
         environment.fill_random(&mut id);
         id
     };
-    match tx.store_binary(&segments(&path), data, unique_id) {
+    match store_binary(tx, file, &segments(&path), data, unique_id) {
         None => upload_reply(
             BAD_DATA,
             Vec::new(),
@@ -159,10 +158,10 @@ pub fn adjust_reference_count(
     if tx.is_read_only() {
         return COUNT_FAILED;
     }
-    let Some(path) = library_path(tx.view().derived(), table) else {
+    let Some(path) = library_path(&tx.derived(), table) else {
         return COUNT_FAILED;
     };
-    match tx.adjust_reference_count(&segments(&path), member, req.delta) {
+    match adjust_count(tx, file, &segments(&path), member, req.delta) {
         Some(count) => {
             if count == 0 {
                 tx.once_stored(format!(
@@ -176,6 +175,98 @@ pub fn adjust_reference_count(
         None => {
             warn!("{file:?}: op87 for missing member {member:02x?} of {path:02x?}");
             COUNT_FAILED
+        }
+    }
+}
+
+/// op88's store of `data` in the library at `path` (`[T, 1f]` or
+/// `[1f]`), creating the library on first use (containers.md 3.4), as the
+/// library's rules decide it from what the transaction reads
+/// ([`library::store_changes`]) and written through it. A store they
+/// refuse ([`library::refusal`]) is logged and changes nothing.
+pub(crate) fn store_binary(
+    tx: &mut Transaction<'_>,
+    file: &str,
+    path: &[&[u8]],
+    data: BinaryData,
+    unique_id: impl FnMut() -> [u8; 16],
+) -> Option<Stored> {
+    let decided = (|| {
+        let view: &dyn View = tx;
+        if let Some(reason) = library::refusal(view, path, Some(&data), None)? {
+            return Ok(Err(reason));
+        }
+        let library = library::At { view, path };
+        let plan = library::plan(&library, &data.md5)?;
+        library::store_changes(&library, data, &plan, unique_id).map(Ok)
+    })();
+    match decided {
+        Ok(Ok(Some((stored, changes)))) => {
+            write(tx, path, changes);
+            Some(stored)
+        }
+        // Not reached: the refusal checked the same counters.
+        Ok(Ok(None)) => None,
+        Ok(Err(reason)) => {
+            warn!("{file}: container data not stored: {reason}");
+            None
+        }
+        Err(error) => {
+            warn!("{file}: container data not stored: {error}");
+            None
+        }
+    }
+}
+
+/// op87's adjustment of `member`'s reference count by `delta` in the
+/// library at `path`, deleting it at 0 (containers.md 5.3), as the
+/// library's rules decide it ([`library::adjust_changes`]) and written
+/// through the transaction: the new count, or `None` when there is no such
+/// member. An adjustment they refuse is logged and changes nothing.
+pub(crate) fn adjust_count(
+    tx: &mut Transaction<'_>,
+    file: &str,
+    path: &[&[u8]],
+    member: &[u8],
+    delta: i32,
+) -> Option<u32> {
+    let decided = (|| {
+        let view: &dyn View = tx;
+        if let Some(reason) = library::refusal(view, path, None, Some((member, delta)))? {
+            return Ok(Err(reason));
+        }
+        library::adjust_changes(&library::At { view, path }, member, delta).map(Ok)
+    })();
+    match decided {
+        Ok(Ok(Some((count, changes)))) => {
+            write(tx, path, changes);
+            Some(count)
+        }
+        Ok(Ok(None)) => None,
+        Ok(Err(reason)) => {
+            warn!("{file}: reference count not changed: {reason}");
+            None
+        }
+        Err(error) => {
+            warn!("{file}: reference count not changed: {error}");
+            None
+        }
+    }
+}
+
+/// A library's `changes` written through the transaction, below the
+/// library at `path`. The rules' refusal checked what each put leaves; a
+/// write refused anyway fails the operation's save, so nothing of it is
+/// kept.
+fn write(tx: &mut Transaction<'_>, path: &[&[u8]], changes: Vec<library::Change>) {
+    for (rest, node) in changes {
+        let at: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).chain(rest).collect();
+        let written = match node {
+            Some(node) => tx.replace(at, node),
+            None => tx.remove(at),
+        };
+        if let Err(reason) = written {
+            tx.refuse(reason);
         }
     }
 }

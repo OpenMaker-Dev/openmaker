@@ -1061,7 +1061,7 @@ pub mod general {
 
 /// Layout Setup's name and view flags for layout `layout`, set on the
 /// layout shown at revision `expected` (its member's
-/// `om_protocol::authoring::catalog_revision`), as the window asks for it
+/// `om_protocol::authoring::layout_revision`), as the window asks for it
 /// ([`crate::DataProvider::set_layout_setup`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LayoutSetupChange {

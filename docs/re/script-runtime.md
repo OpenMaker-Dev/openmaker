@@ -2948,9 +2948,9 @@ Server engine (11.3, 11.5)
   the desktop's writes).
 - Schema changes while a script runs: each session reads the schema
   (record rules, the calculation and SQL schema, summaries, layouts,
-  scripts) again before a step when the store's schema generation moved:
+  scripts) again before a step when the derived state's version moved:
   Manage Database replaced catalogs (op13, op86) or op73 did its field
-  work (`Store::schema_generation`, `ScriptHost::before_step`), and at the
+  work (`ScriptHost::before_step`), and at the
   end of the script before its last commit. The window stays on its layout
   (by id); when that layout is gone or no longer shows the window's table,
   it moves to the first layout of its table (keeping its found set), else

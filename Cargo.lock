@@ -4518,6 +4518,7 @@ dependencies = [
  "om-scripts",
  "om-server",
  "om-session",
+ "om-transfer",
  "rcgen 0.14.10",
  "rmcp",
  "serde",
@@ -4605,6 +4606,7 @@ dependencies = [
  "om-scripts",
  "om-scsu",
  "om-sql",
+ "om-transfer",
  "rustix 1.1.6",
  "zeroize",
 ]
@@ -4684,6 +4686,7 @@ dependencies = [
 name = "om-hbam"
 version = "0.0.0"
 dependencies = [
+ "om-crypto",
  "om-scsu",
 ]
 

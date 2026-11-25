@@ -181,6 +181,8 @@
 //! issuing a member key and building an index operations of their own.
 
 #[cfg(debug_assertions)]
+mod checking;
+#[cfg(debug_assertions)]
 mod copies;
 pub(crate) mod export;
 mod file;
@@ -204,6 +206,7 @@ mod view;
 #[cfg(all(test, debug_assertions))]
 mod tests;
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use log::error;
@@ -228,6 +231,8 @@ pub(crate) use export::{Destination, ExportError, OnDisk, Progress, Source};
 pub(crate) use file::FileEngine;
 pub(crate) use overlay::{Cover, Overlay};
 pub(crate) use reading::{assert_no_reading_held, Read, Waiting};
+#[cfg(test)]
+pub(crate) use transaction::written;
 pub(crate) use transaction::{Hold, Locks, Transaction};
 /// For views written in tests outside the engine.
 #[cfg(test)]
@@ -523,7 +528,7 @@ pub struct ReleaseLocks {
 
 /// op13: put an uploaded subtree, or a single value, at its destination in
 /// the file, replacing what was there (schema-path.md 3.3;
-/// `Store::put_subtree`). The caller checked the session's Full Access;
+/// `schema::upload_to_catalog`). The caller checked the session's Full Access;
 /// op13 takes and checks no lock.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UploadToCatalog {
@@ -540,7 +545,7 @@ pub struct UploadToCatalog {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChangeSchema {
     /// Its UploadMultiple and DeleteTable writes, in order
-    /// (`Store::apply`).
+    /// (`schema::change_schema`).
     pub writes: Vec<om_query::Write>,
     /// The member keys GenerateMemberKey issued that were waiting
     /// (`Store::take_issued_member_keys`).
@@ -1213,9 +1218,9 @@ pub fn run(
         (Operation::ReserveRecordIds(op), Hold::Transaction(tx)) => Outcome::new(
             Reply::ReserveRecordIds(writes::create_record(op, file, tx, locks)),
         ),
-        (Operation::AdvanceSerial(op), Hold::Transaction(tx)) => {
-            Outcome::new(Reply::AdvanceSerial(writes::get_serial(&op.request, tx)))
-        }
+        (Operation::AdvanceSerial(op), Hold::Transaction(tx)) => Outcome::new(
+            Reply::AdvanceSerial(writes::get_serial(&op.request, file, tx)),
+        ),
         (Operation::CommitRecords(op), Hold::Transaction(tx)) => {
             let from = op.user.connection;
             let (reply, changes) = writes::commit(op, file, tx, locks, environment);
@@ -1224,11 +1229,11 @@ pub fn run(
                 notices: Notices { from, changes },
             }
         }
-        (Operation::TakeLock(op), Hold::View(store)) => {
-            Outcome::new(Reply::TakeLock(writes::lock(op, file, store, locks)))
-        }
+        (Operation::TakeLock(op), Hold::View(store)) => Outcome::new(Reply::TakeLock(
+            writes::lock(op, file, &store.tree_view(), locks),
+        )),
         (Operation::TakeLock(op), Hold::Transaction(tx)) => {
-            Outcome::new(Reply::TakeLock(writes::lock(op, file, tx.view(), locks)))
+            Outcome::new(Reply::TakeLock(writes::lock(op, file, tx, locks)))
         }
         (Operation::UpgradeLock(op), _) => {
             Outcome::new(Reply::UpgradeLock(writes::upgrade(op, file, locks)))
@@ -1249,11 +1254,13 @@ pub fn run(
         }
         (Operation::UploadToCatalog(op), Hold::Transaction(tx)) => {
             Outcome::new(Reply::UploadToCatalog(
-                schema::upload_to_catalog(op, tx).map_err(StorageError::refused),
+                schema::upload_to_catalog(op, file, tx)
+                    .map(|()| true)
+                    .map_err(|why| StorageError::refused(&why)),
             ))
         }
         (Operation::ChangeSchema(op), Hold::Transaction(tx)) => Outcome::new(Reply::ChangeSchema(
-            schema::change_schema(op, tx).map_err(SchemaNotChanged::Refused),
+            schema::change_schema(op, file, tx).map_err(SchemaNotChanged::Refused),
         )),
         (Operation::StoreIndexes(op), Hold::Transaction(tx)) => {
             tx.store_indexes(op.indexes);
@@ -1295,7 +1302,7 @@ pub fn run(
             }
         }
         (Operation::SetNextSerial(op), Hold::Transaction(tx)) => {
-            Outcome::new(Reply::SetNextSerial(writes::set_next_serial(op, tx)))
+            Outcome::new(Reply::SetNextSerial(writes::set_next_serial(op, file, tx)))
         }
         (Operation::TakeScriptLock(op), _) => Outcome::new(Reply::TakeScriptLock(
             locks.lock(&op.path, op.user, LOCK_WRITE, &op.holder),
@@ -1364,10 +1371,11 @@ fn save_found_set(op: SaveFoundSet, file: &str, tx: &mut Transaction<'_>) -> boo
     if tx.is_read_only() {
         return false;
     }
-    let version = tx
-        .node(&[&[3], &[0x10], &[5], &table, &[0xfb]])
-        .and_then(|n| n.value.as_deref())
-        .and_then(|v| <[u8; 4]>::try_from(v).ok())
+    let version = View::node(tx, &[&[3], &[0x10], &[5], &table, &[0xfb]])
+        .ok()
+        .flatten()
+        .and_then(|head| head.value)
+        .and_then(|value| <[u8; 4]>::try_from(&*value).ok())
         .map(u32::from_be_bytes);
     let Some(data_version) = version else {
         log::info!("{file}: no data version for table {table:02x?}; found set not kept");
@@ -1378,18 +1386,27 @@ fn save_found_set(op: SaveFoundSet, file: &str, tx: &mut Transaction<'_>) -> boo
         current,
         data_version,
     };
-    let existing = tx.node(&[&occurrence, &[7]]);
-    let Some(node) = om_data::meta::saved_found_set_written(existing, &table, &write) else {
+    // The saved found set whole, as FileMaker Pro writes it.
+    let existing = tx
+        .subtree(&[&occurrence, &[7]], NO_LIMIT)
+        .ok()
+        .flatten()
+        .map(Cow::into_owned);
+    let Some(node) = om_data::meta::saved_found_set_written(existing.as_ref(), &table, &write)
+    else {
         log::info!(
             "{file}: occurrence {occurrence:02x?} holds a found set FileMaker Pro never wrote \
              that way; not kept"
         );
         return false;
     };
-    if existing == Some(&node) {
+    if existing.as_ref() == Some(&node) {
         return true;
     }
-    tx.replace_node(vec![occurrence, vec![7]], node);
+    tx.begin_commit();
+    if let Err(reason) = tx.replace(vec![occurrence, vec![7]], node) {
+        tx.refuse(reason);
+    }
     true
 }
 

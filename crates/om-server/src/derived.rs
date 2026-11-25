@@ -803,7 +803,10 @@ pub(crate) fn index_on_demand(
 /// view): a value of its own, or one split into pieces below it (a list
 /// with no value of its own whose first child is the header `0` of a
 /// chunked value, `OwnedNode::assembled`), which only then is read whole.
-fn value_on_path(view: &dyn View, path: &[&[u8]]) -> Result<Option<Vec<Vec<u8>>>, ReadError> {
+pub(crate) fn value_on_path(
+    view: &dyn View,
+    path: &[&[u8]],
+) -> Result<Option<Vec<Vec<u8>>>, ReadError> {
     for depth in 1..=path.len() {
         let at = &path[..depth];
         let Some(head) = view.node(at)? else {
@@ -882,7 +885,7 @@ pub(crate) fn stored_member_key(view: &dyn View, path: &[&[u8]]) -> Result<(u64,
 /// id and modification count, one more than its last issued id
 /// `[C, 01, 00]` and count `[C, 01, fc]` (or than what `waiting` says was
 /// issued since), and note them there as issued. The tree is only read
-/// here; `Store::write_member_keys` stores them. `None` for a catalog the
+/// here; op86 writes them (`engine::schema`). `None` for a catalog the
 /// tree cannot take them under as it is, and past the largest a serial key
 /// holds.
 pub(crate) fn issue_member_key(

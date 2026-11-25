@@ -20,6 +20,10 @@ pub struct FileEngine {
     /// (`super::copies`).
     #[cfg(debug_assertions)]
     pub(super) copies: std::sync::RwLock<Option<std::sync::Arc<super::copies::Switch>>>,
+    /// Whether each operation's reads and writes through its transaction
+    /// are checked (`super::checking`), when a test asked for it.
+    #[cfg(debug_assertions)]
+    checking_writes: std::sync::atomic::AtomicBool,
 }
 
 /// What the engine offers each operation to, by reference, completed and
@@ -118,6 +122,25 @@ fn needs(operation: &Operation) -> Needs {
         | Operation::ReleaseScriptLock(_)
         | Operation::ReleaseSessionLocks(_) => Needs::LockTable,
     }
+}
+
+/// The operations not moved onto the transaction's writes at all: they
+/// change the tree through the store's own helpers alone, so a check of
+/// the transaction's writes has nothing to check in them, and would compare
+/// and copy the whole tree around each record they write
+/// (docs/server-storage.md 5, "Moving the other readers", item 5). An
+/// operation that moved, even in part, is checked around each helper it
+/// calls (`super::checking::Check::before_store`).
+#[cfg(debug_assertions)]
+fn on_the_store(operation: &Operation) -> bool {
+    matches!(
+        operation,
+        Operation::CommitRecords(_)
+            | Operation::CommitScriptRecords(_)
+            | Operation::UpdateTable(_)
+            | Operation::FinishDeferredWork
+            | Operation::StoreIndexes(_)
+    )
 }
 
 fn save(operation: &Operation) -> Save {
@@ -236,7 +259,19 @@ impl FileEngine {
             recorder: None,
             #[cfg(debug_assertions)]
             copies: Default::default(),
+            #[cfg(debug_assertions)]
+            checking_writes: Default::default(),
         }
+    }
+
+    /// Check each operation's reads and writes through its transaction
+    /// (`super::checking`, `Server::checking_reads`).
+    /// Nothing in a release build, which has no check.
+    #[cfg_attr(not(debug_assertions), allow(dead_code))]
+    pub(crate) fn check_writes(&self) {
+        #[cfg(debug_assertions)]
+        self.checking_writes
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// This engine, offering each operation it runs to `recorder` first
@@ -398,15 +433,26 @@ impl FileEngine {
         let save = save(&operation);
         let mut locks = Locks::new(file.locks(&WRITER));
         let mut tx = Transaction::new(&mut store);
+        #[cfg(debug_assertions)]
+        if self
+            .checking_writes
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && !on_the_store(&operation)
+        {
+            tx.checked();
+        }
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run(
+            let outcome = run(
                 operation,
                 credentials,
                 &file.name,
                 Hold::Transaction(&mut tx),
                 &mut locks,
                 &*self.environment,
-            )
+            );
+            // The derived state follows the operation's last writes.
+            tx.settle();
+            outcome
         }));
         let mut outcome = match ran {
             Ok(outcome) => outcome,
@@ -415,6 +461,8 @@ impl FileEngine {
                 unwound(file, &mut store, journal, taken, locks, panic)
             }
         };
+        #[cfg(debug_assertions)]
+        let check = tx.check.take();
         let Transaction {
             mut journal,
             committing,
@@ -435,6 +483,16 @@ impl FileEngine {
         }));
         if let Err(panic) = followed {
             unwound(file, &mut store, journal, taken, locks, panic);
+        }
+        // The operation's writes said all it changed (a test's check).
+        #[cfg(debug_assertions)]
+        if let Some(check) = check {
+            let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                check.finish(&store);
+            }));
+            if let Err(panic) = checked {
+                unwound(file, &mut store, journal, taken, locks, panic);
+            }
         }
         // An authoring edit's locks, released once the store is let go.
         let held = locks.after_stored();

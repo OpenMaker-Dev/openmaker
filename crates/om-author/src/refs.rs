@@ -50,6 +50,24 @@ pub fn value_list_id(reference: &str, file: &str) -> Result<u64, AuthorError> {
     id_of("value_list", "value_list:3", reference, file)
 }
 
+/// The custom function id `reference` (`custom_function:1@Tasks.fmp12`)
+/// names in `file`, the file connected to.
+pub fn custom_function_id(reference: &str, file: &str) -> Result<u64, AuthorError> {
+    id_of("custom_function", "custom_function:1", reference, file)
+}
+
+/// The data source id `reference` (`data_source:1@Tasks.fmp12`, as
+/// `inspect` gives it) names in `file`, the file connected to.
+pub fn data_source_id(reference: &str, file: &str) -> Result<u64, AuthorError> {
+    id_of("data_source", "data_source:1", reference, file)
+}
+
+/// The relationship id `reference` (`relationship:1@Tasks.fmp12`) names in
+/// `file`, the file connected to.
+pub fn relationship_id(reference: &str, file: &str) -> Result<u64, AuthorError> {
+    id_of("relationship", "relationship:1", reference, file)
+}
+
 /// The table and field ids `reference` names in `file`, the file
 /// connected to.
 pub fn field_id(reference: &str, file: &str) -> Result<(u64, u64), AuthorError> {

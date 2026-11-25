@@ -232,6 +232,10 @@ impl View for FileView<'_> {
     fn changed_since(&self, path: &[&[u8]], since: Version) -> Result<bool, ReadError> {
         self.store.tree_view().changed_since(path, since)
     }
+
+    fn count_children(&self, path: &[&[u8]]) -> Result<usize, ReadError> {
+        self.store.tree_view().count_children(path)
+    }
 }
 
 #[cfg(debug_assertions)]

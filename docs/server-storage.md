@@ -145,21 +145,176 @@ and SQL types are views computed from the tree (section 10), never the
 stored form.
 
 **Path groups.** For history and deploys (section 9) the paths of a file
-are sorted into three groups. The grouping is OpenMaker's and changes
-nothing about how a file is stored.
+are sorted into groups. The grouping is OpenMaker's and changes nothing
+about how a file is stored.
 
 | Group | Holds | Changed by |
 |---|---|---|
-| Design | tables, table occurrences, relationships, field definitions, layouts, themes, scripts, custom functions, custom menus, value lists, privilege sets, extended privileges | developers |
-| Data | each table's records, indexes, record list and counters; container data | users |
-| Access | accounts | administrators |
+| Design | tables, table occurrences, relationships, field definitions, layouts, themes, scripts, custom functions, custom menus and menu sets, value lists, privilege sets, extended privileges, fonts, the file library, data sources, base directories; each catalog's display order and settings, and the entries its index keeps per member of what a tool shows of it | developers |
+| Data | each table's records, indexes, record list, counters and global values; container data and library reference counts; the data keys inside design members: a serial field's next value, a table's and a field's data version, pending field work; each catalog's last issued id; an occurrence's saved found set | users, and the host for them |
+| Access | accounts, file access authorizations | administrators |
+| Secret | a credential stored inside a design member: a password, a private key, a client secret or an API key a script step or a button's step keeps, and the account name beside it in a step that signs in | developers |
+| Derived | what FileMaker computes from other paths and no tool shows or lets a person set: checksums (a privilege set's also covers the file's creation stamp), digests, name lists, counts, routes and dependency lists | whoever writes what they come from |
 
-The paths of each group are listed in one place in code, from
-file-format.md 3.4 and [schema-path.md](re/schema-path.md) 5. The list is
-by path, not by catalog member, because a member can hold both: a serial
-field's next value is a key inside its field definition
-([write-path.md](re/write-path.md) 3.2) and is Data. A path in no group
-belongs to the file as a whole: it is exported, and never deployed.
+The rules are one table in code, `om_hbam::design_paths::rules()`, each
+with what its paths hold and the `docs/re/` section that says so. They
+are by path, not by catalog member, because a member can hold both: a
+serial field's next value is a key inside its field definition
+([write-path.md](re/write-path.md) 3.2) and is Data. A rule covers its
+path and everything below it, and the longest rule that matches a path
+decides. Paths are written with hex segments, as schema-path.md writes
+them (scripts are `[11]`, the security catalogs `[17]`). A catalog that
+is one group as a whole has one rule. A Design catalog has one rule per
+key of its index `[cat, 1]` and per first-level key of its members
+`[cat, 5, id]`, those every catalog shares
+([schema-path.md](re/schema-path.md) 5.1, 8.1) and those its spec names.
+A table's data key `T` is a serial key ([query-program.md](re/query-program.md)
+2.6) of any length with an id from 128 up to 1,065,088 (`d0 00 00`), an
+occurrence's `O` one from 1,065,088 on: tables are numbered from `80 01`
+and occurrences from `d0 00 01` (schema-path.md 5.2, 5.3), and the
+boundary between them is inferred from those first ids. At catalog
+level, with the keys of Design catalogs that are another group (`*` a
+member's id; a test keeps this table equal to the code's):
+
+| Paths | Holds | Group | Objects | Spec |
+|---|---|---|---|---|
+| `[cat, 01, 00]` | the last issued member id, in every catalog's index | Data |  | schema-path.md 5.1 |
+| `[cat, 01, 01]` | the name list, keyed by the members' names, in every catalog's index | Derived |  | schema-path.md 5.1, 5.6 |
+| `[cat, 01, 04]` | the member count, in every catalog's index | Derived |  | schema-path.md 5.1 |
+| `[03, 10]` | base tables | Design | table | schema-path.md 5.2 |
+| `[03, 10, 05, *, fb]` | the table's data version, raised when a change affects stored values | Data |  | schema-path.md 5.8 |
+| `[03, 11]` | table occurrences | Design | occurrence | schema-path.md 5.3 |
+| `[03, 11, 01, 08]` | the routes between occurrences, computed by the client | Derived |  | schema-path.md 5.3 |
+| `[03, 11, 01, 0e]` | the fields' dependencies through relationships (DBDepend) | Derived |  | schema-path.md 5.3 |
+| `[03, fb]` | relationships | Design | relationship | schema-path.md 5.4 |
+| `[04]` | layouts | Design | layout | layout-model.md 10.5, 10.6 |
+| `[04, 01, 07]` | each layout's entry: its occurrence, menu set, name and flags; each entry is part of its member's object for edits, of the catalog's for design revisions (section 9) | Design |  | layout-model.md 10.6, 10.11 |
+| `[06]` | themes | Design | theme | layout-model.md 7.5 |
+| `[06, 01, 07]` | an empty entry for each theme; each entry is part of its member's object for edits, of the catalog's for design revisions (section 9) | Design |  | layout-model.md 7.5 |
+| `[10]` | custom functions | Design | custom_function | calc-encoding.md 8 |
+| `[11]` | scripts | Design | script | scripts.md; script-steps.md 1 |
+| `[11, 01, 07]` | each script's name and flags as Script Workspace shows them (its full-access badge); each entry is part of its member's object for edits, of the catalog's for design revisions (section 9) | Design |  | scripts.md, "The catalog index" |
+| `[11, 01, 08]` | the digest of the member cache | Derived |  | scripts.md, "The catalog index" |
+| `[17, 01]` | accounts | Access |  | session-identity.md 1, 3; local-files.md 3 |
+| `[17, 02]` | privilege sets | Design | privilege_set | session-identity.md 2 |
+| `[17, 02, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
+| `[17, 02, 01, 08]` | the sets by checksum | Derived |  | session-identity.md 4.1 |
+| `[17, 02, 05, *, 04]` | the checksum, over the set and the file's creation stamp | Derived |  | session-identity.md 4.1, 4.4 |
+| `[17, 03]` | extended privileges | Design | extended_privilege | session-identity.md 4.2 |
+| `[17, 03, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
+| `[17, 03, 05, *, 04]` | the checksum | Derived |  | session-identity.md 4.2, 4.4 |
+| `[17, 04]` | file access | Access |  | session-identity.md 4.3 |
+| `[19]` | fonts | Design | font | layout-model.md 8 |
+| `[19, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
+| `[1f]` | file library | Design | library_item | containers.md 1 |
+| `[1f, 01, 06]` | the glyph index: the members that are glyphs; each entry is part of its member's object for edits, of the catalog's for design revisions (section 9) | Design |  | containers.md 1.2 |
+| `[1f, 01, 07]` | the member list; each entry is part of its member's object for edits, of the catalog's for design revisions (section 9) | Design |  | containers.md 1.2 |
+| `[1f, 01, 08]` | the MD5 index | Derived |  | containers.md 1.2 |
+| `[1f, 05, *, 04]` | the MD5 of the data | Derived |  | containers.md 1.3, 2.2 |
+| `[1f, 05, *, 12]` | the reference count | Data |  | containers.md 1.3, 5 |
+| `[20]` | data sources | Design | data_source | file-metadata.md 1.1 |
+| `[21]` | value lists | Design | value_list | file-metadata.md 6 |
+| `[21, 01, 06]` | a second name list, by type as the field catalog's [I] | Derived |  | file-format.md 3.7 [I]; schema-path.md 5.5 |
+| `[21, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
+| `[26]` | base directories | Design | base_directory | containers.md 8.1 |
+| `[40]` | custom menu sets | Design | custom_menu_set | file-format.md 3.4 [I] |
+| `[40, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
+| `[41]` | custom menus | Design | custom_menu | calc-encoding.md 8 |
+| `[41, 01, 07]` | a member list, an empty leaf per member [I] | Derived |  | file-format.md 3.7 [I] |
+| `[T, 03]` | fields | Design | field | schema-path.md 5.5 |
+| `[T, 03, 01, 06]` | the name list by type | Derived |  | schema-path.md 5.5 |
+| `[T, 03, 01, 0e]` | the fields' triggers and dependencies | Derived |  | schema-path.md 5.5, 5.10 |
+| `[T, 03, 01, fd]` | work pending on the table's records, which the host does and deletes | Data |  | schema-path.md 7.2 |
+| `[T, 03, 05, *, 0c]` | the next serial number | Data |  | schema-path.md 5.5; write-path.md 3.2 |
+| `[T, 03, 05, *, fb]` | the field's data version, raised when a change affects stored values | Data |  | schema-path.md 5.5, 5.8 |
+| `[T, 1f]` | table libraries | Data |  | containers.md 1.1 |
+| `[02]` | the file's status: format, version, history, locale, File Options, icons, page setup, creation stamp | none |  | file-format.md 3.4; file-metadata.md 2, 3 |
+| `[1a]` | the file's own icon image (KOrigThumbImg) | none |  | file-format.md 3.4; containers.md 2.3 |
+| `[T, 00]` | the table's last issued record id | Data |  | write-path.md 5.1 |
+| `[T, 01]` | the field value indexes | Data |  | write-path.md 5.5 |
+| `[T, 05]` | the records | Data |  | write-path.md 5.2, 5.4 |
+| `[T, 08]` | the global fields' stored values | Data |  | calc-values.md, "Global values"; script-runtime.md, "Globals" |
+| `[T, 0d]` | the record list | Data |  | write-path.md 5.3 |
+| `[O, 07]` | the saved found set, sort, current record and last find | Data |  | file-metadata.md 11 |
+
+A step's credentials are found by step rules, which need the member: the
+slot `[00 n]` (script-steps.md 4.2) of a step's data that holds a
+password depends on the step, whose id is in the script's step list
+`[11, 5, S, 04]` or the button's object in the layout's object store
+`[4, 5, L, 07]` (layout-model.md 5.3.3). A step keeps its data at
+`[11, 5, S, 05, K]`, a button at `[4, 5, L, 05, O, 11]`. Of a credential
+slot its calculation `05` is Secret (the specs name these credentials as
+calculations), and its text `01` if it has one; the slot's number `03` is
+another setting (Create PDF's slot 7 also holds "allow screen reader"). A
+credential slot holds no value of its own (no spec gives one); one that
+does is not in its shape. A profile is Secret whole, whatever its type
+word: an ODBC profile holds a user name and password beside its query
+(11.5), and profiles are not read here. A path whose subtree holds a
+Secret path (the slot, the member) is Secret too. "Not Secret" means
+identified and known not to hold a credential: when a step is not
+identified with certainty, every slot of its data is Secret whole. The
+step rules mark the two-byte slots of a step's data and its profile; the
+own value of a data node, or a key in it that is neither, is not marked
+and keeps its path rule. The classifier sits below the decoders
+(`om-scripts`, `om-layout`) and cannot call them, so it reads as they do
+or more strictly where it reads, and what it cannot read as they do is
+Secret (`om_hbam::design_paths::STEP_SECRETS`; a test keeps this table
+equal to the code's). This reading is for the report and for deploys;
+design revisions and comparisons do not look into step data at all
+(section 9):
+
+| Step | Slots whose calculation `05` (and text `01`) is Secret | Spec |
+|---|---|---|
+| 63 Send Mail | 10 the SMTP user name; 11 the SMTP password; 16 the Google OAuth service account; 17 the Google OAuth private key; 20 the Microsoft OAuth client id; 21 the Microsoft OAuth client secret | script-steps.md 12.3; catalogs/script-step-params.csv |
+| 83 Change Password | 0 the old password; 1 the new password | catalogs/script-step-params.csv |
+| 134 Add Account | 1 the password | catalogs/script-step-params.csv |
+| 136 Reset Account Password | 1 the new password | catalogs/script-step-params.csv |
+| 138 Re-Login | 0 the account name; 1 the password | catalogs/script-step-params.csv |
+| 144 Save Records as PDF | 7 the password to open [I]; 8 the password to control [I] | script-steps.md 11.7, 12.2 [I] |
+| 211 Trigger Claris Connect Flow | 3 the authentication | catalogs/script-step-params.csv |
+| 212 Configure AI Account | 3 the API key | script-steps.md 12.2; catalogs/script-step-params.csv |
+| 227 Configure RAG Account | 3 the API key | script-steps.md 12.2; catalogs/script-step-params.csv |
+| 242 Print PDF | 1 the password | catalogs/script-step-params.csv |
+| 243 Create PDF | 7 the password to open; 8 the password to control | script-steps.md 12.2 |
+| 244 Append PDF | 7 the PDF's password | script-steps.md 12.2 |
+| 246 Open PDF | 7 the PDF's password | script-steps.md 12.2 |
+| any step | its profile `86`, whole, whatever its type word (an ODBC connection profile holds the user name and password, and profiles are not read here) | script-steps.md 11.0, 11.5 |
+| a step not identified with certainty | every slot, whole: no step list or object store, one that does not decode to its end (a protobuf field om-layout's reader refuses or reads otherwise included), a data key that is no serial key or that two descriptors or buttons give different steps, a button whose step fields disagree, a step id the step catalog does not have (0 included), a data key no step names, a credential slot not shaped as script-steps.md 4.2 gives (a value of its own included); and a script or layout member or attribute record, whole, with a key of more than one byte that reads by number as one the decoders look up there (`[00 04]` as the step list `04`) | script-steps.md 2, 4.2; catalogs/script-steps.csv |
+
+There is no grouping by path alone: `om_hbam::design_paths::group_in`
+takes the tree, since a path-only answer of Design for a stored password
+could be taken as final.
+
+What the rules cannot see is not Secret. The rules reach the first-level
+keys of members and catalog indexes and the slots above; below them
+everything is that rule's. A password typed into a calculation, a URL
+with credentials in Insert from URL's options or a cURL option, or a key
+in a custom function is ordinary formula text and Design. A credential
+under a key no spec names (a data source's connection settings, if a
+file has them) is in no group: like every path in no group it stays in
+its object's edit token, and the object has no design revision (section
+9). A custom menu item that runs a step, and a button in a table view
+`[4, 5, L, 0d]`, are not looked into; a custom menu's items are under its
+unexplained key `02`, in no group.
+
+A path in no group is the file as a whole (`[2]`, `[1a]`), or a key no
+rule names: no spec says what it is, so it is not guessed. Neither is an
+error. `[2, 18]`, File Options, holds file-level design (the layout and
+the script triggers a file opens with) beside local preferences; it is
+left with the file as a whole on purpose, so history does not record it
+and deploys do not carry it. A path in no group is exported, and never
+deployed; a member that holds one is not deployed over an existing one
+(section 9). A path above the rules (a catalog, a member, a table's data
+key) holds paths of several groups and has no group of its own: a write
+that replaces one is classified by the paths below it. The report
+(`cargo run -p om-hbam --example design_paths -- <file>`) lists the
+paths no rule covers by shape, and the catalog members that are no
+design object; the keys of FileMaker Pro 26's starter files that no spec
+explains are listed in [file-format.md](re/file-format.md) 3.7. Two
+index keys there are grouped Derived by inference from their form alone
+(a member list `07` in six catalogs, the value lists' second name list
+`06`): if the inference is wrong, a difference there is reported as
+Derived when it is Design, and no content is hashed or shown.
 
 ## 5. The engine interface
 
@@ -208,9 +363,11 @@ changes and why, which file on disk it last read or saved) it offers
 itself ("The engine's state of a file", below). `export` is built
 ("Exports", below): it copies the file on disk where that holds the
 version and walks a view otherwise, and backup schedules and the
-desktop's Save a Copy as make their copies with it. Server scripts and
-the operations' own reads still hold the store; "Moving the other
-readers" below lists them and the plan for them. `import` and
+desktop's Save a Copy as make their copies with it. The operations read
+and write through their transaction ("The operations' transaction",
+below), but for a commit's records, op73's field work and the indexes a
+find stores, which still hold the store; "Moving the other readers"
+below lists them and what they need. `import` and
 `capabilities` are not built. Of the store engine, its view of one file,
 the import of an `.fmp12` into it and its export are ("The store engine's
 file", below); no file is hosted on it yet.
@@ -606,11 +763,10 @@ replay draws the same. It returns the
 the transaction and the lock table, which keep what the engine needs to
 take them back. An operation that does not change the tree gets less than
 a transaction (`engine::Hold`): op60 a view, op61, op62 and op65 nothing of
-the tree, so that these three do not wait for the store, as before. In the
-file engine
-the transaction (`engine::Transaction`) is still a thin wrapper of the
-store and its journal: it exposes the store's methods the operations use,
-and the store itself as the view that derived state is computed from. The
+the tree, so that these three do not wait for the store, as before. What
+the transaction (`engine::Transaction`) reads and writes, and how the
+file engine carries its writes out, is under "The operations'
+transaction", below. The
 reply is typed, one shape per operation (`engine::Reply`); the caller
 encodes it for the wire. Operations on one file run one at a time, in one
 order; how far the file engine does that today is under "The file engine
@@ -996,10 +1152,11 @@ rules nor the calculations read: a table's deferred field work `[T, 03,
 01, fd]` and each field's next serial value `[T, 03, 05, F, 0c]` (the
 Design functions read the stored one from their own catalogs). So it is
 the same between changes of the schema whenever it is computed, and the
-test view's own, computed later, equals the file engine's. An edit of a
-catalog the decoded schema does not hold, a script `[17]` or a layout
-(`Store::replace_members_in`), now replaces the derived state too, kept
-in the journal, so that a session keyed by its version reads it again.
+test view's own, computed later, equals the file engine's. A write to a
+catalog the decoded schema does not hold, a script `[17]` or a layout,
+replaces the derived state too ("The operations' transaction", below),
+kept in the journal, so that a session keyed by its version reads it
+again.
 
 Every reading shares the store's current
 value (`Arc`), and the catalog within it is shared too, so replacing the
@@ -1050,10 +1207,10 @@ so readers and operations share one implementation.
 
 Still kept by the store, outside derived state: the basis of stored
 calculations (`Store::basis`, below), the verified-index marks
-(`Store::verified`), the schema generation (`Store::schema_generation`,
-which says when the accounts are decoded again; server scripts cached by
-it before, and cache by the derived state's version now), and the
-read-only flag and the file's identity on disk.
+(`Store::verified`), the store's generation (which says when the accounts are
+decoded again and the verified-index marks are stale; server scripts
+cached by it before, and cache by the derived state's version now), and
+the read-only flag and the file's identity on disk.
 
 The basis of stored calculations is not computed from the current view. It
 is what the stored values were last computed with, per table and field:
@@ -1402,6 +1559,155 @@ the transaction's records into the version's indexes instead would have
 answered a find for duplicates (`!`) and the form checks of a text
 field's language otherwise than before.
 
+**The operations' transaction.** An operation reads the file through its
+transaction (`engine::Transaction`), which is a view (`engine::View`) of
+the version the operation started on with the operation's own writes
+applied, and the derived state of that tree (`Transaction::derived`). It
+changes the tree with three writes, in the store engine's vocabulary
+(`om_store::tree::Edit`, section 6.3), so that they become an entry's
+edits without translation: put a node without its children
+(`Transaction::put`), remove a node and everything under it
+(`Transaction::remove`), and replace a subtree (`Transaction::replace`:
+the node, then each node under it in key order, as an entry holds it). A
+put creates missing parents and turns a parent that holds an empty value
+into an empty list, as `OwnedNode::put` does. No operation that moved
+needed a fourth.
+
+What the transaction answers about its own writes is the contract every
+engine's transaction keeps: every read gives the tree as written so far;
+a write that leaves the tree as it was (the same node put where it is, a
+missing node removed) is no change, with nothing to store or take back;
+`Transaction::derived` is the state of the tree as written, its catalog
+and its accounts both; `changed_since` is true for a path at, above or
+below one the transaction changed, a parent a put created or turned into
+a list included (so for that parent's other children too), and for every
+path once a store helper ran (it may be true where nothing changed, never
+false where something did); and the transaction's version stays the one
+the operation started on.
+
+In the file engine each write is applied to the store's tree at once,
+under the commit's journal (`Store::write_in`), so a failed operation or
+save puts every node and flag of the tree back as before
+(`engine::tests::every_change_not_stored_leaves_every_node_and_flag_as_it_was`,
+the seeded test of [#751](https://github.com/OpenMaker-Dev/openmaker/pull/751),
+unchanged); as before too, a roll-back advances the store's generation,
+so the verified-index marks are checked again at their next use, while
+the accounts decoded before the change come back with the derived state
+it puts back, counted as current, so they are not decoded again; and a
+save
+that failed on content the tree held before the change takes the field
+indexes among it out (`Store::drop_unwritable_indexes`). Whether a write
+changes nothing is decided on the tree's content: the root's own list
+flag is not content (the writer writes only its children, and a tree
+loaded from a file has it clear, as no slot names the root). A put the
+file cannot hold there (`om_hbam::writer::put_refusals`, checked on the
+node where it is: beneath a value, or a node the writer cannot write) is
+refused and changes nothing; an operation logs it as before, or, where its
+own checks leave no refusal to expect (op87, op88, op240), fails its
+commit with it (`Transaction::refuse`). Whether a write reaches the
+derived state is decided by its path (`store::feeds_derived`): everything
+outside the tables and the file's container library `[1f]` does, and in a
+table its root and its field catalog `[T, 03]` do, but for a field's next
+serial value `[T, 03, 05, F, 0c]` and the deferred field work `[T, 03, 01,
+fd]`, which the derived state leaves out; a put that creates a parent or
+turns one that is not a list yet into one counts by that parent's path
+too. Such a write advances the store's generation, which the
+verified-index marks and the accounts follow, and has the schema and the
+accounts read again before the derived state is next used, or when the
+operation ends (`Transaction::settle`). A write forgets the
+verified-index marks it can make wrong (`Store::forget_verified`): at,
+above or below a table's records `[T, 05]` or its record list `[T, 0d]`,
+or at or above its indexes `[T, 01]` and a field's `[T, 01, F]`, those
+of the table or the field; at or below a field's postings, value `[T, 01,
+F, 00]` or word `[T, 01, F, 01]`, that index's. The agreement check reads
+the postings and the records alone, so a field's counts `[T, 01, F, 10]`
+and `[T, 01, F, 11]` touch no mark, nor does a serial value, a library
+member or the rest of a table. A commit keeps its own marks as it keeps
+the indexes, but an upload into an index or a record does not. Every write
+that changed the tree counts it as changed since its save.
+
+Before, each operation changed the tree through the store's own helpers,
+which read the schema again after any upload or schema write, whatever
+its path, and advanced the generation with it. What that did as a side
+effect, and which writes do it now:
+
+| Side effect | Before, after | Now, after |
+| --- | --- | --- |
+| The derived state read again (the catalog, the calculation catalogs, whether the locale record is there; the locale, date order and file language stay those the file was loaded with), and with it the server script sessions' schema, which they keep by the derived state's version | every op13 upload, op86 write and op240 edit, and the account edits (not saved found sets, op71, op72, op87, op88, member keys) | a write at a path the derived state reads, or one that creates or turns such a parent; read at `Transaction::settle` |
+| The verified-index marks forgotten (`Store::index_agrees`) | each of those and a saved found set (the generation), op73's field work, a roll-back | all of them: a write the derived state reads, op73's field work, a roll-back (the generation); a table's: a write at, above or below `[T, 05]` or `[T, 0d]`, or at `[T, 01]`; a field's: a write at `[T, 01, F]`; an index's: a write at or below `[T, 01, F, 00]` or `[T, 01, F, 01]`, not the counts `[T, 01, F, 10]`, `[T, 01, F, 11]` (`Store::forget_verified`) |
+| The accounts decoded again (`Store::follow_accounts`) | after the operation, when the generation moved | at `Transaction::settle` with the schema, so `derived()` gives an account as written; after the operation when a later write moved the generation |
+| The tree counted as changed | every such write, one equal to what was there included, and an op86 batch of writes even when every one was refused (op13 returned before it on a refusal) | a write that changed the tree |
+| The derived state kept for a roll-back (`Journal::schema_from`) | at each such write | at `Transaction::settle`, before it changes |
+
+No reply changes, but for these cases, each OpenMaker's own and not
+compared with FileMaker: a write equal to what is there (op13 uploading
+what the file holds, an op86 put of it) was a change before, saved, and
+answered with the storage error when the save failed, and is none now, so
+the file is not rewritten and the request is answered as one with nothing
+to store; op72 giving the value a field holds kept nothing to take back
+before (it kept the serial only when it changed) but counted the tree as
+changed, so its save was tried, and a failed one raised an alert that
+the changes are kept, its reply unchanged, and now it changes nothing and
+a clean file is not saved; Set Next Serial Value giving the value held
+kept the serial always, so with saves failing the step failed with the
+storage error and an alert that the change was taken back, and now the
+step succeeds (with older unsaved changes the save is still tried, and a
+failed one alerts that they are kept); an op86 whose every
+put is refused counted the tree as changed and so rewrote a clean file,
+and changes nothing now; a saved found set no longer advances the
+generation (an account edit still does: the accounts catalog `[23]` is
+read by the derived state); and Delete Account removes the account's
+member and writes the index instead of rewriting the whole catalog, so a
+catalog that holds something the file cannot write elsewhere no longer
+refuses it.
+
+The library's rules (`library::Reads`, `store_changes`, `adjust_changes`)
+read a library through a small interface and say their changes as puts
+and removals: op87 and op88 write them through the transaction, a commit
+applies them to the library in memory, and both refuse through the same
+check read through a view (`library::refusal`). The header's member count
+is the number of entries in the member list `[L, 01, 07]`, and a deleted
+table's library members are counted the same way, which a view gives
+(`View::count_children`): the file engine's tree, its readings and its
+transaction from the node's length, as before, and other views by
+listing.
+
+The checking transaction (`engine::checking`, debug builds, switched on
+with the test view: `Server::checking_reads`, `LocalHost::checking_reads`,
+`FileEngine::check_writes`) keeps the tree the operation started on and
+applies the writes to it as they are recorded, as edits, in order. What
+it compares: every structural read through the transaction (a node, a
+subtree, a page of children or subtrees, a walk, a count) is answered
+again from that tree and must be the file engine's answer; at the end,
+that tree must be the file engine's tree node for node and kind for kind,
+and the derived state must be what the tree decodes to; and, when a write
+was recorded, the tree must count as changed. It does not compare
+`changed_since`, which the transaction answers from its own record of
+what it wrote (its own tests cover it), nor whether a write that it did
+not record (one that changed nothing) left the tree counted as changed.
+A difference
+panics, naming paths only (an account's node holds its password's
+verifier). The server's, `om-author`'s and `om-gui`'s tests run with it. An
+operation not moved at all (a commit's records, op73, the deferred work,
+a find's stored indexes) is not checked: it changes the tree through the
+store's helpers alone. In one that moved, a store helper it calls (op86's
+indexes) changes the tree without saying what; the check does not see
+the helper's own run, and nothing else: when the helper starts, the tree
+must be what the writes made of it, since the start or since the last
+helper returned (`Check::before_store`), and when it returns the check
+takes the tree as it left it (`Check::after_store`). It found
+one write that bypassed the derived state while the operations moved:
+op13's upload to `[T, 03, 01, fd]` created the missing `[T, 03, 01]`,
+which the calculation catalogs read, without reading the schema again.
+What it cannot catch, besides what it does not compare: a write and a
+reply that agree with each other but are wrong (it compares the file
+engine with itself, not with the base or with FileMaker); the order of
+notices and locks; a roll-back (the seeded test covers it); the
+generation and the verified-index marks; the derived state between
+writes, which it compares only at the end, and not at all when the
+catalog does not decode; what a store helper changed; and whatever the
+test suite does not run.
+
 **Moving the other readers.** The readers below, but those marked moved,
 still hold the store (`Hosted::read_store`, or
 `Transaction::view() -> &Store` inside `run`). Each is listed
@@ -1425,24 +1731,37 @@ first, each with the test view's runs of its tests:
    compacted copy.
 4. Admin commands and the hosting state: moved. They read the engine's
    state of a file ("The engine's state of a file", above), not a view.
-5. The operations' own reads inside `engine::run`, through
-   `Transaction::view() -> &Store` and the transaction's delegates
-   (`has_table`, `has_record`, `last_record_id`, `node`): a commit's
-   records (one record whole each, `writes::commit`, with
-   `Store::record_limit` and `views::hidden_fields`), op71's and op72's
-   counters (one node), op13's and op86's refusals (`put_refusals` over
-   the tree: each node on a path, and a chunked value whole), op73's
-   recalculation (every record of a table, listed with each record whole,
-   and the basis), the stored indexes' upkeep (`Store::index_agrees`,
-   `reindex_plan`: index entries by key, and whole indexes for a check),
-   op87's and op88's library members, op240's catalog members and their
-   indexes (`authoring::edit`: one member whole, a catalog's index), and
-   the account edits (`[23, 1, 5]` listed, one account whole). Needs: a
-   transaction that is a view plus put, delete and replace-subtree, which
-   reads its own writes; the basis of stored calculations and the
-   verified-index marks in derived state, by version; and `om-query`'s
-   `Index` over a seekable listing instead of a whole index, which the
-   finds above need too before an engine with pages serves them.
+5. The operations' own reads and writes inside `engine::run`: moved for
+   op60's modification count, op71's and op72's counters and Set Next
+   Serial Value, op13's upload, op86's member keys and schema writes,
+   op87's and op88's library members, op240's edits, the account edits
+   and the desktop's saved found sets ("The operations' transaction",
+   above). Still on the store, through `Transaction::view() -> &Store`
+   and the transaction's delegates to the store's helpers, whose own
+   changes the checking transaction does not check
+   (`Check::before_store`):
+   - a commit's records (op70 and a server script's commit,
+     `writes::commit`): one record whole each, with `Store::record_limit`
+     and `views::hidden_fields`, written by `Store::write_record`, which
+     keeps `[T, 0d]` and the stored indexes current (`put_record`: index
+     entries by key, and `Store::index_agrees`, which checks an index
+     whole once), and stores, counts and releases container data. Needs:
+     the verified-index marks by version
+     ([#782](https://github.com/OpenMaker-Dev/openmaker/issues/782)) and
+     `om-query`'s `Index` over a seekable listing instead of a whole index
+     ([#783](https://github.com/OpenMaker-Dev/openmaker/issues/783)), so
+     that the indexes' upkeep reads and writes index entries through the
+     transaction;
+   - op73's field work and the deferred work a file is opened with
+     (`Store::update_table`, `Store::recover`): every record of a table,
+     listed with each record whole, the basis of stored calculations, and
+     the indexes it drops and builds. Needs: the basis by version
+     ([#781](https://github.com/OpenMaker-Dev/openmaker/issues/781)) and
+     the two above;
+   - the indexes a find builds and stores (op86's `StoreIndexes` and the
+     indexes of its program, `Store::store_indexes_in`): the table's
+     records listed whole and each index written whole. Needs: the
+     indexes' upkeep above.
 
 For finds, what `om-query` still asks whole (see "Views") moves with the
 store engine: a `Source` method for the head NodeExists and GetKey read,
@@ -2799,16 +3118,187 @@ serving them to clients is
 These are commands (AGENTS.md rule 3) in `om-author`'s catalog. The Admin
 Console, the CLI and MCP tools call the same operations.
 
-**Objects and revisions.** A design object is a catalog member: a layout,
-a script, a table, a field, a value list, a custom function, a theme, a
-menu, a privilege set, a relationship, a table occurrence. Its revision is
-the `sha256:` of its Design paths' content without modification stamps,
-the definition `om-author` already uses ([authoring.md](authoring.md),
-"Revisions").
+**Objects and revisions.** A design object is a member `[cat, 5, id]` of
+a Design catalog (section 4), decoded by OpenMaker or not: a table, a
+table occurrence, a relationship, a field, a layout, a theme, a custom
+function, a script, a privilege set, an extended privilege, a font, a
+file library item, a data source, a value list, a base directory, a
+custom menu set or a custom menu; and each Design catalog as a whole
+(`om_hbam::design_paths::objects`). A member is identified by its kind
+and its key (and a field by its table's key), a catalog by its kind (and
+a field catalog by its table). For edits, a member object is its member
+and the entries its catalog's index keeps for it of what a tool shows (a
+script's cached name and flags, with the full-access badge Script
+Workspace shows, scripts.md), and a catalog object is its index. An
+emptied member, a deletion, is no object.
+
+An object has two revisions. Its **edit token** (`Object::edit_token`)
+is the `sha256:` of its whole member or index, stored passwords
+included, without modification stamps: what `om-author` reports and the
+host checks to guard an edit ([authoring.md](authoring.md),
+"Revisions"), exchanged only between a client that holds the member and
+the host. Its **design revision** (`Checked::design_revision`) is the
+revision history, comparisons, the text form and a mirror show and keep:
+the SHA-256 of its Design pieces alone.
+
+Design revisions and comparisons are given only for the objects of a
+checked inventory (`om_hbam::design_paths::inventory`), the one way to
+them. Before anything is read from an object, it checks that the sibling
+keys on the way to and within each design catalog are in order and
+unique, as a file's are; that every key under a design catalog's member
+list has the shape its catalog's spec gives (a font's two bytes, a base
+directory's four, a serial key elsewhere), a member object's and a
+member's with no children alike, whose key is in its catalog's object;
+that no two objects of one kind (and table) report one id; that no key
+on the way to a design catalog, or at its first level (its index `01`
+and member list `05`), is one the decoders, which look these keys up by
+number, could take for a key the design reading spells otherwise (`00
+11` for the scripts' `11`, `00 80 01` for table `80 01`), whether that
+key is there too or not; and that no member is one the decoders could
+read differently: a key of more than
+one byte that reads by number as one they look up (a script's step list
+`04` and step data `05`; a layout's attribute records `05`, object store
+`07` and table view `0d`; the table view's records `05`; a button's step
+data `11` in an attribute record of either), so that where its step data
+is would be in doubt. A tree that fails is refused as a whole, naming the
+kind, the table and, when the key has its specified shape, the id; never
+a key's bytes.
+
+For design revisions and comparisons a member object is its member, a
+member with children, and a catalog object is everything in its catalog
+that is in no member object: the catalog's own value, its index with
+every entry (its members' entries too), any branch beside the index and
+the members, the member list's own value, and the members with no
+children. Every catalog has one. No index entry ever moves between
+objects; a member that gains its first child or loses its last becomes,
+or stops being, an object, and its own node and value pass between it
+and its catalog. The cost: a script's cached name is an entry of its
+catalog's index, so renaming a script changes the script and its
+catalog. An object's pieces are each node's being there and each node's
+own value, as the tree holds them, and each piece's group is decided by
+its own path, never by what lies below or beside it:
+
+- **Step data** is one opaque piece of a group of its own, with everything
+  below it: a script's `[11, 5, S, 05]`, a button's `[4, 5, L, 05, O,
+  11]`, and [I] the same place in a layout's table view `[4, 5, L, 0d, 05,
+  O, 11]`, which keeps a layout's own structure (layout-model.md 10.14; no
+  starter file holds one). Each key of these places but the member's and
+  `O` is matched by number, as the decoders look it up (a key of 1 to 8
+  bytes read big-endian, so `[00 05]` is `05`): the script's `05`; the
+  layout's `05` and `11`; the table view's `0d`, `05` and `11`. A key any
+  decoder could read as the place is so step data, never Design, even
+  where the inventory would not refuse it. Nothing looks inside it: which
+  of its bytes are a stored password depends on the step, and two rounds
+  of review showed that no reading of it below the decoders could be
+  trusted. So an object holding step data has no design revision: every
+  script, and every layout with a button that has step data. These are the
+  places the specs name for a step's stored credentials; the comparison
+  does not claim that no other key of a design catalog holds one (section
+  4, "What the rules cannot see").
+- Design, Data and Derived by the path rules of section 4; a node above
+  the rules (a member, an index, a catalog) is there as Design, the
+  object's shape, and its own value, which no rule names, is not
+  identified.
+- A key no rule names, with everything below it, is **not identified**.
+
+The tree is written as it is held: a value the file keeps in pieces
+(file-format.md 3.6) is its header and its pieces, never joined, so one
+piece's encoding never depends on its siblings. Read from disk, a value
+has one stored form, so equal content compares equal. A tree in memory
+that holds inline a value the file would store in pieces has another
+design revision than the file written from it, and compares as
+different; the history will bring such a tree to the stored form first
+([#777](https://github.com/OpenMaker-Dev/openmaker/issues/777)). Edit
+tokens, which join values in pieces, differ from design revisions in
+this. Modification stamps are left out at exactly two places, where
+schema-path.md 8 places them: the direct stamp keys of a member object's
+own node and of a catalog's index, each with everything below it,
+whatever its shape: decided by its key alone. The cost: content below a
+stamp key at those two places is not compared, which a file FileMaker
+wrote never has (8.1: a stamp is a key string or text, a leaf or a value
+in pieces). A stamp still counts as a member's child, so a member whose
+only child is a stamp is an object. A stamp-shaped key anywhere else is a
+piece like any other. The design revision is built by walking the object
+and adding its Design pieces, in the edit token's general form (segments,
+values and child counts, framed, without list flags), each node written
+with only its children that lead to Design pieces, so that no value,
+length, count or being there of another group reaches it; a difference
+only in whether a node is stored as a list is no difference. The hashed
+bytes start with eight `ff` bytes, which no edit token's input can start
+with (they would be a segment length of 2^64 - 1), then the form's
+version, 1: a design revision is comparable only with one of the same
+version. Its text is `design-sha256:` and 64 hex digits, which no command
+takes as an edit token.
+
+An object has **no design revision** when it holds step data or a piece
+that is not identified. Neither is ever hashed into one. In FileMaker Pro
+26's 66 starter files 6,138 of 7,091 objects have a design revision;
+every script, 220 of 418 layouts (those with a button that has step
+data), and every font and custom menu have none, the fonts and custom
+menus for a key no spec explains (file-format.md 3.7,
+[#765](https://github.com/OpenMaker-Dev/openmaker/issues/765)). Giving
+objects with step data a design revision needs step data identified
+exactly, per step
+([#775](https://github.com/OpenMaker-Dev/openmaker/issues/775)). Derived
+paths are recomputed by whoever writes the paths they come from, a deploy
+too: a privilege set's checksum covers the file's creation stamp, so one
+copied from another file would fail FileMaker's check at open
+(session-identity.md 4.4).
+
+**Comparison.** `compare_designs` (`om_hbam::design_paths::compare_files`,
+an `om-author` command) compares the designs of two files on this
+computer, a source and a target, with or without a base. Each file is
+read whole and every slot decoded, as the file reader reads files; only
+its design catalogs are kept in the tree, so a comparison holds each file
+in memory once and the tree of its design catalogs, several times their
+stored size. The inventories of all its inputs are checked first;
+nothing of any input is classified, named or hashed until every one has
+passed.
+
+Objects are then matched. With a base, by kind and id when the base has
+the object too; two new objects that share an id are listed as new on
+each side. Without a base, two objects of one kind and id are matched
+when their names, decoded on both sides, are equal byte for byte, or
+when neither has a name and every group of their pieces is equal. That
+match of unnamed objects by equal content is no proof that they share a
+history, and a deploy must not rely on it. A field (and a field catalog)
+is matched only when its table is, by the same test: a field whose id and
+name agree, under a table that is not matched, is a possible match by
+id, and with a base it is listed in each file as only there. Every
+object matched with none is listed once, in the file it is in; among
+them, one agreeing with another in id alone is listed as a possible
+match, and without a base so is one agreeing in name alone (up to 8 per
+source object, the rest counted). A possible match is never matched.
+
+Every matched object is compared by its pieces group by group inside the
+process: each group's projection is hashed there and compared, and none
+of these hashes but the design revision is given out. A comparison
+reports which parts differ: Design, step data, unidentified pieces, Data,
+Derived, or none (the same; modification stamps may differ). With a base
+each side is also compared with the base, and a side changed an object
+when its Design, its step data or its unidentified pieces differ from the
+base's: a serial number taken or a checksum over the file's creation
+stamp is no change. Both sides changing an object is a conflict only when
+the two still differ in one of those; the same change made on both sides,
+with a serial number taken on one, is no conflict. A comparison reports
+kinds, ids, names (only where the name is Design throughout), these parts
+and design revisions; never an edit token, a hash covering other content,
+or any content. In the starter files 143 relationships, 528 file library
+items and 66 custom menu sets have no name.
+
+Where the comparison differs from what a deploy (below) will need: it
+matches unnamed objects without a base by equal content, which a deploy
+must not take for identity; it does not class a difference by what every
+record must do; it holds no source as of a point in time; it gives step
+data no reading, where a deploy will need to keep the target's stored
+credentials while taking the source's other changes; and it writes trees
+as held, where a deploy taking a source held in memory will need it in
+the stored form first.
 
 **History.** The entry that changes a Design or Access path also writes,
 into the file's state, an event: the entry, the time, the account, the
-operation and each object's revision before and after. Each revision's
+operation and each object's design revision before and after (for an
+object without one, that it changed, by its content). Each revision's
 content is kept once, by its hash; two events that reach the same content
 stay two events. History is part of the state, so it does not depend on
 how long the log is kept. That covers deploys, `om-author` edits and a
@@ -2821,16 +3311,24 @@ content at any revision.
 decodes the object (scripts in the form `get_script` returns), the rest as
 hex under its path, stamps left out. Text must read back to the same
 revision; an object for which it does not is written as hex only. Access
-paths and Data paths inside a member are never written. The text form is
+paths and Data paths inside a member are never written. Secret paths are
+never written either. The text form is
 for diffs, review and an optional mirror that writes each revision into a
 folder for git. The store's history is the master copy, since live edits
 arrive there.
 
 **Analysis.** From the decoded references between objects, for any
-revision: where an object is used, broken references, objects nothing
-refers to, references made by name at run time (scripts run by name,
+revision: where an object is used, references whose target was not found,
+objects no reference was found for, references made by name at run time (scripts run by name,
 ExecuteSQL text, `Evaluate`), script call chains, and a security review
-(accounts without a password, scripts that run with full access).
+(accounts without a password, scripts that run with full access). For a
+file's current design, `om-author`'s `find_uses`, `broken_references`,
+`unused_objects` and `script_calls` exist ([authoring.md](authoring.md),
+"Design analysis"); every result lists the references made by name at run
+time and the places not read. They build the reference graph with
+`om_data::design_refs` from the catalogs as a key tree holds them, so the
+store can build it for a revision. Analysis of a past revision and the
+security review are not built yet.
 
 **Deploy.** Bringing selected design changes from a source into a hosted
 file without closing it:
@@ -2853,8 +3351,8 @@ file without closing it:
    automatically.
 3. **Differences** are found against the base: changed in the source,
    changed in the target, or changed in both, which is a conflict the
-   administrator settles per object. Without a base every difference is
-   shown as one. Putting an object back to an earlier revision is a
+   administrator settles per object when the two still differ. Without a
+   base every difference is shown as one. Putting an object back to an earlier revision is a
    change like any other. Each difference is classed: a member replaced; a
    table's fields changed; or a change every record must follow (a field's
    type, a stored calculation, an index, a deleted field), which runs as a
@@ -2863,7 +3361,9 @@ file without closing it:
    what it needs and refused if it would leave a reference broken. Access
    paths are never deployed. A member is written path by path: its Design
    paths from the source, its Data paths kept from the target (a serial
-   field keeps its next value). A member holding a path that is in no
+   field keeps its next value). Stored credentials of the target are kept
+   unless the administrator chooses otherwise. A member holding a path
+   that is in no
    group is not deployed over an existing one. A changed privilege set is
    shown with the accounts it affects, and one that accounts use cannot be
    deleted.
