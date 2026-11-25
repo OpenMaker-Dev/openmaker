@@ -231,8 +231,11 @@ fn press(app: &mut common::App, label: &str) {
 }
 fn open_fixture() -> common::App {
     let mut app = common::harness(Box::new(Provider));
-    common::fill(&mut app, "Host", "popovers.example.invalid");
-    common::fill(&mut app, "File", "Popovers.fmp12");
+    common::fill(
+        &mut app,
+        "Path",
+        "fmnet:/popovers.example.invalid/Popovers.fmp12",
+    );
     common::click(&mut app, "Open");
     common::wait_for_label(&mut app, "POPOVER FIXTURE");
     common::wait_until(&mut app, "the first record", |app| {

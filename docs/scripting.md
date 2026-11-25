@@ -911,7 +911,7 @@ Open items:
     in the same change; plug-in functions and `Get` selectors that need a
     window, whose FileMaker Server answers there are unmeasured
     ([#385](https://github.com/OpenMaker-Dev/openmaker/issues/385)).
-  - FileMaker Pro clients: op77 GetFileList (the Hosts dialog's file list)
+  - FileMaker Pro clients: op77 GetFileList (Home's host pages)
     and op89 CompareModCounts (reopening a cached file) are unsupported;
     an op13 with node state `00` (FileMaker Pro deleting a script) leaves
     an empty node (scripts.md, "Saving scripts to a host").

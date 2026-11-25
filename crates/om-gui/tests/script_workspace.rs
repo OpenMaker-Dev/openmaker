@@ -34,8 +34,11 @@ fn open_catalog(
         ..State::default()
     }));
     let mut app = common::harness(Box::new(Provider(state.clone())));
-    common::fill(&mut app, "Host", "fms.example.invalid");
-    common::fill(&mut app, "File", "Contacts.fmp12");
+    common::fill(
+        &mut app,
+        "Path",
+        "fmnet:/fms.example.invalid/Contacts.fmp12",
+    );
     common::click(&mut app, "Open");
     common::wait_until(&mut app, "the file to open", |app| {
         app.query_by_label("Scripts").is_some()

@@ -455,8 +455,22 @@ fn file_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
         });
     }
     rows.submenu("Hosts", true, &mut |rows| {
-        if rows.item("Show Hosts...", None, false, context.launch_available) {
+        if rows.item(
+            "Show Hosts...",
+            None,
+            false,
+            context.launch_available && context.home,
+        ) {
             actions.push(Action::ShowHosts);
+        }
+        // No shortcut: FileMaker gives Shift-Command-O to Show Hosts.
+        if rows.item(
+            "Open Network File...",
+            None,
+            false,
+            context.launch_available,
+        ) {
+            actions.push(Action::OpenNetworkFile(String::new()));
         }
     });
     if rows.item("Open...", Some(shortcuts::OPEN), false, true) {
