@@ -15,20 +15,18 @@
 //! **Changes** come through a [`Reservation`]: [`PageFile::reserve`] sets
 //! aside, for one entry, the pages the caller says applying it can take,
 //! and the reservation is the [`PageStore`] the trees apply the entry
-//! through. Each [`Unit`] it begins carries changes of that entry: one
-//! tree's, or a whole entry's (several trees' pages and releases, and the
-//! changes to the set of trees, committed once). Numbers come from the
-//! free pages and are held for the unit; written pages, releases, changes
-//! to the set of trees and the numbers it did not use take effect together
+//! through. The entry's one [`Unit`] carries everything it changes: every
+//! tree's pages and releases, the trees it makes, drops and renames, and
+//! each changed tree's new root ([`EntryPages`]). Numbers come from the
+//! free pages and are held for the unit; all of it takes effect together
 //! on commit, and nothing does on drop. Committed pages stay in memory
 //! until a checkpoint writes them, and are served from there; they count
 //! against a budget, past which a reservation is refused with
-//! [`SpaceError::CheckpointNeeded`]. Trees are made, dropped and renamed
-//! by units ([`Unit::add_tree`], [`Unit::remove_tree`],
-//! [`Unit::rename_tree`]; [`Reservation::create_tree`] and its kin run a
-//! unit each), so that the page file knows the trees that exist: a
-//! checkpoint names exactly those, and the room kept for checkpoints is
-//! sized from them.
+//! [`SpaceError::CheckpointNeeded`]. The page file holds each tree's name
+//! and root ([`PageStore::trees`]), changed only by a unit's commit, which
+//! checks every root it records; a checkpoint writes the trees as the
+//! page file holds them, and the room kept for checkpoints is sized from
+//! them.
 //!
 //! **Versions.** The page file holds one line of versions: units are
 //! committed in entry order, each entry after the last checkpoint's, and a
@@ -53,31 +51,26 @@
 
 //! **Calls at the same time.** The page file serves one caller that
 //! applies entries, in order, one entry at a time (it reserves the entry,
-//! runs its units, and is done with it before the next; it may reserve
-//! later entries ahead, and runs their units in their turn), one that
-//! checkpoints and reclaims, and readers at any time. It enforces that
-//! contract by refusing what falls outside it, and each check is made in
-//! the same hold of the `inner` lock as the change it guards. Three locks
-//! order the calls: `inner`, held for short steps and never across a read
-//! or write of the file; `io`, held by a checkpoint for all of it, by
-//! growth of the file, by a reclaim and by a restore point's drop; and the
-//! pin table. The page file is specified and tested for the caller that
-//! applies one entry at a time, normally through one unit; several units
-//! of one entry are allowed, and what is claimed for them is exactly what
-//! the rules in the table state.
+//! runs its one unit, and is done with it before the next; it may reserve
+//! later entries ahead), one that checkpoints and reclaims, and readers at
+//! any time. It enforces that contract by refusing what falls outside it,
+//! and each check is made in the same hold of the `inner` lock as the
+//! change it guards. Three locks order the calls: `inner`, held for short
+//! steps and never across a read or write of the file; `io`, held by a
+//! checkpoint for all of it, by growth of the file, by a reclaim and by a
+//! restore point's drop; and the pin table.
 //!
 //! | Calls | Alongside? | What orders them, and the refusal |
 //! |---|---|---|
 //! | a read and anything | yes | a read sees committed pages only; its lookups take `inner`, its file read none |
 //! | reserve and reserve | for different entries, yes; a second for an entry with one open, no | the checks, the promise of pages and the opening of the reservation are one hold of `inner`; the second is refused ([`SpaceError::Refused`]); one short of space reclaims and grows under `io`, one at a time, before that hold |
-//! | units and units (begin, commit, drop) | units of one entry, in any order; of two entries, no | `inner`; a unit begun while units of another entry are open, or for an entry before the last one committed, is refused ([`StoreError`]) |
-//! | two units of one entry, one of them changing the set of trees | yes | the page file counts the changes to the set of trees committed; a unit that changes the set or drops a page (`Release::Dropped`) is refused whole at commit if the count moved since it began ([`StoreError`]) |
+//! | a unit and a unit | no: one unit an entry, one open at a time | `inner`; a unit begun while another is open, or for an entry that has committed one, is refused ([`StoreError`]); a unit dropped or refused may be begun again |
 //! | reserve, begin or commit, and a checkpoint at an earlier entry | yes; a reservation short of space waits for the checkpoint (`io`) | `inner`; a unit of a later entry committed before the checkpoint plans refuses the checkpoint ([`CheckpointError::Refused`]) |
 //! | reserve, begin or commit, and a checkpoint at the same or a later entry | no | the checkpoint's first check fixes its entry, in the hold that checks it: the checkpoint is refused while a reservation for an entry it covers is open, and from then until it is installed or fails, every reservation, unit and commit at or before its entry is refused |
 //! | a checkpoint that keeps a restore point, and an open reservation | no: the checkpoint is refused | the point counts in the room kept for meta streams from the first check, so a reservation opened after it is judged as a reopen on that checkpoint would judge it; one opened before was not |
 //! | a checkpoint and a checkpoint, a reclaim or a restore point's drop | no: the second waits | `io`; so whether a reclaim settles a page before or after a checkpoint, and so the hold it gives, is the order of the two calls |
 //! | a reclaim and a reserve, a unit, a read or a pin | yes | `inner` for each page's step; pages a reclaim frees are those no kept version reaches when it decides, under `inner` |
-//! | a pin or unpin and anything | yes | the pin table; a pin counts from when it is taken, and a checkpoint being written keeps its own version itself |
+//! | a pin or unpin and anything | yes | the pin table; a pin counts from when it is taken, and holds the roots of the version it pins when that is the newest or the newest checkpoint's ([`Pin::roots`]); a checkpoint being written keeps its own version itself |
 //! | open | nothing runs on a page file before its open returns | two opens of one store folder are kept apart by the store folder's lock, which the caller holds |
 //!
 //! So the caller that checkpoints has the caller that applies take no new
@@ -89,8 +82,8 @@
 //! A checkpoint clears what it fixed on every way out of it, an unwind
 //! included; one left by a panic also latches the page file's failure
 //! (what its plan changed in memory is not used: the page file is opened
-//! again). It checks every root it is given as an open will, whether the
-//! root is in memory or on disk.
+//! again). A unit's commit checks every root it records as an open will:
+//! a tree's page, not an overflow page, which the unit wrote.
 
 mod cache;
 mod map;
@@ -116,11 +109,13 @@ use map::{Child, Kept, Map, Released};
 use meta::Meta;
 
 use crate::page::{
-    self, Builder, EntryPages, Fault, Hash, Page, PageFault, PageKind, PageNo, PageStore, Release,
+    self, EntryPages, Fault, Hash, Page, PageFault, PageKind, PageNo, PageStore, Release,
     StoreError, PAGE_SIZE,
 };
 use crate::sys::{self, ErrorKind, File, FileOptions, FolderLock, Fs};
 use crate::tree::Root;
+
+pub use crate::page::TreeName;
 
 /// The file's name in the store folder.
 pub const FILE: &str = "pages";
@@ -145,38 +140,6 @@ pub struct EntryId {
     pub index: u64,
     pub term: u64,
     pub hash: Hash,
-}
-
-/// The name of one of the state's trees: 1 to 255 bytes. The page file
-/// gives names no meaning; the engine names one tree per hosted file and
-/// one for the rest of the state (section 6.2).
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TreeName(Vec<u8>);
-
-impl TreeName {
-    /// The longest name, in bytes.
-    pub const MAX: usize = 255;
-
-    pub fn new(bytes: impl Into<Vec<u8>>) -> Option<TreeName> {
-        let bytes = bytes.into();
-        (!bytes.is_empty() && bytes.len() <= Self::MAX).then_some(TreeName(bytes))
-    }
-
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl fmt::Debug for TreeName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "TreeName({})", self.0.escape_ascii())
-    }
-}
-
-impl fmt::Display for TreeName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0.escape_ascii())
-    }
 }
 
 /// A checkpoint kept beyond the two newest, by name (section 11).
@@ -302,8 +265,6 @@ const FAILED: &str = "an earlier write or flush of the page file failed; the sto
 pub enum CheckpointError {
     /// The call breaks a rule; nothing was written.
     Refused(&'static str),
-    /// A root given cannot be read; nothing was written.
-    Root { tree: TreeName, fault: PageFault },
     /// No space for the checkpoint's meta stream; nothing was written.
     Space(SpaceError),
     /// A write or flush failed. What reached the disk is unknown, and the
@@ -318,9 +279,6 @@ impl fmt::Display for CheckpointError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CheckpointError::Refused(why) => write!(f, "checkpoint refused: {why}"),
-            CheckpointError::Root { tree, fault } => {
-                write!(f, "the root of tree {tree} cannot be read: {fault}")
-            }
             CheckpointError::Space(e) => write!(f, "{e}"),
             CheckpointError::Disk(e) => write!(f, "{e}"),
             CheckpointError::Failed => f.write_str(FAILED),
@@ -560,12 +518,21 @@ pub struct KeptCheckpoint {
 pub struct Pin {
     pins: Arc<Mutex<BTreeMap<Version, usize>>>,
     version: Version,
+    roots: Option<Vec<(TreeName, Root)>>,
 }
 
 impl Pin {
     /// The entry pinned.
     pub fn entry(&self) -> u64 {
         self.version.entry
+    }
+
+    /// The trees of the version pinned, with their roots, taken in the
+    /// same hold as the pin: for the newest version, or the newest
+    /// checkpoint's. A view of another kept version reads them from its
+    /// checkpoint ([`PageFile::trees_of`] with its meta stream).
+    pub fn roots(&self) -> Option<&[(TreeName, Root)]> {
+        self.roots.as_deref()
     }
 }
 
@@ -638,22 +605,21 @@ struct Inner {
     next_number: u64,
     /// The entry of the last unit committed (or of the newest checkpoint).
     last_unit: u64,
-    /// The trees that exist now, by name: those of the newest checkpoint,
-    /// and those made, dropped and renamed since by units. A checkpoint
-    /// names exactly these, and the room kept for it is sized from them.
-    trees: BTreeSet<TreeName>,
-    /// Changes to the set of trees committed so far: a unit that changes
-    /// the set or drops a page is refused if this moved since it began.
-    tree_changes: u64,
+    /// The trees of the newest version, by name, with their roots: those of
+    /// the newest checkpoint, as units have changed them since. Only a
+    /// unit's commit changes them; a checkpoint writes them as they are.
+    trees: BTreeMap<TreeName, Root>,
+    /// How many trees have each page as their root: a page a unit releases
+    /// is checked against it.
+    root_pages: BTreeMap<PageNo, u32>,
     /// The bytes their names take.
     names: usize,
     /// A write or flush failed: nothing more is written (section 6.12).
     failed: bool,
     /// The entries with an open reservation, one each.
     reservations: BTreeSet<u64>,
-    /// The entry whose units are open, and how many: units of one entry at
-    /// a time.
-    units: Option<(u64, usize)>,
+    /// A unit is open: one at a time.
+    unit_open: bool,
     cursor: PageNo,
 }
 
@@ -1032,8 +998,12 @@ impl PageFile {
         let newest_meta = newest.meta_pages.iter().map(|(n, _)| *n).collect();
         let listed = newest.restore_points.clone();
         let last_unit = newest.sb.entry.index;
-        let trees: BTreeSet<TreeName> = newest.trees.iter().map(|(n, _)| n.clone()).collect();
-        let names = trees.iter().map(|n| n.as_bytes().len()).sum();
+        let trees: BTreeMap<TreeName, Root> = newest.trees.iter().cloned().collect();
+        let mut root_pages = BTreeMap::new();
+        for root in trees.values() {
+            *root_pages.entry(root.page).or_default() += 1;
+        }
+        let names = trees.keys().map(|n| n.as_bytes().len()).sum();
         PageFile {
             file,
             config,
@@ -1053,11 +1023,11 @@ impl PageFile {
                 next_number,
                 last_unit,
                 trees,
-                tree_changes: 0,
+                root_pages,
                 names,
                 failed: false,
                 reservations: BTreeSet::new(),
-                units: None,
+                unit_open: false,
                 cursor: 0,
             }),
             pins: Arc::default(),
@@ -1279,7 +1249,7 @@ impl PageFile {
     /// The trees that exist now, by name (the next checkpoint names exactly
     /// these).
     pub fn tree_names(&self) -> Vec<TreeName> {
-        self.lock().trees.iter().cloned().collect()
+        self.lock().trees.keys().cloned().collect()
     }
 
     /// The trees of the newest checkpoint on disk, by name.
@@ -1653,10 +1623,18 @@ impl PageFile {
             return Err("a version that is neither the newest nor kept");
         }
         let version = Version::at(entry);
+        let roots = if entry == inner.last_unit {
+            Some(inner.trees.iter().map(|(n, r)| (n.clone(), *r)).collect())
+        } else if entry == inner.newest.sb.entry.index {
+            Some(inner.newest.trees.clone())
+        } else {
+            None
+        };
         *lock(&self.pins).entry(version).or_default() += 1;
         Ok(Pin {
             pins: self.pins.clone(),
             version,
+            roots,
         })
     }
 
@@ -1762,9 +1740,9 @@ impl PageFile {
         Ok(())
     }
 
-    /// Make a checkpoint of the newest version, at `entry`, whose trees are
-    /// `trees` (every tree of the state; their roots in the newest
-    /// version), kept as restore point `keep_as` when given (section 6.7):
+    /// Make a checkpoint of the newest version, at `entry`, of the trees as
+    /// the page file holds them, kept as restore point `keep_as` when given
+    /// (section 6.7). It takes no roots: units name every tree's root.
     ///
     /// 1. the pages the trees reach that are only in memory, and the
     ///    checkpoint's meta stream (its trees, its restore points, and the
@@ -1786,18 +1764,9 @@ impl PageFile {
     pub fn checkpoint(
         &self,
         entry: EntryId,
-        trees: &[(TreeName, Root)],
         keep_as: Option<&str>,
     ) -> Result<Checkpointed, CheckpointError> {
         let _io = lock(&self.io);
-        let mut trees = trees.to_vec();
-        trees.sort_by(|a, b| a.0.cmp(&b.0));
-        if trees.windows(2).any(|w| w[0].0 == w[1].0) {
-            return Err(CheckpointError::Refused("a tree named twice"));
-        }
-        if trees.len() > MAX_TREES {
-            return Err(CheckpointError::Refused("too many trees"));
-        }
         if let Some(name) = keep_as {
             if name.is_empty() || name.len() > MAX_RESTORE_NAME {
                 return Err(CheckpointError::Refused(
@@ -1811,7 +1780,7 @@ impl PageFile {
         // and the room kept for meta streams counts the point.
         let _fixed = {
             let mut inner = self.lock();
-            refusal(&inner, entry, &trees, keep_as)?;
+            refusal(&inner, entry, keep_as)?;
             // A reservation open now was judged without the point counted;
             // replayed after a reopen on this checkpoint, it would meet a
             // floor that counts it (format section 4.8).
@@ -1834,29 +1803,6 @@ impl PageFile {
             });
             Fixed(self)
         };
-        // Each root is checked as the reader checks it, whether in memory
-        // or on disk: a tree's page, written at or before the entry.
-        for (name, root) in &trees {
-            let in_memory = self.lock().in_memory(root.page, &root.hash);
-            let page = match in_memory {
-                Some(page) => page,
-                None => self.read_page(root.page, &root.hash).map_err(|fault| {
-                    CheckpointError::Root {
-                        tree: name.clone(),
-                        fault: PageFault {
-                            page: root.page,
-                            hash: root.hash,
-                            fault,
-                        },
-                    }
-                })?,
-            };
-            if page.kind() == PageKind::Overflow || page.written() > entry.index {
-                return Err(CheckpointError::Refused(
-                    "a root that is not a tree's at the entry",
-                ));
-            }
-        }
         // Short of room for the meta stream: free what can be freed first
         // (the checkpoint before last's meta stream, retired by the last).
         let short = {
@@ -1869,7 +1815,7 @@ impl PageFile {
         }
         let plan = {
             let mut inner = self.lock();
-            self.plan(&mut inner, entry, trees, keep_as)?
+            self.plan(&mut inner, entry, keep_as)?
         };
         if let Err(e) = self.write_out(&plan) {
             self.lock().failed = true;
@@ -1931,22 +1877,20 @@ impl PageFile {
         &self,
         inner: &mut Inner,
         entry: EntryId,
-        trees: Vec<(TreeName, Root)>,
         keep_as: Option<&str>,
     ) -> Result<Plan, CheckpointError> {
         let refuse = |why| Err(CheckpointError::Refused(why));
         // Again, under the hold that plans: units of later entries may have
         // committed since the first check (nothing at or before the entry
         // can have).
-        refusal(inner, entry, &trees, keep_as)?;
+        refusal(inner, entry, keep_as)?;
+        // The trees as they are at the entry: a unit of a later entry
+        // committed since the first check has refused the checkpoint above.
+        let trees: Vec<(TreeName, Root)> =
+            inner.trees.iter().map(|(n, r)| (n.clone(), *r)).collect();
         let Some(after) = inner.next_number.checked_add(1) else {
             return refuse("checkpoint numbers are exhausted");
         };
-        for (_, root) in &trees {
-            if !inner.map.in_use(root.page) || inner.newest_meta.contains(&root.page) {
-                return refuse("a root that is not a page of the newest version");
-            }
-        }
         // The pages to write: those in memory that the roots reach.
         let mut write: BTreeMap<PageNo, Arc<Page>> = BTreeMap::new();
         let mut stack: Vec<PageNo> = trees
@@ -1974,16 +1918,7 @@ impl PageFile {
             .keys()
             .any(|n| !write.contains_key(n) && !inner.map.pending().contains_key(n))
         {
-            return refuse("a page written since the last checkpoint is reached by no tree given");
-        }
-        let given: BTreeSet<PageNo> = trees.iter().map(|(_, r)| r.page).collect();
-        if inner
-            .newest
-            .trees
-            .iter()
-            .any(|(_, r)| inner.map.in_use(r.page) && !given.contains(&r.page))
-        {
-            return refuse("a tree of the newest checkpoint is neither given nor dropped");
+            return refuse("a page written since the last checkpoint is reached by no tree");
         }
         // Dying pages in memory are taken apart now: after a restart only
         // the disk is left to read them from.
@@ -2357,50 +2292,6 @@ impl Reservation<'_> {
     pub fn file(&self) -> &PageFile {
         self.file
     }
-
-    /// Makes tree `name`, empty, at this entry: a unit that writes the
-    /// empty tree of format version 1 (one empty leaf, as
-    /// [`crate::tree::create`] writes) and adds `name` to the trees that exist,
-    /// committed together with the entry's order checks. Making a tree
-    /// takes its root page and [`TABLE_ROOM`] pages of room for its record
-    /// in the tables of trees, both from this reservation and both counted
-    /// in [`Reservation::taken`]: reserve 5 pages for each. Refused, with
-    /// nothing done, when a tree of that name exists or the reservation is
-    /// short.
-    pub fn create_tree(&self, name: &TreeName) -> Result<Root, StoreError> {
-        let mut unit = self.begin()?;
-        let number = unit.allocate()?;
-        let page = Builder::new(PageKind::Leaf, 0, self.entry)
-            .finish(number)
-            .map_err(|f| store_failed(f.to_string()))?;
-        let root = Root {
-            page: number,
-            hash: page.hash(),
-        };
-        unit.write(Arc::new(page))?;
-        unit.add_tree(name);
-        unit.commit()?;
-        Ok(root)
-    }
-
-    /// Drops tree `name`, whose root at this entry is `root`: a unit that
-    /// releases the root with all it reaches (taken down later, a page at
-    /// a time) and removes the name from the trees that exist.
-    pub fn drop_tree(&self, name: &TreeName, root: Root) -> Result<(), StoreError> {
-        let mut unit = self.begin()?;
-        unit.release(root.page, &root.hash, Release::Dropped)?;
-        unit.remove_tree(name);
-        unit.commit()
-    }
-
-    /// Gives tree `from` the name `to` at this entry: a unit with only that
-    /// change, committed with the entry's order checks. Takes
-    /// [`TABLE_ROOM`] pages of this reservation, as making a tree does.
-    pub fn rename_tree(&self, from: &TreeName, to: &TreeName) -> Result<(), StoreError> {
-        let mut unit = self.begin()?;
-        unit.rename_tree(from, to);
-        unit.commit()
-    }
 }
 
 impl Drop for Reservation<'_> {
@@ -2416,6 +2307,15 @@ impl PageStore for PageFile {
 
     fn read(&self, number: PageNo, hash: &Hash) -> Result<Arc<Page>, Fault> {
         self.read_page(number, hash)
+    }
+
+    fn trees(&self) -> Vec<(TreeName, Root)> {
+        let inner = self.lock();
+        inner.trees.iter().map(|(n, r)| (n.clone(), *r)).collect()
+    }
+
+    fn root(&self, name: &TreeName) -> Option<Root> {
+        self.lock().trees.get(name).copied()
     }
 
     /// Refused: changes go through a [`Reservation`].
@@ -2436,30 +2336,32 @@ impl<'f> PageStore for Reservation<'f> {
         self.file.read_page(number, hash)
     }
 
-    /// A unit of this entry. Refused while units of another entry are open
-    /// (units of one entry at a time), and for an entry before the last one
-    /// committed or one a checkpoint covers.
+    fn trees(&self) -> Vec<(TreeName, Root)> {
+        self.file.trees()
+    }
+
+    fn root(&self, name: &TreeName) -> Option<Root> {
+        self.file.root(name)
+    }
+
+    /// The entry's unit of work. One unit an entry, one at a time: refused
+    /// while another unit is open, for an entry that has committed one (or
+    /// before the last one that did), and for one a checkpoint covers. A
+    /// unit dropped or refused may be begun again.
     fn begin(&self) -> Result<Unit<'_>, StoreError> {
         let mut inner = self.file.lock();
         if inner.failed {
             return Err(StoreError::Failed(FAILED.into()));
         }
-        if self.entry <= inner.cutoff() || self.entry < inner.last_unit {
+        if inner.unit_open {
+            return Err(store_failed("a unit while another is open: one at a time"));
+        }
+        if self.entry <= inner.cutoff() || self.entry <= inner.last_unit {
             return Err(store_failed(
-                "a unit of an entry before the last one committed, or one a checkpoint covers",
+                "a unit of an entry that has committed one, or one a checkpoint covers",
             ));
         }
-        match &mut inner.units {
-            Some((entry, open)) if *entry == self.entry => *open += 1,
-            Some((entry, _)) => {
-                return Err(store_failed(format!(
-                    "a unit of entry {} while units of entry {entry} are open",
-                    self.entry
-                )))
-            }
-            None => inner.units = Some((self.entry, 1)),
-        }
-        let trees_at = inner.tree_changes;
+        inner.unit_open = true;
         drop(inner);
         Ok(Unit {
             file: self.file,
@@ -2471,13 +2373,14 @@ impl<'f> PageStore for Reservation<'f> {
             released: Vec::new(),
             ahead: BTreeMap::new(),
             names: Vec::new(),
-            trees_at,
             committed: false,
         })
     }
 }
 
-/// One tree's changes for one entry ([`EntryPages`]).
+/// Everything one entry changes ([`EntryPages`]): the pages of every tree
+/// it changes, and the trees it makes, drops and renames and gives a new
+/// root.
 pub struct Unit<'a> {
     file: &'a PageFile,
     remaining: &'a AtomicU64,
@@ -2490,40 +2393,18 @@ pub struct Unit<'a> {
     /// page copied shares its references with the copy, and the tree
     /// releases a page before the pages it refers to.
     ahead: BTreeMap<PageNo, u32>,
-    /// Changes to the set of trees, applied with the unit's pages.
+    /// Changes to the trees, applied with the unit's pages.
     names: Vec<NameChange>,
-    /// The changes to the set of trees committed when the unit began.
-    trees_at: u64,
     committed: bool,
 }
 
-/// A change to the set of trees that exist.
+/// A change to the trees, applied at commit.
 #[derive(Clone, Debug)]
 enum NameChange {
-    Add(TreeName),
-    Remove(TreeName),
+    Add(TreeName, Root),
+    Drop(TreeName),
     Rename(TreeName, TreeName),
-}
-
-impl Unit<'_> {
-    /// Adds `name` to the trees that exist when the unit commits (its root
-    /// is a page the unit writes). Takes [`TABLE_ROOM`] pages of the
-    /// reservation at commit.
-    pub fn add_tree(&mut self, name: &TreeName) {
-        self.names.push(NameChange::Add(name.clone()));
-    }
-
-    /// Removes tree `name` when the unit commits.
-    pub fn remove_tree(&mut self, name: &TreeName) {
-        self.names.push(NameChange::Remove(name.clone()));
-    }
-
-    /// Renames tree `from` to `to` when the unit commits. Takes
-    /// [`TABLE_ROOM`] pages of the reservation at commit.
-    pub fn rename_tree(&mut self, from: &TreeName, to: &TreeName) {
-        self.names
-            .push(NameChange::Rename(from.clone(), to.clone()));
-    }
+    SetRoot(TreeName, Root),
 }
 
 struct Releasing {
@@ -2538,12 +2419,7 @@ struct Releasing {
 /// page file's state alone: run before any page is read, so that a call the
 /// page file refuses reads, reclaims and writes nothing, and again in the
 /// plan.
-fn refusal(
-    inner: &Inner,
-    entry: EntryId,
-    trees: &[(TreeName, Root)],
-    keep_as: Option<&str>,
-) -> Result<(), CheckpointError> {
+fn refusal(inner: &Inner, entry: EntryId, keep_as: Option<&str>) -> Result<(), CheckpointError> {
     let refuse = |why| Err(CheckpointError::Refused(why));
     if inner.failed {
         return Err(CheckpointError::Failed);
@@ -2567,9 +2443,6 @@ fn refusal(
     // covers is committed before it fixes its entry, and none after.
     if inner.reservations.range(..=entry.index).next().is_some() {
         return refuse("a reservation for an entry the checkpoint covers is open");
-    }
-    if trees.len() != inner.trees.len() || trees.iter().any(|(n, _)| !inner.trees.contains(n)) {
-        return refuse("the trees given are not the trees that exist (made and dropped by units)");
     }
     Ok(())
 }
@@ -2638,6 +2511,23 @@ impl EntryPages for Unit<'_> {
         Ok(())
     }
 
+    fn add_tree(&mut self, name: &TreeName, root: Root) {
+        self.names.push(NameChange::Add(name.clone(), root));
+    }
+
+    fn drop_tree(&mut self, name: &TreeName) {
+        self.names.push(NameChange::Drop(name.clone()));
+    }
+
+    fn rename_tree(&mut self, from: &TreeName, to: &TreeName) {
+        self.names
+            .push(NameChange::Rename(from.clone(), to.clone()));
+    }
+
+    fn set_root(&mut self, name: &TreeName, root: Root) {
+        self.names.push(NameChange::SetRoot(name.clone(), root));
+    }
+
     fn commit(mut self) -> Result<(), StoreError> {
         let file = self.file;
         let mut inner = file.lock();
@@ -2649,49 +2539,121 @@ impl EntryPages for Unit<'_> {
                 "an entry at or before a checkpoint's (on disk or being written)",
             ));
         }
-        if self.entry < inner.last_unit {
+        // The changes to the trees, checked in order against the trees as
+        // the page file holds them (no other unit can change them while
+        // this one is open). A root given must be a tree's page this unit
+        // wrote; a tree given a new root must have had its old root
+        // released by this unit; a dropped tree's root is released here.
+        let mut view: BTreeMap<TreeName, Option<Root>> = BTreeMap::new();
+        let mut count = inner.trees.len();
+        let mut room = 0u64;
+        let mut drops: Vec<Releasing> = Vec::new();
+        let mut replaced: BTreeMap<PageNo, Hash> = BTreeMap::new();
+        let mut named: BTreeSet<PageNo> = BTreeSet::new();
+        for change in &self.names {
+            let current = |view: &BTreeMap<TreeName, Option<Root>>, n: &TreeName| match view.get(n)
+            {
+                Some(r) => *r,
+                None => inner.trees.get(n).copied(),
+            };
+            let refused = |why: &str| Err(store_failed(format!("{why}: {change:?}")));
+            let mut new_root = |root: &Root| -> Result<(), StoreError> {
+                let tree_page = self
+                    .pages
+                    .get(&root.page)
+                    .is_some_and(|p| p.hash() == root.hash && p.kind() != PageKind::Overflow);
+                if !tree_page || !named.insert(root.page) {
+                    return refused(
+                        "a root that is not a tree's page this unit wrote, or named twice",
+                    );
+                }
+                Ok(())
+            };
+            match change {
+                NameChange::Add(n, root) => {
+                    if current(&view, n).is_some() {
+                        return refused("a tree of that name exists");
+                    }
+                    new_root(root)?;
+                    view.insert(n.clone(), Some(*root));
+                    count += 1;
+                    room += TABLE_ROOM;
+                }
+                NameChange::Drop(n) => {
+                    let Some(old) = current(&view, n) else {
+                        return refused("no tree of that name");
+                    };
+                    if self.pages.contains_key(&old.page) {
+                        return refused("a tree this unit made or gave a root is dropped by it");
+                    }
+                    drops.push(Releasing {
+                        number: old.page,
+                        hash: old.hash,
+                        how: Release::Dropped,
+                        references: None,
+                    });
+                    view.insert(n.clone(), None);
+                    count -= 1;
+                }
+                NameChange::Rename(f, t) => {
+                    let Some(root) = current(&view, f) else {
+                        return refused("no tree of that name");
+                    };
+                    if current(&view, t).is_some() {
+                        return refused("a tree of the new name exists");
+                    }
+                    view.insert(f.clone(), None);
+                    view.insert(t.clone(), Some(root));
+                    room += TABLE_ROOM;
+                }
+                NameChange::SetRoot(n, root) => {
+                    let Some(old) = current(&view, n) else {
+                        return refused("no tree of that name");
+                    };
+                    if self.pages.contains_key(&old.page) {
+                        return refused("a tree this unit made or gave a root is given another");
+                    }
+                    if *root != old {
+                        new_root(root)?;
+                        replaced.insert(old.page, old.hash);
+                    }
+                    view.insert(n.clone(), Some(*root));
+                }
+            }
+            if count > MAX_TREES {
+                return Err(store_failed(format!("more than {MAX_TREES} trees")));
+            }
+        }
+        // A tree's root is released only as the old root of a tree this
+        // unit gives a new one, and every such old root is released.
+        for r in &self.released {
+            let accounted = r.how == Release::Copied && replaced.get(&r.number) == Some(&r.hash);
+            if inner.root_pages.contains_key(&r.number) && !accounted {
+                return Err(store_failed(format!(
+                    "page {} released: the root of a tree this unit gives no new root",
+                    r.number
+                )));
+            }
+        }
+        if let Some(old) = replaced
+            .keys()
+            .find(|n| !self.released.iter().any(|r| r.number == **n))
+        {
             return Err(store_failed(format!(
-                "entry {} committed after entry {}",
-                self.entry, inner.last_unit
+                "page {old}, a tree's root, replaced but not released"
             )));
         }
-        // A unit that changes the set of trees, or drops a page (a tree's
-        // root among them), acts on the set as it was when the unit began:
-        // if another unit has changed it since, this one is refused whole.
-        let drops = self.released.iter().any(|r| r.how == Release::Dropped);
-        if (drops || !self.names.is_empty()) && inner.tree_changes != self.trees_at {
-            return Err(store_failed(
-                "the set of trees changed since this unit began (it changes the set or drops a page)",
-            ));
-        }
-        // The releases are checked in order against the counts they will
-        // meet, so that a page copied while shared has its references. A
-        // page in memory is checked against its hash too: a page freed and
-        // taken again within the entry is another page, unless its bytes
-        // are the same (a hash covers a page's content, not its number).
-        // That case is still reachable: a unit that only copies pages (it
-        // changes no tree and drops nothing, so the count above does not
-        // stop it), staged against a tree that another unit of the entry
-        // drops, after which a third makes a tree whose empty root lands
-        // on the same number. Its commit then releases the new tree's
-        // root, which is freed at once: a read of that tree fails its
-        // check once the number is taken again (never wrong data), and
-        // checkpoints are refused (a root not in use, a page reached by no
-        // tree) until the page file is opened again. Holding each tree's
-        // root in the page file would check the release itself
-        // (https://github.com/OpenMaker-Dev/openmaker/issues/735).
+        // The releases, the dropped trees' roots last, are checked in order
+        // against the counts they will meet, so that a page copied while
+        // shared has its references.
         let mut seen = BTreeSet::new();
         let mut ahead: BTreeMap<PageNo, u32> = BTreeMap::new();
-        for r in &self.released {
+        for r in self.released.iter().chain(&drops) {
             if !seen.insert(r.number)
                 || self.allocated.contains(&r.number)
                 || inner.held.contains(&r.number)
                 || inner.newest_meta.contains(&r.number)
                 || !inner.map.in_use(r.number)
-                || inner
-                    .dirty
-                    .get(&r.number)
-                    .is_some_and(|p| p.hash() != r.hash)
             {
                 return Err(store_failed(format!(
                     "page {} released though it is not in use",
@@ -2709,49 +2671,6 @@ impl EntryPages for Unit<'_> {
                 for (n, _) in references {
                     *ahead.entry(*n).or_default() += 1;
                 }
-            }
-        }
-        // Changes to the set of trees, checked in order against the set as
-        // it stands, and the room they take.
-        let mut overlay: BTreeMap<TreeName, bool> = BTreeMap::new();
-        let mut count = inner.trees.len();
-        let mut room = 0u64;
-        for change in &self.names {
-            let present = |overlay: &BTreeMap<TreeName, bool>, n: &TreeName| {
-                overlay
-                    .get(n)
-                    .copied()
-                    .unwrap_or_else(|| inner.trees.contains(n))
-            };
-            let refused = match change {
-                NameChange::Add(n) => {
-                    let refused = present(&overlay, n);
-                    overlay.insert(n.clone(), true);
-                    count += 1;
-                    room += TABLE_ROOM;
-                    refused
-                }
-                NameChange::Remove(n) => {
-                    let refused = !present(&overlay, n);
-                    overlay.insert(n.clone(), false);
-                    count = count.saturating_sub(1);
-                    refused
-                }
-                NameChange::Rename(f, t) => {
-                    let refused = !present(&overlay, f) || present(&overlay, t);
-                    overlay.insert(f.clone(), false);
-                    overlay.insert(t.clone(), true);
-                    room += TABLE_ROOM;
-                    refused
-                }
-            };
-            if refused {
-                return Err(store_failed(format!(
-                    "a change to the trees refused: {change:?}"
-                )));
-            }
-            if count > MAX_TREES {
-                return Err(store_failed(format!("more than {MAX_TREES} trees")));
             }
         }
         let unwritten = (self.allocated.len() - self.pages.len()) as u64;
@@ -2775,7 +2694,7 @@ impl EntryPages for Unit<'_> {
         inner.last_unit = self.entry;
         let at = Version::at(self.entry);
         let mut died = Vec::new();
-        for r in &self.released {
+        for r in self.released.iter().chain(&drops) {
             let birth = inner
                 .in_memory(r.number, &r.hash)
                 .map(|p| Version::at(p.written()));
@@ -2791,25 +2710,15 @@ impl EntryPages for Unit<'_> {
                 died.push(r.number);
             }
         }
-        for change in std::mem::take(&mut self.names) {
-            inner.tree_changes += 1;
-            match change {
-                NameChange::Add(n) => {
-                    inner.names += n.as_bytes().len();
-                    inner.trees.insert(n);
-                }
-                NameChange::Remove(n) => {
-                    if inner.trees.remove(&n) {
-                        inner.names -= n.as_bytes().len();
-                    }
-                }
-                NameChange::Rename(f, t) => {
-                    if inner.trees.remove(&f) {
-                        inner.names -= f.as_bytes().len();
-                    }
-                    inner.names += t.as_bytes().len();
-                    inner.trees.insert(t);
-                }
+        for (name, root) in view {
+            if let Some(old) = inner.trees.remove(&name) {
+                inner.names -= name.as_bytes().len();
+                unroot(&mut inner.root_pages, old.page);
+            }
+            if let Some(root) = root {
+                inner.names += name.as_bytes().len();
+                *inner.root_pages.entry(root.page).or_default() += 1;
+                inner.trees.insert(name, root);
             }
         }
         // The fixed room the trees' records take, from the reservation to
@@ -2825,15 +2734,20 @@ impl EntryPages for Unit<'_> {
     }
 }
 
+/// One tree fewer has page `n` for its root.
+fn unroot(root_pages: &mut BTreeMap<PageNo, u32>, n: PageNo) {
+    if let Some(k) = root_pages.get_mut(&n) {
+        *k -= 1;
+        if *k == 0 {
+            root_pages.remove(&n);
+        }
+    }
+}
+
 impl Drop for Unit<'_> {
     fn drop(&mut self) {
         let mut inner = self.file.lock();
-        if let Some((_, open)) = &mut inner.units {
-            *open -= 1;
-            if *open == 0 {
-                inner.units = None;
-            }
-        }
+        inner.unit_open = false;
         if self.committed {
             return;
         }
@@ -2852,12 +2766,12 @@ impl PageFile {
     /// as far as the map goes: one more tree reaches the root page. The
     /// clone feature itself is not built; this lets tests drive share
     /// counts.
-    pub(crate) fn clone_for_test(&self, name: &TreeName, root: PageNo) {
+    pub(crate) fn clone_for_test(&self, name: &TreeName, root: Root) {
         let mut inner = self.lock();
-        inner.map.share(root);
+        inner.map.share(root.page);
         inner.names += name.as_bytes().len();
-        inner.trees.insert(name.clone());
-        inner.tree_changes += 1;
+        *inner.root_pages.entry(root.page).or_default() += 1;
+        inner.trees.insert(name.clone(), root);
     }
 
     pub(crate) fn count_for_test(&self, n: PageNo) -> u32 {

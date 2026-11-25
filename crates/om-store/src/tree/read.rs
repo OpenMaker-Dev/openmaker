@@ -932,7 +932,15 @@ impl<'t, 's, S: PageStore + ?Sized> Iterator for Children<'t, 's, S> {
 mod tests {
     use super::*;
     use crate::page::{Builder, EntryPages, MemStore, Numbering};
-    use crate::tree::{apply, check, Edit};
+    use crate::tree::{check, Edit};
+
+    /// Applies an entry in a unit of its own, committed.
+    fn apply(store: &MemStore, root: Root, entry: u64, edits: &[Edit]) -> Result<Root> {
+        let mut unit = store.begin()?;
+        let new = crate::tree::apply(store, &mut unit, Some(root), entry, edits)?;
+        unit.commit()?;
+        Ok(new)
+    }
 
     /// Re-check of #697: an empty leaf below the root, which these rules
     /// never make, is refused by every read that reaches it. An edit that

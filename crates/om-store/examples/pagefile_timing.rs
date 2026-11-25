@@ -12,7 +12,7 @@
 use std::time::Instant;
 
 use om_store::os::OsFs;
-use om_store::page::StoreError;
+use om_store::page::{EntryPages, PageStore, StoreError};
 use om_store::pagefile::{entry_bound, Config, EntryId, PageFile, Purpose, Reservation, TreeName};
 use om_store::sys::Fs;
 use om_store::tree::{self, Edit, Root, Tree};
@@ -41,21 +41,49 @@ fn entry(index: u64) -> EntryId {
     }
 }
 
-/// Applies `edits` at `index` through a reservation of `pages`, extended by
-/// as much again whenever the entry needs more (the apply that ran out
-/// changed nothing). Returns the new root and the pages the entry took.
-fn apply(pf: &PageFile, root: Root, index: u64, edits: &[Edit], pages: u64) -> (Root, u64) {
+/// Applies `edits` to tree `name` as entry `index`, in one unit, through a
+/// reservation of `pages`, extended by as much again whenever the entry
+/// needs more (the unit that ran out is dropped and begun again). Returns
+/// the new root and the pages the entry took.
+fn apply(pf: &PageFile, name: &TreeName, index: u64, edits: &[Edit], pages: u64) -> (Root, u64) {
     let res: Reservation<'_> = match pf.reserve(index, pages, Purpose::Entry) {
         Ok(res) => res,
         Err(e) => panic!("entry {index}: {e}"),
     };
+    let root = pf.root(name).expect("the tree");
     loop {
-        match tree::apply(&res, root, index, edits) {
-            Ok(new) => return (new, res.taken()),
-            Err(tree::Error::Store(StoreError::Full)) => res.extend(pages).unwrap(),
+        let mut unit = res.begin().unwrap();
+        match tree::apply(&res, &mut unit, Some(root), index, edits) {
+            Ok(new) => {
+                unit.set_root(name, new);
+                unit.commit().unwrap();
+                return (new, res.taken());
+            }
+            Err(tree::Error::Store(StoreError::Full)) => {
+                drop(unit);
+                res.extend(pages).unwrap();
+            }
             Err(e) => panic!("{e}"),
         }
     }
+}
+
+/// Makes trees `names`, empty, as entry `index`: one unit.
+fn make(pf: &PageFile, index: u64, names: &[TreeName]) -> Vec<Root> {
+    let res = pf
+        .reserve(index, 5 * names.len() as u64, Purpose::Entry)
+        .unwrap();
+    let mut unit = res.begin().unwrap();
+    let roots = names
+        .iter()
+        .map(|name| {
+            let root = tree::apply(&res, &mut unit, None, index, &[]).unwrap();
+            unit.add_tree(name, root);
+            root
+        })
+        .collect();
+    unit.commit().unwrap();
+    roots
 }
 
 fn mib(bytes: u64) -> f64 {
@@ -87,21 +115,16 @@ fn trees(mode: &str, folder: &str) {
         let lock = fs.lock().unwrap();
         let pf = PageFile::create(&fs, &lock, config).unwrap();
         let n = om_store::pagefile::MAX_TREES;
-        let mut trees = Vec::with_capacity(n);
         let start = Instant::now();
         let mut index = 0;
         for chunk in (0..n).collect::<Vec<_>>().chunks(4_096) {
             index += 1;
-            let res = pf
-                .reserve(index, 5 * chunk.len() as u64, Purpose::Entry)
-                .unwrap();
-            for &i in chunk {
-                let name = TreeName::new(format!("file/{i:08}")).unwrap();
-                let root = res.create_tree(&name).unwrap();
-                trees.push((name, root));
-            }
-            drop(res);
-            pf.checkpoint(entry(index), &trees, None).unwrap();
+            let names: Vec<TreeName> = chunk
+                .iter()
+                .map(|i| TreeName::new(format!("file/{i:08}")).unwrap())
+                .collect();
+            make(&pf, index, &names);
+            pf.checkpoint(entry(index), None).unwrap();
         }
         let space = pf.space();
         println!(
@@ -162,9 +185,7 @@ fn main() {
     // The tree: `items` records of 16 bytes, 1,000 puts an entry, in key
     // order.
     let start = Instant::now();
-    let res = pf.reserve(1, 5, Purpose::Entry).unwrap();
-    let mut root = res.create_tree(&name).unwrap();
-    drop(res);
+    let mut root = make(&pf, 1, std::slice::from_ref(&name))[0];
     let mut index = 1;
     for chunk in (0..items).collect::<Vec<_>>().chunks(1_000) {
         index += 1;
@@ -172,7 +193,7 @@ fn main() {
             .iter()
             .map(|&r| Edit::leaf(path(r), (r as u128).to_le_bytes().to_vec()))
             .collect();
-        root = apply(&pf, root, index, &edits, 64).0;
+        root = apply(&pf, &name, index, &edits, 64).0;
     }
     let loaded = start.elapsed();
     let report = tree::check(&pf, root).unwrap();
@@ -185,9 +206,7 @@ fn main() {
         mib(report.pages.len() as u64 * 16_384)
     );
     let start = Instant::now();
-    let done = pf
-        .checkpoint(entry(index), &[(name.clone(), root)], None)
-        .unwrap();
+    let done = pf.checkpoint(entry(index), None).unwrap();
     println!(
         "first checkpoint: {:.2} s, {} tree pages and {} meta pages, {:.1} MiB",
         start.elapsed().as_secs_f64(),
@@ -206,16 +225,14 @@ fn main() {
         let r = (rng.next() % u64::from(items)) as u32;
         let edits = [Edit::leaf(path(r), rng.next().to_le_bytes().to_vec())];
         let bound = entry_bound(&edits, height);
-        let (new, t) = apply(&pf, root, index, &edits, bound);
+        let (new, t) = apply(&pf, &name, index, &edits, bound);
         root = new;
         taken += t;
     }
     let puts = start.elapsed();
     let dirty = pf.space().dirty;
     let start = Instant::now();
-    let done = pf
-        .checkpoint(entry(index), &[(name.clone(), root)], None)
-        .unwrap();
+    let done = pf.checkpoint(entry(index), None).unwrap();
     let took = start.elapsed();
     println!(
         "10,000 one-put entries: {:.1} us each, {taken} pages written in memory ({:.1} a put, \
@@ -274,10 +291,9 @@ fn main() {
                 let r = low + (rng.next() % u64::from(high - low)) as u32;
                 edits.push(Edit::leaf(path(r), rng.next().to_le_bytes().to_vec()));
             }
-            root = apply(&pf, root, index, &edits, 256).0;
+            root = apply(&pf, &name, index, &edits, 256).0;
         }
-        pf.checkpoint(entry(index), &[(name.clone(), root)], None)
-            .unwrap();
+        pf.checkpoint(entry(index), None).unwrap();
         let mut freed = 0;
         loop {
             let done = pf.reclaim(1 << 20);

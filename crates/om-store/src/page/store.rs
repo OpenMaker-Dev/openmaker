@@ -6,6 +6,46 @@ use std::sync::Arc;
 
 use super::{Fault, Hash, Page, PageNo};
 
+/// A version of a tree: its root page and the hash of that page, which
+/// covers everything in the tree except page numbers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Root {
+    pub page: PageNo,
+    pub hash: Hash,
+}
+
+/// The name of one of the state's trees: 1 to 255 bytes. The store gives
+/// names no meaning; the engine names one tree per hosted file and one for
+/// the rest of the state (section 6.2).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TreeName(Vec<u8>);
+
+impl TreeName {
+    /// The longest name, in bytes.
+    pub const MAX: usize = 255;
+
+    pub fn new(bytes: impl Into<Vec<u8>>) -> Option<TreeName> {
+        let bytes = bytes.into();
+        (!bytes.is_empty() && bytes.len() <= Self::MAX).then_some(TreeName(bytes))
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for TreeName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "TreeName({})", self.0.escape_ascii())
+    }
+}
+
+impl fmt::Display for TreeName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0.escape_ascii())
+    }
+}
+
 /// How a version being built stops reaching a page the version it was built
 /// from reached.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,10 +96,15 @@ impl std::error::Error for StoreError {}
 ///   so that a number that was freed and reused never answers for the page
 ///   that was there before (section 6.4). Committed pages never change, so a
 ///   cache never invalidates anything.
-/// - **Changes come in entries.** Everything the tree changes in the store
-///   for one entry goes through one [`EntryPages`] that `begin` returns, and
-///   takes effect at once when it is committed, or not at all
-///   ([`EntryPages`] says how).
+/// - **The store holds the trees.** It keeps each tree's name and its root
+///   in the newest version ([`PageStore::trees`]), and changes them only
+///   when a unit of work that names them commits.
+/// - **One unit of work an entry.** Everything one entry changes in the
+///   store, in every tree it changes, goes through one [`EntryPages`] that
+///   `begin` returns: the pages written and released, the trees made,
+///   dropped and renamed, and each changed tree's new root. It takes
+///   effect at once when it is committed, or not at all ([`EntryPages`]
+///   says how).
 /// - **Pages stay while reached.** A committed page stays readable under its
 ///   number and hash for as long as any version, view, checkpoint, restore
 ///   point, clone or state copy in progress reaches it. Until a checkpoint
@@ -82,15 +127,20 @@ pub trait PageStore {
     /// the superblock) holds for it.
     fn read(&self, number: PageNo, hash: &Hash) -> Result<Arc<Page>, Fault>;
 
-    /// Opens the changes of one entry to one tree. The tree calls it only
-    /// once the entry's edits have all been applied to its working copy, so
-    /// that nothing before it can fail half way.
+    /// The trees of the newest version, by name, with their roots.
+    fn trees(&self) -> Vec<(TreeName, Root)>;
+
+    /// The root of tree `name` in the newest version.
+    fn root(&self, name: &TreeName) -> Option<Root>;
+
+    /// Opens the unit of work of one entry: everything the entry changes.
     fn begin(&self) -> Result<Self::Entry<'_>, StoreError>;
 }
 
-/// The changes one entry makes to the page store: the pages it writes and the
-/// pages the new version no longer reaches. Nothing of them is visible to
-/// readers or counted in the store's space until [`EntryPages::commit`].
+/// The changes one entry makes to the page store: the pages it writes, the
+/// pages the new version no longer reaches, and the trees it makes, drops,
+/// renames and gives a new root. Nothing of them is visible to readers or
+/// counted in the store's space until [`EntryPages::commit`].
 ///
 /// - **Allocating.** `allocate` returns a number that no committed page uses
 ///   and no other open entry holds, and holds it for this entry.
@@ -107,6 +157,13 @@ pub trait PageStore {
 ///   the store raises their counts (Rodeh's method), learning them from
 ///   [`Page::references`]. A page is freed only when nothing reaches it
 ///   (section 6.7).
+/// - **Naming trees.** `add_tree` makes a tree whose root is a page this
+///   entry wrote; `drop_tree` drops a tree, and the store releases the root
+///   it holds for it (as [`Release::Dropped`]); `rename_tree` gives a tree
+///   another name; `set_root` gives a tree a root this entry wrote, the
+///   old one having been released by this entry. They take effect in the
+///   order given, at commit. A tree is named by the store's own record of
+///   it, so a caller gives the store no root of a tree it already holds.
 /// - **Committing.** `commit` makes all of it take effect together: the
 ///   written pages become readable and reached, the releases are applied
 ///   in the order given, and numbers allocated and not written are given
@@ -129,6 +186,18 @@ pub trait EntryPages {
 
     /// The version being built no longer reaches page `number`.
     fn release(&mut self, number: PageNo, hash: &Hash, how: Release) -> Result<(), StoreError>;
+
+    /// Tree `name` is made, with root `root`, a page this entry wrote.
+    fn add_tree(&mut self, name: &TreeName, root: Root);
+
+    /// Tree `name` is dropped, with everything its root reaches.
+    fn drop_tree(&mut self, name: &TreeName);
+
+    /// Tree `from` takes the name `to`.
+    fn rename_tree(&mut self, from: &TreeName, to: &TreeName);
+
+    /// Tree `name`'s root becomes `root`, a page this entry wrote.
+    fn set_root(&mut self, name: &TreeName, root: Root);
 
     /// Makes the entry's changes take effect, all together.
     fn commit(self) -> Result<(), StoreError>;

@@ -36,59 +36,60 @@ const MIN_FILL: usize = USABLE / 4;
 /// hint fills at least this much of a page.
 const SPLIT_HIGH: usize = USABLE * 7 / 8;
 
-/// A tree with no nodes: one empty leaf, written by entry `entry`.
-pub fn create<S: PageStore + ?Sized>(store: &S, entry: u64) -> Result<Root> {
-    let mut out = store.begin()?;
-    let r = write_page(&mut out, Builder::new(PageKind::Leaf, 0, entry))?;
-    out.commit()?;
-    Ok(Root {
-        page: r.page,
-        hash: r.hash,
-    })
-}
-
 /// Applies the edits of entry `entry`, in order, to the version `root`
-/// names, and returns the root of the new version. The old version's pages
-/// are left as they were. An entry whose edits change nothing returns
-/// `root` and writes nothing.
+/// names (`None`: a tree the entry makes, which starts empty), and returns
+/// the root of the new version. The old version's pages are left as they
+/// were. An entry whose edits change an existing tree in nothing returns
+/// `root` and writes nothing; a tree made is always written, if only as one
+/// empty leaf.
 ///
 /// Every edit is checked against the store's bounds before anything is
 /// done ([`check_edits`]). `entry` must be above the index of the last entry
 /// that changed the tree.
 ///
-/// The store sees only reads until every edit has been applied to the
-/// working copy; then the new pages and the releases go to one
-/// [`EntryPages`], committed last. An error at any point leaves the store as
-/// it was ([`EntryPages`]), so the entry can be applied again.
-pub fn apply<S: PageStore + ?Sized>(
+/// Pages are read through `store` and written into `out`, the entry's unit
+/// of work, which `apply` does not commit: the caller names the new root
+/// in the unit ([`EntryPages::set_root`], [`EntryPages::add_tree`]) and
+/// commits the entry once. The unit sees only reads until every edit has
+/// been applied to the working copy. An error leaves the unit with the
+/// pages written so far; the caller drops it, and the store is as it was.
+pub fn apply<S: PageStore + ?Sized, E: EntryPages>(
     store: &S,
-    root: Root,
+    out: &mut E,
+    root: Option<Root>,
     entry: u64,
     edits: &[Edit],
 ) -> Result<Root> {
     check_edits(edits)?;
     let pages = Pages { store };
-    let top = pages.root(root)?;
-    if entry <= top.written() {
-        return Err(Error::EntryOrder {
-            entry,
-            last: top.written(),
-        });
-    }
+    let mut tree = match root {
+        Some(root) => {
+            let top = pages.root(root)?;
+            if entry <= top.written() {
+                return Err(Error::EntryOrder {
+                    entry,
+                    last: top.written(),
+                });
+            }
+            Work {
+                slot: Slot::Clean(ChildRef {
+                    page: root.page,
+                    hash: root.hash,
+                    stamp: top.written(),
+                }),
+                level: top.level(),
+            }
+        }
+        None => Work {
+            slot: Slot::Dirty(Box::new(WNode::Leaf(WLeaf::new(Vec::new())))),
+            level: 0,
+        },
+    };
     let mut cx = Cx {
         pages,
         released: Vec::new(),
-        changed: false,
+        changed: root.is_none(),
     };
-    let mut tree = Work {
-        slot: Slot::Clean(ChildRef {
-            page: root.page,
-            hash: root.hash,
-            stamp: top.written(),
-        }),
-        level: top.level(),
-    };
-    drop(top);
     for edit in edits {
         match edit {
             Edit::Put { path, node } => put(&mut cx, &mut tree, path, node)?,
@@ -99,17 +100,15 @@ pub fn apply<S: PageStore + ?Sized>(
             }
         }
     }
-    if !cx.changed {
+    if let (false, Some(root)) = (cx.changed, root) {
         return Ok(root);
     }
     // Every entry that changes the tree rewrites its root.
     materialize(&mut cx, &mut tree.slot, tree.level, true)?;
-    let mut out = store.begin()?;
-    let new = write_slot(entry, &mut out, tree.slot, tree.level)?;
+    let new = write_slot(entry, out, tree.slot, tree.level)?;
     for (number, hash, how) in &cx.released {
         out.release(*number, hash, *how)?;
     }
-    out.commit()?;
     Ok(Root {
         page: new.page,
         hash: new.hash,

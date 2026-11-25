@@ -9,9 +9,38 @@ use std::time::Instant;
 
 use om_store::page::{
     EntryPages, Fault, Hash, MemStore, Numbering, Page, PageNo, PageStore, Release, StoreError,
-    PAGE_SIZE,
+    TreeName, PAGE_SIZE,
 };
-use om_store::tree::{apply, check, create, Edit, Root, Tree};
+use om_store::tree::{self, check, Edit, Error, Root, Tree};
+
+/// Applies the edits of entry `entry` to the tree `root` names (`None`: a
+/// tree made) in a unit of work of its own, committed. These trees are not
+/// named in the store: the store only keeps their pages.
+fn apply_in<S: PageStore + ?Sized>(
+    store: &S,
+    root: Option<Root>,
+    entry: u64,
+    edits: &[Edit],
+) -> Result<Root, Error> {
+    let mut unit = store.begin()?;
+    let new = tree::apply(store, &mut unit, root, entry, edits)?;
+    unit.commit()?;
+    Ok(new)
+}
+
+fn apply<S: PageStore + ?Sized>(
+    store: &S,
+    root: Root,
+    entry: u64,
+    edits: &[Edit],
+) -> Result<Root, Error> {
+    apply_in(store, Some(root), entry, edits)
+}
+
+/// A tree with no nodes: one empty leaf, written by entry `entry`.
+fn create<S: PageStore + ?Sized>(store: &S, entry: u64) -> Result<Root, Error> {
+    apply_in(store, None, entry, &[])
+}
 
 /// Pages in memory, freed as soon as the newest version no longer reaches
 /// them, as a page file with no older version in use would. `MemStore` keeps
@@ -49,6 +78,15 @@ impl PageStore for Newest {
         Ok(page.clone())
     }
 
+    /// The trees are not named here: the measurement keeps their roots.
+    fn trees(&self) -> Vec<(TreeName, Root)> {
+        Vec::new()
+    }
+
+    fn root(&self, _: &TreeName) -> Option<Root> {
+        None
+    }
+
     fn begin(&self) -> Result<NewestEntry<'_>, StoreError> {
         Ok(NewestEntry {
             store: self,
@@ -82,6 +120,14 @@ impl EntryPages for NewestEntry<'_> {
         self.released.push((number, how));
         Ok(())
     }
+
+    fn add_tree(&mut self, _: &TreeName, _: Root) {}
+
+    fn drop_tree(&mut self, _: &TreeName) {}
+
+    fn rename_tree(&mut self, _: &TreeName, _: &TreeName) {}
+
+    fn set_root(&mut self, _: &TreeName, _: Root) {}
 
     fn commit(self) -> Result<(), StoreError> {
         let mut pages = self.store.pages.lock().unwrap();

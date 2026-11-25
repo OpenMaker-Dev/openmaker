@@ -10,7 +10,7 @@ mod memory;
 mod store;
 
 pub use memory::{MemEntry, MemStore, Numbering};
-pub use store::{EntryPages, PageStore, Release, StoreError};
+pub use store::{EntryPages, PageStore, Release, Root, StoreError, TreeName};
 
 use std::fmt;
 

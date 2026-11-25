@@ -16,10 +16,11 @@ mod write;
 
 use std::fmt;
 
+pub use crate::page::Root;
 pub use check::{check, Report};
 pub use key::Key;
 pub use read::{Children, Cursor, Item, Tree};
-pub use write::{apply, create};
+pub use write::apply;
 
 use crate::page::{Fault, Hash, PageFault, PageNo, StoreError, MAX_KEY, MAX_VALUE};
 
@@ -27,14 +28,6 @@ use crate::page::{Fault, Hash, PageFault, PageNo, StoreError, MAX_KEY, MAX_VALUE
 /// edit can create (each is a prefix of the edit's path), and so what an
 /// entry can make the store write.
 pub const MAX_DEPTH: usize = 64;
-
-/// A version of a tree: its root page and the hash of that page, which
-/// covers everything in the tree except page numbers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Root {
-    pub page: PageNo,
-    pub hash: Hash,
-}
 
 /// What a node is: a list of children (possibly empty), a value (possibly
 /// empty), or both. No file FileMaker wrote has a node that is both, but the

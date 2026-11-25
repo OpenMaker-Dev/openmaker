@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use om_hbam::OwnedNode;
 use om_store::apply::{
-    apply, create, Applied, Error, FileRow, LockRow, Position, Refusal, Roots, ServerRow,
-    SessionRow, StoreTree, TreeId,
+    apply, Applied, Error, FileRow, LockRow, Position, Refusal, ServerRow, SessionRow, StoreTree,
+    TreeId,
 };
 use om_store::entry::{
     entry_hash, Change, Entry, Feature, FileEvent, Kind, LockEdit, Mark, Members, Op, Payload,
@@ -23,9 +23,12 @@ use om_store::entry::{
 };
 use om_store::model::{self, File, Model};
 use om_store::page::{
-    Fault, Hash, MemEntry, MemStore, Numbering, Page, PageKind, PageNo, PageStore, Release,
-    StoreError, MAX_VALUE,
+    EntryPages, Fault, Hash, MemEntry, MemStore, Numbering, Page, PageKind, PageNo, PageStore,
+    Release, StoreError, TreeName, MAX_VALUE,
 };
+use om_store::pagefile::{Config as PageConfig, EntryId, PageFile, Purpose as PagePurpose};
+use om_store::sim::{Fates, Rates, Sim};
+use om_store::sys::{FolderLock, Fs};
 use om_store::tree::{self, check_edits, key, Edit, Node, Root, Tree, MAX_DEPTH};
 
 type Path = Vec<Vec<u8>>;
@@ -619,6 +622,40 @@ impl Gen {
     }
 }
 
+/// The roots the page store holds for the state's trees.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Roots {
+    store: Root,
+    files: BTreeMap<u64, Root>,
+}
+
+impl Roots {
+    /// Every tree with its root, the store's first.
+    fn iter(&self) -> impl Iterator<Item = (TreeId, Root)> + '_ {
+        std::iter::once((TreeId::Store, self.store))
+            .chain(self.files.iter().map(|(id, r)| (TreeId::File(*id), *r)))
+    }
+}
+
+fn roots_of<S: PageStore + ?Sized>(store: &S) -> Roots {
+    let mut roots = Roots {
+        store: Root {
+            page: 0,
+            hash: Hash::default(),
+        },
+        files: BTreeMap::new(),
+    };
+    for (name, root) in store.trees() {
+        match TreeId::from_name(name.as_bytes()).expect("a tree the state names") {
+            TreeId::Store => roots.store = root,
+            TreeId::File(id) => {
+                roots.files.insert(id, root);
+            }
+        }
+    }
+    roots
+}
+
 fn walk_all<S: PageStore + ?Sized>(store: &S, root: Root) -> Vec<(Path, Node)> {
     let tree = Tree::open(store, root).unwrap();
     let root_path: &[Vec<u8>] = &[];
@@ -631,8 +668,9 @@ fn walk_all<S: PageStore + ?Sized>(store: &S, root: Root) -> Vec<(Path, Node)> {
 }
 
 /// Everything the state holds, read from the trees, against the model.
-fn compare<S: PageStore + ?Sized>(store: &S, roots: &Roots, model: &Model, at: &str) {
-    let state = StoreTree::open(store, roots.store).unwrap();
+fn compare<S: PageStore + ?Sized>(store: &S, model: &Model, at: &str) {
+    let roots = &roots_of(store);
+    let state = StoreTree::of(store).unwrap();
     assert_eq!(
         state.applied().unwrap(),
         model.applied,
@@ -731,48 +769,39 @@ fn compare<S: PageStore + ?Sized>(store: &S, roots: &Roots, model: &Model, at: &
 /// checked against what the store saw.
 fn run_against_the_model(seed: u64, entries: u64, reached: &mut Reached) {
     let store = MemStore::new(Numbering::Sequential);
-    let mut roots = create(&store).unwrap();
     let mut model = Model::new();
     let mut gen = Gen::new(seed);
     for n in 0..entries {
         let built = gen.next(&model);
         let at = format!("seed {seed} entry {} ({n})", built.index);
-        store.take_written();
         store.take_released();
-        let applied = apply(&store, &roots, &built.entry()).unwrap_or_else(|e| panic!("{at}: {e}"));
+        let before = roots_of(&store);
+        let applied = apply(&store, &built.entry()).unwrap_or_else(|e| panic!("{at}: {e}"));
         let outcome = model
             .apply(&built.entry())
             .unwrap_or_else(|e| panic!("{at}: the model refused: {e}"));
         assert_eq!(applied.opened, outcome.opened, "{at}");
         assert_eq!(applied.closed, outcome.closed, "{at}");
-        assert_eq!(
-            applied.made,
-            outcome
-                .added
-                .map(TreeId::File)
-                .into_iter()
-                .collect::<Vec<_>>(),
-            "{at}"
-        );
-        // The unit's counts are what the store took.
-        let written = store.take_written();
+        // The trees the store holds now: the file added made, the file
+        // removed dropped, its root released by the store.
+        let after = roots_of(&store);
+        let made: Vec<u64> = after
+            .files
+            .keys()
+            .filter(|id| !before.files.contains_key(id))
+            .copied()
+            .collect();
+        assert_eq!(made, outcome.added.into_iter().collect::<Vec<_>>(), "{at}");
         let released = store.take_released();
-        assert_eq!(applied.pages.written, written.len() as u64, "{at}");
-        assert_eq!(
-            applied.pages.copied + applied.pages.dropped,
-            released.len() as u64,
-            "{at}"
-        );
         if let Some(id) = outcome.removed {
-            let root = roots.files[&id];
-            assert_eq!(applied.dropped, vec![(TreeId::File(id), root)], "{at}");
+            let root = before.files[&id];
+            assert!(!after.files.contains_key(&id), "{at}");
             assert!(
                 released.contains(&(root.page, root.hash, Release::Dropped)),
                 "{at}"
             );
         }
-        applied.update(&mut roots);
-        compare(&store, &roots, &model, &at);
+        compare(&store, &model, &at);
     }
     let nodes: usize = model.files.values().map(|f| f.nodes.len()).sum();
     eprintln!(
@@ -853,15 +882,15 @@ fn root_hashes_do_not_depend_on_page_numbers() {
             MemStore::new(Numbering::Scattered(seed.wrapping_mul(7919))),
             MemStore::trusting(Numbering::Scattered(seed)),
         ];
-        let mut roots: Vec<Roots> = stores.iter().map(|s| create(s).unwrap()).collect();
         let mut model = Model::new();
         let mut gen = Gen::new(seed);
         for _ in 0..entries {
             let built = gen.next(&model);
             model.apply(&built.entry()).unwrap();
-            for (store, roots) in stores.iter().zip(roots.iter_mut()) {
-                apply(store, roots, &built.entry()).unwrap().update(roots);
+            for store in &stores {
+                apply(store, &built.entry()).unwrap();
             }
+            let roots: Vec<Roots> = stores.iter().map(roots_of).collect();
             let hashes: Vec<Vec<(TreeId, Hash)>> = roots
                 .iter()
                 .map(|r| r.iter().map(|(t, root)| (t, root.hash)).collect())
@@ -877,7 +906,6 @@ fn root_hashes_do_not_depend_on_page_numbers() {
 /// and its entries.
 struct Fixture {
     store: MemStore,
-    roots: Roots,
     model: Model,
     file: u64,
     alice: Session,
@@ -889,13 +917,6 @@ impl Fixture {
     fn new() -> Fixture {
         let mut f = Fixture {
             store: MemStore::new(Numbering::Sequential),
-            roots: Roots {
-                store: Root {
-                    page: 0,
-                    hash: Hash::default(),
-                },
-                files: BTreeMap::new(),
-            },
             model: Model::new(),
             file: 0,
             alice: Session {
@@ -910,7 +931,6 @@ impl Fixture {
             },
             term: 2,
         };
-        f.roots = create(&f.store).unwrap();
         f.push(
             1,
             Payload::File(FileEvent::Added {
@@ -973,9 +993,8 @@ impl Fixture {
     }
 
     fn push_built(&mut self, built: &Built) -> Applied {
-        let applied = apply(&self.store, &self.roots, &built.entry()).unwrap();
+        let applied = apply(&self.store, &built.entry()).unwrap();
         self.model.apply(&built.entry()).unwrap();
-        applied.update(&mut self.roots);
         applied
     }
 
@@ -994,12 +1013,12 @@ impl Fixture {
     fn refused(&mut self, built: &Built, why: Refusal) {
         let before = self.footprint();
         let model = self.model.clone();
-        let got = apply(&self.store, &self.roots, &built.entry());
+        let got = apply(&self.store, &built.entry());
         assert_eq!(got, Err(Error::Refused(why.clone())), "{built:?}");
         assert_eq!(self.footprint(), before, "a refusal wrote to the store");
         assert_eq!(self.model.apply(&built.entry()), Err(why), "the model");
         assert!(self.model == model, "a refusal changed the model");
-        compare(&self.store, &self.roots, &self.model, "after a refusal");
+        compare(&self.store, &self.model, "after a refusal");
     }
 }
 
@@ -1317,18 +1336,19 @@ fn entries_that_cannot_be_right_are_refused() {
         f.refused(&wrong, Refusal::NoSuchLock { edit });
     }
     // In another file, alice holds nothing.
-    let other = f.push(
-        f.model.applied.index + 1,
+    let other = f.model.applied.index + 1;
+    f.push(
+        other,
         Payload::File(FileEvent::Added {
             name: b"Other".to_vec(),
             flags: 0,
             page0: Vec::new(),
         }),
     );
-    let other = match other.made[..] {
-        [TreeId::File(id)] => id,
-        _ => panic!("no file made"),
-    };
+    assert!(
+        roots_of(&f.store).files.contains_key(&other),
+        "no file made"
+    );
     let elsewhere = f.seal(
         other,
         &change_of(None, vec![remove(f.alice, b"rec 1")], Vec::new()),
@@ -1374,7 +1394,7 @@ fn entries_that_cannot_be_right_are_refused() {
     // After all of it, the next entry is still taken.
     let next = f.seal(0, &Payload::Empty);
     f.push_built(&next);
-    compare(&f.store, &f.roots, &f.model, "after the refusals");
+    compare(&f.store, &f.model, "after the refusals");
 }
 
 /// A state whose tree format version this build does not know, a later
@@ -1388,17 +1408,22 @@ fn a_state_of_an_unknown_tree_format_version_takes_no_entry() {
         // Write the version as another build might have; the entry index is
         // the tree's own, not the log's.
         let index = f.model.applied.index;
-        f.roots.store = tree::apply(
+        let name = TreeId::Store.name();
+        let mut unit = f.store.begin().unwrap();
+        let root = tree::apply(
             &f.store,
-            f.roots.store,
+            &mut unit,
+            f.store.root(&name),
             index + 1,
             &[Edit::leaf(vec![vec![0x02]], vec![version])],
         )
         .unwrap();
+        unit.set_root(&name, root);
+        unit.commit().unwrap();
         let before = f.footprint();
         let why = Refusal::UnknownFormatVersion(version);
         assert_eq!(
-            apply(&f.store, &f.roots, &next.entry()),
+            apply(&f.store, &next.entry()),
             Err(Error::Refused(why.clone()))
         );
         assert_eq!(f.footprint(), before);
@@ -1444,7 +1469,7 @@ fn a_dropped_unit_of_work_leaves_nothing() {
         for (file, payload) in entries(&f) {
             f.push(file, payload);
         }
-        f.roots
+        roots_of(&f.store)
     };
     let mut f = Fixture::new();
     for (file, payload) in entries(&f) {
@@ -1453,13 +1478,13 @@ fn a_dropped_unit_of_work_leaves_nothing() {
         let applied = loop {
             let before = f.footprint();
             f.store.fail_call(Some(failures));
-            let got = apply(&f.store, &f.roots, &built.entry());
+            let got = apply(&f.store, &built.entry());
             f.store.fail_call(None);
             match got {
                 Ok(applied) => break applied,
                 Err(Error::Tree(_)) => {
                     assert_eq!(f.footprint(), before, "failure at call {failures}");
-                    compare(&f.store, &f.roots, &f.model, "after a failure");
+                    compare(&f.store, &f.model, "after a failure");
                     failures += 1;
                 }
                 Err(e) => panic!("{e}"),
@@ -1468,11 +1493,11 @@ fn a_dropped_unit_of_work_leaves_nothing() {
         eprintln!("{failures} calls failed in turn");
         assert!(failures > 10, "only {failures} calls");
         f.model.apply(&built.entry()).unwrap();
-        applied.update(&mut f.roots);
-        compare(&f.store, &f.roots, &f.model, "after the entry");
+        let _ = applied;
+        compare(&f.store, &f.model, "after the entry");
     }
     let hashes = |r: &Roots| r.iter().map(|(t, root)| (t, root.hash)).collect::<Vec<_>>();
-    assert_eq!(hashes(&f.roots), hashes(&reference));
+    assert_eq!(hashes(&roots_of(&f.store)), hashes(&reference));
 }
 
 /// A session's close and a server's start release the session's locks, in
@@ -1500,12 +1525,7 @@ fn closing_releases_locks() {
         change_of(None, vec![set(f.alice, b"a"), set(f.bob, b"b")], Vec::new()),
     );
     f.push(f.file, change_of(None, vec![set(f.bob, b"c")], Vec::new()));
-    let state = |f: &Fixture| {
-        StoreTree::open(&f.store, f.roots.store)
-            .unwrap()
-            .locks()
-            .unwrap()
-    };
+    let state = |f: &Fixture| StoreTree::of(&f.store).unwrap().locks().unwrap();
     assert_eq!(state(&f).len(), 5);
     // A logout from one file.
     f.push(
@@ -1535,7 +1555,7 @@ fn closing_releases_locks() {
     );
     assert_eq!(started.closed, vec![f.bob]);
     assert!(state(&f).is_empty());
-    assert!(StoreTree::open(&f.store, f.roots.store)
+    assert!(StoreTree::of(&f.store)
         .unwrap()
         .sessions()
         .unwrap()
@@ -1578,7 +1598,7 @@ fn closing_releases_locks() {
         }),
     );
     assert!(again.closed.is_empty());
-    compare(&f.store, &f.roots, &f.model, "at the end");
+    compare(&f.store, &f.model, "at the end");
 }
 
 fn round_trip(kind: Kind, payload: &Payload) {
@@ -2147,7 +2167,7 @@ fn the_largest_lock_fits_the_tree() {
             Vec::new(),
         ),
     );
-    compare(&f.store, &f.roots, &f.model, "a large lock");
+    compare(&f.store, &f.model, "a large lock");
 }
 
 /// A `MemStore` that counts the overflow pages read through it.
@@ -2167,6 +2187,14 @@ impl PageStore for Counting {
         Ok(page)
     }
 
+    fn trees(&self) -> Vec<(TreeName, Root)> {
+        self.inner.trees()
+    }
+
+    fn root(&self, name: &TreeName) -> Option<Root> {
+        self.inner.root(name)
+    }
+
     fn begin(&self) -> Result<MemEntry<'_>, StoreError> {
         self.inner.begin()
     }
@@ -2184,14 +2212,12 @@ fn a_start_reads_no_reply_of_the_sessions_it_closes() {
         inner: MemStore::new(Numbering::Sequential),
         overflow: Cell::new(0),
     };
-    let mut roots = create(&store).unwrap();
     let mut model = Model::new();
     let server = SERVERS[0];
     let mut push = |file: u64, payload: Payload| {
         let built = seal(&model.applied, 1, file, &payload);
-        let applied = apply(&store, &roots, &built.entry()).unwrap();
+        let applied = apply(&store, &built.entry()).unwrap();
         model.apply(&built.entry()).unwrap();
-        applied.update(&mut roots);
         applied
     };
     for (id, name) in [(1, b"f"), (2, b"g")] {
@@ -2249,7 +2275,7 @@ fn a_start_reads_no_reply_of_the_sessions_it_closes() {
     assert_eq!(store.overflow.get(), 0, "overflow pages read by the start");
     assert_eq!(started.listed.rows, sessions);
     assert_eq!(started.listed.held, 1, "rows held at once by the start");
-    compare(&store, &roots, &model, "after the start");
+    compare(&store, &model, "after the start");
 }
 
 /// Review of #732: the model checks and makes one change's lock edits in
@@ -2310,4 +2336,276 @@ fn the_model_takes_lock_edits_in_linear_steps() {
             .count(),
         2
     );
+}
+
+/// What the runs on the page file reached, summed over seeds.
+#[derive(Debug, Default)]
+struct OnDisk {
+    entries: u64,
+    extended: u64,
+    checkpoints: u64,
+    kept: u64,
+    dropped: u64,
+    crashes: u64,
+    power_losses: u64,
+    reopens: u64,
+    replayed: u64,
+    compared: u64,
+}
+
+/// A running process: the page file, with the store folder's lock.
+struct OnDiskProcess {
+    pf: PageFile,
+    _lock: FolderLock,
+}
+
+/// Applies `built` through the page file: one reservation, extended while
+/// the entry runs out (the unit that ran out is dropped, and `apply` begins
+/// another).
+fn apply_on_disk(pf: &PageFile, built: &Built, disk: &mut OnDisk) -> Result<(), String> {
+    let res = pf
+        .reserve(built.index, 4, PagePurpose::Entry)
+        .map_err(|e| e.to_string())?;
+    loop {
+        match apply(&res, &built.entry()) {
+            Ok(_) => return Ok(()),
+            Err(Error::Tree(tree::Error::Store(StoreError::Full))) => {
+                disk.extended += 1;
+                res.extend(256).map_err(|e| e.to_string())?;
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
+/// The checkpoint's entry for the model's last entry.
+fn entry_id(p: &Position) -> EntryId {
+    EntryId {
+        index: p.index,
+        term: p.term,
+        hash: p.hash,
+    }
+}
+
+/// The model after the log's entries up to `index`.
+fn model_at(log: &[Built], index: u64) -> Model {
+    let mut model = Model::new();
+    for built in log.iter().take_while(|b| b.index <= index) {
+        model.apply(&built.entry()).unwrap();
+    }
+    model
+}
+
+/// Opens the store after a stop, checks the checkpoint it opened against
+/// the model at that entry, applies the log's later entries again and
+/// checks the whole state; a crash meanwhile stops it and it starts over.
+fn reopen_on_disk(
+    sim: &Sim,
+    rates: Rates,
+    log: &[Built],
+    model: &Model,
+    disk: &mut OnDisk,
+) -> OnDiskProcess {
+    // The comparisons read without faults; the rest runs under `rates`.
+    let quiet = |sim: &Sim, f: &mut dyn FnMut()| {
+        sim.set_rates(Rates::default());
+        f();
+        sim.set_rates(rates);
+    };
+    loop {
+        sim.restart();
+        disk.reopens += 1;
+        let fs = sim.fs();
+        let lock = match fs.lock() {
+            Ok(lock) => lock,
+            Err(e) => {
+                assert!(sim.halted(), "lock: {e}");
+                disk.crashes += 1;
+                continue;
+            }
+        };
+        let (pf, opened) = match PageFile::open(&fs, &lock, PageConfig::default()) {
+            Ok(opened) => opened,
+            Err(e) => {
+                assert!(sim.halted(), "open: {e}");
+                disk.crashes += 1;
+                continue;
+            }
+        };
+        let at = opened.entry.index;
+        let prefix = model_at(log, at);
+        quiet(sim, &mut || compare(&pf, &prefix, "the checkpoint opened"));
+        disk.compared += 1;
+        let mut crashed = false;
+        for built in log.iter().filter(|b| b.index > at) {
+            if let Err(e) = apply_on_disk(&pf, built, disk) {
+                assert!(sim.halted(), "replay of {}: {e}", built.index);
+                crashed = true;
+                break;
+            }
+            disk.replayed += 1;
+        }
+        if crashed {
+            disk.crashes += 1;
+            continue;
+        }
+        quiet(sim, &mut || compare(&pf, model, "after the replay"));
+        disk.compared += 1;
+        return OnDiskProcess { pf, _lock: lock };
+    }
+}
+
+/// A crash drawn about once in this many steps of the disk.
+const ON_DISK_RATES: Rates = Rates {
+    crash: 150,
+    fail_flush: 0,
+    fail_write: 0,
+    no_space: 0,
+    fail_read: 0,
+    damage: 0,
+    misplace: 0,
+    lose_write: 0,
+    writeback: 0,
+};
+
+fn run_on_the_page_file(seed: u64, steps: u64, reached: &mut Reached, disk: &mut OnDisk) {
+    let sim = Sim::new(seed);
+    let fs = sim.fs();
+    let lock = fs.lock().unwrap();
+    let mut proc = Some(OnDiskProcess {
+        pf: PageFile::create(&fs, &lock, PageConfig::default()).unwrap(),
+        _lock: lock,
+    });
+    sim.set_rates(ON_DISK_RATES);
+    let mut gen = Gen::new(seed);
+    let mut rng = Rng(seed ^ 0xd15c);
+    let mut log: Vec<Built> = Vec::new();
+    let mut model = Model::new();
+    let mut names = 0u64;
+    for _ in 0..steps {
+        let Some(p) = proc.as_ref() else {
+            proc = Some(reopen_on_disk(&sim, ON_DISK_RATES, &log, &model, disk));
+            continue;
+        };
+        let pf = &p.pf;
+        let mut stop = false;
+        match rng.below(100) {
+            0..=79 => {
+                // The entry is appended to the log, then applied: a crash
+                // meanwhile leaves it for the replay.
+                let built = gen.next(&model);
+                model.apply(&built.entry()).unwrap();
+                log.push(built.clone());
+                disk.entries += 1;
+                match apply_on_disk(pf, &built, disk) {
+                    Ok(()) => {}
+                    Err(e) if e.contains("checkpoint needed") => {
+                        // Applied after the checkpoint, at the replay.
+                        stop = true;
+                    }
+                    Err(e) => {
+                        assert!(sim.halted(), "entry {}: {e}", built.index);
+                        disk.crashes += 1;
+                        stop = true;
+                    }
+                }
+            }
+            80..=89 => {
+                let keep = rng.percent(25).then(|| {
+                    names += 1;
+                    format!("k{names}")
+                });
+                match pf.checkpoint(entry_id(&model.applied), keep.as_deref()) {
+                    Ok(_) => {
+                        disk.checkpoints += 1;
+                        disk.kept += u64::from(keep.is_some());
+                        sim.set_rates(Rates::default());
+                        compare(pf, &model, "at a checkpoint");
+                        sim.set_rates(ON_DISK_RATES);
+                        disk.compared += 1;
+                    }
+                    Err(e) => {
+                        assert!(sim.halted(), "checkpoint: {e}");
+                        disk.crashes += 1;
+                        stop = true;
+                    }
+                }
+            }
+            90..=93 => {
+                let listed = pf.restore_points();
+                if let Some((rp, false)) = listed.first() {
+                    pf.drop_restore_point(&rp.name).unwrap();
+                    disk.dropped += 1;
+                }
+            }
+            _ => {
+                sim.crash(Fates::Drawn);
+                disk.power_losses += 1;
+                stop = true;
+            }
+        }
+        if stop {
+            proc = None;
+        }
+    }
+    // Without faults: a last stop, and the whole state again.
+    sim.set_rates(Rates::default());
+    drop(proc);
+    let p = reopen_on_disk(&sim, Rates::default(), &log, &model, disk);
+    let pf = &p.pf;
+    let next = model.applied;
+    pf.checkpoint(entry_id(&next), None).unwrap();
+    compare(pf, &model, "at the end");
+    add(reached, std::mem::take(&mut gen.reached));
+}
+
+/// The page file and `apply` fit (#735): entries of every kind (files
+/// added, renamed and removed; changes; sessions; marks), applied through
+/// `apply` on the page file itself, on the simulated disk, with
+/// checkpoints, restore points kept and dropped, crashes drawn at any step
+/// and power losses. Every tree and the store's tables match the model at
+/// each checkpoint, at the checkpoint each reopen takes, and after the
+/// replay of the log.
+#[test]
+fn entries_through_apply_on_the_page_file_match_the_model() {
+    let steps = env("OM_STORE_ENTRIES", 300);
+    let mut reached = Reached::default();
+    let mut disk = OnDisk::default();
+    for seed in seeds(3) {
+        run_on_the_page_file(seed, steps, &mut reached, &mut disk);
+    }
+    eprintln!("{disk:?}\n{reached:?}");
+    if std::env::var("OM_STORE_SEED").is_err() {
+        let counts = [
+            disk.entries,
+            disk.checkpoints,
+            disk.kept,
+            disk.dropped,
+            disk.crashes,
+            disk.extended,
+            disk.power_losses,
+            disk.reopens,
+            disk.replayed,
+        ];
+        assert!(counts.iter().all(|&n| n > 0), "{disk:?}");
+        for kind in [Kind::Change, Kind::File, Kind::Session, Kind::Mark] {
+            assert!(
+                reached.kinds.get(&kind).copied().unwrap_or(0) > 0,
+                "{kind:?}: {reached:?}"
+            );
+        }
+    }
+}
+
+/// The same, longer.
+#[test]
+#[ignore = "long: 12 seeds of 2,000 steps on the simulated disk by default (OM_STORE_SEEDS, OM_STORE_ENTRIES); run with --release"]
+fn long_entries_through_apply_on_the_page_file_match_the_model() {
+    let steps = env("OM_STORE_ENTRIES", 2_000);
+    let mut reached = Reached::default();
+    let mut disk = OnDisk::default();
+    for seed in seeds(12) {
+        run_on_the_page_file(seed, steps, &mut reached, &mut disk);
+    }
+    eprintln!("{disk:?}\n{reached:?}");
 }

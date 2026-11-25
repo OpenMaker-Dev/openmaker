@@ -3,9 +3,9 @@
 //! the rules are `docs/server-storage-format.md` section 5.
 //!
 //! The state is a set of named trees ([`TreeId`]): the store's own tree,
-//! and one tree per file holding exactly the file's key tree. The caller
-//! keeps their roots by name ([`Roots`]; the page file keeps them in its
-//! checkpoints, outside any tree). The store's own tree holds the files'
+//! and one tree per file holding exactly the file's key tree. The page
+//! store holds their roots by name ([`PageStore::trees`]), outside any
+//! tree; before entry 1 there is no tree. The store's own tree holds the files'
 //! rows, the session table with each server's start count, the lock table,
 //! the tree format version and the last entry applied ([`StoreTree`] reads
 //! it). No item of any tree holds a page number, so a root hash depends on
@@ -13,25 +13,23 @@
 //!
 //! [`apply`] is a function of the state and the entry alone: it reads the
 //! state, decides everything the entry does or refuses it, and only then
-//! writes, every tree's changes through one unit of work of the page store,
-//! committed once. An entry that cannot be right is refused
-//! ([`Error::Refused`]) before anything is written, and every server
-//! refuses it the same way; any error leaves the store and the roots as
-//! they were.
+//! writes, every tree's changes through one unit of work of the page store:
+//! the pages of each tree it changes, the file trees it makes and drops,
+//! and each changed tree's new root, committed once. An entry that cannot
+//! be right is refused ([`Error::Refused`]) before anything is written, and
+//! every server refuses it the same way; any error leaves the store as it
+//! was.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::Bound;
-use std::sync::Arc;
 
 use crate::entry::{
     entry_hash, Entry, FileEvent, Kind, LockEdit, Members, Op, Payload, PayloadError, ServerId,
     Session, SessionEvent,
 };
-use crate::page::{
-    EntryPages, Fault, Hash, Page, PageNo, PageStore, Release, StoreError, FORMAT_VERSION,
-};
+use crate::page::{EntryPages, Hash, PageStore, StoreError, TreeName, FORMAT_VERSION};
 use crate::tree::{self, Direction, Edit, Node, Root, Tree};
 
 /// The top-level segments of the store's own tree, and the segments under a
@@ -66,13 +64,14 @@ pub enum TreeId {
 }
 
 impl TreeId {
-    /// The tree's name, as the page file keeps it: `store`, or `file:`
+    /// The tree's name, as the page store keeps it: `store`, or `file:`
     /// followed by the file's id in decimal.
-    pub fn name(&self) -> Vec<u8> {
-        match self {
+    pub fn name(&self) -> TreeName {
+        let name = match self {
             TreeId::Store => b"store".to_vec(),
             TreeId::File(id) => format!("file:{id}").into_bytes(),
-        }
+        };
+        TreeName::new(name).expect("a name of at most 25 bytes")
     }
 
     /// The tree a name names: only the names [`TreeId::name`] gives.
@@ -85,28 +84,6 @@ impl TreeId {
             !digits.is_empty() && digits.iter().all(u8::is_ascii_digit) && digits[0] != b'0';
         let id: u64 = std::str::from_utf8(digits).ok()?.parse().ok()?;
         canonical.then_some(TreeId::File(id))
-    }
-}
-
-/// The roots of the state's trees, which the caller keeps.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Roots {
-    pub store: Root,
-    pub files: BTreeMap<u64, Root>,
-}
-
-impl Roots {
-    pub fn get(&self, tree: TreeId) -> Option<Root> {
-        match tree {
-            TreeId::Store => Some(self.store),
-            TreeId::File(id) => self.files.get(&id).copied(),
-        }
-    }
-
-    /// Every tree with its root, the store's first.
-    pub fn iter(&self) -> impl Iterator<Item = (TreeId, Root)> + '_ {
-        std::iter::once((TreeId::Store, self.store))
-            .chain(self.files.iter().map(|(id, r)| (TreeId::File(*id), *r)))
     }
 }
 
@@ -258,7 +235,7 @@ impl fmt::Display for Refusal {
 }
 
 /// Why an entry was not applied. Whatever the error, nothing changed: the
-/// roots given still name the state, and the page store is as it was.
+/// page store is as it was.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// The entry cannot be right ([`Refusal`]).
@@ -266,7 +243,7 @@ pub enum Error {
     /// A page could not be read or the page store failed: this server's own
     /// trouble, not the entry's.
     Tree(tree::Error),
-    /// The roots given hold no tree for a file the state has.
+    /// The page store holds no tree for a file the state has.
     MissingRoot(TreeId),
     /// The store's tree holds a row this build cannot read.
     Malformed(&'static str),
@@ -277,7 +254,7 @@ impl fmt::Display for Error {
         match self {
             Error::Refused(r) => write!(f, "entry refused: {r}"),
             Error::Tree(e) => e.fmt(f),
-            Error::MissingRoot(t) => write!(f, "no root given for tree {t:?}"),
+            Error::MissingRoot(t) => write!(f, "the page store holds no tree {t:?}"),
             Error::Malformed(why) => write!(f, "the store's tree is malformed: {why}"),
         }
     }
@@ -303,17 +280,6 @@ impl From<Refusal> for Error {
     }
 }
 
-/// What the entry's unit of work did, as it passed through: numbers taken,
-/// pages written, and pages released as copied or dropped. A dropped page
-/// stands for everything under it, which is not counted.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Pages {
-    pub allocated: u64,
-    pub written: u64,
-    pub copied: u64,
-    pub dropped: u64,
-}
-
 /// What the checks of an entry listed from the store's tree: the rows the
 /// listings visited, and the most listed rows held at once. A listing holds
 /// one row at a time, so this is the depth of listings within listings
@@ -332,40 +298,15 @@ pub struct Applied {
     /// operation's session and sequence number, are delivered when the
     /// entry is published.
     pub payload: Payload,
-    /// The trees whose root changed, made ones included, with their new
-    /// roots. The store's own tree is always among them.
-    pub changed: Vec<(TreeId, Root)>,
-    /// Trees made by the entry: a file added.
-    pub made: Vec<TreeId>,
-    /// Trees dropped by the entry, with the root they had: a file removed.
-    pub dropped: Vec<(TreeId, Root)>,
     /// The session the entry opened. An opening that changed nothing is
     /// `None`.
     pub opened: Option<Session>,
     /// The sessions the entry closed, with their locks.
     pub closed: Vec<Session>,
-    pub pages: Pages,
     pub listed: Listed,
 }
 
 impl Applied {
-    /// Brings `roots` to the state after the entry.
-    pub fn update(&self, roots: &mut Roots) {
-        for (tree, root) in &self.changed {
-            match tree {
-                TreeId::Store => roots.store = *root,
-                TreeId::File(id) => {
-                    roots.files.insert(*id, *root);
-                }
-            }
-        }
-        for (tree, _) in &self.dropped {
-            if let TreeId::File(id) = tree {
-                roots.files.remove(id);
-            }
-        }
-    }
-
     /// The notices to deliver.
     pub fn notices(&self) -> &[Vec<u8>] {
         match &self.payload {
@@ -381,15 +322,6 @@ impl Applied {
             _ => None,
         }
     }
-}
-
-/// The state before entry 1: an empty store tree, written as of entry 0,
-/// and no file.
-pub fn create<S: PageStore + ?Sized>(store: &S) -> Result<Roots, Error> {
-    Ok(Roots {
-        store: tree::create(store, 0)?,
-        files: BTreeMap::new(),
-    })
 }
 
 fn le64(b: &[u8]) -> u64 {
@@ -506,16 +438,29 @@ fn known_version(version: u8) -> bool {
 /// The store's own tree, read as the tables it holds. Every row is checked
 /// as it is read; one this build cannot read is [`Error::Malformed`].
 pub struct StoreTree<'s, S: ?Sized> {
-    tree: Tree<'s, S>,
+    /// None before entry 1: the store has no tree yet.
+    tree: Option<Tree<'s, S>>,
     listed: Cell<Listed>,
     /// Listed rows held now.
     holding: Cell<u64>,
 }
 
 impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
+    /// The store's tree in the newest version `store` holds.
+    pub fn of(store: &'s S) -> Result<Self, Error> {
+        match store.root(&TreeId::Store.name()) {
+            Some(root) => Self::open(store, root),
+            None => Ok(StoreTree {
+                tree: None,
+                listed: Cell::new(Listed::default()),
+                holding: Cell::new(0),
+            }),
+        }
+    }
+
     pub fn open(store: &'s S, root: Root) -> Result<Self, Error> {
         Ok(StoreTree {
-            tree: Tree::open(store, root)?,
+            tree: Some(Tree::open(store, root)?),
             listed: Cell::new(Listed::default()),
             holding: Cell::new(0),
         })
@@ -526,9 +471,17 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
         self.listed.get()
     }
 
+    /// The node at `path`, if there is one.
+    fn get(&self, path: &[Vec<u8>]) -> Result<Option<Node>, Error> {
+        match &self.tree {
+            Some(tree) => Ok(tree.get(path)?),
+            None => Ok(None),
+        }
+    }
+
     /// The value at `path`, if a value is there.
     fn value(&self, path: &[Vec<u8>]) -> Result<Option<Vec<u8>>, Error> {
-        match self.tree.get(path)? {
+        match self.get(path)? {
             None => Ok(None),
             Some(Node::Value(v)) => Ok(Some(v)),
             Some(_) => Err(Error::Malformed("a list where a row's value belongs")),
@@ -542,10 +495,10 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
         path: &[Vec<u8>],
         mut f: impl FnMut(Vec<u8>, Node) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        for child in self
-            .tree
-            .children(path, Bound::Unbounded, Direction::Forward)
-        {
+        let Some(tree) = &self.tree else {
+            return Ok(());
+        };
+        for child in tree.children(path, Bound::Unbounded, Direction::Forward) {
             let (segment, node) = child?;
             let holding = self.holding.get() + 1;
             self.holding.set(holding);
@@ -664,7 +617,7 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
 
     /// Whether a session is open: its list is there. Reads no value.
     pub fn is_open(&self, s: &Session) -> Result<bool, Error> {
-        match self.tree.get(&session_path(s))? {
+        match self.get(&session_path(s))? {
             None => Ok(false),
             Some(Node::List) => Ok(true),
             Some(_) => Err(Error::Malformed("a value where a session's list belongs")),
@@ -747,7 +700,10 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
     /// this at startup.
     pub fn locks(&self) -> Result<Vec<LockRow>, Error> {
         let mut out = Vec::new();
-        for item in self.tree.walk(&[seg(keys::LOCKS)]) {
+        let Some(tree) = &self.tree else {
+            return Ok(out);
+        };
+        for item in tree.walk(&[seg(keys::LOCKS)]) {
             let item = item?;
             let path = item.key.path();
             if path.len() < 5 {
@@ -805,7 +761,7 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
                     session,
                     file.to_be_bytes().to_vec(),
                 ];
-                if self.tree.get(&path)?.is_some() {
+                if self.get(&path)?.is_some() {
                     f(path)?;
                 }
                 Ok(())
@@ -821,7 +777,7 @@ struct Plan {
     /// The file whose tree the change's edits go to, and its root.
     file: Option<(u64, Root)>,
     make: Option<u64>,
-    drop: Option<(u64, Root)>,
+    drop: Option<u64>,
     opened: Option<Session>,
     closed: Vec<Session>,
 }
@@ -902,22 +858,19 @@ impl Pending {
     }
 }
 
-/// Applies `entry` to the state `roots` name, through `store`, and says what
-/// changed ([`Applied::update`] brings `roots` along).
+/// Applies `entry` to the state `store` holds, and says what it did.
 ///
 /// The entry must be the next one: its index one more than the last
 /// applied, its term not below that entry's, and its hash
 /// [`entry_hash`] over that entry's hash and its own bytes. Every check
 /// (format section 5.6) is made from reads of the state before anything is
-/// written; then each tree's changes go through one unit of work of
-/// `store`, committed once. An error at any point leaves the store as it
-/// was, and `roots` still names the state.
-pub fn apply<S: PageStore + ?Sized>(
-    store: &S,
-    roots: &Roots,
-    entry: &Entry<'_>,
-) -> Result<Applied, Error> {
-    let state = StoreTree::open(store, roots.store)?;
+/// written; then everything the entry changes goes through one unit of work
+/// of `store`, which names the trees made and dropped and every changed
+/// tree's new root, committed once. An error at any point leaves the store
+/// as it was.
+pub fn apply<S: PageStore + ?Sized>(store: &S, entry: &Entry<'_>) -> Result<Applied, Error> {
+    let store_root = store.root(&TreeId::Store.name());
+    let state = StoreTree::of(store)?;
     let last = state.applied()?;
     if last.index.checked_add(1) != Some(entry.index) {
         return Err(Refusal::NotNext {
@@ -953,7 +906,7 @@ pub fn apply<S: PageStore + ?Sized>(
         return Err(Refusal::UnknownFormatVersion(version).into());
     }
     let payload = Payload::decode(entry.kind, entry.payload).map_err(Refusal::Payload)?;
-    let mut plan = plan(&state, roots, entry, &payload, version)?;
+    let mut plan = plan(store, &state, entry, &payload, version)?;
     let position = Position {
         index: entry.index,
         term: entry.term,
@@ -965,47 +918,42 @@ pub fn apply<S: PageStore + ?Sized>(
     drop(state);
 
     // Everything is decided; now the writes, all in one unit.
-    let joint = Joint::begin(store)?;
-    let mut changed = Vec::new();
-    let mut made = Vec::new();
-    let mut dropped = Vec::new();
+    let mut unit = store.begin()?;
     if let Some(id) = plan.make {
-        let root = tree::create(&joint, entry.index)?;
-        changed.push((TreeId::File(id), root));
-        made.push(TreeId::File(id));
+        let root = tree::apply(store, &mut unit, None, entry.index, &[])?;
+        unit.add_tree(&TreeId::File(id).name(), root);
     }
     if let (Some((id, root)), Payload::Change(change)) = (plan.file, &payload) {
         if !change.edits.is_empty() {
-            let new = tree::apply(&joint, root, entry.index, &change.edits)?;
+            let new = tree::apply(store, &mut unit, Some(root), entry.index, &change.edits)?;
             if new != root {
-                changed.push((TreeId::File(id), new));
+                unit.set_root(&TreeId::File(id).name(), new);
             }
         }
     }
-    if let Some((id, root)) = plan.drop {
-        joint.release(root.page, &root.hash, Release::Dropped)?;
-        dropped.push((TreeId::File(id), root));
+    if let Some(id) = plan.drop {
+        unit.drop_tree(&TreeId::File(id).name());
     }
-    let new = tree::apply(&joint, roots.store, entry.index, &plan.store)?;
-    changed.push((TreeId::Store, new));
-    let pages = joint.commit()?;
+    let new = tree::apply(store, &mut unit, store_root, entry.index, &plan.store)?;
+    match store_root {
+        None => unit.add_tree(&TreeId::Store.name(), new),
+        Some(old) if old != new => unit.set_root(&TreeId::Store.name(), new),
+        Some(_) => {}
+    }
+    unit.commit()?;
     Ok(Applied {
         position,
         payload,
-        changed,
-        made,
-        dropped,
         opened: plan.opened,
         closed: plan.closed,
-        pages,
         listed,
     })
 }
 
 /// Decides what the entry does, from reads of the state alone.
 fn plan<S: PageStore + ?Sized>(
+    store: &S,
     state: &StoreTree<'_, S>,
-    roots: &Roots,
     entry: &Entry<'_>,
     payload: &Payload,
     version: u8,
@@ -1035,10 +983,8 @@ fn plan<S: PageStore + ?Sized>(
             .ok_or(Error::Refused(Refusal::NoSuchFile(entry.file)))
     };
     let root_of = |id: u64| {
-        roots
-            .files
-            .get(&id)
-            .copied()
+        store
+            .root(&TreeId::File(id).name())
             .ok_or(Error::MissingRoot(TreeId::File(id)))
     };
     match payload {
@@ -1188,7 +1134,8 @@ fn plan<S: PageStore + ?Sized>(
                     plan.store.push(Edit::delete(list));
                     Ok(())
                 })?;
-                plan.drop = Some((id, root_of(id)?));
+                root_of(id)?;
+                plan.drop = Some(id);
             }
             FileEvent::Renamed { name } => {
                 let row = existing()?;
@@ -1234,107 +1181,6 @@ fn plan<S: PageStore + ?Sized>(
     Ok(plan)
 }
 
-/// One unit of work of the page store for a whole entry, shared by every
-/// tree the entry changes. Each tree's [`EntryPages`] ([`Part`]) passes its
-/// calls through to the one unit, and its commit does nothing: the unit is
-/// committed once, after the last tree, so that the entry takes effect
-/// whole or not at all. Dropped without that commit, it has had no effect.
-///
-/// Each tree is applied through it at most once per entry, so no tree reads
-/// a page the unit has written and not committed.
-struct Joint<'s, S: PageStore + ?Sized + 's> {
-    store: &'s S,
-    unit: RefCell<S::Entry<'s>>,
-    pages: Cell<Pages>,
-}
-
-impl<'s, S: PageStore + ?Sized + 's> Joint<'s, S> {
-    fn begin(store: &'s S) -> Result<Self, StoreError> {
-        Ok(Joint {
-            store,
-            unit: RefCell::new(store.begin()?),
-            pages: Cell::new(Pages::default()),
-        })
-    }
-
-    fn with<T>(
-        &self,
-        f: impl FnOnce(&mut S::Entry<'s>) -> Result<T, StoreError>,
-    ) -> Result<T, StoreError> {
-        // Nothing the unit does calls back here, so the cell is free.
-        let mut unit = self
-            .unit
-            .try_borrow_mut()
-            .map_err(|_| StoreError::Failed("the entry's unit is in use".into()))?;
-        f(&mut unit)
-    }
-
-    fn count(&self, f: impl FnOnce(&mut Pages)) {
-        let mut pages = self.pages.get();
-        f(&mut pages);
-        self.pages.set(pages);
-    }
-
-    fn release(&self, number: PageNo, hash: &Hash, how: Release) -> Result<(), StoreError> {
-        self.with(|u| u.release(number, hash, how))?;
-        self.count(|p| match how {
-            Release::Copied => p.copied += 1,
-            Release::Dropped => p.dropped += 1,
-        });
-        Ok(())
-    }
-
-    fn commit(self) -> Result<Pages, StoreError> {
-        let pages = self.pages.get();
-        self.unit.into_inner().commit()?;
-        Ok(pages)
-    }
-}
-
-impl<'s, S: PageStore + ?Sized + 's> PageStore for Joint<'s, S> {
-    type Entry<'a>
-        = Part<'a, 's, S>
-    where
-        Self: 'a;
-
-    fn read(&self, number: PageNo, hash: &Hash) -> Result<Arc<Page>, Fault> {
-        self.store.read(number, hash)
-    }
-
-    fn begin(&self) -> Result<Part<'_, 's, S>, StoreError> {
-        Ok(Part { joint: self })
-    }
-}
-
-/// One tree's view of the entry's unit.
-struct Part<'a, 's, S: PageStore + ?Sized + 's> {
-    joint: &'a Joint<'s, S>,
-}
-
-impl<'s, S: PageStore + ?Sized + 's> EntryPages for Part<'_, 's, S> {
-    fn allocate(&mut self) -> Result<PageNo, StoreError> {
-        let number = self.joint.with(|u| u.allocate())?;
-        self.joint.count(|p| p.allocated += 1);
-        Ok(number)
-    }
-
-    fn write(&mut self, page: Arc<Page>) -> Result<(), StoreError> {
-        self.joint.with(|u| u.write(page))?;
-        self.joint.count(|p| p.written += 1);
-        Ok(())
-    }
-
-    fn release(&mut self, number: PageNo, hash: &Hash, how: Release) -> Result<(), StoreError> {
-        self.joint.release(number, hash, how)
-    }
-
-    /// The tree's part is done; the entry's unit commits once for all of
-    /// them ([`Joint::commit`]).
-    fn commit(self) -> Result<(), StoreError> {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1369,7 +1215,7 @@ mod tests {
     #[test]
     fn tree_names_round_trip() {
         for tree in [TreeId::Store, TreeId::File(1), TreeId::File(u64::MAX)] {
-            assert_eq!(TreeId::from_name(&tree.name()), Some(tree));
+            assert_eq!(TreeId::from_name(tree.name().as_bytes()), Some(tree));
         }
         for name in [
             &b"file:"[..],

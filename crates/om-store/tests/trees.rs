@@ -9,11 +9,41 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 
 use om_store::page::{
-    Fault, Hash, MemStore, Numbering, PageFault, PageNo, PageStore, Release, MAX_KEY, MAX_VALUE,
+    EntryPages, Fault, Hash, MemStore, Numbering, PageFault, PageNo, PageStore, Release, MAX_KEY,
+    MAX_VALUE,
 };
 use om_store::tree::{
-    apply, check, create, key, Direction, Edit, Error, Node, Refusal, Root, Tree, MAX_DEPTH,
+    self, check, key, Direction, Edit, Error, Node, Refusal, Root, Tree, MAX_DEPTH,
 };
+
+/// Applies the edits of entry `entry` to the tree `root` names (`None`: a
+/// tree made) in a unit of work of its own, committed. These trees are not
+/// named in the store: the store only keeps their pages.
+fn apply_in<S: PageStore + ?Sized>(
+    store: &S,
+    root: Option<Root>,
+    entry: u64,
+    edits: &[Edit],
+) -> Result<Root, Error> {
+    let mut unit = store.begin()?;
+    let new = tree::apply(store, &mut unit, root, entry, edits)?;
+    unit.commit()?;
+    Ok(new)
+}
+
+fn apply<S: PageStore + ?Sized>(
+    store: &S,
+    root: Root,
+    entry: u64,
+    edits: &[Edit],
+) -> Result<Root, Error> {
+    apply_in(store, Some(root), entry, edits)
+}
+
+/// A tree with no nodes: one empty leaf, written by entry `entry`.
+fn create<S: PageStore + ?Sized>(store: &S, entry: u64) -> Result<Root, Error> {
+    apply_in(store, None, entry, &[])
+}
 
 type Path = Vec<Vec<u8>>;
 

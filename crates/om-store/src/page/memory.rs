@@ -5,7 +5,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use super::{EntryPages, Fault, Hash, Page, PageNo, PageStore, Release, StoreError};
+use super::{
+    EntryPages, Fault, Hash, Page, PageNo, PageStore, Release, Root, StoreError, TreeName,
+};
 
 /// How a [`MemStore`] numbers new pages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +35,8 @@ struct Inner {
     counter: u64,
     released: Vec<(PageNo, Hash, Release)>,
     written: Vec<PageNo>,
+    /// The trees, by name, with their roots.
+    trees: BTreeMap<TreeName, Root>,
     /// Calls made so far, and the one to fail.
     calls: u64,
     fail_at: Option<u64>,
@@ -76,6 +80,7 @@ impl MemStore {
                 counter: 0,
                 released: Vec::new(),
                 written: Vec::new(),
+                trees: BTreeMap::new(),
                 calls: 0,
                 fail_at: None,
             }),
@@ -215,7 +220,16 @@ pub struct MemEntry<'a> {
     allocated: Vec<PageNo>,
     pages: Vec<Arc<Page>>,
     released: Vec<(PageNo, Hash, Release)>,
+    names: Vec<NameChange>,
     committed: bool,
+}
+
+/// A change to the set of trees, applied at commit.
+enum NameChange {
+    Add(TreeName, Root),
+    Drop(TreeName),
+    Rename(TreeName, TreeName),
+    SetRoot(TreeName, Root),
 }
 
 impl PageStore for MemStore {
@@ -247,8 +261,18 @@ impl PageStore for MemStore {
             allocated: Vec::new(),
             pages: Vec::new(),
             released: Vec::new(),
+            names: Vec::new(),
             committed: false,
         })
+    }
+
+    fn trees(&self) -> Vec<(TreeName, Root)> {
+        let inner = self.lock();
+        inner.trees.iter().map(|(n, r)| (n.clone(), *r)).collect()
+    }
+
+    fn root(&self, name: &TreeName) -> Option<Root> {
+        self.lock().trees.get(name).copied()
     }
 }
 
@@ -297,11 +321,58 @@ impl EntryPages for MemEntry<'_> {
         Ok(())
     }
 
+    fn add_tree(&mut self, name: &TreeName, root: Root) {
+        self.names.push(NameChange::Add(name.clone(), root));
+    }
+
+    fn drop_tree(&mut self, name: &TreeName) {
+        self.names.push(NameChange::Drop(name.clone()));
+    }
+
+    fn rename_tree(&mut self, from: &TreeName, to: &TreeName) {
+        self.names
+            .push(NameChange::Rename(from.clone(), to.clone()));
+    }
+
+    fn set_root(&mut self, name: &TreeName, root: Root) {
+        self.names.push(NameChange::SetRoot(name.clone(), root));
+    }
+
     fn commit(mut self) -> Result<(), StoreError> {
         let mut inner = self.store.lock();
         if inner.fails() {
             return Err(injected());
         }
+        // The changes to the trees, checked against the trees as they are
+        // before anything takes effect; a dropped tree's root is released.
+        let mut trees = inner.trees.clone();
+        for change in &self.names {
+            let refused = |why: &str| Err(StoreError::Failed(why.to_owned()));
+            match change {
+                NameChange::Add(name, root) => {
+                    if trees.insert(name.clone(), *root).is_some() {
+                        return refused(&format!("tree {name} exists"));
+                    }
+                }
+                NameChange::Drop(name) => match trees.remove(name) {
+                    Some(root) => self.released.push((root.page, root.hash, Release::Dropped)),
+                    None => return refused(&format!("no tree {name}")),
+                },
+                NameChange::Rename(from, to) => {
+                    let Some(root) = trees.remove(from) else {
+                        return refused(&format!("no tree {from}"));
+                    };
+                    if trees.insert(to.clone(), root).is_some() {
+                        return refused(&format!("tree {to} exists"));
+                    }
+                }
+                NameChange::SetRoot(name, root) => match trees.get_mut(name) {
+                    Some(r) => *r = *root,
+                    None => return refused(&format!("no tree {name}")),
+                },
+            }
+        }
+        inner.trees = trees;
         for page in self.pages.drain(..) {
             let number = page.number();
             let stored = Stored {
