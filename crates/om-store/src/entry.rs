@@ -34,9 +34,8 @@ pub const MAX_PAYLOAD: usize = 64 << 20;
 pub const MAX_NAME: usize = 1024;
 /// The longest page 0 a file is added with: an `.fmp12` page.
 pub const MAX_PAGE0: usize = 4096;
-/// The longest reply. The session's row keeps it with the sequence number
-/// in one value.
-pub const MAX_REPLY: usize = MAX_VALUE - 8;
+/// The longest reply: the session's row keeps it as one value.
+pub const MAX_REPLY: usize = MAX_VALUE;
 /// The longest notice.
 pub const MAX_NOTICE: usize = MAX_VALUE;
 /// The most notices one change carries.
@@ -395,15 +394,31 @@ impl Payload {
     }
 
     /// The payload's bytes, refused when anything is beyond the bounds the
-    /// decoder holds it to.
+    /// decoder holds it to. A change's size and bounds are checked whole
+    /// before any of it is copied, so a change past the payload's bound is
+    /// refused without building it.
     pub fn encode(&self) -> Result<Vec<u8>, PayloadError> {
         let mut w = Vec::new();
         if let Payload::Empty = self {
             return Ok(w);
         }
+        if let Payload::Change(c) = self {
+            let len = change_size(c)?.saturating_add(1);
+            if len > MAX_PAYLOAD {
+                return Err(PayloadError::TooLong {
+                    field: "payload",
+                    len,
+                    max: MAX_PAYLOAD,
+                });
+            }
+            w.reserve_exact(len);
+            encode_change_at(&mut w, c)?;
+            debug_assert_eq!(w.len(), len, "change_size and encode_change agree");
+            return Ok(w);
+        }
+        // The other kinds are a few KiB at most.
         w.push(VERSION);
         match self {
-            Payload::Change(c) => encode_change(&mut w, c)?,
             Payload::Session(s) => match s {
                 SessionEvent::Opened(session) => {
                     w.push(1);
@@ -443,7 +458,7 @@ impl Payload {
                 w.push(mark.purpose as u8);
                 put_name(&mut w, &mark.name)?;
             }
-            Payload::Empty => {}
+            Payload::Change(_) | Payload::Empty => {}
         }
         if w.len() > MAX_PAYLOAD {
             return Err(PayloadError::TooLong {
@@ -782,6 +797,67 @@ fn put_name(w: &mut Vec<u8>, name: &[u8]) -> Result<(), PayloadError> {
         return Err(PayloadError::EmptyName);
     }
     put16(w, "name", name, MAX_NAME)
+}
+
+/// The bytes a change encodes to after the version byte, with every field
+/// and count checked against its bound: what [`encode_change`] writes.
+fn change_size(c: &Change) -> Result<usize, PayloadError> {
+    fn bounded(field: &'static str, len: usize, max: usize) -> Result<usize, PayloadError> {
+        if len > max {
+            return Err(PayloadError::TooLong { field, len, max });
+        }
+        Ok(len)
+    }
+    fn counted(field: &'static str, count: usize, max: usize) -> Result<(), PayloadError> {
+        if count > max {
+            return Err(PayloadError::TooMany { field, count, max });
+        }
+        Ok(())
+    }
+    if c.op.is_none() && !c.reply.is_empty() {
+        return Err(PayloadError::ReplyWithoutOp);
+    }
+    // Group, op tag and op, reply, and the three counts.
+    let mut n: usize = 8 + 1 + if c.op.is_some() { 40 } else { 0 } + 4 + 12;
+    let add = |n: usize, more: usize| n.saturating_add(more);
+    n = add(n, bounded("reply", c.reply.len(), MAX_REPLY)?);
+    counted("notices", c.notices.len(), MAX_NOTICES)?;
+    for notice in &c.notices {
+        n = add(n, 4 + bounded("notice", notice.len(), MAX_NOTICE)?);
+    }
+    counted("lock edits", c.locks.len(), MAX_LOCK_EDITS)?;
+    for edit in &c.locks {
+        n = add(n, 1 + 32);
+        if let LockEdit::Set { key, user, .. } | LockEdit::Remove { key, user, .. } = edit {
+            n = add(n, 2 + bounded("lock key", key.len(), MAX_LOCK_KEY)?);
+            n = add(n, 2 + bounded("lock user", user.len(), MAX_LOCK_USER)?);
+        }
+        if let LockEdit::Set { value, .. } = edit {
+            n = add(n, 4 + bounded("lock value", value.len(), MAX_LOCK_VALUE)?);
+        }
+    }
+    check_edits(&c.edits)?;
+    counted("edits", c.edits.len(), MAX_EDITS)?;
+    for edit in &c.edits {
+        let (path, value) = match edit {
+            Edit::Put { path, node } => (path, (!matches!(node, Node::List)).then(|| node.value())),
+            Edit::Delete { path } => (path, None),
+        };
+        n = add(n, 2);
+        for segment in path {
+            n = add(n, 2 + segment.len());
+        }
+        if let Some(v) = value {
+            n = add(n, 4 + v.len());
+        }
+    }
+    Ok(n)
+}
+
+/// The version byte and a change.
+fn encode_change_at(w: &mut Vec<u8>, c: &Change) -> Result<(), PayloadError> {
+    w.push(VERSION);
+    encode_change(w, c)
 }
 
 fn encode_change(w: &mut Vec<u8>, c: &Change) -> Result<(), PayloadError> {

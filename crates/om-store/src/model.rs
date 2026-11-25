@@ -112,7 +112,7 @@ impl Model {
                 found: entry.hash,
             });
         }
-        if self.format > FORMAT_VERSION {
+        if !(1..=FORMAT_VERSION).contains(&self.format) {
             return Err(Refusal::UnknownFormatVersion(self.format));
         }
         let payload = Payload::decode(entry.kind, entry.payload).map_err(Refusal::Payload)?;
@@ -205,7 +205,25 @@ impl Model {
                             }
                         }
                         LockEdit::ReleaseFile { session } => {
-                            locks.retain(|id, _| !(id.session == *session && id.file == file));
+                            // The session's locks on the file are one range.
+                            let from = LockId {
+                                session: *session,
+                                file,
+                                key: Vec::new(),
+                                user: Vec::new(),
+                            };
+                            let mut after = locks.split_off(&from);
+                            let rest = match after
+                                .keys()
+                                .find(|id| id.session != *session || id.file != file)
+                            {
+                                Some(id) => {
+                                    let id = id.clone();
+                                    after.split_off(&id)
+                                }
+                                None => BTreeMap::new(),
+                            };
+                            locks.extend(rest);
                         }
                     }
                 }
@@ -245,8 +263,13 @@ impl Model {
                         }
                     }
                     SessionEvent::Started { server, count } => {
-                        let recorded = self.servers.get(server).map_or(0, |r| r.0);
-                        if *count > recorded {
+                        // Format 5.6: applied when the count is above the
+                        // server's recorded count, or the server has no row.
+                        let applies = match self.servers.get(server) {
+                            None => true,
+                            Some((recorded, _)) => count > recorded,
+                        };
+                        if applies {
                             out.closed = self
                                 .sessions
                                 .keys()
@@ -298,7 +321,7 @@ impl Model {
             },
             Payload::Members(Members::FormatVersion(v)) => {
                 Self::no_file_field(entry, Kind::Members)?;
-                if *v > FORMAT_VERSION {
+                if !(1..=FORMAT_VERSION).contains(v) {
                     return Err(Refusal::UnknownFormatVersion(*v));
                 }
                 if *v < self.format {

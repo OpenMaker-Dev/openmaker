@@ -20,7 +20,7 @@
 //! they were.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::Bound;
 use std::sync::Arc;
@@ -48,6 +48,10 @@ mod keys {
     pub const FILE_NAME: u8 = 0x01;
     pub const FILE_FLAGS: u8 = 0x02;
     pub const FILE_PAGE0: u8 = 0x03;
+
+    /// Under a session's list `[SESSIONS, server, session]`.
+    pub const SESSION_SEQ: u8 = 0x01;
+    pub const SESSION_REPLY: u8 = 0x02;
 }
 
 type Path = Vec<Vec<u8>>;
@@ -188,10 +192,10 @@ pub enum Refusal {
     /// Its hash does not continue the last applied entry's.
     Chain { expected: Hash, found: Hash },
     /// The state's tree format version, or the one a `members` entry
-    /// names, is not one this build knows.
+    /// names, is not one this build knows (0 is not a version).
     UnknownFormatVersion(u8),
     /// A `members` entry names a lower tree format version than the
-    /// state's.
+    /// state's: it cannot arise while 1 is the only version.
     FormatVersionLowered { current: u8, version: u8 },
     /// The payload does not decode: a kind or payload version this build
     /// does not know, malformed bytes, something beyond a bound, or
@@ -433,8 +437,15 @@ fn server_sessions(server: &ServerId) -> Path {
     vec![seg(keys::SESSIONS), server.to_vec()]
 }
 
+/// A session's list: present exactly while the session is open.
 fn session_path(s: &Session) -> Path {
     vec![seg(keys::SESSIONS), s.server.to_vec(), session_segment(s)]
+}
+
+fn session_field(s: &Session, field: u8) -> Path {
+    let mut p = session_path(s);
+    p.push(seg(field));
+    p
 }
 
 fn server_locks(server: &ServerId) -> Path {
@@ -463,10 +474,22 @@ fn server_value(row: ServerRow) -> Vec<u8> {
     out
 }
 
-fn session_value(seq: u64, reply: &[u8]) -> Vec<u8> {
-    let mut out = seq.to_le_bytes().to_vec();
-    out.extend_from_slice(reply);
-    out
+/// The edits that record a session's last completed operation: two leaves
+/// under the session's list, so that listing a server's sessions reads
+/// lists and no reply.
+fn session_row(s: &Session, seq: u64, reply: &[u8]) -> [Edit; 2] {
+    [
+        Edit::leaf(
+            session_field(s, keys::SESSION_SEQ),
+            seq.to_le_bytes().to_vec(),
+        ),
+        Edit::leaf(session_field(s, keys::SESSION_REPLY), reply.to_vec()),
+    ]
+}
+
+/// Whether a tree format version is one this build applies entries with.
+fn known_version(version: u8) -> bool {
+    (1..=FORMAT_VERSION).contains(&version)
 }
 
 /// The store's own tree, read as the tables it holds. Every row is checked
@@ -563,6 +586,18 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
         }
     }
 
+    /// The whole name index: every name with the id of its file.
+    pub fn names(&self) -> Result<Vec<(Vec<u8>, u64)>, Error> {
+        let mut out = Vec::new();
+        for (name, node) in self.children(&[seg(keys::NAMES)])? {
+            match node {
+                Node::Value(v) if v.len() == 8 => out.push((name, le64(&v))),
+                _ => return Err(Error::Malformed("a name's file")),
+            }
+        }
+        Ok(out)
+    }
+
     pub fn server(&self, server: &ServerId) -> Result<Option<ServerRow>, Error> {
         match self.value(&server_path(server))? {
             None => Ok(None),
@@ -589,44 +624,55 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
         Ok(out)
     }
 
-    pub fn session(&self, s: &Session) -> Result<Option<SessionRow>, Error> {
-        match self.value(&session_path(s))? {
-            None => Ok(None),
-            Some(v) if v.len() >= 8 => Ok(Some(SessionRow {
-                seq: le64(&v[..8]),
-                reply: v[8..].to_vec(),
-            })),
-            Some(_) => Err(Error::Malformed("a session's row")),
+    /// Whether a session is open: its list is there. Reads no value.
+    pub fn is_open(&self, s: &Session) -> Result<bool, Error> {
+        match self.tree.get(&session_path(s))? {
+            None => Ok(false),
+            Some(Node::List) => Ok(true),
+            Some(_) => Err(Error::Malformed("a value where a session's list belongs")),
         }
     }
 
-    /// The open sessions of `server`.
-    fn sessions_of(&self, server: &ServerId) -> Result<Vec<(Session, SessionRow)>, Error> {
+    /// The last sequence number an open session completed (0 for none),
+    /// without its reply.
+    fn seq(&self, s: &Session) -> Result<Option<u64>, Error> {
+        if !self.is_open(s)? {
+            return Ok(None);
+        }
+        match self.value(&session_field(s, keys::SESSION_SEQ))? {
+            Some(v) if v.len() == 8 => Ok(Some(le64(&v))),
+            _ => Err(Error::Malformed("a session's sequence number")),
+        }
+    }
+
+    pub fn session(&self, s: &Session) -> Result<Option<SessionRow>, Error> {
+        let Some(seq) = self.seq(s)? else {
+            return Ok(None);
+        };
+        let reply = self
+            .value(&session_field(s, keys::SESSION_REPLY))?
+            .ok_or(Error::Malformed("a session's reply"))?;
+        Ok(Some(SessionRow { seq, reply }))
+    }
+
+    /// The open sessions of `server`, from their lists alone: no sequence
+    /// number or reply is read.
+    fn session_ids(&self, server: &ServerId) -> Result<Vec<Session>, Error> {
         let mut out = Vec::new();
         for (segment, node) in self.children(&server_sessions(server))? {
-            let (Node::Value(v), 16) = (node, segment.len()) else {
-                return Err(Error::Malformed("a session's row"));
+            let (Node::List, 16) = (node, segment.len()) else {
+                return Err(Error::Malformed("a session's list"));
             };
-            if v.len() < 8 {
-                return Err(Error::Malformed("a session's row"));
-            }
-            let session = Session {
+            out.push(Session {
                 server: *server,
                 start: be64(&segment[..8]),
                 connection: be64(&segment[8..]),
-            };
-            out.push((
-                session,
-                SessionRow {
-                    seq: le64(&v[..8]),
-                    reply: v[8..].to_vec(),
-                },
-            ));
+            });
         }
         Ok(out)
     }
 
-    /// Every open session.
+    /// Every open session, with its row.
     pub fn sessions(&self) -> Result<Vec<(Session, SessionRow)>, Error> {
         let mut out = Vec::new();
         for (segment, _) in self.children(&[seg(keys::SESSIONS)])? {
@@ -634,7 +680,12 @@ impl<'s, S: PageStore + ?Sized> StoreTree<'s, S> {
                 .as_slice()
                 .try_into()
                 .map_err(|_| Error::Malformed("a server's id"))?;
-            out.extend(self.sessions_of(&server)?);
+            for session in self.session_ids(&server)? {
+                let row = self
+                    .session(&session)?
+                    .ok_or(Error::Malformed("a session's row"))?;
+                out.push((session, row));
+            }
         }
         Ok(out)
     }
@@ -726,6 +777,82 @@ struct Plan {
     closed: Vec<Session>,
 }
 
+/// The lock edits a change has made so far, by session, so that a later
+/// edit of the change sees them. A release clears only its own session's
+/// edits, each of which one earlier edit made, so planning a change is
+/// linear in its lock edits.
+#[derive(Default)]
+struct Pending {
+    sessions: BTreeMap<Session, PendingSession>,
+    /// The map entries visited, which a test holds to linear.
+    visited: u64,
+}
+
+struct PendingSession {
+    open: bool,
+    /// The change released the session's locks on the file.
+    released: bool,
+    /// Locks the change set (true) or removed (false), by lock segment.
+    locks: BTreeMap<Vec<u8>, bool>,
+}
+
+impl Pending {
+    /// Whether a session is open, read from the state once per change.
+    fn is_open<S: PageStore + ?Sized>(
+        &mut self,
+        state: &StoreTree<'_, S>,
+        s: &Session,
+    ) -> Result<bool, Error> {
+        self.visited += 1;
+        if let Some(p) = self.sessions.get(s) {
+            return Ok(p.open);
+        }
+        let open = state.is_open(s)?;
+        self.sessions.insert(
+            *s,
+            PendingSession {
+                open,
+                released: false,
+                locks: BTreeMap::new(),
+            },
+        );
+        Ok(open)
+    }
+
+    fn session(&mut self, s: &Session) -> &mut PendingSession {
+        // `is_open` has entered every session an edit names.
+        self.sessions.entry(*s).or_insert_with(|| PendingSession {
+            open: true,
+            released: false,
+            locks: BTreeMap::new(),
+        })
+    }
+
+    fn set(&mut self, s: &Session, lock: Vec<u8>, held: bool) {
+        self.visited += 1;
+        self.session(s).locks.insert(lock, held);
+    }
+
+    /// Whether the change has decided that the lock is held: `None` when
+    /// the state before the change decides.
+    fn held(&mut self, s: &Session, lock: &[u8]) -> Option<bool> {
+        self.visited += 1;
+        let p = self.sessions.get(s)?;
+        match p.locks.get(lock) {
+            Some(&held) => Some(held),
+            None => p.released.then_some(false),
+        }
+    }
+
+    fn release(&mut self, s: &Session) {
+        let p = self.session(s);
+        let cleared = p.locks.len() as u64;
+        p.locks.clear();
+        p.released = true;
+        self.visited += 1 + cleared;
+    }
+}
+
 /// Applies `entry` to the state `roots` name, through `store`, and says what
 /// changed ([`Applied::update`] brings `roots` along).
 ///
@@ -773,7 +900,7 @@ pub fn apply<S: PageStore + ?Sized>(
         .into());
     }
     let version = state.format_version()?;
-    if version > FORMAT_VERSION {
+    if !known_version(version) {
         return Err(Refusal::UnknownFormatVersion(version).into());
     }
     let payload = Payload::decode(entry.kind, entry.payload).map_err(Refusal::Payload)?;
@@ -867,35 +994,23 @@ fn plan<S: PageStore + ?Sized>(
         Payload::Change(change) => {
             existing()?;
             let file = entry.file;
-            let mut open = BTreeMap::new();
-            let mut is_open = |s: &Session| -> Result<bool, Error> {
-                if let Some(&o) = open.get(s) {
-                    return Ok(o);
-                }
-                let o = state.session(s)?.is_some();
-                open.insert(*s, o);
-                Ok(o)
-            };
             if let Some(op) = &change.op {
-                let Some(row) = state.session(&op.session)? else {
+                let Some(last) = state.seq(&op.session)? else {
                     return Err(Refusal::SessionNotOpen(op.session).into());
                 };
-                if row.seq.checked_add(1) != Some(op.seq) {
+                if last.checked_add(1) != Some(op.seq) {
                     return Err(Refusal::Sequence {
                         session: op.session,
-                        last: row.seq,
+                        last,
                         seq: op.seq,
                     }
                     .into());
                 }
             }
-            // Which locks this entry has set or removed so far, and the
-            // sessions whose locks on the file it released.
-            let mut held: BTreeMap<Path, bool> = BTreeMap::new();
-            let mut released: BTreeSet<Session> = BTreeSet::new();
+            let mut pending = Pending::default();
             for (i, edit) in change.locks.iter().enumerate() {
                 let session = edit.session();
-                if !is_open(session)? {
+                if !pending.is_open(state, session)? {
                     return Err(Refusal::SessionNotOpen(*session).into());
                 }
                 match edit {
@@ -905,38 +1020,34 @@ fn plan<S: PageStore + ?Sized>(
                         user,
                         value,
                     } => {
-                        let path = lock_path(session, file, key, user);
-                        held.insert(path.clone(), true);
-                        plan.store.push(Edit::leaf(path, value.clone()));
+                        pending.set(session, lock_segment(key, user), true);
+                        plan.store.push(Edit::leaf(
+                            lock_path(session, file, key, user),
+                            value.clone(),
+                        ));
                     }
                     LockEdit::Remove { session, key, user } => {
-                        let path = lock_path(session, file, key, user);
-                        let is_held = match held.get(&path) {
-                            Some(&h) => h,
-                            None => {
-                                !released.contains(session)
-                                    && state.lock(session, file, key, user)?.is_some()
-                            }
+                        let lock = lock_segment(key, user);
+                        let is_held = match pending.held(session, &lock) {
+                            Some(h) => h,
+                            None => state.lock(session, file, key, user)?.is_some(),
                         };
                         if !is_held {
                             return Err(Refusal::NoSuchLock { edit: i }.into());
                         }
-                        held.insert(path.clone(), false);
-                        plan.store.push(Edit::delete(path));
+                        pending.set(session, lock, false);
+                        plan.store
+                            .push(Edit::delete(lock_path(session, file, key, user)));
                     }
                     LockEdit::ReleaseFile { session } => {
-                        let list = file_locks(session, file);
-                        held.retain(|p, _| !p.starts_with(&list));
-                        released.insert(*session);
-                        plan.store.push(Edit::delete(list));
+                        pending.release(session);
+                        plan.store.push(Edit::delete(file_locks(session, file)));
                     }
                 }
             }
             if let Some(op) = &change.op {
-                plan.store.push(Edit::leaf(
-                    session_path(&op.session),
-                    session_value(op.seq, &change.reply),
-                ));
+                plan.store
+                    .extend(session_row(&op.session, op.seq, &change.reply));
             }
             plan.file = Some((file, root_of(file)?));
         }
@@ -960,26 +1071,26 @@ fn plan<S: PageStore + ?Sized>(
                                 connection: s.connection,
                             }),
                         ));
-                        plan.store
-                            .push(Edit::leaf(session_path(s), session_value(0, &[])));
+                        plan.store.extend(session_row(s, 0, &[]));
                         plan.opened = Some(*s);
                     }
                 }
                 SessionEvent::Closed(s) => {
-                    if state.session(s)?.is_some() {
+                    if state.is_open(s)? {
                         plan.store.push(Edit::delete(session_path(s)));
                         plan.store.push(Edit::delete(session_locks(s)));
                         plan.closed.push(*s);
                     }
                 }
                 SessionEvent::Started { server, count } => {
-                    let recorded = state.server(server)?.map_or(0, |r| r.start);
-                    if *count > recorded {
-                        plan.closed = state
-                            .sessions_of(server)?
-                            .into_iter()
-                            .map(|(s, _)| s)
-                            .collect();
+                    // A server without a row has recorded no start: its
+                    // first start is applied, whatever its count.
+                    let applies = match state.server(server)? {
+                        None => true,
+                        Some(row) => *count > row.start,
+                    };
+                    if applies {
+                        plan.closed = state.session_ids(server)?;
                         plan.store.push(Edit::delete(server_sessions(server)));
                         plan.store.push(Edit::delete(server_locks(server)));
                         plan.store.push(Edit::leaf(
@@ -1041,7 +1152,7 @@ fn plan<S: PageStore + ?Sized>(
             if entry.file != 0 {
                 return Err(field());
             }
-            if *v > FORMAT_VERSION {
+            if !known_version(*v) {
                 return Err(Refusal::UnknownFormatVersion(*v).into());
             }
             if *v < version {
@@ -1172,6 +1283,33 @@ impl<'s, S: PageStore + ?Sized + 's> EntryPages for Part<'_, 's, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review of #732: a change that sets many locks for one session and
+    /// releases another's many times does linear work in its lock edits.
+    #[test]
+    fn planning_lock_edits_is_linear() {
+        let a = Session {
+            server: [1; 16],
+            start: 1,
+            connection: 1,
+        };
+        let b = Session { connection: 2, ..a };
+        let mut pending = Pending::default();
+        pending.session(&a);
+        pending.session(&b);
+        let n = 20_000u64;
+        for i in 0..n {
+            pending.set(&a, i.to_be_bytes().to_vec(), true);
+            pending.release(&b);
+        }
+        assert_eq!(pending.held(&a, &5u64.to_be_bytes()), Some(true));
+        assert_eq!(pending.held(&b, b"x"), Some(false));
+        assert!(
+            pending.visited <= 3 * n,
+            "{} map entries visited",
+            pending.visited
+        );
+    }
 
     #[test]
     fn tree_names_round_trip() {

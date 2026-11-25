@@ -7,7 +7,9 @@
 //! `long_random_entries_match_the_model` runs 16 seeds of 1,500 entries
 //! unless those say otherwise; run it with `--release`.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use om_hbam::OwnedNode;
 use om_store::apply::{
@@ -20,7 +22,10 @@ use om_store::entry::{
     MAX_REPLY,
 };
 use om_store::model::{self, File, Model};
-use om_store::page::{Hash, MemStore, Numbering, PageStore, Release, MAX_VALUE};
+use om_store::page::{
+    Fault, Hash, MemEntry, MemStore, Numbering, Page, PageKind, PageNo, PageStore, Release,
+    StoreError, MAX_VALUE,
+};
 use om_store::tree::{self, check_edits, key, Edit, Node, Root, Tree, MAX_DEPTH};
 
 type Path = Vec<Vec<u8>>;
@@ -347,7 +352,8 @@ impl Gen {
                     1 => recorded.saturating_sub(1),
                     _ => recorded + 1 + self.rng.below(2) as u64,
                 };
-                if count > recorded {
+                // Format 5.6: a first start is applied whatever its count.
+                if row.is_none() || count > recorded {
                     let closing: Vec<&Session> =
                         open.iter().filter(|s| s.server == server).collect();
                     if !closing.is_empty() {
@@ -685,6 +691,19 @@ fn compare<S: PageStore + ?Sized>(store: &S, roots: &Roots, model: &Model, at: &
         .map(|(s, SessionRow { seq, reply })| (s, (seq, reply)))
         .collect();
     assert!(sessions == model.sessions, "{at}: sessions");
+    // The whole name index: no name left behind by a rename or a removal.
+    let names: BTreeMap<Vec<u8>, u64> = state.names().unwrap().into_iter().collect();
+    let want: BTreeMap<Vec<u8>, u64> = model
+        .files
+        .iter()
+        .map(|(id, f)| (f.name.clone(), *id))
+        .collect();
+    assert!(
+        names == want,
+        "{at}: {} names, {} files",
+        names.len(),
+        want.len()
+    );
     let mut locks = state.locks().unwrap();
     locks.sort();
     let mut want: Vec<LockRow> = model
@@ -1319,14 +1338,10 @@ fn entries_that_cannot_be_right_are_refused() {
     // Tree format versions.
     let higher = f.seal(0, &Payload::Members(Members::FormatVersion(2)));
     f.refused(&higher, Refusal::UnknownFormatVersion(2));
-    let lower = f.seal(0, &Payload::Members(Members::FormatVersion(0)));
-    f.refused(
-        &lower,
-        Refusal::FormatVersionLowered {
-            current: 1,
-            version: 0,
-        },
-    );
+    // Only version 1 is known, so no lower version can be named yet: 0 is
+    // unknown.
+    let zero = f.seal(0, &Payload::Members(Members::FormatVersion(0)));
+    f.refused(&zero, Refusal::UnknownFormatVersion(0));
 
     // An edit beyond the tree's bounds.
     let mut deep = Payload::Change(Change {
@@ -1362,28 +1377,34 @@ fn entries_that_cannot_be_right_are_refused() {
     compare(&f.store, &f.roots, &f.model, "after the refusals");
 }
 
-/// A state whose tree format version this build does not know is applied
-/// no further.
+/// A state whose tree format version this build does not know, a later
+/// one or 0 (review of #732), is applied no further, by `apply` or the
+/// model.
 #[test]
 fn a_state_of_an_unknown_tree_format_version_takes_no_entry() {
-    let mut f = Fixture::new();
-    let next = f.seal(0, &Payload::Empty);
-    // Write the version as a later build would have; the entry index is the
-    // tree's own, not the log's.
-    let index = f.model.applied.index;
-    f.roots.store = tree::apply(
-        &f.store,
-        f.roots.store,
-        index + 1,
-        &[Edit::leaf(vec![vec![0x02]], vec![2])],
-    )
-    .unwrap();
-    let before = f.footprint();
-    assert_eq!(
-        apply(&f.store, &f.roots, &next.entry()),
-        Err(Error::Refused(Refusal::UnknownFormatVersion(2)))
-    );
-    assert_eq!(f.footprint(), before);
+    for version in [0, 2] {
+        let mut f = Fixture::new();
+        let next = f.seal(0, &Payload::Empty);
+        // Write the version as another build might have; the entry index is
+        // the tree's own, not the log's.
+        let index = f.model.applied.index;
+        f.roots.store = tree::apply(
+            &f.store,
+            f.roots.store,
+            index + 1,
+            &[Edit::leaf(vec![vec![0x02]], vec![version])],
+        )
+        .unwrap();
+        let before = f.footprint();
+        let why = Refusal::UnknownFormatVersion(version);
+        assert_eq!(
+            apply(&f.store, &f.roots, &next.entry()),
+            Err(Error::Refused(why.clone()))
+        );
+        assert_eq!(f.footprint(), before);
+        f.model.format = version;
+        assert_eq!(f.model.apply(&next.entry()), Err(why));
+    }
 }
 
 /// The issue's last check: an entry whose unit of work is dropped leaves
@@ -1529,6 +1550,34 @@ fn closing_releases_locks() {
             .opened,
         None
     );
+    // Review of #732: a server's first start is applied whatever its count,
+    // 0 included, and its first session then opens.
+    let first = Session {
+        server: SERVERS[2],
+        start: 0,
+        connection: 1,
+    };
+    f.push(
+        0,
+        Payload::Session(SessionEvent::Started {
+            server: SERVERS[2],
+            count: 0,
+        }),
+    );
+    assert_eq!(
+        f.push(0, Payload::Session(SessionEvent::Opened(first)))
+            .opened,
+        Some(first)
+    );
+    // A second start with the same count changes nothing.
+    let again = f.push(
+        0,
+        Payload::Session(SessionEvent::Started {
+            server: SERVERS[2],
+            count: 0,
+        }),
+    );
+    assert!(again.closed.is_empty());
     compare(&f.store, &f.roots, &f.model, "at the end");
 }
 
@@ -1890,6 +1939,20 @@ fn malformed_payloads_are_refused() {
     for payload in refused {
         assert!(payload.encode().is_err(), "{payload:?}");
     }
+    // Review of #732: notices each within their bound, past the payload's
+    // together, are refused before anything is copied.
+    let notices = vec![vec![0u8; om_store::entry::MAX_NOTICE]; 1025];
+    let big = Payload::Change(Change {
+        notices,
+        ..Change::default()
+    });
+    assert!(matches!(
+        big.encode(),
+        Err(PayloadError::TooLong {
+            field: "payload",
+            ..
+        })
+    ));
 }
 
 /// Random bytes, and valid payloads cut, extended and flipped, never make
@@ -1968,6 +2031,27 @@ fn edits_leave_what_owned_node_holds() {
             flatten(child, path, out);
             path.pop();
         }
+    }
+    // Review of #732: a put under a leaf whose value is empty, which the
+    // file engine's `holds_value` lets through, leaves a list that keeps
+    // its empty value: both, empty.
+    {
+        let mut nodes = BTreeMap::new();
+        let mut owned = OwnedNode::list(Vec::new(), Vec::new());
+        owned.put(&[b"a"], OwnedNode::leaf(Vec::new(), Vec::new()));
+        model::put(&mut nodes, &[b"a".to_vec()], Node::Value(Vec::new()));
+        assert!(!om_hbam::writer::holds_value(owned.child(b"a").unwrap()));
+        owned.put(&[b"a", b"b"], OwnedNode::leaf(Vec::new(), vec![1]));
+        model::put(
+            &mut nodes,
+            &[b"a".to_vec(), b"b".to_vec()],
+            Node::Value(vec![1]),
+        );
+        let mut got = Vec::new();
+        flatten(&owned, &mut Vec::new(), &mut got);
+        assert_eq!(got[0], (vec![b"a".to_vec()], Node::Both(Vec::new())));
+        let want: Vec<(Path, Node)> = nodes.into_iter().collect();
+        assert_eq!(got, want);
     }
     for seed in seeds(2) {
         let mut rng = Rng(seed ^ 0x0e);
@@ -2064,4 +2148,84 @@ fn the_largest_lock_fits_the_tree() {
         ),
     );
     compare(&f.store, &f.roots, &f.model, "a large lock");
+}
+
+/// A `MemStore` that counts the overflow pages read through it.
+struct Counting {
+    inner: MemStore,
+    overflow: Cell<u64>,
+}
+
+impl PageStore for Counting {
+    type Entry<'a> = MemEntry<'a>;
+
+    fn read(&self, number: PageNo, hash: &Hash) -> Result<Arc<Page>, Fault> {
+        let page = self.inner.read(number, hash)?;
+        if page.kind() == PageKind::Overflow {
+            self.overflow.set(self.overflow.get() + 1);
+        }
+        Ok(page)
+    }
+
+    fn begin(&self) -> Result<MemEntry<'_>, StoreError> {
+        self.inner.begin()
+    }
+}
+
+/// Review of #732: a server's start finds the sessions it closes from their
+/// lists alone. It reads none of their replies, however large, so what one
+/// start reads and holds does not grow with the replies it deletes.
+#[test]
+fn a_start_reads_no_reply_of_the_sessions_it_closes() {
+    let store = Counting {
+        inner: MemStore::new(Numbering::Sequential),
+        overflow: Cell::new(0),
+    };
+    let mut roots = create(&store).unwrap();
+    let mut model = Model::new();
+    let server = SERVERS[0];
+    let mut push = |file: u64, payload: Payload| {
+        let built = seal(&model.applied, 1, file, &payload);
+        let applied = apply(&store, &roots, &built.entry()).unwrap();
+        model.apply(&built.entry()).unwrap();
+        applied.update(&mut roots);
+        applied
+    };
+    push(
+        1,
+        Payload::File(FileEvent::Added {
+            name: b"f".to_vec(),
+            flags: 0,
+            page0: Vec::new(),
+        }),
+    );
+    push(
+        0,
+        Payload::Session(SessionEvent::Started { server, count: 1 }),
+    );
+    let sessions = 40;
+    for connection in 1..=sessions {
+        let session = Session {
+            server,
+            start: 1,
+            connection,
+        };
+        push(0, Payload::Session(SessionEvent::Opened(session)));
+        push(
+            1,
+            Payload::Change(Change {
+                op: Some(Op { session, seq: 1 }),
+                reply: vec![connection as u8; MAX_REPLY],
+                ..Change::default()
+            }),
+        );
+    }
+    store.overflow.set(0);
+    let started = push(
+        0,
+        Payload::Session(SessionEvent::Started { server, count: 2 }),
+    );
+    assert_eq!(started.closed.len(), sessions as usize);
+    assert_eq!(store.overflow.get(), 0, "overflow pages read by the start");
+    compare(&store, &roots, &model, "after the start");
 }
