@@ -101,7 +101,9 @@ paths, host names, ports, file names, the list shown and the saved hosts
 (below) in the OS account's `settings.json`, never account names or
 passwords. When that file cannot be read or written, the lists last until
 OpenMaker quits: Home says so beside its tabs, and a pin, Remove or host
-change that could not be saved shows an alert.
+change that could not be saved shows an alert. A host Open Network File adds
+is saved as its file opens; when it cannot be, its alert waits for any the
+opening file shows, and stays until it is dismissed itself.
 
 Under Home in the sidebar, **Hosts** lists the saved hosts, by name or
 address; **+** adds one (Address, Port, and an optional Name the sidebar
@@ -125,7 +127,8 @@ which file on which host and port the path names, or what is wrong with it,
 and **Open** waits until it names a host and a file. A host's address
 cannot carry an account (`name@host`): the account goes in Account Name,
 so none is saved with a host. It signs in as the sign-in does. A path
-to a host Home does not have offers **Add host to Hosts**, off by default.
+to a host Home does not have offers **Add host to Hosts**, off by default; the host is saved once the
+file opens.
 Searching a host page for a name it does not list offers **Open “Name”...**,
 the same dialog with that file's path: a host can leave a file unlisted, and
 it still opens by its name.

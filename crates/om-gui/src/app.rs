@@ -878,6 +878,9 @@ enum Launch {
 struct Opening {
     target: Target,
     destination: crate::file_history::SavedFile,
+    /// Open Network File's Add to Hosts: saved once the file opens, so a
+    /// failed open and a failed save never share the one alert.
+    save_host: Option<crate::file_history::SavedHost>,
 }
 
 impl Opening {
@@ -893,6 +896,7 @@ impl Opening {
                 file,
                 local: Some(path),
             },
+            save_host: None,
         }
     }
 }
@@ -943,6 +947,11 @@ pub struct OpenMakerApp {
     file_history: crate::file_history::History,
     /// Why Recent and Favorites could not be read or saved, shown on Home.
     history_error: Option<String>,
+    /// Alerts that wait for the one up: each shows once no other is up, and
+    /// stays until its own alert is dismissed, so an error that replaces it
+    /// meanwhile does not lose it. A host Add to Hosts could not save as
+    /// its file opened, when the file's own errors may follow at once.
+    waiting_alerts: std::collections::VecDeque<String>,
     status: ConnectStatus,
     /// The file being opened while `status` is `Connecting`.
     opening: Option<Opening>,
@@ -1105,6 +1114,7 @@ impl OpenMakerApp {
             home: Default::default(),
             file_history: Default::default(),
             history_error: None,
+            waiting_alerts: Default::default(),
             status: ConnectStatus::Idle,
             opening: None,
             listing: connect::Listing::None,
@@ -2921,6 +2931,9 @@ impl OpenMakerApp {
                 self.forced_alert = Some((file, text));
             }
         }
+        if self.forced_alert.is_none() && self.error.is_none() && self.script.prompt.is_none() {
+            self.error = self.waiting_alerts.front().cloned();
+        }
         self.alert(&ctx, actions);
         self.host_message(&ctx, actions);
         self.prompt(&ctx);
@@ -3332,10 +3345,10 @@ impl OpenMakerApp {
                 self.form.password.zeroize();
                 self.form = ConnectForm::from(connection);
                 self.apply(ctx, Action::Connect);
-                // After Connect, which clears the alert: a host that could
-                // not be saved says so.
-                if let Some(host) = save_host {
-                    self.edit_file_history(crate::file_history::Change::AddHost(host));
+                // Saved once the file opens (`file_opened`); a failed open
+                // drops it, and the dialog, still ticked, asks again.
+                if let Some(opening) = &mut self.opening {
+                    opening.save_host = save_host;
                 }
             }
             connect::NetworkAction::Cancel => {
@@ -3462,8 +3475,12 @@ impl OpenMakerApp {
     fn edit_file_history(&mut self, change: crate::file_history::Change) {
         let path = self.history_path().map(std::path::Path::to_path_buf);
         let requested = change.requested();
+        // Saved as its file opens, a host's failure waits for any alert
+        // the opening file raises, and is not lost to it.
+        let waits = matches!(change, crate::file_history::Change::AddHost(_));
         match self.file_history.change(path.as_deref(), change) {
             Ok(()) => self.history_error = None,
+            Err(error) if waits => self.waiting_alerts.push_back(error.message),
             Err(error) if requested => self.error = Some(error.message),
             Err(error) => self.history_error = Some(error.message),
         }
@@ -4916,6 +4933,7 @@ impl OpenMakerApp {
                                 port: connection.port,
                                 file: connection.file.clone(),
                             },
+                            save_host: None,
                         });
                         self.request(
                             ctx,
@@ -5322,6 +5340,9 @@ impl OpenMakerApp {
                 }
             }
             Action::DismissAlert => {
+                if self.waiting_alerts.front() == self.error.as_ref() {
+                    self.waiting_alerts.pop_front();
+                }
                 self.error = None;
                 self.w.document.release_focus();
             }
@@ -5655,9 +5676,13 @@ impl OpenMakerApp {
         let Opening {
             target,
             destination,
+            save_host,
         } = opening;
         if !self.sample_data {
             self.edit_file_history(crate::file_history::Change::Opened(destination.clone()));
+        }
+        if let Some(host) = save_host {
+            self.edit_file_history(crate::file_history::Change::AddHost(host));
         }
         self.home.reset();
         self.closed_windows.clear();
