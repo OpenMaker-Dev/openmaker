@@ -959,8 +959,8 @@ rebuilt for them when those entries are applied again (4.7).
   write or flush that fails makes the page file refuse every later write
   until it is opened again (section 6.12); a refusal writes nothing.
 - **An open** (section 6.7, step 2) flushes the store folder and reads
-  the four slots one at a time; a slot the device fails to read is passed
-  over. Of the two highest numbers with a valid copy, newest first, it
+  the four slots one at a time. Of the two highest numbers with a valid
+  copy, newest first, it
   takes the first checkpoint whose meta stream reads back, decodes, and
   agrees with its superblock (number, entry, tree format), and whose
   tree roots read back with the hashes it names, are not overflow pages,
@@ -981,10 +981,27 @@ rebuilt for them when those entries are applied again (4.7).
   unit releasing it is refused, and a checkpoint is refused when it is a
   root or a page of the newest meta stream. Dropping the outer tree
   first leaves the inner tree's root dying and refuses every later
-  checkpoint. A
-  device read error or bytes that do not check pass the checkpoint over,
-  with the reason; any other failure of a read (the process stopping)
-  fails the open. Then, before it returns:
+  checkpoint.
+
+  Bytes that are not there or do not check pass the checkpoint over, with
+  the reason and the restore points given up with it: those it listed
+  that the checkpoint taken does not, when its own table of restore points
+  was read, and otherwise that they are unknown (`PassedOver::lost`). A
+  read the device fails is not taken for such bytes: it says nothing of
+  them, and a later read may return them whole. So when the device fails
+  a read of a checkpoint's meta stream or roots, or of a slot that could
+  hold a checkpoint newer than the newest the open read, the open fails
+  with an error that names the checkpoint (or the slot) and the page,
+  writes nothing, and leaves every slot as it was; it is opened again
+  later. A slot whose pair's other slot holds the newest copy read holds
+  that checkpoint or an older one, since the pairs take checkpoints in
+  turn, and does not stop the open. When the read keeps failing, an
+  explicit call (`PageFile::open_falling_back`) opens as an open did
+  before #750: it passes over what the device fails to read, overwrites
+  a slot it cannot read, and reports both. It is refused, writing
+  nothing, when the device fails no read that would stop the open. Any
+  other failure of a read (the process stopping) fails the open. Then,
+  before it returns:
   1. the checkpoint's copy is written into both slots of its pair, each
      flushed: the device may not hold a copy the system's cache showed
      (an earlier process's failed write or flush), and a crash during a
@@ -993,10 +1010,22 @@ rebuilt for them when those entries are applied again (4.7).
      its meta stream names, that copy is written into the other slot of
      the pair when that slot does not hold it already, and flushed;
      otherwise each slot that is not blank is cleared (zeros over a
-     copy's length), and flushed. Either way a slot that held anything else (a newer
-     checkpoint passed over, whose pages the store will now reuse; a
-     stale copy; bytes that could not be read) is overwritten before any
-     page is: such a checkpoint must never be taken later;
+     copy's length), and flushed. Either way a slot that held anything
+     else (a newer checkpoint passed over, whose pages the store will now
+     reuse; a stale copy; bytes that could not be read) is overwritten
+     before any page is: such a checkpoint must never be taken later.
+     Clearing a checkpoint passed over gives up nothing exactly when its
+     bytes do not check: bytes that do not check against the hashes the
+     superblock and the parents name are taken as damage that stays, so
+     the checkpoint could never be used. Clearing one the device only
+     failed to read would give up a checkpoint a later read could use,
+     and the restore points only it lists, which is why that stops the
+     open instead, and only the explicit call clears it. If the process
+     stops while that call writes, after it has cleared the slots and
+     before it returns its report, the report is lost: the error of the
+     open it followed named the checkpoint, and the restore points given
+     up are those kept at that checkpoint (for a slot, at any checkpoint
+     newer than the one taken);
   3. if the file is shorter than the map's `end`, it is extended to it
      and flushed.
 

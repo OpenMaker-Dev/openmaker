@@ -545,12 +545,21 @@ settled (server-storage-format.md 4.5).
 1. Read `state`. With no valid copy the server does not start.
 2. Of the two checkpoints on disk, newest first, take the first whose
    superblock copy is valid, whose meta stream reads back and agrees with
-   it, and whose tree roots read back with the hashes it names; a read
-   the device fails counts as not reading back. Its copy is written into
-   both of its slots, and the other pair keeps only its predecessor's
-   copy: a checkpoint passed over is cleared before any of its pages can
-   be written over. Deeper damage is page damage (section 6.12), found when a
-   page is read, and does not send the server back to an older checkpoint.
+   it, and whose tree roots read back with the hashes it names. A
+   checkpoint whose bytes do not check is passed over, and the open
+   reports it with the restore points only it listed (or that they are
+   unknown, when its table cannot be read). A read the device fails is
+   not damage: it says nothing of the bytes, which a later read may return
+   whole, so the open fails, writes nothing and names the checkpoint and
+   the place, and the server is started again later. When the read keeps
+   failing, an administrator's explicit call gives up what cannot be read
+   and opens on the older checkpoint, reporting what it gave up (#750).
+   The checkpoint used has its copy written into both of its slots, and
+   the other pair keeps only its predecessor's copy: a checkpoint passed
+   over is cleared before any of its pages can be written over, which
+   gives up nothing when its bytes do not check, since they never will.
+   Deeper damage is page damage (section 6.12), found when a page is read,
+   and does not send the server back to an older checkpoint.
 3. Read the log from that checkpoint and check it against the marker: the
    entry at the marker's index must be there, whole, with the marker's
    hash, and so must every entry between the checkpoint and it. A
@@ -714,7 +723,8 @@ store take unbounded memory or disk:
 | `state` has no valid copy | its hashes | the server does not start: it does not know what it confirmed. A cluster member comes back only as a new server (section 7.5). A single server is restored (section 11) |
 | A page is damaged, misplaced or missing | its parent's hash | on a cluster, fetch it (section 7.5). On one server, reads of that range fail, the file is marked damaged and the event is logged |
 | A blob or a kept original image is damaged or missing | the hashes in its reference, checked whenever it is read (section 8) | on a cluster, fetch it. On one server, the read or export fails and the event is logged; damaged bytes are never served or exported |
-| The newest checkpoint's superblock or roots cannot be read | hashes | use the checkpoint before it, which is kept whole (section 6.7) |
+| The newest checkpoint's superblock, meta stream or roots do not check | hashes | use the checkpoint before it, which is kept whole, and report the restore points only the newest listed (section 6.7) |
+| The device fails a read of a checkpoint the open is choosing | the system's error | the open fails and writes nothing; start again later. A read that keeps failing is given up only by an administrator's explicit call, which opens on the checkpoint before and reports what it gave up (section 6.7) |
 | A flush fails | the system's error | stop the server at once and recover on restart. Never retry the flush: the system may already have dropped the data (PostgreSQL's 2018 finding). An entry the failed flush covered may be found whole on restart; its outcome was unknown to its client (section 2) |
 | The disk is full | a segment, page or reservation that cannot be allocated | refuse writes before appending anything, keep serving reads |
 | Slow damage | a background job that reads every page and entry and recomputes its hash | as for the fault found |
