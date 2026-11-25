@@ -2677,6 +2677,9 @@ fn query(
             // instructions, a key it reserves. Only such a program fails
             // when what it stores is not stored.
             let changes = query_changes_file(&program);
+            if changes {
+                before_engine_write(shared, &file.hosted);
+            }
             let (outcome, issued) = {
                 let reading = shared.engine.read(&file.hosted);
                 let late = shared.late_index_builds.load(Ordering::Relaxed);
@@ -2704,7 +2707,12 @@ fn query(
                     reading.serve_once(&mut run)
                 };
                 match ran {
-                    Ran::ReadOnly => return Err(Refused.into()),
+                    // Read-only by the time the program runs: refused as it
+                    // is at admission, with the error slot and 200.
+                    Ran::ReadOnly => {
+                        return Ok(reply(error_slot(ACCESS_DENIED), Resume::complete())
+                            .to_result_within(max_return as usize));
+                    }
                     // A file that takes no more changes (a save's outcome
                     // was unknown) refuses them before they run, so that no
                     // key is reserved that could never be stored
@@ -2773,8 +2781,11 @@ fn query(
                             file.hosted.name
                         );
                     }
+                    // The engine found the file read-only under its write
+                    // lock: refused as at admission.
                     Reply::ChangeSchema(Err(SchemaNotChanged::Refused(_))) => {
-                        return Err(Refused.into())
+                        return Ok(reply(error_slot(ACCESS_DENIED), Resume::complete())
+                            .to_result_within(max_return as usize));
                     }
                     // The program's writes were not stored: its reply is
                     // the error slot with the save's FileMaker error
@@ -3176,7 +3187,7 @@ enum Unwritable {
 /// (`ServerHandle::read_only_before_next_write`), after its request was
 /// admitted and before the engine takes the write lock, as another
 /// connection's op73 can make a file read-only between the two.
-fn before_engine_write(shared: &Shared, hosted: &Hosted) {
+pub(crate) fn before_engine_write(shared: &Shared, hosted: &Hosted) {
     #[cfg(debug_assertions)]
     if shared.read_only_before_write.swap(false, Ordering::Relaxed) {
         shared
@@ -3460,14 +3471,24 @@ fn upload(
         // the upload fails as one whose save failed does (#737), so that
         // neither it nor a commit of what it would have staged is taken
         // for done.
+        // A refused continuation ends the upload it belongs to, with what
+        // its earlier parts are charged.
         Err(Unwritable::ReadOnly(why)) => {
+            session
+                .transfers
+                .abandon_upload(Owner::of(header), &request.resume);
             return Err(PerformError::Status(format!(
                 "upload to {:02x?} not {}: {why}",
                 request.dest,
                 if to_file { "stored" } else { "staged" }
             )));
         }
-        Err(Unwritable::Session) if request.resume.has_more() => return Err(Refused.into()),
+        Err(Unwritable::Session) if request.resume.has_more() => {
+            session
+                .transfers
+                .abandon_upload(Owner::of(header), &request.resume);
+            return Err(Refused.into());
+        }
         Err(Unwritable::Session) => return Ok(done),
     };
     // Native uploads can replace a script through any catalog ancestor or
@@ -3728,6 +3749,10 @@ fn commit(
     let file = match writable(shared, peer, session, header) {
         Ok(file) => file,
         Err(Unwritable::ReadOnly(why)) => {
+            // A refused continuation ends the list it belongs to.
+            session
+                .transfers
+                .abandon_upload(Owner::of(header), &request.resume);
             return Err(PerformError::Status(format!("commit not saved: {why}")));
         }
         Err(Unwritable::Session) => return Ok(done),
@@ -3907,20 +3932,29 @@ fn upload_binary(
     if !session.open.contains_key(&header.file_id) {
         return Ok(failed(FILE_NOT_OPEN));
     }
-    let Ok(file) = writable(shared, peer, session, header) else {
+    // One admission decision; a refused continuation ends the upload it
+    // belongs to, with what its earlier parts are charged.
+    let admitted = match writable(shared, peer, session, header) {
+        Err(_) => None,
+        Ok(file) if !views_every_record(file) => {
+            info!("{peer}: refusing container data from an account with a view limit");
+            None
+        }
+        Ok(file) if !container_library_writable(shared, file, &request.table) => {
+            info!(
+                "{peer}: refusing container data for a table its privilege set does not let it \
+                 write"
+            );
+            None
+        }
+        Ok(file) => Some(file.hosted.clone()),
+    };
+    let Some(hosted) = admitted else {
+        session
+            .transfers
+            .abandon_upload(Owner::of(header), &request.resume);
         return Ok(failed(ACCESS_DENIED));
     };
-    if !views_every_record(file) {
-        info!("{peer}: refusing container data from an account with a view limit");
-        return Ok(failed(ACCESS_DENIED));
-    }
-    if !container_library_writable(shared, file, &request.table) {
-        info!(
-            "{peer}: refusing container data for a table its privilege set does not let it write"
-        );
-        return Ok(failed(ACCESS_DENIED));
-    }
-    let hosted = file.hosted.clone();
     let part = std::mem::take(&mut request.payload);
     let (payload, held) =
         match upload_payload(shared, peer, session, header, &request.resume, part)? {

@@ -737,6 +737,38 @@ impl ServerHandle {
             .fail_reads(file, path.iter().map(|segment| segment.to_vec()).collect());
     }
 
+    /// The bytes clients' uploads hold now (parts of uploads in progress,
+    /// staged records), on the whole server: for tests that a refusal
+    /// leaves what it should. Only in debug builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn upload_memory_in_use(&self) -> usize {
+        self.shared.upload_memory.in_use()
+    }
+
+    /// Hold hosted file `id` read-only from now on
+    /// (`ReadOnlyCause::DeferredWork`), as another connection's op73 can
+    /// make it: for tests of requests on a file that became read-only.
+    /// Whether the file is served. Only in debug builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn hold_read_only(&self, id: u32) -> bool {
+        let Some(hosted) = self
+            .shared
+            .hosting
+            .slots()
+            .iter()
+            .find(|slot| slot.id == id)
+            .and_then(|slot| slot.served())
+        else {
+            return false;
+        };
+        self.shared
+            .engine
+            .hold_read_only(&hosted, crate::store::ReadOnlyCause::DeferredWork);
+        true
+    }
+
     /// Hold the file of the next write a client sends read-only
     /// (`ReadOnlyCause::DeferredWork`) after the request is admitted and
     /// before the engine takes the write lock, as another connection's op73
