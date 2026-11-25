@@ -8,6 +8,7 @@ use std::ops::Bound;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use om_data::rules::RecordEnvironment;
+use om_hbam::slot::be_uint;
 use om_hbam::OwnedNode;
 use om_protocol::write::{Conflict, KeyPath};
 
@@ -15,7 +16,8 @@ use super::view::{Child, Direction, Head, ReadError, Step, Version, View};
 use crate::derived::Derived;
 use crate::library::BinaryData;
 use crate::locks::{LockTable, LockUser};
-use crate::store::{IndexId, Journal, Store, Written};
+use crate::recalc::TableBasis;
+use crate::store::{Journal, Store, Written};
 
 /// What the engine holds of a file for an operation: what the operation
 /// needs, and no more (`FileEngine::submit`).
@@ -87,9 +89,6 @@ pub struct Transaction<'a> {
     /// records ([`Self::drop_emptied_library`]), whose thumbnails the
     /// engine forgets once the commit is stored.
     pub(super) emptied_libraries: Vec<Vec<Vec<u8>>>,
-    /// Fields an authoring edit added, counted as computed once the edit
-    /// is stored ([`Self::add_field_basis_once_stored`]).
-    pub(super) field_bases: Vec<(Vec<u8>, u64)>,
     /// Whether the run began writing member keys
     /// ([`Self::wrote_member_keys`]).
     pub(super) wrote_member_keys: bool,
@@ -116,15 +115,16 @@ pub struct Transaction<'a> {
 pub(crate) fn written<T>(store: &mut Store, write: impl FnOnce(&mut Transaction<'_>) -> T) -> T {
     let mut tx = Transaction::new(store);
     #[cfg(debug_assertions)]
-    tx.checked();
+    tx.checked(true);
     let out = write(&mut tx);
     tx.settle();
     #[cfg(debug_assertions)]
     let check = tx.check.take();
+    let journal = std::mem::replace(&mut tx.journal, tx.store.begin_commit());
     drop(tx);
     #[cfg(debug_assertions)]
     if let Some(check) = check {
-        check.finish(store);
+        check.finish(store, &journal);
     }
     out
 }
@@ -140,7 +140,6 @@ impl<'a> Transaction<'a> {
             stored_lines: Vec::new(),
             released_libraries: Vec::new(),
             emptied_libraries: Vec::new(),
-            field_bases: Vec::new(),
             wrote_member_keys: false,
             schema_pending: false,
             written: Vec::new(),
@@ -150,10 +149,12 @@ impl<'a> Transaction<'a> {
         }
     }
 
-    /// Check the operation's reads and writes (`super::checking`).
+    /// Check the operation's reads and writes (`super::checking`); with
+    /// `tree` false, its state of its own and its verified-index marks
+    /// alone.
     #[cfg(debug_assertions)]
-    pub(super) fn checked(&mut self) {
-        self.check = Some(Box::new(super::checking::Check::new(self.store)));
+    pub(super) fn checked(&mut self, tree: bool) {
+        self.check = Some(Box::new(super::checking::Check::new(self.store, tree)));
     }
 
     /// Run `work`, one of the store's own helpers (an operation not moved
@@ -394,24 +395,50 @@ impl<'a> Transaction<'a> {
         self.stored_lines.push(line);
     }
 
-    /// Indexes finds built on demand (`Store::store_indexes_in`).
-    pub fn store_indexes(&mut self, indexes: Vec<IndexId>) {
-        #[cfg(test)]
-        if PANIC_STORING_INDEXES.with(std::cell::Cell::get) {
-            panic!("a test's panic while storing indexes");
-        }
-        if indexes.is_empty() {
-            self.store.store_indexes_in(&mut self.journal, indexes);
-        } else {
-            self.by_store(|store, journal| store.store_indexes_in(journal, indexes));
+    /// The basis of `table`'s stored calculations at the transaction's
+    /// version (`Store::set_basis_in`; docs/server-storage.md 5, "The
+    /// basis of stored calculations").
+    pub fn basis(&self, table: &[u8]) -> Option<&TableBasis> {
+        self.store.bases().get(table)
+    }
+
+    /// Set `table`'s basis (`None`: it has none), a write of the version's
+    /// own state that a roll-back takes back and the check records.
+    pub fn set_basis(&mut self, table: &[u8], basis: Option<TableBasis>) {
+        #[cfg(debug_assertions)]
+        let recorded = self.check.as_ref().map(|_| basis.clone());
+        if self
+            .store
+            .set_basis_in(Some(&mut self.journal), table, basis)
+        {
+            #[cfg(debug_assertions)]
+            if let (Some(check), Some(basis)) = (&mut self.check, recorded) {
+                check.wrote_basis(table, basis);
+            }
         }
     }
 
-    /// Count field `field` of `table`, which the commit adds, as computed
-    /// once the commit is stored (`Store::add_field_basis`), and not if it
-    /// is not.
-    pub fn add_field_basis_once_stored(&mut self, table: Vec<u8>, field: u64) {
-        self.field_bases.push((table, field));
+    /// Count field `field` of `table`, which the operation added, as
+    /// computed with its definition as the transaction reads it: a new
+    /// field has no stored values to recompute (op240's Create Field). A
+    /// table without a basis keeps none.
+    pub fn add_field_basis(&mut self, table: &[u8], field: u64) {
+        let derived = self.derived();
+        let Some(definition) = be_uint(table).and_then(|t| derived.catalog().table(t)) else {
+            return;
+        };
+        let Some(field) = definition.field(field) else {
+            return;
+        };
+        let Some(mut basis) = self.basis(table).cloned() else {
+            return;
+        };
+        let view: &dyn View = self;
+        let Ok(entry) = crate::recalc::field_basis(view, definition.id, field) else {
+            return;
+        };
+        basis.insert(field.id, entry);
+        self.set_basis(table, Some(basis));
     }
 
     /// op73: a table's deferred field work (`Store::update_table`), each
@@ -624,7 +651,7 @@ fn owned_steps(steps: &[Step<'_>]) -> Vec<(usize, Vec<u8>, Head<'static>)> {
 
 #[cfg(test)]
 thread_local! {
-    /// Makes [`Transaction::store_indexes`] panic on this thread
+    /// Makes `schema::store_indexes` panic on this thread
     /// (`engine::tests`).
     pub(super) static PANIC_STORING_INDEXES: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };

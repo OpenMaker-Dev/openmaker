@@ -88,7 +88,7 @@ impl Environment for Rewound {
 struct Untouched {
     tree: OwnedNode,
     catalog: om_hbam::Catalog,
-    basis: std::collections::HashMap<Vec<u8>, crate::recalc::TableBasis>,
+    basis: crate::store::Bases,
     accounts: Vec<crate::hosting::FileAccount>,
     waiting: (Vec<crate::store::IndexId>, Vec<crate::store::MemberKey>),
     locks: Vec<(KeyPath, LockUser, u16, u32, String)>,

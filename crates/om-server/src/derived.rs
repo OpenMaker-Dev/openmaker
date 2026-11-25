@@ -41,7 +41,7 @@ use om_query::keys::{record_value_entries, value_keys, word_entries, Reading, Te
 use crate::engine::{Direction, ReadError, Version, View, Waiting, NO_LIMIT};
 use crate::hosting::FileAccount;
 use crate::modcount::{self, MOD_COUNT};
-use crate::store::{keys, IssuedKeysAre};
+use crate::store::{keys, IndexId, IssuedKeysAre};
 
 /// The file's locale record `[2, 0d]` (file-metadata.md 2), decoded with
 /// the shared decoder every host uses.
@@ -113,7 +113,20 @@ pub struct Derived {
     /// The file's page 0 as it was loaded ([`Derived::page_zero`]); empty
     /// until the engine sets it.
     page_zero: Arc<[u8]>,
+    /// The verified-index marks ([`Marks`]) of the version this state
+    /// belongs to.
+    marks: Arc<Marks>,
 }
+
+/// Whether each index a write checked holds the keys the current rules
+/// give its records (`Store::index_agrees`), by index: a cache of the
+/// version's tree, derived from it as the rest of this state is
+/// (docs/server-storage.md 5, "The verified-index marks"). A mark that an
+/// index agrees is never wrong for the version it is kept with; any mark
+/// may be missing, and is then checked again. It is carried to the next
+/// version with the rest of the state, and forgotten by the writes that
+/// can make it wrong.
+pub(crate) type Marks = BTreeMap<IndexId, bool>;
 
 impl Derived {
     /// The state of the file named `name` at `view`'s version, its schema
@@ -162,6 +175,7 @@ impl Derived {
             name: name.to_string(),
             desktop: false,
             page_zero: Arc::from(&[][..]),
+            marks: Arc::default(),
         };
         derived.calc = CalcCatalogs::read(view, &derived)?;
         Ok(derived)
@@ -180,6 +194,19 @@ impl Derived {
         };
         derived.calc = CalcCatalogs::read(view, &derived)?;
         Ok(derived)
+    }
+
+    /// The verified-index marks kept with this state ([`Marks`]).
+    pub(crate) fn marks(&self) -> &Marks {
+        &self.marks
+    }
+
+    /// This state with the verified-index marks `marks`.
+    pub(crate) fn with_marks(&self, marks: Marks) -> Self {
+        Derived {
+            marks: Arc::new(marks),
+            ..self.clone()
+        }
     }
 
     /// This state with `accounts`, read again at `version`.

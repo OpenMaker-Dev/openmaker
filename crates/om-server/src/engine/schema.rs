@@ -6,15 +6,20 @@
 //! back (`FileEngine::submit`).
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
-use log::warn;
+use log::{error, warn};
+use om_hbam::{OwnedNode, RidList};
 use om_query::Write;
 
-use super::{ChangeSchema, Environment, Transaction, UpdateTable, UploadToCatalog, View, NO_LIMIT};
-use crate::derived::{CATALOG_INDEX, LAST_MEMBER_ID};
+use super::{
+    ChangeSchema, Environment, ReadError, Transaction, UpdateTable, UploadToCatalog, View, NO_LIMIT,
+};
+use crate::derived::{self, counts_key, CATALOG_INDEX, LAST_MEMBER_ID};
 use crate::library::LIBRARY;
 use crate::modcount::{self, MOD_COUNT};
-use crate::store::MemberKey;
+use crate::store::keys::INDEXES;
+use crate::store::{IndexId, MemberKey};
 
 /// The refusal of a write to a file hosted read-only.
 const READ_ONLY: &str = "the file is hosted read-only";
@@ -59,12 +64,90 @@ pub(super) fn change_schema(
     if tx.is_read_only() && !writes.is_empty() {
         return Err(READ_ONLY);
     }
-    tx.store_indexes(indexes);
+    store_indexes(indexes, file, tx);
     if !tx.is_read_only() {
         write_member_keys(member_keys, file, tx);
         apply(writes, file, tx);
     }
     Ok(())
+}
+
+/// The indexes finds built on demand (an op86 program's, a find's
+/// `StoreIndexes`; `Store::take_indexes_on_demand`), stored so that record
+/// writes keep them current from now on (query-program.md 7.1): each built
+/// again from the records as the transaction reads them
+/// (`derived::index_entries`) and written whole with its counts. An index
+/// stored already (its counts there), a field whose index is not built on
+/// demand, and one in a language whose keys this server does not build
+/// while a record holds text there (#572; one built while none did, a
+/// record of which has gained text since, is not stored, #159) are left as
+/// they are; one the file cannot hold is logged and left.
+pub(super) fn store_indexes(indexes: Vec<IndexId>, file: &str, tx: &mut Transaction<'_>) {
+    #[cfg(test)]
+    if super::transaction::PANIC_STORING_INDEXES.with(std::cell::Cell::get) {
+        panic!("a test's panic while storing indexes");
+    }
+    if indexes.is_empty() {
+        return;
+    }
+    let derived = tx.derived();
+    for (table, field, kind) in indexes {
+        let counts = counts_key(kind);
+        let view: &dyn View = tx;
+        let built = (|| -> Result<Option<BTreeMap<Vec<u8>, RidList>>, ReadError> {
+            let at: [&[u8]; 4] = [&table, &[INDEXES], &field, &[counts]];
+            if view.node(&at)?.is_some() {
+                return Ok(None);
+            }
+            let Some(data_type) = derived.indexable(&table, &field, kind) else {
+                return Ok(None);
+            };
+            let Some(form) = derived::written_form(view, &derived, &table, &field, data_type)?
+            else {
+                return Ok(None);
+            };
+            let keys = derived::index_entries(
+                view, &derived, &table, &field, data_type, kind, form, false,
+            )?;
+            Ok(Some(keys.unwrap_or_default()))
+        })();
+        let keys = match built {
+            Ok(Some(keys)) => keys,
+            Ok(None) => continue,
+            Err(error) => {
+                warn!(
+                    "{file}: index {kind} of table {table:02x?} field {field:02x?} not stored: \
+                     {error}"
+                );
+                continue;
+            }
+        };
+        let entries: usize = keys.values().map(RidList::len).sum();
+        let distinct = keys.len();
+        let path = |key: u8| vec![table.clone(), vec![INDEXES], field.clone(), vec![key]];
+        let mut written = Ok(());
+        if !keys.is_empty() {
+            let nodes = keys
+                .into_iter()
+                .map(|(key, ids)| ids.to_node(key))
+                .collect();
+            written = tx.replace(path(kind), OwnedNode::list(vec![kind], nodes));
+        }
+        if written.is_ok() {
+            let mut value = (entries as u64).to_be_bytes().to_vec();
+            value.extend((distinct as u64).to_be_bytes());
+            written = tx.put(path(counts), OwnedNode::leaf(Vec::new(), value));
+        }
+        match written {
+            Ok(()) => tx.once_stored(format!(
+                "built index {kind} of table {table:02x?} field {field:02x?} on demand"
+            )),
+            Err(reason) => error!(
+                "{file}: index {kind} of table {table:02x?} field {field:02x?} cannot be \
+                 stored: {reason}"
+            ),
+        }
+    }
 }
 
 /// GenerateMemberKey's issued keys: each catalog's last member id and
