@@ -340,6 +340,10 @@ impl OpenError {
             OpenError::Log(LogError::PlanChanged) => {
                 "plan the acceptance again (Store::plan_damage): the log changed since"
             }
+            OpenError::Log(LogError::NotAsPlanned { .. }) => {
+                "plan the acceptance again (Store::plan_damage): the log changed after the \
+                 acceptance recorded its decision, and its open did nothing the plan did not say"
+            }
             OpenError::UnreadableEnd { .. } => {
                 "open the store again later, restore it from a backup, or accept the loss of what \
                  may follow the place (Store::give_up_unreadable_end)"

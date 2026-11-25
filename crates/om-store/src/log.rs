@@ -66,10 +66,7 @@ use std::sync::Arc;
 use crate::state::{Marker, Segments, State, StateError, Values};
 use crate::sys::{self, ErrorKind, File, FileOptions, Fs};
 
-use format::{
-    encode_entry, is_batch_mark, segment_number, segment_path, BatchHeader, SegmentHeader,
-    BATCH_MARK,
-};
+use format::{encode_entry, segment_number, segment_path, BatchHeader, SegmentHeader};
 pub use format::{
     HeaderFault, BATCH_HEADER, ENTRY_OVERHEAD, MAX_INDEX, MAX_PAYLOAD, MAX_SEGMENT, MIN_SEGMENT,
     SEGMENT_HEADER, VERSION, ZERO_HASH,
@@ -267,9 +264,9 @@ pub struct DamageAccepted {
     pub listed_before: Segments,
     pub listed: Segments,
     /// Every listed segment no longer listed, with the entries it held as
-    /// far as the headers say, and where its file went. Those numbered
-    /// before `listed.first` held only entries before the start's
-    /// successor: what a checkpoint older than the start loses.
+    /// far as the headers say, and where its file went; then every segment
+    /// file the run did not list (its entries unknown), set aside too. Why
+    /// each was given up is in the plan's [`FileFate`]s.
     pub given_up: Vec<SegmentGivenUp>,
     /// The kept segment whose bytes after `kept` are given up (when the cut
     /// count was raised): copied, since it stays in use, to
@@ -335,7 +332,11 @@ pub enum Fate {
     Kept,
     /// Kept, and lengthened with zeros to its header's size.
     Lengthened { size: u64 },
-    /// Given up: renamed aside, why.
+    /// Given up: renamed aside, and why: it holds only entries up to the
+    /// checkpoint's; nothing after the checkpoint's entry could be kept (and
+    /// why not); it follows a missing segment or one whose header does not
+    /// check; it holds entries after the last kept; its own header does not
+    /// check; the run does not list it.
     SetAside { reason: &'static str },
     /// Listed and not there: given up.
     Missing,
@@ -368,7 +369,8 @@ fn planned(
     Ok((marker, cut_count))
 }
 
-/// A listed segment an acceptance gave up.
+/// A segment file an acceptance gave up: a listed segment, or a segment
+/// file the run did not list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SegmentGivenUp {
     pub number: u64,
@@ -554,6 +556,16 @@ pub enum LogError {
     /// An acceptance was given a plan that a fresh plan no longer matches:
     /// refused, with nothing changed. Plan again.
     PlanChanged,
+    /// The open an acceptance runs after recording its decision would not
+    /// do what the plan said: it would end the log at entry `durable`, list
+    /// `listed`, and remove the segment files `removing`. It did none of
+    /// that: the open after an acceptance writes and removes nothing that
+    /// its plan did not say. `state` holds the decision; plan again.
+    NotAsPlanned {
+        durable: u64,
+        listed: Segments,
+        removing: Vec<u64>,
+    },
 }
 
 impl fmt::Display for LogError {
@@ -613,6 +625,18 @@ impl fmt::Display for LogError {
                 "the log's framing before the checkpoint's entry is broken in segment \
                  {segment} at offset {offset}: where the entry after it begins cannot be \
                  established, and nothing was given up"
+            ),
+            LogError::NotAsPlanned {
+                durable,
+                listed,
+                removing,
+            } => write!(
+                f,
+                "the open after the acceptance would end the log at entry {durable}, list \
+                 {} segments from {}, and remove segment files {removing:?}: not what the \
+                 plan said, so it did none of that; the acceptance's decision is recorded; \
+                 plan again",
+                listed.count, listed.first
             ),
         }
     }
@@ -1081,9 +1105,56 @@ fn park(
     Ok((prefix, unreadable))
 }
 
-/// Whether a batch's mark stands anywhere in segment `seg` at or after
-/// `offset`: written bytes the walk could not reach.
-fn marks_after(seg: &Seg, offset: u64) -> Result<bool, LogError> {
+/// A segment file shorter than its header says, read as it will read once
+/// an acceptance has lengthened it: zeros from its end to `size` (format
+/// section 6.2). A plan only reads it.
+struct Lengthened {
+    file: Box<dyn File>,
+    end: u64,
+    size: u64,
+}
+
+impl File for Lengthened {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> sys::Result<usize> {
+        let room = |to: u64| {
+            usize::try_from(to.saturating_sub(offset)).map_or(buf.len(), |n| n.min(buf.len()))
+        };
+        if offset < self.end {
+            let want = room(self.end);
+            return self.file.read_at(offset, &mut buf[..want]);
+        }
+        let n = room(self.size);
+        buf[..n].fill(0);
+        Ok(n)
+    }
+
+    fn write_at(&self, _: u64, _: &[u8]) -> sys::Result<()> {
+        Err(sys::Error::new(ErrorKind::Unsupported, sys::Op::Write, ""))
+    }
+
+    fn flush(&self) -> sys::Result<()> {
+        Err(sys::Error::new(ErrorKind::Unsupported, sys::Op::Flush, ""))
+    }
+
+    fn allocate(&self, _: u64) -> sys::Result<()> {
+        Err(sys::Error::new(
+            ErrorKind::Unsupported,
+            sys::Op::Allocate,
+            "",
+        ))
+    }
+
+    fn size(&self) -> sys::Result<u64> {
+        Ok(self.size)
+    }
+}
+
+/// Whether anything is written in segment `seg` at or after `offset`, to
+/// the size its header states: any byte that is not zero. A segment is made
+/// of zeros (format section 3.2), so bytes there are bytes the writer put
+/// there, whatever they now hold: a batch whose mark was damaged still has
+/// the rest of its header and its entries.
+fn written_after(seg: &Seg, offset: u64) -> Result<bool, LogError> {
     let size = seg
         .file
         .size()
@@ -1107,15 +1178,10 @@ fn marks_after(seg: &Seg, offset: u64) -> Result<bool, LogError> {
         if n == 0 {
             break;
         }
-        if buf[..n].windows(BATCH_MARK as usize).any(is_batch_mark) {
+        if buf[..n].iter().any(|&b| b != 0) {
             return Ok(true);
         }
-        // A mark across two reads is found by the next one, which begins
-        // just short of this one's end.
-        if at + (n as u64) >= size {
-            break;
-        }
-        at += (n as u64).saturating_sub(BATCH_MARK - 1).max(1);
+        at += n as u64;
     }
     Ok(false)
 }
@@ -1237,8 +1303,10 @@ impl Log {
     /// the segment that holds the one after it are reached by their framing
     /// alone (format section 3.5): their chain is checked as the walk goes,
     /// and where it does not hold, the entry at `start` included, is
-    /// reported ([`Opened::before_start`]) and does not fail the open;
-    /// framing that breaks there does. When `start` covers the marker's
+    /// reported ([`Opened::before_start`]) and does not fail the open. A
+    /// whole batch before the start's is crossed by its own header when its
+    /// entries do not frame (reported the same way); framing that breaks
+    /// anywhere else before the start fails the open. When `start` covers the marker's
     /// entry it answers for it. After the marker
     /// (or `start`, whichever is later), a batch is kept only when it is
     /// whole and carries the cut count `state` holds; the first that is not,
@@ -1250,11 +1318,26 @@ impl Log {
     /// to the same end.
     pub fn open(
         fs: Arc<dyn Fs>,
-        mut state: State,
+        state: State,
         config: Config,
         start: Position,
     ) -> Result<(Log, Opened), Box<OpenFailed>> {
-        match Self::recover(&*fs, &mut state, config, start) {
+        Self::open_as(fs, state, config, start, None)
+    }
+
+    /// [`Log::open`], or with `plan` the open an acceptance runs after
+    /// recording its decision: that one writes `state` and removes files
+    /// only when its walk ends the log where `plan` says, with the run it
+    /// lists, and no segment file would be removed; otherwise it fails
+    /// ([`LogError::NotAsPlanned`]) having written and removed nothing.
+    fn open_as(
+        fs: Arc<dyn Fs>,
+        mut state: State,
+        config: Config,
+        start: Position,
+        plan: Option<&DamagePlan>,
+    ) -> Result<(Log, Opened), Box<OpenFailed>> {
+        match Self::recover(&*fs, &mut state, config, start, plan) {
             Ok(recovered) => {
                 let opened = recovered.opened.clone();
                 let log = Log {
@@ -1291,6 +1374,7 @@ impl Log {
         state: &mut State,
         config: Config,
         start: Position,
+        plan: Option<&DamagePlan>,
     ) -> Result<Recovered, LogError> {
         config.check()?;
         if !state.holds_lock_of(fs) {
@@ -1414,6 +1498,22 @@ impl Log {
             hash: last.hash,
             committed: marker.committed,
         };
+        if let Some(plan) = plan {
+            // After an acceptance: only what the plan said, and nothing
+            // removed.
+            let removing: Vec<u64> = names
+                .iter()
+                .filter_map(|name| segment_number(name))
+                .filter(|n| !(listed.first..listed.first + listed.count).contains(n))
+                .collect();
+            if last != plan.opens_at || listed != plan.listed || !removing.is_empty() {
+                return Err(LogError::NotAsPlanned {
+                    durable: last.index,
+                    listed,
+                    removing,
+                });
+            }
+        }
         state
             .update(|v| {
                 v.marker = new_marker;
@@ -1470,36 +1570,46 @@ impl Log {
     ///
     /// - **kept**: the chain from `start`, in the listed segment that holds
     ///   the entry after it: the start reached by framing alone (nothing
-    ///   before it is needed; what does not check there, or a read the
-    ///   device fails of an entry's payload or hash, is reported and does
-    ///   not count), then checked forward from the start's hash through the
-    ///   listed segments that follow without a gap, up to the later of the
-    ///   marker and the start; with the listed segments before that segment
-    ///   that follow one another without a gap; and no further than the
-    ///   open's own walk over that run would go, which the plan runs. A kept
-    ///   file shorter than its header says is lengthened with zeros;
+    ///   before it is needed: a whole batch before the start's is crossed by
+    ///   its own header whatever its entries' fields say, and what does not
+    ///   frame or check there, or a read the device fails of an entry's
+    ///   payload or hash, is reported and does not count), then checked
+    ///   forward from the start's hash through the listed segments that
+    ///   follow without a gap, up to the later of the marker and the start;
+    ///   with the listed segments before that segment that follow one another
+    ///   without a gap; and no further than the open's own walk over that run
+    ///   would go, which the plan runs. A file shorter than its header says
+    ///   is read as it will read once lengthened, zeros from its end to its
+    ///   header's size, and a kept one is lengthened so;
     /// - **given up**: every other listed segment (one whose header does
     ///   not check is not looked into), every segment file the run does not
     ///   list, and what follows the last entry kept (`kept`); the marker is
     ///   lowered to it. Every file given up is renamed, in `log/`, to a name
     ///   of this acceptance's own that no open removes, and the kept one
     ///   whose tail is given up is copied: durable before `state` changes,
-    ///   and nothing is removed;
+    ///   and nothing is removed. The plan says why of each file
+    ///   ([`Fate::SetAside`]);
     /// - **refused**, with nothing changed: when the walk cannot say where
     ///   the entry after the start begins (it stops before any entry after
-    ///   the start, at a batch's mark or header, at bytes that do not frame,
-    ///   or past a start whose own end its hash does not place, unless it
-    ///   reached the clean end of its last segment and the listed segment
-    ///   after it is missing); when a listed segment whose header does not
-    ///   check could hold that entry; when nothing would change; on a
-    ///   segment of a newer format; on a read the device fails of anything
-    ///   the decision depends on (`LogError::Unreadable`).
+    ///   the start, at a batch's mark or header, at bytes that do not frame
+    ///   in the start's own batch, or past a start whose own end its hash
+    ///   does not place), unless it reached the clean end of its last
+    ///   segment, every byte after that in the segment is zero, and the
+    ///   listed segment after it is missing (so a segment that holds bytes
+    ///   after its end, such as batches from before an earlier cut, with the
+    ///   segment after it missing, is refused too); when a listed segment
+    ///   whose header does not check could hold that entry; when nothing
+    ///   would change; on a segment of a newer format; on a read the device
+    ///   fails of anything the decision depends on (`LogError::Unreadable`).
     ///
     /// One `state` update, written to both slots, lists the kept segments,
     /// lowers the marker (its committed position with it, when that was
     /// past) and raises the cut count when anything after `kept` is given
-    /// up. Then the log is opened as [`Log::open`] opens it, and its effect
-    /// is checked against the plan. A failure after the decision says what
+    /// up. Then the log is opened as [`Log::open`] opens it, except that this
+    /// open writes `state` and removes files only when its walk ends the log
+    /// where the plan says, with the run it says, and no segment file would
+    /// be removed; otherwise it fails, having done none of it
+    /// ([`LogError::NotAsPlanned`]). A failure after the decision says what
     /// it was and whether `state` holds it ([`AcceptFailed::decided`]). It
     /// needs no committed position: it is the administrator's decision,
     /// which no committed position could make on a single server.
@@ -1561,8 +1671,8 @@ impl Log {
                 Err(error) => return Err(fail(error, state, None)),
             }
         }
-        // Kept files that are short, lengthened with zeros: past what is
-        // kept, which the walk read, nothing in them is part of the log.
+        // Kept files that are short, lengthened with zeros: the plan read
+        // them so, and the open reads what the plan read.
         for &(number, size) in &lengthen {
             let lengthened = fs
                 .open(&segment_path(number), FileOptions::PLAIN)
@@ -1584,25 +1694,10 @@ impl Log {
             };
             return Err(fail(LogError::State(e), state, decided));
         }
-        match Log::open(fs, state, config, start) {
-            // The effect, checked against the plan: the open ends where it
-            // said, with the run it said, and removed nothing.
-            Ok((log, opened))
-                if opened.durable == plan.opens_at
-                    && log.segments() == plan.listed
-                    && opened.removed.is_empty() =>
-            {
-                Ok((log, opened, accepted))
-            }
-            Ok((log, _)) => Err(Box::new(AcceptFailed {
-                failed: Box::new(OpenFailed {
-                    error: LogError::Refused(
-                        "the open after the acceptance did not do what the plan said",
-                    ),
-                    state: log.state,
-                }),
-                decided: Some((accepted, Recorded::Done)),
-            })),
+        // The open ends the log where the plan said, with the run it said,
+        // and removes nothing, or fails having written nothing.
+        match Log::open_as(fs, state, config, start, Some(plan)) {
+            Ok((log, opened)) => Ok((log, opened, accepted)),
             Err(failed) => Err(Box::new(AcceptFailed {
                 failed,
                 decided: Some((accepted, Recorded::Done)),
@@ -1694,11 +1789,20 @@ impl Log {
             if header.store != store || header.number != number {
                 continue;
             }
-            // A short file is read as far as it goes: its length is no
-            // reason to pass it over.
-            if file.size().map_err(LogError::Disk)? < header.size {
+            // A short file is no reason to pass it over: it is read as the
+            // open will read it once lengthened, zeros from its end to the
+            // size its header states.
+            let size = file.size().map_err(LogError::Disk)?;
+            let file: Box<dyn File> = if size < header.size {
                 short.insert(number);
-            }
+                Box::new(Lengthened {
+                    file,
+                    end: size,
+                    size: header.size,
+                })
+            } else {
+                file
+            };
             usable.push(Seg {
                 number,
                 header,
@@ -1720,7 +1824,17 @@ impl Log {
         let mut kept = start;
         let mut keep: Option<(usize, usize)> = None;
         let after = start.index + 1;
+        // When nothing after the start is kept: the segments numbered below
+        // `older_below` hold only entries up to the start, and why nothing
+        // in the others is kept.
+        let mut older_below: Option<u64> = None;
+        let mut nothing_kept = "the segment that would hold the entry after the checkpoint's \
+                                is missing or its header does not check: no entry after the \
+                                checkpoint's can be checked";
         if let Some(from) = usable.iter().rposition(|s| s.header.first <= after) {
+            older_below = Some(usable[from].number);
+            nothing_kept = "the segment that would hold the entry after the checkpoint's does \
+                            not continue from the checkpoint's entry or the marker's";
             let mut to = from;
             while to + 1 < usable.len() && follows(&usable[to], &usable[to + 1]) {
                 to += 1;
@@ -1737,6 +1851,9 @@ impl Log {
                 hash: header.prev_hash,
             };
             if fits(&before) {
+                nothing_kept = "the walk reached the clean end of a segment before the \
+                                checkpoint's entry, and the segment after it, which held the \
+                                entry after the checkpoint's, is missing";
                 let mut seen = (before, 0usize);
                 if before.index < firm {
                     let mut scanner = Scanner::new(chain, 0, Keep::Nothing).anchored_at(
@@ -1767,8 +1884,11 @@ impl Log {
                     // was found and did not check (inside a batch, past the
                     // start, whose end is placed by its hash), or when the
                     // walk reached the clean end of the last segment it had,
-                    // nothing follows in that segment, and the listed segment
-                    // after it is missing: the successor was there.
+                    // every byte after that in the segment is zero, and the
+                    // listed segment after it is missing: the successor was
+                    // there. Bytes that are not zero there are something
+                    // written (a batch whose mark was damaged, or bytes from
+                    // before an earlier cut): refused.
                     if let Some((seg, offset)) = stopped.filter(|_| seen.0.index <= start.index) {
                         let placed = !scanner.before_anchor() && scanner.anchor_placed();
                         let entry_failed = placed && !scanner.ended_between();
@@ -1780,12 +1900,17 @@ impl Log {
                                 let follower = chain[seg].number + 1;
                                 follower < run_end && !present.contains(&follower)
                             }
-                            && !marks_after(&chain[seg], offset)?;
+                            && !written_after(&chain[seg], offset)?;
                         if !entry_failed && !clean_end {
                             return Err(LogError::FramingBroken {
                                 segment: chain[seg].number,
                                 offset,
                             });
+                        }
+                        if clean_end && scanner.before_anchor() {
+                            // The walk ended before the start, cleanly: what
+                            // it walked held only entries before it.
+                            older_below = Some(chain[seg].number + 1);
                         }
                     }
                 }
@@ -1893,13 +2018,28 @@ impl Log {
                 Fate::SetAside {
                     reason: "its header does not check",
                 }
-            } else if number < listed.first {
+            } else if (keep.is_some() && number < listed.first)
+                || (keep.is_none() && older_below.is_some_and(|b| number < b))
+                || last.is_some_and(|l| l <= start.index)
+            {
+                // Its entries come before the start's successor's segment.
                 Fate::SetAside {
-                    reason: "before the kept chain, past a gap: only an older checkpoint needed it",
+                    reason: "it holds only entries up to the checkpoint's: only an older \
+                             checkpoint needs them",
+                }
+            } else if keep.is_none() {
+                Fate::SetAside {
+                    reason: nothing_kept,
+                }
+            } else if (listed_end..number).any(|n| !first_of.contains_key(&n)) {
+                Fate::SetAside {
+                    reason: "it follows a segment that is missing or whose header does not \
+                             check: its entries cannot be checked from the last entry kept",
                 }
             } else {
                 Fate::SetAside {
-                    reason: "after the last entry kept, or past where the open would end the log",
+                    reason: "it holds entries after the last entry kept, or past where the open \
+                             would end the log",
                 }
             };
             if !matches!(fate, Fate::Kept | Fate::Lengthened { .. }) {
@@ -1924,6 +2064,12 @@ impl Log {
         // so they are set aside too.
         for &number in unlisted.iter() {
             moves.push(number);
+            given_up.push(SegmentGivenUp {
+                number,
+                first: None,
+                last: None,
+                moved_to: None,
+            });
             files.push(FileFate {
                 number,
                 first: None,

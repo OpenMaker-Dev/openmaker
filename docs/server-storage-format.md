@@ -826,17 +826,27 @@ opened from (the start, a checkpoint's entry) reaches it by the framing
 alone: an entry's fixed fields (its index must be the one expected, its
 length within the batch), a batch header's start and its own hash, the
 lengths of entries and batches; not the chain, since nothing before the
-start is needed after it. The start's entry takes the start's hash and
-term, whatever its bytes say, and the entry after it is checked by the
-chain from that hash: a batch that begins there names the start's index
-and hash, which anchors it without the start's own bytes. On the way, the
-entries before the start are still checked by the chain from the
-segment's header, through each batch header, as far as it holds; where it
-stops is noted, and a read the device fails of an entry's bytes past its
-fixed fields is noted the same way rather than ending the walk. The open, a
-read and a cut walk so; so does accepting a loss (6.2), which refuses when
-the framing breaks before the start, so that where the start's successor
-begins cannot be established (`LogError::FramingBroken`).
+start is needed after it. A batch whose last entry comes before the start
+is crossed by its header when its entries do not frame or its framing does
+not end where the header says: the header, checked by its own hash, says
+where the batch ends, the hash of its last entry and so the index the next
+batch must name, which is all the walk needs from it (the term of that last
+entry it does not say; the next entry's bytes, or the next segment's header,
+which must continue from that hash, give it). Inside the start's own batch
+the entries are framed one by one, since the start's end must be placed.
+The start's entry takes the start's hash and term, whatever its bytes say,
+and the entry after it is checked by the chain from that hash: a batch that
+begins there names the start's index and hash, which anchors it without
+the start's own bytes. On the way, the entries before the start are still
+checked by the chain from the segment's header, through each batch header,
+as far as it holds; where it stops is noted (an entry that does not frame
+in a batch crossed by its header, too), and a read the device fails of an
+entry's bytes past its fixed fields is noted the same way rather than
+ending the walk. The open, a read and a cut walk so; so does accepting a
+loss (6.2), which refuses when the framing breaks before the start where
+no header crosses it (a batch's mark or header, an entry in the start's
+own batch), so that where the start's successor begins cannot be
+established (`LogError::FramingBroken`).
 
 **Reading** (`Log::read`) walks from the segment that holds the first
 entry asked for, through the entries before it in that segment (anchored
@@ -2337,11 +2347,13 @@ entry. Two calls go past two of them, and nothing else does:
   rather keep what a plan gives up restores, or repairs by hand. The plan
   is made from the start, the checkpoint the store opens on. Every listed
   segment the folder holds is opened, and a file shorter than its header
-  says is read as far as it goes. The rule:
+  says is read as it will read once lengthened: its bytes, then zeros to
+  its header's size. The rule:
   - **kept**: in the listed segment that holds the entry after the start,
-    the start reached by framing alone (3.5, "Anchored walks"; what does
-    not check before it, or a read the device fails of an entry's payload
-    or hash there, is reported in the plan and does not count), then the
+    the start reached by framing alone (3.5, "Anchored walks": a whole
+    batch before the start's is crossed by its header; what does not frame
+    or check before the start, or a read the device fails of an entry's
+    payload or hash there, is reported in the plan and does not count), then the
     chain checked forward from the start's hash through the listed
     segments that follow without a gap, no further than the later of the
     marker and the start; the last entry so reached is `kept`. With it, the
@@ -2352,7 +2364,8 @@ entry. Two calls go past two of them, and nothing else does:
     that is short is lengthened to its header's size with zeros, flushed,
     before `state` changes. Those zeros are bytes like any: where they
     complete a batch whose hashes all check (a file short only by trailing
-    zero bytes), the batch is whole, as it was written;
+    zero bytes), the batch is whole, as it was written, and the plan, which
+    read the file so, says the open keeps it;
   - **given up**: every other listed segment (one whose own header does
     not check is not looked into), every segment file the run does not
     list, and whatever follows `kept`. Nothing is destroyed: every file
@@ -2366,15 +2379,27 @@ entry. Two calls go past two of them, and nothing else does:
     changes. A rename is used, not a copy into a folder of its own beside
     `log/`: the file system renames within one folder only, and a file
     given up is often one the device cannot read, which a rename keeps
-    whole without reading it;
+    whole without reading it. The plan says why of each file: it holds only
+    entries up to the start's (only an older checkpoint needs them);
+    nothing after the start could be kept, and why (the segment that would
+    hold the start's successor is missing, or does not continue from the
+    start's entry, or the walk ended cleanly before the start and the
+    segment after is missing); it follows a segment that is missing or
+    whose header does not check; it holds entries after `kept`; its own
+    header does not check; the run does not list it;
   - **refused**, with nothing in the log changed: when the walk cannot say
     where the entry after the start begins (`LogError::FramingBroken`): it
     stops before any entry after the start, at a batch's mark or header,
-    at bytes that do not frame, or past a start whose own end its hash
-    does not place (a damaged length would place its successor wrong),
-    unless it reached the clean end of its last segment, nothing is
-    written after that in the segment, and the listed segment after it is
-    missing; when a listed segment whose header does not check could hold
+    at bytes that do not frame in the start's own batch, or past a start
+    whose own end its hash does not place (a damaged length would place
+    its successor wrong), unless it reached the clean end of its last
+    segment, every byte after that in the segment, to its header's size, is
+    zero, and the listed segment after it is missing. A segment is made of
+    zeros (3.2), so a byte that is not zero there is something written (a
+    batch whose mark was damaged still has its header's rest and its
+    entries): this refuses too a segment that holds bytes after its end
+    from before an earlier cut, when the segment after it is missing. Also
+    refused when a listed segment whose header does not check could hold
     that entry; when nothing would change; on a segment of a newer format;
     on a read the device fails of anything the decision depends on (an
     error that is not the device's, such as a stopped process, is the
@@ -2382,20 +2407,24 @@ entry. Two calls go past two of them, and nothing else does:
 
   Then one `state` update, written to both slots, lists the kept segments,
   lowers the marker to `kept`, and raises the cut count when anything after
-  `kept` is given up; the log is opened, and what that open keeps, where it
-  ends and that it removed nothing are checked against the plan. The
-  report (`DamageAccepted`) carries the plan and says it all: `kept`,
-  the marker before, the cut count, the run before and after, every
-  segment given up with the entries it held as far as the headers say
-  (its first from its own header, its last from the next one's; unknown
-  where a header is missing or not valid; those numbered before the kept
-  run held what a checkpoint older than the start loses), the kept segment
-  whose tail is given up (and the places of it that could not be read),
-  the segments lengthened, and the names given.
+  `kept` is given up; the log is opened as any open opens it, except that
+  it writes `state` and removes files only when its walk ends the log where
+  the plan says, with the run it says, and no segment file would be
+  removed: otherwise it fails having done none of that
+  (`LogError::NotAsPlanned`, naming what it would have removed; the
+  decision stands, and a new plan sets those files aside). The report
+  (`DamageAccepted`) carries the plan and says it all: `kept`, the marker
+  before, the cut count, the run before and after, every segment file
+  given up with the entries it held as far as the headers say (its first
+  from its own header, its last from the next one's; unknown where a
+  header is missing or not valid, and for a file the run did not list)
+  and where it went, the kept segment whose tail is given up (and the
+  places of it that could not be read), the segments lengthened, and the
+  names given.
 
   | A crash | leaves |
   |---|---|
-  | after some renames, before `state`'s update | `state` listing segments whose files were renamed: the open reports them missing, and accepting again finds them so and gives them up (under the earlier names) |
+  | after some renames, before `state`'s update | `state` listing segments whose files were renamed: the open reports them missing, and accepting again finds them so and gives them up; their bytes are under the earlier names, which the new plan does not show, nor the entries they held |
   | while copying the tail, before `state`'s update | a partial copy under its new name, the log otherwise as the renames left it |
   | after lengthening a kept file, before `state`'s update | that file at its header's size; nothing else changed |
   | after `state`'s first slot is flushed | the decision, which stands |
@@ -2530,3 +2559,15 @@ published.
 - The threaded front of the engine (an applying thread, group commit
   across callers, background checkpoints, the limits of server-storage.md
   6.11) is not built: the caller drives every step.
+- Accepting a loss (6.2) gives up, set aside and shown in the plan, entries
+  it could check in two shapes: a listed segment that is missing (an empty
+  segment that giving up an unreadable end made, say) before one whose
+  header continues from the last entry kept; and a listed segment whose
+  header does not check, one segment or more after the one that holds the
+  start's successor, with what follows it, although its entries chain. The
+  plan does not look across either.
+- An acceptance that fails or crashes after renaming some files and before
+  `state`'s update leaves their bytes under the given-up names, but its
+  error does not list them, and a new plan, which does not look at
+  given-up names, shows those segments missing: neither where they went
+  nor the entries they held.

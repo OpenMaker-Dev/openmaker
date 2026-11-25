@@ -2771,6 +2771,21 @@ impl Shaped {
     /// (format section 3.4): found as the entry's index, little-endian,
     /// last before its payload.
     fn damage_head(&self, tag: u8) {
+        let (at, place) = self.head(tag);
+        self.sim.damage(&self.segments[at], place, 8).unwrap();
+    }
+
+    /// Damage the first index named in the header of the batch that entry
+    /// `tag` begins (bytes 16 to 24 of the header, 136 bytes before it).
+    fn damage_batch_header(&self, tag: u8) {
+        let (at, place) = self.head(tag);
+        self.sim
+            .damage(&self.segments[at], place - 136 + 16, 8)
+            .unwrap();
+    }
+
+    /// Where entry `tag` begins: its segment and offset.
+    fn head(&self, tag: u8) -> (usize, u64) {
         let (index, at, offset) = self.entries[&tag];
         let bytes = self.bytes(&self.segments[at]).unwrap();
         let from = offset.saturating_sub(256) as usize;
@@ -2778,8 +2793,7 @@ impl Shaped {
             .windows(8)
             .rposition(|w| w == index.to_le_bytes())
             .expect("the entry's index before its payload");
-        let place = (from + head) as u64;
-        self.sim.damage(&self.segments[at], place, 8).unwrap();
+        (at, (from + head) as u64)
     }
 
     /// Where segment `at`'s batches end: after its last batch, by the
@@ -2855,8 +2869,9 @@ enum Want {
 /// several holes; the last segment missing; an entry that does not verify
 /// before the checkpoint's entry, at it and after it; a file short only in
 /// its padding, and one short into an entry; a segment of a newer format; a
-/// read the device fails while deciding; the framing broken before the
-/// checkpoint's entry. Whatever is kept opens; whatever is given up is
+/// read the device fails while deciding; an entry's fields broken in a
+/// batch before the checkpoint's (crossed by its header); the framing broken
+/// before the checkpoint's entry (a batch header). Whatever is kept opens; whatever is given up is
 /// copied first, byte for byte; a refusal changes nothing.
 #[test]
 fn accepting_the_loss_over_every_shape_of_damage() {
@@ -2980,8 +2995,15 @@ fn accepting_the_loss_over_every_shape_of_damage() {
             |_| Want::Refused(|e| matches!(e, OpenError::Log(LogError::Unreadable { .. }))),
         ),
         (
-            "the framing broken before the checkpoint's entry",
+            "an entry's fields broken in a batch before the checkpoint's",
             |s| s.damage_head(s.tags_in(1)[0]),
+            |s| Want::Opens {
+                stops: s.index(s.tags_in(1)[0]),
+            },
+        ),
+        (
+            "the framing broken before the checkpoint's entry",
+            |s| s.damage_batch_header(s.tags_in(1)[0]),
             |_| Want::Refused(|e| matches!(e, OpenError::Log(LogError::FramingBroken { .. }))),
         ),
     ];

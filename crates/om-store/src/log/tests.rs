@@ -4038,6 +4038,24 @@ impl Laid {
         panic!("entry {index} laid out")
     }
 
+    /// The first entry of the batch that holds entry `index`.
+    fn batch_of(&self, index: u64) -> u64 {
+        self.owners
+            .iter()
+            .flatten()
+            .filter_map(|(_, _, o)| match o {
+                Owner::BatchHeader(first) if *first <= index => Some(*first),
+                _ => None,
+            })
+            .max()
+            .expect("every entry is in a batch")
+    }
+
+    /// Where the last entry of segment `seg` ends.
+    fn end_of_entries(&self, seg: usize) -> usize {
+        self.owners[seg].last().map_or(0, |(_, end, _)| *end)
+    }
+
     /// What bytes `from..to` of segment `seg` belong to.
     fn touched(&self, seg: usize, from: usize, to: usize) -> Vec<Owner> {
         self.owners[seg]
@@ -4049,6 +4067,11 @@ impl Laid {
 
     /// A fresh disk holding the log, segment `seg` changed by `harm`.
     fn disk(&self, seg: usize, harm: impl Fn(&mut Vec<u8>)) -> Sim {
+        self.disk_without(seg, harm, None)
+    }
+
+    /// The same, with segment `missing`'s file left out.
+    fn disk_without(&self, seg: usize, harm: impl Fn(&mut Vec<u8>), missing: Option<usize>) -> Sim {
         let sim = Sim::new(81);
         let fs = sim.fs();
         fs.create_root().unwrap();
@@ -4060,6 +4083,9 @@ impl Laid {
         };
         write(crate::state::FILE, &self.state);
         for (at, (path, bytes)) in self.segments.iter().enumerate() {
+            if Some(at) == missing {
+                continue;
+            }
             let mut bytes = bytes.clone();
             if at == seg {
                 harm(&mut bytes);
@@ -4085,18 +4111,34 @@ fn read_back(log: &Log, from: u64) -> Vec<(u64, Vec<u8>)> {
 }
 
 /// One case of the sweep: segment `seg` of `laid` damaged over `from..to`
-/// by `harm`, the log opened from entry `start`. What it checks is the
-/// sweep's doc; a failure says the case.
+/// by `harm`, segment `missing`'s file lost, the log opened from entry
+/// `start`. What it checks is the sweep's doc; a failure says the case.
+/// The outcome says, for a refusal, what the damage reaches first.
 fn damaged_case(
     laid: &Laid,
     start: u64,
+    missing: Option<usize>,
     seg: usize,
     from: usize,
     to: usize,
     harm: impl Fn(&mut Vec<u8>),
 ) -> &'static str {
-    let case = format!("start {start}, segment {seg}, bytes {from}..{to}");
+    let case = format!("start {start}, missing {missing:?}, segment {seg}, bytes {from}..{to}");
     let last = laid.entries.last().unwrap().0;
+    // The last entry an acceptance can keep: with a segment lost, the last
+    // before it (none after the start when the start's successor was in
+    // it).
+    let reach = match missing {
+        None => last.index,
+        Some(lost) => laid
+            .entries
+            .iter()
+            .map(|(p, _)| p.index)
+            .filter(|&i| laid.place_of(i).0 < lost)
+            .max()
+            .unwrap()
+            .max(start),
+    };
     let start_at = if start == 0 {
         Position::START
     } else {
@@ -4121,7 +4163,10 @@ fn damaged_case(
         .map(|o| o.index())
         .filter(|&i| i > start)
         .min();
-    let sim = laid.disk(seg, harm);
+    // Bytes after the last entry of the segment before a lost one: a
+    // refusal is allowed there, for what is not zero (format section 6.2).
+    let after_end = missing.is_some_and(|lost| seg + 1 == lost && from >= laid.end_of_entries(seg));
+    let sim = laid.disk_without(seg, harm, missing);
     let fs: Arc<dyn Fs> = Arc::new(sim.fs());
     let damaged: Vec<(String, Vec<u8>)> = sim
         .image()
@@ -4132,6 +4177,7 @@ fn damaged_case(
     let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
     match Log::open(fs.clone(), state, config, start_at) {
         Ok((log, opened)) => {
+            assert!(missing.is_none(), "{case}: opened with a segment lost");
             // It opens with everything, and reports damage it walked past.
             assert!(
                 first_after.is_none(),
@@ -4177,9 +4223,15 @@ fn damaged_case(
             match planned {
                 Err(refused) => {
                     // A refusal is allowed for damage that begins before the
-                    // entry after the start; it changes nothing.
+                    // entry after the start, or that writes bytes after the
+                    // end of the segment before a lost one; it says where
+                    // the framing broke and changes nothing.
                     assert!(
-                        begun_before,
+                        matches!(refused, LogError::FramingBroken { .. }),
+                        "{case}: refused, not for framing: {refused}"
+                    );
+                    assert!(
+                        begun_before || after_end,
                         "{case}: refused ({refused}) damage after the start"
                     );
                     let now: Vec<(String, Vec<u8>)> = sim
@@ -4189,7 +4241,23 @@ fn damaged_case(
                         .map(|(p, b)| (p, b.unwrap()))
                         .collect();
                     assert!(now == damaged, "{case}: the plan changed the log");
-                    "refused"
+                    // What the damage reaches that decides: a header before
+                    // any entry, then the entries from the start back.
+                    let kind = |o: &Owner| match o {
+                        Owner::SegmentHeader(_) => (0, "refused: a segment header"),
+                        Owner::BatchHeader(_) => (1, "refused: a batch header"),
+                        Owner::Entry(i) if *i == start => (2, "refused: the start's entry"),
+                        Owner::Entry(i) if *i > start => (3, "refused: an entry after the start"),
+                        Owner::Entry(i) if laid.batch_of(*i) == laid.batch_of(start) => {
+                            (4, "refused: an entry before the start in its batch")
+                        }
+                        Owner::Entry(_) => (5, "refused: an entry of an earlier batch"),
+                    };
+                    touched
+                        .iter()
+                        .map(kind)
+                        .min()
+                        .map_or("refused: bytes after the last entry", |(_, k)| k)
                 }
                 Ok(plan) => {
                     let (log, opened, accepted) =
@@ -4205,9 +4273,9 @@ fn damaged_case(
                     // the start given up. Reaching it or past it: kept every
                     // entry before the first the damage reaches.
                     let kept = if before {
-                        last.index
+                        reach
                     } else {
-                        first_after.map_or(last.index, |t| t - 1)
+                        first_after.map_or(reach, |t| (t - 1).min(reach))
                     };
                     assert_eq!(accepted.kept.index, kept, "{case}: kept");
                     assert_eq!(accepted.marker, last.index, "{case}");
@@ -4244,28 +4312,57 @@ fn damaged_case(
 /// Accepting a loss never gives up an entry it could have checked, over
 /// every byte of a small log: each byte of every listed segment changed in
 /// turn, and then 16 bytes zeroed from each, with the start at a batch's
-/// first entry, inside a batch, and at a batch's (and its segment's) last.
+/// first entry, inside a batch, and at a batch's (and its segment's) last;
+/// once with every segment there, and once with the second segment's file
+/// lost (the segment after the start's, and for the last start the one
+/// that held its successor).
 /// Damage wholly before the entry after the start: the open opens with
-/// everything (and reports what it walked past), or it refuses and the
-/// acceptance refuses too or keeps everything. Damage reaching it or past
-/// it: the acceptance keeps every entry before the first it reaches, and
-/// says so. A refusal changes nothing; an acceptance removes no byte; the
-/// open after it agrees and reads back every entry kept. `stride` thins
-/// the bytes for the default run.
-fn sweep_damage(stride: usize) -> BTreeMap<&'static str, u64> {
+/// everything (and reports what it walked past), or the plan refuses
+/// (`FramingBroken`), or the acceptance keeps everything it can reach (with
+/// a segment lost, through the last entry before it). Damage reaching it or
+/// past it: the acceptance keeps every entry before the first it reaches.
+/// With a segment lost, bytes that are not zero after the last entry of
+/// the segment before it are refused too. A refusal changes nothing; an
+/// acceptance removes no byte; the open after it agrees and reads back
+/// every entry kept. No refusal is of damage to an entry of a batch before
+/// the start's (it is crossed by its header). The outcomes count each kind
+/// of refusal by what the damage reaches first; those with the segment
+/// lost begin "lost: ". `stride` thins the bytes for the default run.
+fn sweep_damage(stride: usize) -> BTreeMap<String, u64> {
     let laid = Laid::new();
-    let mut outcomes = BTreeMap::new();
-    for start in [4, 5, 6] {
-        for (seg, (_, bytes)) in laid.segments.iter().enumerate() {
-            for at in (0..bytes.len()).step_by(stride) {
-                let outcome = damaged_case(&laid, start, seg, at, at + 1, |b| b[at] ^= 0x5a);
-                *outcomes.entry(outcome).or_insert(0) += 1;
-                let end = (at + 16).min(bytes.len());
-                let outcome = damaged_case(&laid, start, seg, at, end, |b| b[at..end].fill(0));
-                *outcomes.entry(outcome).or_insert(0) += 1;
+    let mut outcomes: BTreeMap<String, u64> = BTreeMap::new();
+    for missing in [None, Some(1)] {
+        for start in [4, 5, 6] {
+            for (seg, (_, bytes)) in laid.segments.iter().enumerate() {
+                if Some(seg) == missing {
+                    continue;
+                }
+                for at in (0..bytes.len()).step_by(stride) {
+                    let mut count = |outcome: &'static str| {
+                        let lost = if missing.is_some() { "lost: " } else { "" };
+                        if outcome.starts_with("refused") {
+                            *outcomes.entry(format!("{lost}refused")).or_insert(0) += 1;
+                        }
+                        *outcomes.entry(format!("{lost}{outcome}")).or_insert(0) += 1;
+                    };
+                    count(damaged_case(&laid, start, missing, seg, at, at + 1, |b| {
+                        b[at] ^= 0x5a
+                    }));
+                    let end = (at + 16).min(bytes.len());
+                    count(damaged_case(&laid, start, missing, seg, at, end, |b| {
+                        b[at..end].fill(0)
+                    }));
+                }
             }
         }
     }
+    for lost in ["", "lost: "] {
+        assert!(
+            !outcomes.contains_key(&format!("{lost}refused: an entry of an earlier batch")),
+            "{outcomes:?}"
+        );
+    }
+    assert!(!outcomes.contains_key("lost: opened"), "{outcomes:?}");
     outcomes
 }
 
@@ -4273,7 +4370,13 @@ fn sweep_damage(stride: usize) -> BTreeMap<&'static str, u64> {
 fn accepting_a_loss_gives_up_no_entry_it_could_check_whatever_byte_is_damaged() {
     let outcomes = sweep_damage(5);
     eprintln!("{outcomes:?}");
-    for kind in ["opened", "refused", "accepted"] {
+    for kind in [
+        "opened",
+        "refused",
+        "accepted",
+        "lost: refused",
+        "lost: accepted",
+    ] {
         assert!(
             outcomes.get(kind).copied().unwrap_or(0) > 0,
             "no {kind}: {outcomes:?}"
@@ -4510,4 +4613,181 @@ fn the_plan_sets_aside_what_the_open_after_it_would_drop() {
         .and_then(|(_, b)| b)
         .unwrap();
     assert!(kept == bytes, "the set-aside segment kept whole");
+}
+
+/// A batch whose mark is damaged, in the last segment the walk has, before
+/// a listed segment that is lost: bytes are written after the place where
+/// the walk stopped, so that place is not the end of what was written, and
+/// the plan refuses rather than give up the batch's entries after the
+/// start. With the mark whole, everything before the lost segment is kept.
+#[test]
+fn a_damaged_mark_before_a_lost_segment_is_not_taken_for_the_end() {
+    let laid = Laid::new();
+    let at = laid.entries[3].0;
+    let mark = laid.owners[0]
+        .iter()
+        .find(|(_, _, o)| *o == Owner::BatchHeader(4))
+        .unwrap()
+        .0;
+    let plan = |harm: &dyn Fn(&mut Vec<u8>)| {
+        let sim = laid.disk_without(0, harm, Some(1));
+        let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+        let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+        Log::plan_damage(&*fs, &state, laid.config, at)
+    };
+    let refused = plan(&|b| b[mark] ^= 0x5a);
+    assert!(
+        matches!(refused, Err(LogError::FramingBroken { offset, .. }) if offset == mark as u64),
+        "{refused:?}"
+    );
+    let kept = plan(&|_| {}).unwrap().kept;
+    assert_eq!(kept, laid.entries[5].0);
+}
+
+/// The plan reads a kept file that is short as the open after the
+/// acceptance reads it, lengthened with zeros: where the zeros complete a
+/// batch (the file is short only by the trailing zero byte of its last
+/// entry's hash), the plan says the open keeps that batch, and the
+/// acceptance does just that.
+#[test]
+fn the_plan_reads_a_short_kept_file_as_the_open_will() {
+    let laid = Laid::new();
+    let last = laid.entries.last().unwrap().0;
+    let at = laid.entries[5].0;
+    let sim = laid.disk(0, |_| {});
+    let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+    let cut_count = State::open(&*fs, fs.lock().unwrap())
+        .unwrap()
+        .values()
+        .cut_count;
+    sim.restart();
+    // An entry after the marker whose hash ends in a zero byte, in a batch
+    // the marker does not cover, after the last segment's entries.
+    let (payload, entry, hash) = (0u32..)
+        .map(|n| {
+            let payload = n.to_le_bytes().repeat(8);
+            let (entry, hash) = format::encode_entry(&last.hash, last.index + 1, 1, 1, 0, &payload);
+            (payload, entry, hash)
+        })
+        .find(|(_, _, hash)| hash[31] == 0)
+        .unwrap();
+    let batch = format::BatchHeader {
+        count: 1,
+        first: last.index + 1,
+        length: entry.len() as u64,
+        cut_count,
+        prev: last.hash,
+        last: hash,
+    };
+    let path = &laid.segments[2].0;
+    let mut bytes = laid.segments[2].1.clone();
+    let end = laid.end_of_entries(2);
+    let batch = [batch.encode().as_slice(), &entry].concat();
+    bytes[end..end + batch.len()].copy_from_slice(&batch);
+    bytes.truncate(end + batch.len() - 1);
+    fs.remove(path).unwrap();
+    let file = fs.create(path, FileOptions::PLAIN).unwrap();
+    file.write_at(0, &bytes).unwrap();
+    file.flush().unwrap();
+    drop(file);
+    fs.flush_folder(FOLDER).unwrap();
+    let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+    let plan = Log::plan_damage(&*fs, &state, laid.config, at).unwrap();
+    assert_eq!(plan.kept, last);
+    assert_eq!(plan.opens_at.index, last.index + 1, "{plan:?}");
+    assert!(
+        matches!(plan.files[2].fate, Fate::Lengthened { .. }),
+        "{plan:?}"
+    );
+    let (log, opened, _) = Log::accept_damage(fs.clone(), state, laid.config, at, &plan)
+        .unwrap_or_else(|e| panic!("{}", e.failed.error));
+    assert_eq!(opened.durable, plan.opens_at);
+    assert_eq!(read_back(&log, last.index + 1), [(last.index + 1, payload)]);
+}
+
+/// The open an acceptance runs removes nothing and writes `state` only as
+/// its plan says: a segment file it would remove fails it, named, with the
+/// file still there and `state` as it was. The ordinary open removes it.
+#[test]
+fn the_open_after_an_acceptance_removes_nothing() {
+    let laid = Laid::new();
+    let at = laid.entries[5].0;
+    let last = laid.entries.last().unwrap().0;
+    let sim = laid.disk(0, |_| {});
+    let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+    let stray = segment_path(40);
+    let file = fs.create(&stray, FileOptions::PLAIN).unwrap();
+    file.write_at(0, b"stray").unwrap();
+    file.flush().unwrap();
+    drop(file);
+    fs.flush_folder(FOLDER).unwrap();
+    let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+    let before = *state.values();
+    let plan = DamagePlan {
+        start: at,
+        kept: last,
+        marker: last.index,
+        cut_count: None,
+        listed_before: before.segments,
+        listed: before.segments,
+        opens_at: last,
+        files: Vec::new(),
+        tail_copied: None,
+        before_start: None,
+    };
+    let Err(failed) = Log::open_as(fs.clone(), state, laid.config, at, Some(&plan)) else {
+        panic!("the open after an acceptance would remove a file and went on")
+    };
+    assert!(
+        matches!(&failed.error, LogError::NotAsPlanned { removing, .. } if *removing == [40]),
+        "{}",
+        failed.error
+    );
+    assert_eq!(*failed.state.values(), before);
+    let there = |sim: &Sim| sim.image().iter().any(|(p, b)| *p == stray && b.is_some());
+    assert!(there(&sim));
+    let (_, opened) = Log::open(fs.clone(), failed.state, laid.config, at).unwrap();
+    assert_eq!(opened.removed, [40]);
+    assert!(!there(&sim));
+}
+
+/// When nothing after the checkpoint's entry can be kept, the plan says of
+/// each file why it is given up: a segment that holds entries after the
+/// checkpoint's is not one "only an older checkpoint needs".
+#[test]
+fn a_plan_that_keeps_nothing_says_why_of_each_file() {
+    let laid = Laid::new();
+    let older = |reason: &str| reason.contains("only an older checkpoint");
+    // The start in the first segment, which is lost: nothing after it can
+    // be checked, and the others hold entries after it.
+    let sim = laid.disk_without(0, |_| {}, Some(0));
+    let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+    let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+    let plan = Log::plan_damage(&*fs, &state, laid.config, laid.entries[3].0).unwrap();
+    assert_eq!(plan.listed.count, 0, "{plan:?}");
+    assert_eq!(plan.files[0].fate, Fate::Missing);
+    for file in &plan.files[1..] {
+        let Fate::SetAside { reason } = file.fate else {
+            panic!("{plan:?}")
+        };
+        assert!(!older(reason) && reason.contains("missing"), "{reason}");
+    }
+    // The start in the second segment, which is lost: the first holds only
+    // entries before it; the third, entries after it.
+    let sim = laid.disk_without(0, |_| {}, Some(1));
+    let fs: Arc<dyn Fs> = Arc::new(sim.fs());
+    let state = State::open(&*fs, fs.lock().unwrap()).unwrap();
+    let plan = Log::plan_damage(&*fs, &state, laid.config, laid.entries[7].0).unwrap();
+    assert_eq!(plan.listed.count, 0, "{plan:?}");
+    let reasons: Vec<Option<&str>> = plan
+        .files
+        .iter()
+        .map(|f| match f.fate {
+            Fate::SetAside { reason } => Some(reason),
+            _ => None,
+        })
+        .collect();
+    assert!(reasons[0].is_some_and(older), "{plan:?}");
+    assert_eq!(plan.files[1].fate, Fate::Missing);
+    assert!(reasons[2].is_some_and(|r| !older(r)), "{plan:?}");
 }

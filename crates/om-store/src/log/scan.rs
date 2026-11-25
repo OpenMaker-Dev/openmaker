@@ -202,6 +202,8 @@ enum Probe {
 /// The batch being read.
 struct OpenBatch {
     offset: u64,
+    /// The index its header names for its first entry.
+    first: u64,
     count: u32,
     length: u64,
     /// The hash its header names for its last entry; `None` for a batch of
@@ -247,6 +249,11 @@ pub(crate) struct Scanner<'a> {
     /// Before the anchor, the hash of the last entry taken while the chain
     /// from the segment's header still holds; `None` once it stopped.
     chain: Option<[u8; 32]>,
+    /// The term of the entry before the next one is not known: the walk
+    /// crossed a batch by its header ([`Scanner::cross`]), which names its
+    /// last entry's hash but not its term. Known again at the next entry or
+    /// segment.
+    term_unknown: bool,
     chain_fault: Option<ChainStop>,
     /// A buffer for the next place.
     spare: Vec<u8>,
@@ -274,6 +281,7 @@ impl<'a> Scanner<'a> {
             between: false,
             placed: true,
             chain: None,
+            term_unknown: false,
             chain_fault: None,
             spare: Vec::new(),
         }
@@ -590,8 +598,42 @@ impl<'a> Scanner<'a> {
         self.segs.get(self.seg + 1).is_some_and(|s| {
             s.header.first == self.next
                 && s.header.prev_hash == self.prev
-                && s.header.prev_term == self.prev_term
+                && (self.term_unknown || s.header.prev_term == self.prev_term)
         })
+    }
+
+    /// Before the anchor, a batch that ends before the anchor's entry, whose
+    /// header was read whole: where it ends, its last entry's hash and the
+    /// index after it, as its header says. The header's own hash checked
+    /// them, so the walk can cross the batch to its end whatever its
+    /// entries' fields say (format section 3.5): none of its entries is
+    /// needed to open on the anchor. Inside the batch that holds the anchor
+    /// the entries are framed one by one, since the anchor's own end must be
+    /// placed.
+    fn crossing(&self) -> Option<(u64, [u8; 32], u64)> {
+        let (at, _, _) = self.anchor?;
+        let batch = self.batch.as_ref()?;
+        let last = batch.last?;
+        let next = batch.first.checked_add(u64::from(batch.count))?;
+        let end = batch
+            .offset
+            .checked_add(BATCH_HEADER)?
+            .checked_add(batch.length)?;
+        (batch.count > 0 && next <= at).then_some((end, last, next))
+    }
+
+    /// Cross the batch being read to its end by its header
+    /// ([`Scanner::crossing`]), its entries having stopped framing or
+    /// checking at `offset`: the chain before the anchor stops there, and is
+    /// reported as any break of it is ([`Scanner::chain_fault`]).
+    fn cross(&mut self, (end, last, next): (u64, [u8; 32], u64), offset: u64) -> Event {
+        self.chain_stops(offset, self.next, false);
+        self.offset = end;
+        self.prev = last;
+        self.next = next;
+        self.term_unknown = true;
+        self.batch = None;
+        Event::BatchEnd { whole: false }
     }
 
     /// The current batch ends at `offset`, and the walk with it.
@@ -629,6 +671,10 @@ impl<'a> Scanner<'a> {
                         == batch_offset
                             .checked_add(BATCH_HEADER)
                             .and_then(|o| o.checked_add(length));
+                if let Some(crossing) = self.crossing().filter(|_| !whole) {
+                    let offset = self.offset;
+                    return Ok(self.cross(crossing, offset));
+                }
                 self.batch = None;
                 return Ok(Event::BatchEnd { whole });
             }
@@ -650,7 +696,10 @@ impl<'a> Scanner<'a> {
                 let probe = self.probe(&mut place)?;
                 self.recycle(place);
                 return Ok(match probe {
-                    Probe::Nothing | Probe::Marked => self.end_batch_here(offset),
+                    Probe::Nothing | Probe::Marked => match self.crossing() {
+                        Some(crossing) => self.cross(crossing, offset),
+                        None => self.end_batch_here(offset),
+                    },
                     found => {
                         self.batch = None;
                         self.pending = Some((found, offset));
@@ -680,6 +729,7 @@ impl<'a> Scanner<'a> {
                     self.next = found.index + 1;
                     self.prev = found.hash;
                     self.prev_term = found.term;
+                    self.term_unknown = false;
                     if self.anchor.is_some_and(|(at, _, _)| found.index >= at) {
                         self.anchor = None;
                     }
@@ -688,7 +738,10 @@ impl<'a> Scanner<'a> {
                     }
                     Event::Entry(found)
                 }
-                None => self.end_batch_here(offset),
+                None => match self.crossing() {
+                    Some(crossing) => self.cross(crossing, offset),
+                    None => self.end_batch_here(offset),
+                },
             });
         }
         if let Some((seg, offset)) = self.ending.take() {
@@ -701,6 +754,8 @@ impl<'a> Scanner<'a> {
             None if self.next_segment_continues() => {
                 self.seg += 1;
                 self.offset = SEGMENT_HEADER;
+                self.prev_term = self.segs[self.seg].header.prev_term;
+                self.term_unknown = false;
                 return Ok(Event::Segment { seg: self.seg });
             }
             None => {
@@ -722,6 +777,7 @@ impl<'a> Scanner<'a> {
                 let stale = self.judge.is_some_and(|j| header.cut_count != j.cut_count);
                 self.batch = Some(OpenBatch {
                     offset,
+                    first: header.first,
                     count: header.count,
                     length: header.length,
                     last: Some(header.last),
@@ -739,6 +795,7 @@ impl<'a> Scanner<'a> {
             (Probe::Stale(start), offset) => {
                 self.batch = Some(OpenBatch {
                     offset,
+                    first: start.first,
                     count: start.count,
                     length: start.length,
                     last: None,
