@@ -277,10 +277,10 @@ without a valid copy does not know what it confirmed, and does not start
 
 The **state** of a store at an entry is everything it answers from:
 
-- for each file: its tree, its page 0, its name and id, whether it is
-  read-only and the image kept for it (section 6.10), the list of its
-  container files stored outside the `.fmp12` (section 8), and its design
-  history (section 9);
+- for each file: its tree, its page 0, its name and id (the index of the
+  entry that added it), whether it is read-only and the image kept for
+  it (section 6.10), the list of its container files stored outside the
+  `.fmp12` (section 8), and its design history (section 9);
 - the lock table and the session table, with each server's highest start
   count (section 7.3);
 - the number of references to each blob (section 8);
@@ -289,7 +289,8 @@ The **state** of a store at an entry is everything it answers from:
 - the index, term and hash of the last entry applied.
 
 All of it is kept in trees in the page file, one per file and one for the
-rest. A checkpoint names every root in one superblock (section 6.7), so a
+rest ([server-storage-format.md](server-storage-format.md) section 5.3).
+A checkpoint names every root in one superblock (section 6.7), so a
 checkpoint is the whole state at one entry, and nothing the state needs
 lives only in memory or only in the log. Each server's map of its own free
 pages (section 6.7) is not part of the state: servers place pages
@@ -309,13 +310,13 @@ above it:
 
 Every change is first an **entry** in the log. An entry has an index (its
 position, counted from 1), a term (section 7.1), a kind, the file it
-belongs to, a payload, and a SHA-256 hash over the previous entry's hash
-and its own content. The chain of hashes shows a missing, reordered or
-altered entry.
+belongs to (by id), a payload, and a SHA-256 hash over the previous
+entry's hash and its own content. The chain of hashes shows a missing,
+reordered or altered entry.
 
 | Kind | Payload |
 |---|---|
-| change | one write operation's effects on one file: tree edits (put a leaf, put a list, delete a subtree), lock table edits, notices, the operation's id and its reply. It may be part of a group (section 6.9) |
+| change | one write operation's effects on one file: tree edits (put a leaf, a list or a list with a value in place of what was there; delete a subtree), lock table edits (set, remove, release a session's locks on the file), notices, the operation's session and sequence number, and its reply. It may be part of a group (section 6.9) |
 | session | a session opened or closed, or a server started (section 7.3) |
 | file | a file added, removed, renamed or cloned |
 | members | the cluster's servers, or the tree format version (section 7.6) |
@@ -784,10 +785,11 @@ differ. They only need to apply edits the same way (section 6.4).
 
 - **Sessions.** A session is named by its server, that server's start count
   (section 6.1) and its connection; within a start a server numbers its
-  connections upward. A `session` entry opens it and one closes it. A
-  server writes a `session` entry when it starts, which closes every
-  session of its earlier starts and records the start count as that
-  server's highest; one that names a lower count does nothing. The state
+  connections upward. A `session` entry opens it and one closes it; one
+  that closes a session not open does nothing. A server writes a
+  `session` entry when it starts, which closes every session of its
+  earlier starts and records the start count as that server's highest;
+  one that names no higher count does nothing. The state
   keeps, for each server, that count and the highest connection number
   opened in it. An entry that opens a session is applied only when it names
   that count and a higher connection number, so a delayed or repeated entry
@@ -802,8 +804,12 @@ differ. They only need to apply edits the same way (section 6.4).
   session.
 - **Locks.** A lock belongs to a lock user as today (connection, session
   id and transaction, write-path.md 4.1) within a session as above, and
-  lock counts are kept per lock. Locks change only by entries, so every
-  server holds the same lock table and a new leader starts with it. On a
+  lock counts are kept per lock; the store keeps each lock under its
+  session and file, with its key, user and value as bytes it does not
+  interpret, so that closing a session, or removing a file, releases
+  them in the same entry (server-storage-format.md 5.3). Locks change
+  only by entries, so every server holds the same lock table and a new
+  leader starts with it. On a
   cluster a lock is granted when its entry is committed. A single server
   grants a lock when its entry is appended, without waiting for it to be
   durable, and views do not depend on it: if the server stops, every
