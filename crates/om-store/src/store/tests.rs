@@ -3070,9 +3070,9 @@ fn a_restart_discards_a_group_on_a_disk_that_cannot_grow() {
 enum AtTheEnd {
     /// Each group discarded by an entry, then a restart.
     Discard,
-    /// The new file's publication, refused for the disk, then its discard
-    /// and a restart.
-    Publish,
+    /// A staged group's close and the new file's publication, each refused
+    /// for the disk, then every discard and a restart.
+    CloseOrPublish,
     /// A restart with every group still open: one `empty` entry.
     Restart,
 }
@@ -3083,11 +3083,17 @@ enum AtTheEnd {
 /// ordinary entry fits, on a disk that cannot grow, with the segments
 /// since the last checkpoint all still needed. The discards, or a
 /// restart's `empty` entry for all three groups and its start's entry,
-/// take the room the log kept; a publication, which is not one of them, is
-/// refused for the disk with nothing changed, and its group's discard runs.
+/// take the room the log kept. A staged close and a publication, which are
+/// not among them, are refused for the disk with nothing changed, and so
+/// is a caller's start of another server (review of #796, round 3); the
+/// discards run after them.
 #[test]
 fn ending_entries_find_room_at_a_full_segments_end() {
-    for end in [AtTheEnd::Discard, AtTheEnd::Publish, AtTheEnd::Restart] {
+    for end in [
+        AtTheEnd::Discard,
+        AtTheEnd::CloseOrPublish,
+        AtTheEnd::Restart,
+    ] {
         let what = format!("{end:?}");
         let sim = Sim::new(47);
         let (mut store, _) = made(&sim);
@@ -3150,6 +3156,25 @@ fn ending_entries_find_room_at_a_full_segments_end() {
                 Err(e) => panic!("{what}: a change beside: {e}"),
             }
         }
+        // Entries that are not the open's own and do not only give back
+        // leave the kept room: refused for the disk, nothing changed.
+        let refused = |store: &mut Store, file: u64, payload: &Payload, which: &str| {
+            let before = (store.next_index(), store.space().groups);
+            match store.append(file, payload) {
+                Err(WriteError::Log(LogError::NoSpace(_))) => {}
+                other => panic!("{what}: {which}: {other:?}"),
+            }
+            assert_eq!(
+                (store.next_index(), store.space().groups),
+                before,
+                "{what}: {which}"
+            );
+        };
+        let start = Payload::Session(SessionEvent::Started {
+            server: SERVERS[1],
+            count: 1,
+        });
+        refused(&mut store, 0, &start, "another server's start");
         match end {
             AtTheEnd::Discard => {
                 for id in &groups {
@@ -3160,24 +3185,29 @@ fn ending_entries_find_room_at_a_full_segments_end() {
                     store.flush().unwrap();
                 }
             }
-            AtTheEnd::Publish => {
+            AtTheEnd::CloseOrPublish => {
+                let close = Payload::Change(Change {
+                    group: Some(Group {
+                        id: groups[0],
+                        step: Step::Close,
+                    }),
+                    ..Change::default()
+                });
+                refused(&mut store, file, &close, "the staged close");
                 let publish = Payload::Group(GroupEvent::Publish {
                     id: made_file,
                     name: b"made".to_vec(),
                     flags: 0,
                     page0: Vec::new(),
                 });
-                let before = store.next_index();
-                match store.append(made_file, &publish) {
-                    Err(WriteError::Log(LogError::NoSpace(_))) => {}
-                    other => panic!("{what}: the publication: {other:?}"),
+                refused(&mut store, made_file, &publish, "the publication");
+                for id in &groups {
+                    let discard = Payload::Group(GroupEvent::Discard { id: *id });
+                    store
+                        .append(0, &discard)
+                        .unwrap_or_else(|e| panic!("{what}: the discard of {id}: {e}"));
+                    store.flush().unwrap();
                 }
-                assert_eq!(store.next_index(), before, "{what}");
-                let discard = Payload::Group(GroupEvent::Discard { id: made_file });
-                store
-                    .append(0, &discard)
-                    .unwrap_or_else(|e| panic!("{what}: the discard: {e}"));
-                store.flush().unwrap();
             }
             AtTheEnd::Restart => {}
         }

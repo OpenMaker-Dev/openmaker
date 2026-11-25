@@ -85,6 +85,9 @@ pub struct Config {
     /// The largest payload an append takes, at most [`MAX_PAYLOAD`]. An
     /// entry never spans segments, so an entry with the largest payload must
     /// fit in an empty segment; larger work is a group (section 6.9).
+    /// While the log keeps room at a segment's end ([`Log::keep`]), an entry
+    /// that fits an empty segment alone but not beside that room is refused
+    /// ([`LogError::BesideKeptRoom`]), even with space for a new segment.
     /// Entries written under a larger setting stay readable.
     pub max_payload: u32,
 }
@@ -593,6 +596,11 @@ pub enum LogError {
     BatchFull,
     /// The payload is larger than [`Config::max_payload`].
     TooLarge { len: usize, max: u32 },
+    /// The entry, `size` bytes with its overhead, does not fit in an empty
+    /// segment beside the `kept` bytes the log keeps at a segment's end
+    /// ([`Log::keep`]): it fits only once that room is kept no more (no
+    /// group open, for the store). Nothing was added.
+    BesideKeptRoom { size: u64, kept: u64 },
     /// An earlier failure stopped the log: open it again.
     Poisoned,
     /// The log ends, for this open, at a place the device failed to read
@@ -667,6 +675,11 @@ impl fmt::Display for LogError {
                     "an entry of {len} bytes is larger than the log takes ({max})"
                 )
             }
+            LogError::BesideKeptRoom { size, kept } => write!(
+                f,
+                "an entry of {size} bytes does not fit in a segment beside the {kept} bytes kept \
+                 for the entries that end the open groups"
+            ),
             LogError::Poisoned => f.write_str(
                 "an earlier write or flush of the log failed; the store must stop and be opened \
                  again",
@@ -2634,9 +2647,7 @@ impl Log {
         let next_segment = self.there > 0 || BATCH_HEADER + self.here + size + keep > room;
         if next_segment {
             if SEGMENT_HEADER + BATCH_HEADER + size + keep > self.config.segment_size {
-                return Err(LogError::Refused(
-                    "the entry does not fit in a segment beside the room kept for ending groups",
-                ));
+                return Err(LogError::BesideKeptRoom { size, kept: keep });
             }
             if SEGMENT_HEADER + BATCH_HEADER + self.there + size + keep > self.config.segment_size {
                 return Err(LogError::BatchFull);

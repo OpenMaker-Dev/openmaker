@@ -131,9 +131,13 @@ does not do):
   what loading the same items in key order in one entry writes, each
   page once. Its memory follows the shape of the edits, not their bytes:
   a million edits of paths with many empty segments decode to about
-  15 times their encoded size, and the worst shape found under the bounds
-  peaked at 1,086 MiB, about what the largest single change decodes to.
-  The 4 KiB puts at the bound peaked at 362 MiB.
+  15 times their encoded size. For the worst shape found under the
+  bounds, a million puts at paths of 26 segments (66 MB encoded), the
+  decoded edits peaked at 971 MiB and the apply at 1,086 MiB; for the
+  4 KiB puts at the bound, 134 and 362 MiB. These are measured peaks of
+  this example, not a bound on the close: the close also holds a part's
+  bytes while it decodes them, and its tree writer works over the file's
+  tree, not an empty one.
 - **A staged group's holds dominate its cost.** Each part holds
   `entry_bound` of its edits (59 pages for one 4 KiB put), about 55 times
   what its share of the close writes, and the page file grows to provide

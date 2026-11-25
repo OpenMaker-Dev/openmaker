@@ -26,7 +26,9 @@ use om_store::page::{
     EntryPages, Fault, Hash, MemEntry, MemStore, Numbering, Page, PageKind, PageNo, PageStore,
     Release, StoreError, TreeName, MAX_VALUE,
 };
-use om_store::pagefile::{Config as PageConfig, EntryId, PageFile, Purpose as PagePurpose};
+use om_store::pagefile::{
+    entry_bound, Config as PageConfig, EntryId, PageFile, Purpose as PagePurpose,
+};
 use om_store::sim::{Fates, Rates, Sim};
 use om_store::sys::{FolderLock, Fs};
 use om_store::tree::{self, check_edits, key, Edit, Node, Root, Tree, MAX_DEPTH};
@@ -2131,6 +2133,59 @@ fn new_file_group_entries_that_cannot_be_right_are_refused() {
     assert!(
         listed.iter().all(|id| f.model.files.contains_key(id)),
         "group lists of files removed: {listed:?}"
+    );
+}
+
+/// Review of #796, rounds 2 and 3: a staged group holds from its open the
+/// room for what its close may write in the store's tree, the session row
+/// of the operation it completes included, its sequence and a reply of the
+/// largest size. An edit-free group's recorded hold is all of that: it is
+/// at least `entry_bound` of those two writes at the store tree's height
+/// plus one.
+#[test]
+fn a_staged_groups_hold_counts_its_closes_session_row() {
+    let mut f = Fixture::new();
+    let file = f.file;
+    let id = f.model.applied.index + 1;
+    f.push(
+        file,
+        Payload::Change(Change {
+            group: Some(Group {
+                id,
+                step: Step::Open(vec![GroupPath {
+                    file,
+                    path: vec![b"S".to_vec()],
+                }]),
+            }),
+            ..Change::default()
+        }),
+    );
+    let row = StoreTree::of(&f.store).unwrap().group(id).unwrap().unwrap();
+    let root = f.store.root(&TreeId::Store.name()).unwrap();
+    let height = Tree::open(&f.store, root).unwrap().height();
+    // `[06, server, start connection, 01 | 02]` (format section 5.3).
+    let session: Vec<u8> = [
+        f.alice.start.to_be_bytes(),
+        f.alice.connection.to_be_bytes(),
+    ]
+    .concat();
+    let field = |n: u8| {
+        vec![
+            vec![0x06],
+            f.alice.server.to_vec(),
+            session.clone(),
+            vec![n],
+        ]
+    };
+    let writes = [
+        Edit::leaf(field(1), vec![0; 8]),
+        Edit::leaf(field(2), vec![0; MAX_REPLY]),
+    ];
+    let bound = entry_bound(&writes, height + 1);
+    assert!(
+        row.held >= bound,
+        "the hold, {} pages, below the session row's {bound}",
+        row.held
     );
 }
 

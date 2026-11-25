@@ -41,16 +41,20 @@ pub const MAX_OPEN_GROUPS: u64 = 256;
 
 /// The most bytes a staged group's parts may stage, as their edits encode
 /// (format section 5.6): the largest payload one entry may have. With
-/// [`MAX_GROUP_EDITS`] it bounds what a close holds in memory, the decoded
-/// edits, by what the largest change decodes to. A part past it is refused.
+/// [`MAX_GROUP_EDITS`] it bounds the edits a close decodes, its input, by
+/// the largest change's; the close also holds a part's bytes while it
+/// decodes them and the tree writer's working copy. A part past it is
+/// refused.
 pub const MAX_GROUP_STAGED: u64 = crate::entry::MAX_PAYLOAD as u64;
 
 /// The most edits a staged group's parts may stage: the most one change may
 /// carry ([`crate::entry::MAX_EDITS`]).
 pub const MAX_GROUP_EDITS: u64 = crate::entry::MAX_EDITS as u64;
 
-/// The most parts a staged group may have, its opening part included: each
-/// is at least one item of the staging tree, which the close reads whole.
+/// The most parts a staged group may have, its opening part included. Every
+/// part counts, an empty one too, which writes no item; a part with edits
+/// writes one item of the staging tree for each chunk of them, at least
+/// one, and the close reads every item.
 pub const MAX_GROUP_PARTS: u64 = 1 << 16;
 
 /// Which bound of a staged group a part would pass ([`Refusal::GroupTooLarge`]).

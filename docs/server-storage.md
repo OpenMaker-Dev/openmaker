@@ -2198,9 +2198,11 @@ use a group, and what is marked *not built* below, are not.
   all of it, and a reopen finds the group whole or not at all. A staged
   group has at most 65,536 parts and stages at most 1,048,576 edits and
   64 MiB of them as they encode: the most edits one change carries and
-  the largest payload, so that its close holds no more in memory than
-  the largest change decodes to (measured for the worst shape found,
-  1,086 MiB). A part past a bound is refused, typed, naming it (format
+  the largest payload, so that the edits its close decodes are no more
+  than the largest change's. The close's memory is measured, not
+  bounded: for the worst shape found, a million puts at paths of 26
+  segments, the decoded edits peaked at 971 MiB and the whole apply at
+  1,086 MiB. A part past a bound is refused, typed, naming it (format
   5.6).
 - **Written in place, then published.** A new file group's open makes
   the file's tree, empty, under the group's name, `group:<id>`, which no
@@ -2304,7 +2306,9 @@ use a group, and what is marked *not built* below, are not.
   kind of limit). The entry that ends a group (a close, a publication, a
   discard, an `empty` entry) takes what the group holds as its
   reservation, so a discard is funded by what it releases and runs on a
-  disk that cannot grow; what it writes past that may take the reserve.
+  disk that cannot grow, within that bound: past it, it extends as the
+  other ending entries do and can be refused as full; what it writes past
+  the hold may take the reserve.
   What it does not take, and the dropped tree's pages, go back to the
   free pages. The log keeps room at the end of its segment too, while
   groups are open, for a discard of each and the next start's `empty`

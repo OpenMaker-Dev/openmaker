@@ -767,14 +767,14 @@ fn kept_room(groups: u64) -> u64 {
 }
 
 /// Whether an entry may take the room the log keeps ([`kept_room`]): one
-/// that only gives back, a discard or an `empty` entry, and a start's own
-/// entry.
-fn takes_kept_room(payload: &Payload) -> bool {
-    matches!(
+/// that only gives back, a discard or an `empty` entry, from any caller;
+/// and the entries the store's own open appends (`own`), its `empty` entry
+/// and its start's. A caller's `session` entry of another server's start
+/// is an ordinary entry.
+fn takes_kept_room(payload: &Payload, own: bool) -> bool {
+    own || matches!(
         payload,
-        Payload::Empty
-            | Payload::Group(GroupEvent::Discard { .. })
-            | Payload::Session(SessionEvent::Started { .. })
+        Payload::Empty | Payload::Group(GroupEvent::Discard { .. })
     )
 }
 
@@ -1849,7 +1849,7 @@ impl Store {
                 _ => {}
             }
         }
-        self.append_as(file, payload, Purpose::Entry)
+        self.append_as(file, payload, Purpose::Entry, false)
     }
 
     /// This start's count, from `state`.
@@ -1870,7 +1870,7 @@ impl Store {
     ) -> Result<(Position, u64), WriteError> {
         let mut checkpointed = false;
         loop {
-            match self.append_as(0, payload, purpose) {
+            match self.append_as(0, payload, purpose, true) {
                 Ok(appended) => return Ok((appended.position, u64::from(checkpointed))),
                 Err(
                     WriteError::CheckpointNeeded(_)
@@ -1895,12 +1895,14 @@ impl Store {
     }
 
     /// [`Store::append`] without its rules on the payload, reserving for
-    /// `purpose`.
+    /// `purpose`; `own` for the entries the store's open appends, which
+    /// may take the room the log keeps ([`takes_kept_room`]).
     fn append_as(
         &mut self,
         file: u64,
         payload: &Payload,
         purpose: Purpose,
+        own: bool,
     ) -> Result<Appended, WriteError> {
         self.usable()?;
         let bytes = payload.encode().map_err(WriteError::Payload)?;
@@ -1908,7 +1910,7 @@ impl Store {
         let term = self.term;
         // The room the log keeps for ending the groups open after this
         // entry, which an entry that only gives back may take.
-        let kept = takes_kept_room(payload);
+        let kept = takes_kept_room(payload, own);
         self.log.keep(if kept {
             0
         } else {

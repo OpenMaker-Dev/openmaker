@@ -775,7 +775,13 @@ empty segment holds (`Config::max_payload`, 16 MiB by default; it must
 fit in a segment with its headers, and be at most the format's bound,
 3.4), and a batch never spans more than two segments: an append that would
 make it do so is refused (`LogError::BatchFull`) until the batch is
-flushed.
+flushed. While the log keeps room at a segment's end (3.7), an entry that
+fits an empty segment alone but not beside that room is refused
+(`LogError::BesideKeptRoom`, naming its size and the room kept), even
+with space on the disk for a new segment: with the store's default 64 MiB
+segments and 16 MiB payloads that cannot happen (the room is at most
+54,050 bytes), but a configuration whose largest payload nearly fills a
+segment meets it while groups are open.
 
 ### 3.4 An entry
 
@@ -1076,7 +1082,8 @@ writes nothing for the room: it is a rule on where entries go, so a
 segment can end short by up to that many bytes. The store keeps the room
 the entries that end its open groups need (6.3); with no group open it
 keeps none. An entry that cannot fit in an empty segment beside the room
-kept is refused (`LogError::Refused`).
+kept is refused (`LogError::BesideKeptRoom`), so that a caller can tell it
+from an entry that cannot be right.
 
 ### 3.8 A batch flush
 
@@ -1978,8 +1985,12 @@ rebuilt for them when those entries are applied again (4.7).
   checkpoint judges as any reservation), extended like any; what it
   writes past that may take the reserve (`Purpose::Discard`). What it
   does not take goes back to the free pages when it is done, so a
-  discard is funded by the hold it ends and never waits for room the
-  disk does not have. An entry not applied leaves the holds as they
+  discard is funded by the hold it ends and needs no room the disk does
+  not have, within the hold's bound: an ending entry, a discard
+  included, that finds the store tree taller than at the group's open
+  plus one level takes what it needs past the hold from free pages and
+  the reserve, and can be refused as full on a disk with neither (above,
+  and #787's kind of limit). An entry not applied leaves the holds as they
   were. A page file keeps no holds on
   disk: the store's recovery holds again, before the replay, what the
   checkpoint's state records for its open groups (6.2 step 4), so the
@@ -2227,8 +2238,11 @@ exists while the group is open. No other entry reads or writes it. Keys
 sort by file first: a part for a file numbered below one the group
 staged for already is inserted before the tree's end, not appended. Such
 an insert costs a put in the middle of the tree, a path's pages and the
-splits it makes, against the append path's last pages; the staged bound
-(5.6, 64 MiB) keeps the tree within about 4,100 chunks.
+splits it makes, against the append path's last pages. A part with edits
+writes one chunk for every 16,344 bytes of them, at least one; an empty
+part writes none but counts toward the part bound. So the bounds of 5.6
+keep the tree within 65,536 + 4,106 chunks: one a part for 65,536
+one-edit parts, about 4,100 for parts that fill their chunks.
 
 The list `[0a, 02, file]` stays, empty, after the last group with paths
 in a file ends, and goes with the file: a removal deletes it, and so
@@ -2517,11 +2531,13 @@ listings visited and the most held at once.
   the tree: a fixed number of rows and one name, whatever the group's
   size.
 - **A close** reads the whole staging tree and holds every staged edit,
-  decoded, at once. The bounds of 5.6 (1,048,576 edits, 64 MiB encoded)
-  hold that to what the largest change decodes to: measured for the
-  worst shape found, a million puts at paths of 26 segments, the decoded
-  edits and the tree's working copy peaked at 1,086 MiB; for the 4 KiB
-  puts of the measurements, 362 MiB at the bound
+  decoded, at once, with the bytes of the part it is decoding and the
+  tree writer's working copy. The bounds of 5.6 (1,048,576 edits, 64 MiB
+  encoded) bound the decoded edits by the largest change's; the whole
+  close is measured, not bounded: for the worst shape found, a million
+  puts at paths of 26 segments (66 MB encoded), the decoded edits
+  peaked at 971 MiB and the apply at 1,086 MiB; for the 4 KiB puts of
+  the measurements at the bound, 134 and 362 MiB
   (performance/store-groups.md). It applies each file's edits with one
   `tree::apply`, so it writes what one entry with all of them writes
   (2.7: each page once, in place of once a part), and drops the staging
@@ -2872,9 +2888,12 @@ nothing changed. Then it:
    each group open after this entry, each in a batch of its own, and for
    the next start's `empty` entry and its own entry in one batch:
    `136 + 2 × 64 + 26` bytes and `136 + 64 + 10` more a group, so 500
-   bytes for one group and 54,050 for 256. A discard, an `empty` entry
-   and a start's own entry may take that room (`Log::append_kept`);
-   every other entry, a close and a publication included, leaves it, and
+   bytes for one group and 54,050 for 256. A discard and an `empty`
+   entry may take that room (`Log::append_kept`), and so may the entries
+   the store's own open appends (6.2), told apart by how they are
+   appended and not by their kind: a caller's `session` entry of another
+   server's start is an ordinary entry. Every other entry, a close and a
+   publication included, leaves the room, and
    on a full disk is refused as an entry that needs a segment the disk
    cannot give (`WriteError::Log` with `LogError::NoSpace`), with nothing
    changed. So an entry that only gives back never needs a new segment;
