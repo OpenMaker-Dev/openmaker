@@ -83,6 +83,8 @@ struct Watched {
     /// Places the device cannot read: a read of the file that covers the
     /// offset fails, every time.
     bad: Arc<Mutex<Vec<(String, u64)>>>,
+    /// How many reads failed on one of those places.
+    bad_reads: Arc<AtomicU64>,
     /// The next write to a log file reaches the system's cache only, whole,
     /// and fails: a write the device did not take, whose bytes a process
     /// that goes on without a power loss still reads.
@@ -90,7 +92,53 @@ struct Watched {
     /// The next flush or write of a log file fails, as the simulator fails
     /// one (simulated machines only).
     fail_next: Arc<std::sync::atomic::AtomicBool>,
+    rereads: Arc<Mutex<Rereads>>,
     sim: Option<Sim>,
+}
+
+/// Second reads that differ: when on, a read of bytes already read since
+/// the last [`Rereads::begin`] comes back with one of them changed, the
+/// byte and the change drawn from the seed. An operation of the log reads
+/// each place once and acts only on what it checked (format section 3.11),
+/// so it never meets one; code that reads a place again and uses what it
+/// read then would use bytes it did not check.
+#[derive(Default)]
+struct Rereads {
+    draw: Option<Rng>,
+    /// The ranges read since the last `begin`, by path.
+    read: BTreeMap<String, Vec<(u64, u64)>>,
+    /// How many reads came back changed.
+    changed: u64,
+}
+
+impl Rereads {
+    /// A new operation begins: what was read before it may be read again.
+    fn begin(&mut self) {
+        self.read.clear();
+    }
+
+    /// `buf`, just read at `offset` of `path`: one byte changed when it
+    /// overlaps bytes read before.
+    fn after_read(&mut self, path: &str, offset: u64, buf: &mut [u8]) {
+        let Some(draw) = self.draw.as_mut() else {
+            return;
+        };
+        if buf.is_empty() {
+            return;
+        }
+        let range = (offset, offset + buf.len() as u64);
+        let ranges = self.read.entry(path.to_owned()).or_default();
+        let overlap = ranges.iter().find_map(|&(a, b)| {
+            let (lo, hi) = (a.max(range.0), b.min(range.1));
+            (lo < hi).then_some((lo, hi))
+        });
+        if let Some((lo, hi)) = overlap {
+            let at = lo + draw.below(hi - lo);
+            buf[(at - offset) as usize] ^= 1 + draw.below(255) as u8;
+            self.changed += 1;
+        }
+        ranges.push(range);
+    }
 }
 
 struct WatchedFile {
@@ -101,8 +149,10 @@ struct WatchedFile {
     changes: Arc<AtomicU64>,
     largest_read: Arc<AtomicU64>,
     bad: Arc<Mutex<Vec<(String, u64)>>>,
+    bad_reads: Arc<AtomicU64>,
     cache_only: Arc<std::sync::atomic::AtomicBool>,
     fail_next: Arc<std::sync::atomic::AtomicBool>,
+    rereads: Arc<Mutex<Rereads>>,
     sim: Option<Sim>,
 }
 
@@ -124,8 +174,10 @@ impl Watched {
             changes: Arc::default(),
             largest_read: Arc::default(),
             bad: Arc::default(),
+            bad_reads: Arc::default(),
             cache_only: Arc::default(),
             fail_next: Arc::default(),
+            rereads: Arc::default(),
             sim: None,
         }
     }
@@ -145,8 +197,10 @@ impl Watched {
             changes: self.changes.clone(),
             largest_read: self.largest_read.clone(),
             bad: self.bad.clone(),
+            bad_reads: self.bad_reads.clone(),
             cache_only: self.cache_only.clone(),
             fail_next: self.fail_next.clone(),
+            rereads: self.rereads.clone(),
             sim: self.sim.clone(),
         })
     }
@@ -213,9 +267,15 @@ impl File for WatchedFile {
             .iter()
             .any(|(path, at)| *path == self.path && (offset..end).contains(at));
         if bad {
+            self.bad_reads.fetch_add(1, Ordering::Relaxed);
             return Err(sys::Error::new(ErrorKind::Read, sys::Op::Read, &self.path));
         }
-        self.inner.read_at(offset, buf)
+        let n = self.inner.read_at(offset, buf)?;
+        self.rereads
+            .lock()
+            .unwrap()
+            .after_read(&self.path, offset, &mut buf[..n]);
+        Ok(n)
     }
 
     fn write_at(&self, offset: u64, data: &[u8]) -> sys::Result<()> {
@@ -265,6 +325,13 @@ trait Machine {
     /// The next flush or write of a log file fails (simulated machines
     /// only).
     fn arm_failure(&self);
+    /// An operation that reads begins (see [`Rereads`]).
+    fn begin_reads(&self);
+    /// The device can no longer read the byte at `offset` of `path`, or,
+    /// with `None`, can read every byte again.
+    fn set_bad(&self, place: Option<(String, u64)>);
+    /// How many reads failed on such a byte.
+    fn bad_reads(&self) -> u64;
     fn random(&self) -> &dyn Random;
     /// The process ends; with `power_loss` the power fails first, where the
     /// machine can do that.
@@ -289,6 +356,18 @@ impl Simulated {
             sim,
         }
     }
+
+    /// A second read of the same bytes in one operation differs in one
+    /// byte, drawn from `seed` (see [`Rereads`]).
+    fn with_rereads_changed(self, seed: u64) -> Self {
+        self.fs.rereads.lock().unwrap().draw = Some(Rng::stream(seed, 11));
+        self
+    }
+
+    /// How many second reads came back changed.
+    fn rereads_changed(&self) -> u64 {
+        self.fs.rereads.lock().unwrap().changed
+    }
 }
 
 impl Machine for Simulated {
@@ -307,6 +386,18 @@ impl Machine for Simulated {
 
     fn arm_failure(&self) {
         self.fs.fail_next.store(true, Ordering::Relaxed);
+    }
+
+    fn begin_reads(&self) {
+        self.fs.rereads.lock().unwrap().begin();
+    }
+
+    fn set_bad(&self, place: Option<(String, u64)>) {
+        *self.fs.bad.lock().unwrap() = place.into_iter().collect();
+    }
+
+    fn bad_reads(&self) -> u64 {
+        self.fs.bad_reads.load(Ordering::Relaxed)
     }
 
     fn random(&self) -> &dyn Random {
@@ -358,6 +449,18 @@ impl Machine for Real {
     }
 
     fn arm_failure(&self) {}
+
+    fn begin_reads(&self) {
+        self.fs.rereads.lock().unwrap().begin();
+    }
+
+    fn set_bad(&self, place: Option<(String, u64)>) {
+        *self.fs.bad.lock().unwrap() = place.into_iter().collect();
+    }
+
+    fn bad_reads(&self) -> u64 {
+        self.fs.bad_reads.load(Ordering::Relaxed)
+    }
 
     fn random(&self) -> &dyn Random {
         &self.random
@@ -470,6 +573,9 @@ struct Reached {
     poisoned: u64,
     retried_opens: u64,
     unreadable_ends: u64,
+    given_up: u64,
+    given_up_for_good: u64,
+    cut_past_unreadable: u64,
     lost_slots: u64,
     tails_in_cache: u64,
     unconfirmed: u64,
@@ -588,6 +694,10 @@ struct Run<'a> {
     /// A tail was held in the cache only, and the opens after it have not
     /// yet succeeded.
     cache_tail_pending: bool,
+    /// What followed an unreadable place that stays unreadable was given
+    /// up, when the device had failed this many reads on it: no later read
+    /// may reach it, until an open succeeds and the place reads again.
+    given_up_place: Option<u64>,
     model: Model,
     term: u64,
     reached: &'a mut Reached,
@@ -628,6 +738,7 @@ impl<'a> Run<'a> {
             rates,
             log: None,
             cache_tail_pending: false,
+            given_up_place: None,
             model: Model::new(),
             term: 1,
             reached,
@@ -861,6 +972,7 @@ impl<'a> Run<'a> {
                 return None;
             }
         };
+        self.machine.begin_reads();
         let state = match State::open(&*fs, lock) {
             Ok(state) => state,
             Err(StateError::Missing) => {
@@ -901,7 +1013,21 @@ impl<'a> Run<'a> {
         loop {
             // What this attempt writes, not an earlier one's.
             let before = self.machine.changes();
+            self.machine.begin_reads();
             let opened = Log::open(fs.clone(), state, CONFIG, self.model.start);
+            if let Some(reads) = self.given_up_place {
+                assert_eq!(
+                    self.machine.bad_reads(),
+                    reads,
+                    "seed {}: an open read past the entry after which an unreadable place was \
+                     given up",
+                    self.seed
+                );
+                if opened.is_ok() {
+                    self.given_up_place = None;
+                    self.machine.set_bad(None);
+                }
+            }
             self.trace.push(stamp(
                 &*self.machine,
                 match &opened {
@@ -995,23 +1121,23 @@ impl<'a> Run<'a> {
         }
     }
 
-    /// The checks of the module docs after an open that succeeded.
+    /// The checks of the module docs after an open that succeeded. After
+    /// one that ended at a place it could not read they all run too, and
+    /// the model keeps what may lie past that place.
     fn check_open(&mut self, opened: &Opened) -> Option<End> {
         let seed = self.seed;
         self.reached.opens += 1;
-        if opened.unreadable_end.is_some() {
+        let unreadable = opened.unreadable_end.is_some();
+        if unreadable {
             // The log ends, for this open, where the device failed to read;
-            // a confirmed batch may lie past it (a lost marker advance). Its
-            // appends wait, so the caller opens it again: the model learns
-            // nothing from it.
+            // a confirmed batch may lie past it (a lost marker advance), so
+            // appends wait.
             self.reached.unreadable_ends += 1;
             let log = self.log.as_mut().expect("opened");
             assert!(
                 matches!(log.append(1, 0, 0, b""), Err(LogError::EndUnreadable(_))),
                 "seed {seed}"
             );
-            self.stop(false);
-            return None;
         }
         if opened.kept > 0 {
             self.reached.kept_tails += 1;
@@ -1019,6 +1145,10 @@ impl<'a> Run<'a> {
         if opened.cut.is_some() {
             self.reached.open_cuts += 1;
         }
+        assert!(
+            !(unreadable && opened.cut.is_some()),
+            "seed {seed}: an open that ended unreadable cut: {opened:?}"
+        );
         let durable = opened.durable;
         {
             let log = self.log.as_ref().expect("opened");
@@ -1034,27 +1164,41 @@ impl<'a> Run<'a> {
         let lying = self.device == Device::Lying;
         let mut lost = false;
         if durable.index < self.model.durable && !lying {
-            // A copy of `state` lost (damaged, or unreadable at an open,
-            // which `state` passes over like a lost one) together with a
-            // damaged tail: the double fault format section 1.5 leaves
-            // uncovered, which loses at most the last advance.
             let damaged = self.damaged_paths(0);
             let state_lost = damaged.contains(crate::state::FILE)
                 || self.events_since(0).iter().any(|event| {
                     matches!(event, sim::Event::ReadFailed { path, .. } if path == crate::state::FILE)
                 });
-            let log_damaged = damaged.iter().any(|p| p.starts_with("log/"));
-            assert!(
-                state_lost && log_damaged && durable.index >= self.model.before_advance,
-                "seed {seed}: the durable position went back from {} to {}",
-                self.model.durable,
-                durable.index
-            );
-            lost = true;
+            if unreadable {
+                // A copy of `state` lost (damaged, or unreadable at an open,
+                // which `state` passes over like a lost one) took the marker
+                // back, and the open could not read past it: what was
+                // reported durable after it may lie past that place, and
+                // the model still expects it.
+                assert!(
+                    state_lost,
+                    "seed {seed}: the durable position went back from {} to {} at an unreadable \
+                     end",
+                    self.model.durable, durable.index
+                );
+            } else {
+                // A copy of `state` lost together with a damaged tail: the
+                // double fault format section 1.5 leaves uncovered, which
+                // loses at most the last advance.
+                let log_damaged = damaged.iter().any(|p| p.starts_with("log/"));
+                assert!(
+                    state_lost && log_damaged && durable.index >= self.model.before_advance,
+                    "seed {seed}: the durable position went back from {} to {}",
+                    self.model.durable,
+                    durable.index
+                );
+                lost = true;
+            }
         }
         // Read back from the start, against the model.
         let from = self.model.start.index + 1;
         let read: Result<Vec<Entry>, LogError> = self.quiet(|run| {
+            run.machine.begin_reads();
             run.log
                 .as_ref()
                 .expect("opened")
@@ -1138,12 +1282,20 @@ impl<'a> Run<'a> {
         for entry in entries {
             self.model.acked.insert(entry.index, entry);
         }
-        self.model.acked.split_off(&(durable.index + 1));
-        self.model.maybe.clear();
-        self.model.durable = durable.index;
-        // An open that kept a tail moved the marker over it with one
-        // advance of `state`.
-        self.model.before_advance = durable.index - opened.kept;
+        if unreadable {
+            // Nothing past the unreadable place was cut: what the model was
+            // owed there, or may find there, stays.
+            self.model.maybe = self.model.maybe.split_off(&(durable.index + 1));
+            self.model.before_advance = self.model.before_advance.min(durable.index - opened.kept);
+            self.model.durable = self.model.durable.max(durable.index);
+        } else {
+            self.model.acked.split_off(&(durable.index + 1));
+            self.model.maybe.clear();
+            self.model.durable = durable.index;
+            // An open that kept a tail moved the marker over it with one
+            // advance of `state`.
+            self.model.before_advance = durable.index - opened.kept;
+        }
         self.model.appended = durable;
         // The recorded committed position is never more than the scenario
         // gave, and is not confirmed until it gives one again; the cut count
@@ -1169,13 +1321,132 @@ impl<'a> Run<'a> {
         let last_term = self
             .model
             .acked
-            .last_key_value()
+            .range(..=durable.index)
+            .next_back()
             .map_or(self.model.start.term, |(_, e)| e.term);
         self.term = self.term.max(last_term);
         if lost {
             return Some(End::Lost);
         }
+        if let Some(end) = opened.unreadable_end {
+            self.past_unreadable_end(durable, end);
+        }
         None
+    }
+
+    /// The log ends, for this open, at a place it could not read, after
+    /// `durable`. The scenario opens it again, gives up what may follow (the
+    /// administrator accepting the loss), or cuts past it as a leader
+    /// would.
+    fn past_unreadable_end(&mut self, durable: Position, end: UnreadableEnd) {
+        let seed = self.seed;
+        let choice = self.plan.below(3);
+        if choice == 0 {
+            self.stop(false);
+            return;
+        }
+        // The place stays unreadable (a failed sector): once what follows
+        // it is given up, nothing may read it again.
+        let stays = self.machine.sim().is_some();
+        if stays {
+            self.machine
+                .set_bad(Some((format::segment_path(end.segment), end.offset)));
+        }
+        self.machine.begin_reads();
+        let log = self.log.as_mut().expect("opened");
+        let done = if choice == 1 {
+            // Giving up needs no committed position, and is refused for any
+            // other entry than the last one verified.
+            assert!(!log.committed_confirmed(), "seed {seed}");
+            let mut other = durable.hash;
+            other[0] ^= 1;
+            assert!(
+                matches!(
+                    log.give_up_unreadable_end(durable.index, other),
+                    Err(LogError::Refused(_))
+                ),
+                "seed {seed}"
+            );
+            log.give_up_unreadable_end(durable.index, durable.hash)
+        } else {
+            let given = self.model.committed;
+            if let Err(e) = log.set_committed(given) {
+                assert!(log.is_poisoned(), "seed {seed}: {e}");
+                self.reached.poisoned += 1;
+                self.machine.set_bad(None);
+                self.fail();
+                return;
+            }
+            let from = durable.index + 1 + self.plan.below(3);
+            if from <= given.max(self.model.start.index) {
+                // A leader never cuts what it committed.
+                assert!(
+                    matches!(log.cut(from), Err(LogError::Refused(_))),
+                    "seed {seed}"
+                );
+                self.machine.set_bad(None);
+                self.stop(false);
+                return;
+            }
+            log.cut(from)
+        };
+        self.trace.push(stamp(
+            &*self.machine,
+            format!("past the unreadable end after {}: {done:?}", durable.index),
+        ));
+        let log = self.log.as_mut().expect("opened");
+        if stays && done.is_err() {
+            self.machine.set_bad(None);
+        }
+        match done {
+            Ok(done) => {
+                if stays {
+                    self.given_up_place = Some(self.machine.bad_reads());
+                    self.reached.given_up_for_good += 1;
+                }
+                assert_eq!(done.last, durable, "seed {seed}");
+                assert!(
+                    done.unreadable_end.is_some() && done.fence.is_some(),
+                    "seed {seed}: {done:?}"
+                );
+                assert_eq!((done.unflushed, done.durable), (0, 0), "seed {seed}");
+                assert!(
+                    self.device == Device::Lying || done.cut_count == Some(self.model.cuts + 1),
+                    "seed {seed}: {done:?} after {} cuts",
+                    self.model.cuts
+                );
+                if choice == 1 {
+                    self.reached.given_up += 1;
+                } else {
+                    self.reached.cut_past_unreadable += 1;
+                }
+                // Whatever followed is gone, the loss accepted.
+                self.model.acked.split_off(&(durable.index + 1));
+                self.model.maybe.split_off(&(durable.index + 1));
+                self.model.durable = durable.index;
+                self.model.before_advance = durable.index;
+                self.model.cuts += 1;
+                self.model.cuts_attempted = self.model.cuts_attempted.max(self.model.cuts);
+            }
+            Err(e @ (LogError::NoSpace(_) | LogError::Disk(_))) if !log.is_poisoned() => {
+                // Refused before anything listed changed.
+                self.trace
+                    .push(stamp(&*self.machine, format!("give up refused: {e}")));
+                self.stop(false);
+            }
+            Err(e) => {
+                assert!(log.is_poisoned(), "seed {seed}: {e}");
+                self.reached.poisoned += 1;
+                // Given up or not: what followed may be found again, or not.
+                self.model.cuts_attempted += 1;
+                for (index, entry) in self.model.acked.split_off(&(durable.index + 1)) {
+                    self.model.maybe.entry(index).or_default().push(entry);
+                }
+                self.model.durable = durable.index;
+                self.model.before_advance = self.model.before_advance.min(durable.index);
+                self.fail();
+            }
+        }
     }
 
     fn payload(&mut self, big: bool) -> Vec<u8> {
@@ -1416,12 +1687,38 @@ impl<'a> Run<'a> {
             return;
         }
         let durable_before = self.model.durable;
+        self.machine.begin_reads();
         let log = self.log.as_mut().expect("open");
         let cut = log.cut(from);
         self.trace
             .push(stamp(&*self.machine, format!("cut from {from}: {cut:?}")));
         match cut {
-            Ok(position) => {
+            Ok(done) => {
+                let position = done.last;
+                // What the cut says it did.
+                if self.device == Device::Honest {
+                    let (unflushed, durable, cut_count) = if from > last {
+                        (0, 0, None)
+                    } else if from > durable_before {
+                        (last - from + 1, 0, None)
+                    } else {
+                        (
+                            last - durable_before,
+                            durable_before - from + 1,
+                            Some(self.model.cuts + 1),
+                        )
+                    };
+                    assert_eq!(
+                        (done.unflushed, done.durable, done.cut_count),
+                        (unflushed, durable, cut_count),
+                        "seed {seed}: cut from {from}: {done:?}"
+                    );
+                    assert_eq!(
+                        (done.unreadable_end, done.fence),
+                        (None, None),
+                        "seed {seed}"
+                    );
+                }
                 let expected = if from > last {
                     self.model.appended
                 } else if from - 1 > durable_before {
@@ -1569,6 +1866,7 @@ impl<'a> Run<'a> {
     fn read_check(&mut self) {
         let seed = self.seed;
         let from = self.model.start.index + 1;
+        self.machine.begin_reads();
         let log = self.log.as_ref().expect("open");
         let read: Result<Vec<Entry>, LogError> = log.read(from).and_then(|r| r.collect());
         match read {
@@ -1649,6 +1947,12 @@ fn the_log_survives_drawn_crashes_and_faults() {
                 "opens that ended where a read failed",
                 reached.unreadable_ends,
             ),
+            ("unreadable ends given up", reached.given_up),
+            (
+                "unreadable places given up for good",
+                reached.given_up_for_good,
+            ),
+            ("cuts past an unreadable end", reached.cut_past_unreadable),
             ("cut entries appended again", reached.reappended),
             ("damage reports", reached.damaged),
         ] {
@@ -1657,6 +1961,31 @@ fn the_log_survives_drawn_crashes_and_faults() {
         assert!(ends.get("Open").copied().unwrap_or(0) > 150, "{ends:?}");
     }
     eprintln!("{ends:?} {reached:?}");
+}
+
+/// The drawn scenario on a device whose second read of the same bytes, in
+/// one operation, differs from the first in one byte: no entry is confirmed
+/// or returned whose bytes do not match its hash, and no field returned
+/// differs from the bytes the hash was checked over (format section 3.11,
+/// "Whatever is checked is what is used"). The log reads each place once,
+/// so it never meets such a read; code that reads a place again and acts on
+/// it fails the model's checks.
+#[test]
+fn the_log_acts_only_on_what_it_checked_when_a_second_read_differs() {
+    let mut reached = Reached::default();
+    let mut changed = 0;
+    for seed in seeds(100) {
+        let mut machine = Simulated::new(seed, FAULTS).with_rereads_changed(seed);
+        Run::new(&mut machine, Device::Honest, seed, FAULTS, &mut reached).go(70);
+        changed += machine.rereads_changed();
+    }
+    if seeds(100).len() >= 100 {
+        assert!(reached.kept_tails > 0 && reached.opens > 100, "{reached:?}");
+    }
+    assert_eq!(
+        changed, 0,
+        "the log read the same bytes twice in one operation"
+    );
 }
 
 #[test]
@@ -2231,7 +2560,7 @@ fn a_cut_never_reaches_committed_or_checkpointed_entries() {
     log.retire(7).unwrap();
     assert!(matches!(log.cut(6), Err(LogError::Refused(_))));
     assert_eq!(log.durable().index, 8);
-    assert_eq!(log.cut(7).unwrap().index, 6);
+    assert_eq!(log.cut(7).unwrap().last.index, 6);
 }
 
 /// Entries 1, 2 and 3, each flushed as a batch of its own, entry 1
@@ -2254,7 +2583,7 @@ fn three_batches(sim: &Sim) -> (Log, Vec<Position>) {
 fn a_cut_holds_when_the_cut_entries_are_appended_again() {
     let sim = Sim::new(9);
     let (mut log, entries) = three_batches(&sim);
-    assert_eq!(log.cut(2).unwrap(), entries[0]);
+    assert_eq!(log.cut(2).unwrap().last, entries[0]);
     assert_eq!(log.state().values().cut_count, 1);
     let again = log.append(1, 0, 0, &[2; 40]).unwrap();
     assert_eq!(again, entries[1]);
@@ -2619,7 +2948,7 @@ fn an_unreadable_place_after_the_firm_position_ends_the_log_for_that_open() {
     log.append(1, 0, 0, &vec![2; 256 << 10]).unwrap();
     log.flush_batch(None).unwrap();
     log.set_committed(1).unwrap();
-    assert_eq!(log.cut(2).unwrap(), one);
+    assert_eq!(log.cut(2).unwrap().last, one);
     drop(log);
     sim.restart();
     let second = SEGMENT_HEADER + BATCH_HEADER + ENTRY_OVERHEAD + 3;
@@ -2900,4 +3229,336 @@ fn a_batch_header_that_does_not_chain_is_passed_over_unread() {
     assert_eq!(opened.durable, one);
     assert_eq!(opened.cut, None);
     assert!(watched.largest_read.load(Ordering::Relaxed) <= 64 * 1024);
+}
+
+/// Segments of 1024 bytes, for the cases of the end rule.
+const SMALL: Config = Config {
+    segment_size: 1024,
+    max_payload: 600,
+};
+
+/// A store on `sim` seen through `watched`: `state` opened, or made where
+/// there is none, and the log opened from the start with `config`.
+fn open_watched(
+    sim: &Sim,
+    watched: &Arc<Watched>,
+    config: Config,
+) -> Result<(Log, Opened), Box<OpenFailed>> {
+    let fs: Arc<dyn Fs> = watched.clone();
+    let state = match State::open(&*fs, fs.lock().unwrap()) {
+        Ok(state) => state,
+        Err(StateError::Missing) => State::create(&*fs, &sim.random(), fs.lock().unwrap()).unwrap(),
+        Err(e) => panic!("{e}"),
+    };
+    Log::open(fs, state, config, Position::START)
+}
+
+/// A log of 1024-byte segments written in `batches` (each a list of
+/// payload lengths), every batch's marker recorded but, unless `recorded`,
+/// the last one's: its write is on the device and the power failed before
+/// `state` was updated. A first batch whose marker is lost would be in a
+/// segment `state` never listed, so then an entry is written and cut
+/// first: segment 1 is listed, the cut count is 1, and the batches begin
+/// at its first place. Returns the machine and every entry appended.
+fn small_log(
+    seed: u64,
+    batches: &[&[usize]],
+    recorded: bool,
+) -> (Sim, Arc<Watched>, Vec<Position>) {
+    let sim = Sim::new(seed);
+    let watched = Arc::new(Watched::new(Arc::new(sim.fs())));
+    let (mut log, _) = open_watched(&sim, &watched, SMALL).unwrap();
+    if batches.len() == 1 && !recorded {
+        log.append(1, 0, 0, b"cut").unwrap();
+        log.flush_batch(None).unwrap();
+        log.set_committed(0).unwrap();
+        log.cut(1).unwrap();
+    }
+    let mut entries = Vec::new();
+    for (i, batch) in batches.iter().enumerate() {
+        for &len in *batch {
+            entries.push(log.append(1, 0, 0, &vec![7; len]).unwrap());
+        }
+        if i + 1 == batches.len() && !recorded {
+            sim.set_crash_fates(Fates::LoseAll);
+            sim.place(sim.steps() + 2, Fault::Crash);
+            assert!(log.flush_batch(None).is_err());
+            assert_eq!(sim.fired().get(&Fault::Crash), Some(&1));
+        } else {
+            log.flush_batch(None).unwrap();
+        }
+    }
+    drop(log);
+    sim.restart();
+    sim.set_crash_fates(Fates::Drawn);
+    (sim, watched, entries)
+}
+
+/// The third review's fourth finding: where the log ends is decided from
+/// what must be there, and a read fails only where a decision needs the
+/// bytes it could not read (format section 3.6). The review's segment of
+/// 1024 bytes with byte 512 unreadable: after a whole batch whose last
+/// entry ends at 494, nothing is read past the next header's mark.
+#[test]
+fn the_end_is_decided_by_what_must_be_there() {
+    let seg1 = format::segment_path(1);
+    let open = |sim: &Sim, watched: &Arc<Watched>, bad: &[u64]| {
+        *watched.bad.lock().unwrap() = bad.iter().map(|&at| (seg1.clone(), at)).collect();
+        open_watched(sim, watched, SMALL)
+    };
+    for recorded in [true, false] {
+        // Two entries in one batch, payloads of 102 and 0 bytes: the second
+        // from 430 to 494. Nothing looks for a header in its place past its
+        // fixed bytes, and nothing past 494 is read but the next mark.
+        let (sim, watched, entries) = small_log(41, &[&[102, 0]], recorded);
+        let (layout, _) = layout(&device_bytes(&sim, &seg1));
+        assert_eq!(&layout[1..], &[(2, 430, 64)]);
+        let (log, opened) = open(&sim, &watched, &[512]).unwrap();
+        assert_eq!(opened.durable, entries[1], "recorded: {recorded}");
+        assert_eq!(opened.kept, if recorded { 0 } else { 2 });
+        assert_eq!((opened.unreadable_end, opened.cut), (None, None));
+        assert_eq!(log.read(1).unwrap().map(Result::unwrap).count(), 2);
+        drop(log);
+
+        // One entry of 166 bytes of payload, ending at 494.
+        let (sim, watched, entries) = small_log(42, &[&[166]], recorded);
+        let (log, opened) = open(&sim, &watched, &[512]).unwrap();
+        assert_eq!(opened.durable, entries[0], "recorded: {recorded}");
+        assert_eq!((opened.unreadable_end, opened.cut), (None, None));
+        drop(log);
+        sim.restart();
+        // The next header's mark itself cannot be read: the log ends there
+        // for this open, at the first byte of the read that failed.
+        let (log, opened) = open(&sim, &watched, &[496]).unwrap();
+        assert_eq!(opened.durable, entries[0]);
+        assert_eq!(
+            opened.unreadable_end,
+            Some(UnreadableEnd {
+                segment: 1,
+                offset: 494,
+                index: 2
+            })
+        );
+        drop(log);
+    }
+
+    // Fewer bytes left than a header and one empty entry: no batch can
+    // begin, and nothing is read.
+    let (sim, watched, entries) = small_log(43, &[&[600]], false);
+    let (_, opened) = open(&sim, &watched, &[930]).unwrap();
+    assert_eq!(opened.durable, entries[0]);
+    assert_eq!((opened.unreadable_end, opened.cut), (None, None));
+
+    // Entries 1 and 2 as batches of their own, then a cut from 2: entry 2's
+    // batch, at 338, carries the older cut count. Its header's start shows
+    // that, so the rest of it is not read.
+    let (sim, watched, entries) = small_log(44, &[&[10], &[10]], true);
+    let (mut log, _) = open(&sim, &watched, &[]).unwrap();
+    log.set_committed(1).unwrap();
+    assert_eq!(log.cut(2).unwrap().last, entries[0]);
+    drop(log);
+    sim.restart();
+    let (log, opened) = open(&sim, &watched, &[338 + 100]).unwrap();
+    assert_eq!(opened.durable, entries[0]);
+    assert_eq!(opened.cut.map(|c| c.why), Some(CutWhy::OlderCut));
+    assert_eq!(opened.unreadable_end, None);
+    drop(log);
+    sim.restart();
+    // A batch written there after the cut, its marker lost: a header of the
+    // current count, whose hash cannot be read, decides nothing.
+    let (mut log, _) = open(&sim, &watched, &[]).unwrap();
+    log.append(2, 0, 0, &[8; 10]).unwrap();
+    sim.set_crash_fates(Fates::LoseAll);
+    sim.place(sim.steps() + 2, Fault::Crash);
+    assert!(log.flush_batch(None).is_err());
+    drop(log);
+    sim.restart();
+    let (_, opened) = open(&sim, &watched, &[338 + 100]).unwrap();
+    assert_eq!(opened.durable, entries[0]);
+    assert_eq!(opened.cut, None);
+    assert_eq!(
+        opened.unreadable_end,
+        Some(UnreadableEnd {
+            segment: 1,
+            offset: 338 + format::BATCH_START,
+            index: 2
+        })
+    );
+}
+
+/// Entry 1 durable, entry 2's batch at 338 written and its marker lost,
+/// and byte 340, in that batch's mark, unreadable: the open ends the log
+/// after entry 1.
+fn unreadable_after_one(seed: u64) -> (Sim, Arc<Watched>, Position, Log, Opened) {
+    let (sim, watched, entries) = small_log(seed, &[&[10], &[10]], false);
+    watched
+        .bad
+        .lock()
+        .unwrap()
+        .push((format::segment_path(1), 340));
+    let (log, opened) = open_watched(&sim, &watched, SMALL).unwrap();
+    assert_eq!(opened.durable, entries[0]);
+    assert!(opened.unreadable_end.is_some());
+    (sim, watched, entries[0], log, opened)
+}
+
+/// The third review's fifth point and the review's third answer: what may
+/// follow an unreadable end is given up with the last entry the open
+/// verified, and no committed position. The log continues in a fresh
+/// segment, so the next open does not stop at that place again though it
+/// stays unreadable, and what followed never comes back.
+#[test]
+fn giving_up_an_unreadable_end_fences_what_may_follow() {
+    let (sim, watched, one, mut log, opened) = unreadable_after_one(51);
+    assert!(matches!(
+        log.give_up_unreadable_end(one.index, [0; 32]),
+        Err(LogError::Refused(_))
+    ));
+    assert!(matches!(
+        log.give_up_unreadable_end(2, one.hash),
+        Err(LogError::Refused(_))
+    ));
+    assert!(!log.committed_confirmed());
+    let done = log.give_up_unreadable_end(one.index, one.hash).unwrap();
+    assert_eq!(
+        done,
+        CutDone {
+            last: one,
+            unflushed: 0,
+            durable: 0,
+            cut_count: Some(1),
+            unreadable_end: opened.unreadable_end,
+            fence: Some(2),
+            removed: Vec::new(),
+        }
+    );
+    assert_eq!(log.segments().count, 2);
+    assert!(matches!(
+        log.give_up_unreadable_end(one.index, one.hash),
+        Err(LogError::Refused(_))
+    ));
+    let two = log.append(2, 0, 0, b"two").unwrap();
+    log.flush_batch(None).unwrap();
+    drop(log);
+    for bad in [true, false] {
+        if !bad {
+            watched.bad.lock().unwrap().clear();
+            sim.crash(Fates::LoseAll);
+        }
+        sim.restart();
+        let (log, opened) = open_watched(&sim, &watched, SMALL).unwrap();
+        assert_eq!(opened.durable, two, "the place unreadable: {bad}");
+        assert_eq!((opened.unreadable_end, opened.cut), (None, None));
+        assert_eq!(opened.cut_count, 1);
+        let read: Vec<Position> = log
+            .read(1)
+            .unwrap()
+            .map(|e| e.unwrap().position())
+            .collect();
+        assert_eq!(read, [one, two]);
+        drop(log);
+    }
+    // Nothing to give up on a log that ends where it can read.
+    sim.restart();
+    let (mut log, _) = open_watched(&sim, &watched, SMALL).unwrap();
+    assert!(matches!(
+        log.give_up_unreadable_end(two.index, two.hash),
+        Err(LogError::Refused(_))
+    ));
+}
+
+/// Giving up is done once the first slot of its `state` update is flushed:
+/// a crash at any step of it leaves it undone (the open ends unreadable
+/// again, and it can be given up again) or done, never anything else.
+#[test]
+fn giving_up_survives_a_crash_at_every_step() {
+    let steps = {
+        let (sim, _, one, mut log, _) = unreadable_after_one(52);
+        let begin = sim.steps();
+        log.give_up_unreadable_end(one.index, one.hash).unwrap();
+        sim.steps() - begin
+    };
+    let mut done_after = 0;
+    for step in 1..=steps {
+        for fates in [Fates::KeepAll, Fates::LoseAll, Fates::Drawn] {
+            let (sim, watched, one, mut log, _) = unreadable_after_one(52);
+            sim.set_crash_fates(fates);
+            sim.place(sim.steps() + step, Fault::Crash);
+            assert!(log.give_up_unreadable_end(one.index, one.hash).is_err());
+            assert_eq!(sim.fired().get(&Fault::Crash), Some(&2));
+            drop(log);
+            sim.restart();
+            let what = format!("step {step}, {fates:?}");
+            let (mut log, opened) =
+                open_watched(&sim, &watched, SMALL).unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert_eq!(opened.durable, one, "{what}");
+            let done = opened.unreadable_end.is_none();
+            assert_eq!(opened.cut_count, u64::from(done), "{what}");
+            // The update's second slot: written after the first one's flush
+            // returned.
+            if step > steps - 2 {
+                assert!(done, "{what}: given up, then undone");
+            }
+            if done {
+                done_after += 1;
+            } else {
+                log.give_up_unreadable_end(one.index, one.hash)
+                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+            }
+            let two = log.append(2, 0, 0, b"two").unwrap();
+            log.flush_batch(None).unwrap();
+            drop(log);
+            sim.crash(Fates::LoseAll);
+            sim.restart();
+            let (_, opened) = open_watched(&sim, &watched, SMALL).unwrap();
+            assert_eq!(opened.durable, two, "{what}");
+            assert_eq!(opened.unreadable_end, None, "{what}");
+        }
+    }
+    assert!(done_after > 0);
+}
+
+/// The third review's fourth point: a cut at any index after the durable
+/// entry of a log that ends unreadable gives up what may follow, and says
+/// so; one at or before the durable entry ends the log before the place.
+#[test]
+fn a_cut_past_an_unreadable_end_gives_up_what_may_follow() {
+    for from in [2, 5] {
+        let (sim, watched, one, mut log, opened) = unreadable_after_one(53);
+        assert!(matches!(log.cut(from), Err(LogError::CommittedUnconfirmed)));
+        log.set_committed(0).unwrap();
+        let done = log.cut(from).unwrap();
+        assert_eq!(done.last, one);
+        assert_eq!(done.cut_count, Some(1));
+        assert_eq!(done.unreadable_end, opened.unreadable_end);
+        assert_eq!(done.fence, Some(2));
+        let two = log.append(2, 0, 0, b"two").unwrap();
+        log.flush_batch(None).unwrap();
+        drop(log);
+        sim.restart();
+        let (_, opened) = open_watched(&sim, &watched, SMALL).unwrap();
+        assert_eq!(opened.durable, two, "cut from {from}");
+        assert_eq!(opened.unreadable_end, None);
+    }
+    // Entries 1 and 2 durable, 3's batch past the marker unreadable: a cut
+    // from 2 moves the end before the place, which no open reads again.
+    let (sim, watched, entries) = small_log(54, &[&[10], &[10], &[10]], false);
+    let bad = (format::segment_path(1), 548 + 2);
+    watched.bad.lock().unwrap().push(bad);
+    let (mut log, opened) = open_watched(&sim, &watched, SMALL).unwrap();
+    assert_eq!(opened.durable, entries[1]);
+    assert!(opened.unreadable_end.is_some());
+    log.set_committed(1).unwrap();
+    let done = log.cut(2).unwrap();
+    assert_eq!(
+        (done.last, done.durable, done.cut_count, done.fence),
+        (entries[0], 1, Some(1), None)
+    );
+    assert_eq!(done.unreadable_end, opened.unreadable_end);
+    log.append(2, 0, 0, b"x").unwrap();
+    drop(log);
+    sim.restart();
+    let (_, opened) = open_watched(&sim, &watched, SMALL).unwrap();
+    assert_eq!(opened.durable, entries[0]);
+    assert_eq!(opened.unreadable_end, None);
 }

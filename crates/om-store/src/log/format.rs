@@ -14,6 +14,16 @@ pub const SEGMENT_HEADER: u64 = 128;
 /// The bytes a batch's header takes; its entries follow it.
 pub const BATCH_HEADER: u64 = 136;
 
+/// The first bytes of a batch's header, which begin every batch: the
+/// format's mark for one.
+pub const BATCH_MARK: u64 = 8;
+
+/// The bytes of a batch's header before the hash of its last entry: its
+/// mark, version, count, first index, length, cut count and the hash of
+/// the entry before its first. They show whether a header can continue the
+/// log at a place before the rest of it is read (format section 3.5).
+pub const BATCH_START: u64 = 72;
+
 /// An entry's fixed fields, before its payload.
 pub const ENTRY_FIXED: u64 = 32;
 
@@ -175,6 +185,48 @@ pub struct BatchHeader {
     pub last: [u8; 32],
 }
 
+/// Whether `bytes` begin with a batch header's mark.
+pub fn is_batch_mark(bytes: &[u8]) -> bool {
+    bytes.len() >= BATCH_MAGIC.len() && bytes[..BATCH_MAGIC.len()] == BATCH_MAGIC
+}
+
+/// The start of a batch's header (its first [`BATCH_START`] bytes), whose
+/// hash is not checked yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BatchStart {
+    pub count: u32,
+    pub first: u64,
+    pub length: u64,
+    pub cut_count: u64,
+    pub prev: [u8; 32],
+}
+
+impl BatchStart {
+    /// The start of a header at the start of `bytes`, if one is there and
+    /// its fields are valid (section 3.3): the mark, the version, the
+    /// reserved bytes, a count of at least 1, a first index within bounds
+    /// and a length of at least 64 bytes for each entry.
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < BATCH_START as usize || !is_batch_mark(bytes) {
+            return None;
+        }
+        let start = BatchStart {
+            count: u32_at(bytes, 12),
+            first: u64_at(bytes, 16),
+            length: u64_at(bytes, 24),
+            cut_count: u64_at(bytes, 32),
+            prev: hash_at(bytes, 40),
+        };
+        let valid = u16_at(bytes, 8) == VERSION
+            && bytes[10..12] == [0; 2]
+            && start.count > 0
+            && start.first > 0
+            && start.first <= MAX_INDEX
+            && start.length >= u64::from(start.count) * ENTRY_OVERHEAD;
+        valid.then_some(start)
+    }
+}
+
 impl BatchHeader {
     pub fn encode(&self) -> [u8; BATCH_HEADER as usize] {
         let mut out = [0u8; BATCH_HEADER as usize];
@@ -195,27 +247,18 @@ impl BatchHeader {
     /// batch is always of its segment's version, so any other version is
     /// not a valid header.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < BATCH_HEADER as usize || bytes[..BATCH_MAGIC.len()] != BATCH_MAGIC {
+        let start = BatchStart::decode(bytes)?;
+        if bytes.len() < BATCH_HEADER as usize || sha256(&[&bytes[..104]]) != hash_at(bytes, 104) {
             return None;
         }
-        if sha256(&[&bytes[..104]]) != hash_at(bytes, 104) {
-            return None;
-        }
-        let header = BatchHeader {
-            count: u32_at(bytes, 12),
-            first: u64_at(bytes, 16),
-            length: u64_at(bytes, 24),
-            cut_count: u64_at(bytes, 32),
-            prev: hash_at(bytes, 40),
+        Some(BatchHeader {
+            count: start.count,
+            first: start.first,
+            length: start.length,
+            cut_count: start.cut_count,
+            prev: start.prev,
             last: hash_at(bytes, 72),
-        };
-        let valid = u16_at(bytes, 8) == VERSION
-            && bytes[10..12] == [0; 2]
-            && header.count > 0
-            && header.first > 0
-            && header.first <= MAX_INDEX
-            && header.length >= u64::from(header.count) * ENTRY_OVERHEAD;
-        valid.then_some(header)
+        })
     }
 }
 

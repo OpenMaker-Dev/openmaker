@@ -3,12 +3,17 @@
 //! (`docs/server-storage-format.md` section 3.5). Opening, reading and
 //! cutting all walk the log this way; what they make of where it ends is
 //! theirs.
+//!
+//! Each place the walk decides on is read once, into one buffer, in steps
+//! that each go only as far as the decision at hand needs; every check,
+//! every field returned and every byte the open writes back comes from that
+//! buffer (format section 3.11, "Whatever is checked is what is used").
 
 use crate::sys::{self, File};
 
 use super::format::{
-    entry_hash, BatchHeader, EntryHead, SegmentHeader, BATCH_HEADER, ENTRY_FIXED, HASH,
-    SEGMENT_HEADER,
+    entry_hash, is_batch_mark, BatchHeader, BatchStart, EntryHead, SegmentHeader, BATCH_HEADER,
+    BATCH_MARK, BATCH_START, ENTRY_FIXED, ENTRY_OVERHEAD, SEGMENT_HEADER,
 };
 
 /// A listed segment, its header checked.
@@ -18,33 +23,48 @@ pub(crate) struct Seg {
     pub file: Box<dyn File>,
 }
 
-/// The largest entry read into the walk's own buffer; a larger one is read
-/// into a buffer of its own, which becomes its payload.
-const CHUNK: usize = 64 * 1024;
+/// The largest buffer a walk keeps for its next place; a larger one, read
+/// for a large entry, is let go with it.
+const KEEP_BUFFER: usize = 64 * 1024;
 
-/// Reads of one segment, never past its size. Each reads exactly the bytes
-/// asked for, and nothing ahead of them: what the walk reads is what the
-/// record it is deciding on takes, so that a place the device cannot read
-/// is met only by the record it belongs to (format section 3.5).
-struct Cursor {
+/// The bytes read at one place of a segment, from its offset on. No byte of
+/// a place is read twice, and nothing is read past what is asked for or
+/// past the segment's size (format section 3.5): a place the device cannot
+/// read is met only by a decision that needs it.
+struct Place {
+    offset: u64,
     buf: Vec<u8>,
+    /// The file ended before a read did.
+    short: bool,
 }
 
-impl Cursor {
-    fn new() -> Self {
-        Self { buf: Vec::new() }
-    }
-
-    /// The bytes from `offset` to `offset + len` of `file`, or fewer when the
-    /// file or the segment (`size`) ends first.
-    fn get(&mut self, file: &dyn File, size: u64, offset: u64, len: u64) -> sys::Result<&[u8]> {
-        let end = offset.saturating_add(len).min(size);
-        if offset >= end {
-            return Ok(&[]);
+impl Place {
+    /// The place's first `len` bytes, or fewer where the segment (`size`)
+    /// or the file ends: those read before, and the rest, read now. A
+    /// failed read gives its offset and error.
+    fn get(&mut self, file: &dyn File, size: u64, len: u64) -> Result<&[u8], (u64, sys::Error)> {
+        let want = self
+            .offset
+            .saturating_add(len)
+            .min(size)
+            .saturating_sub(self.offset);
+        let want = usize::try_from(want).expect("bounded by a segment's size");
+        let have = self.buf.len();
+        if want > have && !self.short {
+            self.buf.resize(want, 0);
+            let at = self.offset + have as u64;
+            match read_exact(file, at, &mut self.buf[have..]) {
+                Ok(n) => {
+                    self.short = n < want - have;
+                    self.buf.truncate(have + n);
+                }
+                Err(error) => {
+                    self.buf.truncate(have);
+                    return Err((at, error));
+                }
+            }
         }
-        self.buf.resize((end - offset) as usize, 0);
-        let done = read_exact(file, offset, &mut self.buf)?;
-        Ok(&self.buf[..done])
+        Ok(&self.buf[..want.min(self.buf.len())])
     }
 }
 
@@ -61,7 +81,28 @@ pub(crate) fn read_exact(file: &dyn File, offset: u64, buf: &mut [u8]) -> sys::R
     Ok(done)
 }
 
-/// An entry the walk found whole and chained.
+/// What a walk keeps of the entries it reads, besides their fields.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Keep {
+    Nothing,
+    /// Their payloads (a read).
+    Payloads,
+    /// The whole bytes of the entries after this index, as verified (the
+    /// open, which writes them back).
+    BytesAfter(u64),
+}
+
+/// The open's rule after its firm position (format section 3.6): a batch
+/// written under another cut count than `cut_count` counts only up to
+/// `firm`, so nothing of it past `firm` is read beyond what shows that.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Judge {
+    pub firm: u64,
+    pub cut_count: u64,
+}
+
+/// An entry the walk found whole and chained. Every field comes from the
+/// bytes its hash was checked over.
 #[derive(Clone, Debug)]
 pub(crate) struct Found {
     /// The segment, as an index into the run.
@@ -76,6 +117,8 @@ pub(crate) struct Found {
     pub hash: [u8; 32],
     /// The payload, when the walk keeps payloads.
     pub payload: Vec<u8>,
+    /// The entry's bytes as verified, when the walk keeps them.
+    pub bytes: Vec<u8>,
     /// Where its batch's header is.
     pub batch_offset: u64,
     /// It is its batch's first entry.
@@ -85,9 +128,16 @@ pub(crate) struct Found {
 /// What the walk met next.
 #[derive(Debug)]
 pub(crate) enum Event {
-    /// A batch begins, written under this cut count.
+    /// A batch begins at `offset` of segment `seg`, written under
+    /// `cut_count`. `header` is its header's bytes as verified; `None` for
+    /// a batch of another cut count than the open's after its firm
+    /// position, of whose header only the start was read and of which
+    /// nothing more is read.
     Batch {
+        seg: usize,
+        offset: u64,
         cut_count: u64,
+        header: Option<[u8; BATCH_HEADER as usize]>,
     },
     Entry(Found),
     /// The batch ended: whole when all its entries were read, its last
@@ -109,7 +159,8 @@ pub(crate) enum Event {
     },
 }
 
-/// A read error, at a place in the log.
+/// A read error, at a place in the log: the offset of the read that
+/// failed.
 #[derive(Debug)]
 pub(crate) struct ReadFault {
     pub seg: usize,
@@ -117,11 +168,30 @@ pub(crate) struct ReadFault {
     pub error: sys::Error,
 }
 
+/// What a look for a batch header at a place found.
+#[derive(Debug)]
+enum Probe {
+    /// A valid header that continues the chain, and its bytes.
+    Header(BatchHeader, [u8; BATCH_HEADER as usize]),
+    /// The start of a header that continues the chain after the open's firm
+    /// position, written under another cut count: nothing more of it is
+    /// read.
+    Stale(BatchStart),
+    Nothing,
+}
+
 /// The batch being read.
 struct OpenBatch {
-    header: BatchHeader,
     offset: u64,
+    count: u32,
+    length: u64,
+    /// The hash its header names for its last entry; `None` for a batch of
+    /// which only the start of its header was read.
+    last: Option<[u8; 32]>,
     read: u32,
+    /// No entry past this index is read: the batch was written before the
+    /// last cut, and counts only up to the firm position.
+    read_no_further_than: Option<u64>,
 }
 
 /// A walk of the log from the start of one listed segment.
@@ -137,20 +207,19 @@ pub(crate) struct Scanner<'a> {
     batch: Option<OpenBatch>,
     /// A batch header found where an entry was expected, to begin once the
     /// batch it ends is reported.
-    pending: Option<(BatchHeader, u64)>,
-    /// No entry of the current batch past this index is read: the batch
-    /// ends there, as if the entry were missing.
-    read_no_further_than: Option<u64>,
+    pending: Option<(Probe, u64)>,
     /// The walk ends once the batch it is in is reported.
     ending: Option<(usize, u64)>,
     ended: bool,
-    cursor: Cursor,
-    keep_payload: bool,
+    keep: Keep,
+    judge: Option<Judge>,
+    /// A buffer for the next place.
+    spare: Vec<u8>,
 }
 
 impl<'a> Scanner<'a> {
     /// A walk from the start of `segs[seg]`, chained from its header.
-    pub fn new(segs: &'a [Seg], seg: usize, keep_payload: bool) -> Self {
+    pub fn new(segs: &'a [Seg], seg: usize, keep: Keep) -> Self {
         let header = &segs[seg].header;
         Self {
             segs,
@@ -161,20 +230,18 @@ impl<'a> Scanner<'a> {
             prev_term: header.prev_term,
             batch: None,
             pending: None,
-            read_no_further_than: None,
             ending: None,
             ended: false,
-            cursor: Cursor::new(),
-            keep_payload,
+            keep,
+            judge: None,
+            spare: Vec::new(),
         }
     }
 
-    /// Read no entry of the current batch past `index`: the batch, and the
-    /// walk, end before it, and nothing is read for it. The next batch is
-    /// read in full again. The open sets it for a batch written before the
-    /// last cut, which counts only up to the firm position.
-    pub fn read_no_further_than(&mut self, index: u64) {
-        self.read_no_further_than = Some(index);
+    /// Walk under the open's rule after its firm position (see [`Judge`]).
+    pub fn judging(mut self, judge: Judge) -> Self {
+        self.judge = Some(judge);
+        self
     }
 
     /// The index the next entry would have, and the hash and term of the
@@ -183,98 +250,126 @@ impl<'a> Scanner<'a> {
         (self.next, self.prev, self.prev_term)
     }
 
-    /// The bytes at `offset` of the current segment, up to `len`.
-    fn bytes(&mut self, offset: u64, len: u64) -> Result<&[u8], ReadFault> {
+    fn place(&mut self, offset: u64) -> Place {
+        let mut buf = std::mem::take(&mut self.spare);
+        buf.clear();
+        Place {
+            offset,
+            buf,
+            short: false,
+        }
+    }
+
+    fn recycle(&mut self, place: Place) {
+        if place.buf.capacity() <= KEEP_BUFFER {
+            self.spare = place.buf;
+        }
+    }
+
+    /// The first `len` bytes of `place` in the current segment.
+    fn get<'p>(&self, place: &'p mut Place, len: u64) -> Result<&'p [u8], ReadFault> {
         let seg = &self.segs[self.seg];
-        let size = seg.header.size;
-        match self.cursor.get(&*seg.file, size, offset, len) {
-            Ok(bytes) => Ok(bytes),
-            Err(error) => Err(ReadFault {
+        place
+            .get(&*seg.file, seg.header.size, len)
+            .map_err(|(offset, error)| ReadFault {
                 seg: self.seg,
                 offset,
                 error,
-            }),
-        }
+            })
     }
 
-    /// A valid batch header at `offset` whose first entry is the next one
-    /// and chains from the entry just read.
-    fn header_at(&mut self, offset: u64) -> Result<Option<BatchHeader>, ReadFault> {
+    /// Whether a batch header that continues the chain begins at `place`,
+    /// decided from what must be there (format section 3.6): no batch
+    /// begins where fewer bytes are left than a header and one entry of no
+    /// payload, and none where the mark is not; then the rest of the
+    /// header's start must name the index expected and the entry just read,
+    /// and fit in the segment; then, under the open's rule, a header of
+    /// another cut count after the firm position is settled; only then is
+    /// the rest of the header read and its hash checked. Each step reads
+    /// only what it needs, so that a read fails only where a decision
+    /// depends on the bytes it could not read.
+    fn probe(&self, place: &mut Place) -> Result<Probe, ReadFault> {
         let size = self.segs[self.seg].header.size;
-        let next = self.next;
-        let prev = self.prev;
-        let bytes = self.bytes(offset, BATCH_HEADER)?;
-        Ok(BatchHeader::decode(bytes).filter(|h| {
-            h.first == next
-                && h.prev == prev
-                && offset
-                    .checked_add(BATCH_HEADER)
-                    .and_then(|o| o.checked_add(h.length))
-                    .is_some_and(|end| end <= size)
-        }))
+        let offset = place.offset;
+        if size.saturating_sub(offset) < BATCH_HEADER + ENTRY_OVERHEAD {
+            return Ok(Probe::Nothing);
+        }
+        if !is_batch_mark(self.get(place, BATCH_MARK)?) {
+            return Ok(Probe::Nothing);
+        }
+        let Some(start) = BatchStart::decode(self.get(place, BATCH_START)?) else {
+            return Ok(Probe::Nothing);
+        };
+        let fits = offset
+            .checked_add(BATCH_HEADER)
+            .and_then(|o| o.checked_add(start.length))
+            .is_some_and(|end| end <= size);
+        if start.first != self.next || start.prev != self.prev || !fits {
+            return Ok(Probe::Nothing);
+        }
+        if let Some(judge) = self.judge {
+            if start.first > judge.firm && start.cut_count != judge.cut_count {
+                return Ok(Probe::Stale(start));
+            }
+        }
+        let bytes = self.get(place, BATCH_HEADER)?;
+        Ok(match BatchHeader::decode(bytes) {
+            Some(header) => Probe::Header(
+                header,
+                bytes[..BATCH_HEADER as usize]
+                    .try_into()
+                    .expect("a whole header"),
+            ),
+            None => Probe::Nothing,
+        })
     }
 
-    /// A whole entry at `offset` that is the next one and continues the
-    /// chain, within `limit`. Its fixed fields are checked (index and
-    /// payload length within the format's bounds, the entry within the
-    /// batch) before anything is read for its payload, so that no length
-    /// read from disk sizes more than [`super::format::MAX_PAYLOAD`] bytes.
-    fn entry_at(&mut self, offset: u64, limit: u64) -> Result<Option<Found>, ReadFault> {
-        let fixed = self.bytes(offset, ENTRY_FIXED)?;
-        if (fixed.len() as u64) < ENTRY_FIXED {
-            return Ok(None);
-        }
-        let Some(head) = EntryHead::decode(fixed) else {
+    /// The entry at `place`, if it is whole, the next one, chained, and
+    /// within `limit`. Its fixed fields are checked (index and payload
+    /// length within the format's bounds, the entry within the batch)
+    /// before anything is read for its payload, so that no length read from
+    /// disk sizes more than [`super::format::MAX_PAYLOAD`] bytes; then the
+    /// rest of it is read, once, and its hash checked over the bytes its
+    /// fields were decoded from.
+    fn entry(&mut self, mut place: Place, limit: u64) -> Result<Option<Found>, ReadFault> {
+        let offset = place.offset;
+        let fixed = self.get(&mut place, ENTRY_FIXED)?;
+        let head = if (fixed.len() as u64) < ENTRY_FIXED {
+            None
+        } else {
+            EntryHead::decode(fixed)
+                .filter(|h| h.index == self.next && offset.saturating_add(h.size()) <= limit)
+        };
+        let Some(head) = head else {
+            self.recycle(place);
             return Ok(None);
         };
-        if head.index != self.next || offset.saturating_add(head.size()) > limit {
+        let size = head.size();
+        let content = (ENTRY_FIXED + u64::from(head.len)) as usize;
+        let bytes = self.get(&mut place, size)?;
+        if (bytes.len() as u64) < size {
+            self.recycle(place);
             return Ok(None);
         }
-        let content_len = ENTRY_FIXED + u64::from(head.len);
-        let prev = self.prev;
-        let keep = self.keep_payload;
-        let total = content_len + HASH;
-        let (hash, payload) = if total <= CHUNK as u64 {
-            let bytes = self.bytes(offset, total)?;
-            if (bytes.len() as u64) < total {
-                return Ok(None);
+        let hash = entry_hash(&self.prev, &bytes[..content]);
+        if hash[..] != bytes[content..] {
+            self.recycle(place);
+            return Ok(None);
+        }
+        let (payload, bytes) = match self.keep {
+            Keep::Payloads => {
+                let mut buf = std::mem::take(&mut place.buf);
+                buf.truncate(content);
+                buf.drain(..ENTRY_FIXED as usize);
+                (buf, Vec::new())
             }
-            let content = &bytes[..content_len as usize];
-            let hash = entry_hash(&prev, content);
-            if hash[..] != bytes[content_len as usize..] {
-                return Ok(None);
+            Keep::BytesAfter(index) if head.index > index => {
+                (Vec::new(), std::mem::take(&mut place.buf))
             }
-            let payload = if keep {
-                content[ENTRY_FIXED as usize..].to_vec()
-            } else {
-                Vec::new()
-            };
-            (hash, payload)
-        } else {
-            // A large entry is read into a buffer of its own, which becomes
-            // its payload: one copy of it in memory, not two.
-            let mut bytes = vec![0u8; total as usize];
-            let file = &*self.segs[self.seg].file;
-            let n = read_exact(file, offset, &mut bytes).map_err(|error| ReadFault {
-                seg: self.seg,
-                offset,
-                error,
-            })?;
-            if n < bytes.len() {
-                return Ok(None);
+            _ => {
+                self.recycle(place);
+                (Vec::new(), Vec::new())
             }
-            let hash = entry_hash(&prev, &bytes[..content_len as usize]);
-            if hash[..] != bytes[content_len as usize..] {
-                return Ok(None);
-            }
-            let payload = if keep {
-                bytes.truncate(content_len as usize);
-                bytes.drain(..ENTRY_FIXED as usize);
-                bytes
-            } else {
-                Vec::new()
-            };
-            (hash, payload)
         };
         let batch = self
             .batch
@@ -283,13 +378,14 @@ impl<'a> Scanner<'a> {
         Ok(Some(Found {
             seg: self.seg,
             offset,
-            size: head.size(),
+            size,
             index: head.index,
             term: head.term,
             kind: head.kind,
             file: head.file,
             hash,
             payload,
+            bytes,
             batch_offset: batch.offset,
             first_in_batch: batch.read == 0,
         }))
@@ -306,6 +402,13 @@ impl<'a> Scanner<'a> {
         })
     }
 
+    /// The current batch ends at `offset`, and the walk with it.
+    fn end_batch_here(&mut self, offset: u64) -> Event {
+        self.batch = None;
+        self.ending = Some((self.seg, offset));
+        Event::BatchEnd { whole: false }
+    }
+
     pub fn next_event(&mut self) -> Result<Event, ReadFault> {
         if self.ended {
             return Ok(Event::End {
@@ -313,15 +416,20 @@ impl<'a> Scanner<'a> {
                 offset: self.offset,
             });
         }
-        if let Some((count, read, batch_offset, length, last)) = self.batch.as_ref().map(|b| {
-            (
-                b.header.count,
-                b.read,
-                b.offset,
-                b.header.length,
-                b.header.last,
-            )
-        }) {
+        if let Some(batch) = &self.batch {
+            let (batch_offset, count, length, last, read, no_further) = (
+                batch.offset,
+                batch.count,
+                batch.length,
+                batch.last,
+                batch.read,
+                batch.read_no_further_than,
+            );
+            // A batch of which only the start of its header was read:
+            // nothing of it is read, and the walk ends at it.
+            let Some(last) = last else {
+                return Ok(self.end_batch_here(batch_offset));
+            };
             if read == count {
                 let whole = self.prev == last
                     && Some(self.offset)
@@ -336,23 +444,42 @@ impl<'a> Scanner<'a> {
                 return Ok(Event::BatchEnd { whole: false });
             }
             let offset = self.offset;
-            // A cut and the batch written after it: a header where an
-            // entry was expected, which begins with the next entry.
-            if let Some(header) = self.header_at(offset)? {
-                self.batch = None;
-                self.pending = Some((header, offset));
-                return Ok(Event::BatchEnd { whole: false });
-            }
-            if self
-                .read_no_further_than
-                .is_some_and(|last| self.next > last)
-            {
-                self.batch = None;
-                self.ending = Some((self.seg, offset));
-                return Ok(Event::BatchEnd { whole: false });
-            }
             let limit = batch_offset + BATCH_HEADER + length;
-            match self.entry_at(offset, limit)? {
+            let mut place = self.place(offset);
+            if no_further.is_some_and(|last| self.next > last)
+                || limit.saturating_sub(offset) < ENTRY_OVERHEAD
+            {
+                // No entry of the batch is read here: it was written before
+                // the last cut and this is past the firm position, or it
+                // has no room left for one. Only a header that ends the
+                // batch (a cut, and the batch written after it) counts
+                // here, and that shows in its mark first.
+                let probe = self.probe(&mut place)?;
+                self.recycle(place);
+                return Ok(match probe {
+                    Probe::Nothing => self.end_batch_here(offset),
+                    found => {
+                        self.batch = None;
+                        self.pending = Some((found, offset));
+                        Event::BatchEnd { whole: false }
+                    }
+                });
+            }
+            // The next entry, or a header that ends the batch: both begin
+            // here, with the bytes an entry's fixed fields take. A header
+            // is looked for only when they begin with its mark.
+            if is_batch_mark(self.get(&mut place, ENTRY_FIXED)?) {
+                match self.probe(&mut place)? {
+                    Probe::Nothing => {}
+                    found => {
+                        self.recycle(place);
+                        self.batch = None;
+                        self.pending = Some((found, offset));
+                        return Ok(Event::BatchEnd { whole: false });
+                    }
+                }
+            }
+            return Ok(match self.entry(place, limit)? {
                 Some(found) => {
                     self.offset += found.size;
                     // An entry's index is at most `MAX_INDEX`, one below
@@ -363,14 +490,10 @@ impl<'a> Scanner<'a> {
                     if let Some(batch) = &mut self.batch {
                         batch.read += 1;
                     }
-                    return Ok(Event::Entry(found));
+                    Event::Entry(found)
                 }
-                None => {
-                    self.batch = None;
-                    self.ending = Some((self.seg, offset));
-                    return Ok(Event::BatchEnd { whole: false });
-                }
-            }
+                None => self.end_batch_here(offset),
+            });
         }
         if let Some((seg, offset)) = self.ending.take() {
             self.ended = true;
@@ -378,32 +501,58 @@ impl<'a> Scanner<'a> {
             return Ok(Event::End { seg, offset });
         }
         let begin = match self.pending.take() {
-            Some(found) => Some(found),
+            Some(found) => found,
             None if self.next_segment_continues() => {
                 self.seg += 1;
                 self.offset = SEGMENT_HEADER;
-                self.cursor = Cursor::new();
                 return Ok(Event::Segment { seg: self.seg });
             }
             None => {
                 let offset = self.offset;
-                self.header_at(offset)?.map(|h| (h, offset))
+                let mut place = self.place(offset);
+                let probe = self.probe(&mut place)?;
+                self.recycle(place);
+                (probe, offset)
             }
         };
+        let firm = self.judge.map(|j| j.firm);
         match begin {
-            Some((header, offset)) => {
-                self.read_no_further_than = None;
+            (Probe::Header(header, bytes), offset) => {
+                let stale = self.judge.is_some_and(|j| header.cut_count != j.cut_count);
                 self.batch = Some(OpenBatch {
-                    header,
                     offset,
+                    count: header.count,
+                    length: header.length,
+                    last: Some(header.last),
                     read: 0,
+                    read_no_further_than: if stale { firm } else { None },
                 });
                 self.offset = offset + BATCH_HEADER;
                 Ok(Event::Batch {
+                    seg: self.seg,
+                    offset,
                     cut_count: header.cut_count,
+                    header: Some(bytes),
                 })
             }
-            None => {
+            (Probe::Stale(start), offset) => {
+                self.batch = Some(OpenBatch {
+                    offset,
+                    count: start.count,
+                    length: start.length,
+                    last: None,
+                    read: 0,
+                    read_no_further_than: firm,
+                });
+                self.offset = offset;
+                Ok(Event::Batch {
+                    seg: self.seg,
+                    offset,
+                    cut_count: start.cut_count,
+                    header: None,
+                })
+            }
+            (Probe::Nothing, _) => {
                 self.ended = true;
                 Ok(Event::End {
                     seg: self.seg,
