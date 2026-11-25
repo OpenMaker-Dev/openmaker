@@ -823,6 +823,31 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
     }
 }
 
+impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
+    /// The next item, as [`Iterator::next`] gives it, but with its key lent
+    /// to `f` rather than given: from its page when the page holds the key
+    /// whole (a key of up to the 1,024 bytes a spilled item keeps in its
+    /// page), else read whole first. For a reader that needs only part of
+    /// each key, or a copy into its own buffer.
+    pub fn next_lent<T>(&mut self, f: impl FnOnce(&[u8], Node) -> T) -> Option<Result<T>> {
+        let item = self.step().and_then(|at| {
+            at.map(|(leaf, i)| {
+                let pages = &self.tree.pages;
+                let node = pages.item_node(&leaf, i)?;
+                match leaf.item(i).key_part() {
+                    (key, true) => Ok(f(key, node)),
+                    (_, false) => Ok(f(&pages.item_key(&leaf, i)?, node)),
+                }
+            })
+            .transpose()
+        });
+        if item.is_err() {
+            self.state = State::Done;
+        }
+        item.transpose()
+    }
+}
+
 impl<'t, 's, S: PageStore + ?Sized> Iterator for Cursor<'t, 's, S> {
     type Item = Result<Item>;
 

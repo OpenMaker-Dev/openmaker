@@ -189,22 +189,25 @@ impl<'s, S: PageStore + ?Sized> PagedView<'s, S> {
             // written as a push (as `om_hbam::KeyTree` makes it).
             stack.push(OwnedNode::default());
         } else {
-            match items.next() {
+            match items.next_lent(|key, node| (key_depth(key), node)) {
                 None => return Ok(None),
                 Some(Err(e)) => return Err(unreadable(path, &e)),
-                Some(Ok(item)) => {
-                    if item.key.depth() != base {
+                Some(Ok((depth, node))) => {
+                    if depth != base {
                         return Err(orphan(path));
                     }
                     let segment = exact(path[base - 1].to_vec());
-                    least += segment.len() + item.node.value().len();
-                    stack.push(owned(segment, item.node));
+                    least += segment.len() + node.value().len();
+                    stack.push(owned(segment, node));
                 }
             }
         }
-        for item in items {
-            let item = item.map_err(|e| unreadable(path, &e))?;
-            let (depth, segment) = last_segment(item.key.as_bytes());
+        // Each key is lent from its page: only its last segment is copied.
+        while let Some(item) = items.next_lent(|key, node| {
+            let (depth, segment) = last_segment(key);
+            (depth, segment, node)
+        }) {
+            let (depth, segment, node) = item.map_err(|e| unreadable(path, &e))?;
             let below = depth.checked_sub(base).filter(|d| *d > 0);
             let Some(below) = below.filter(|d| *d <= stack.len()) else {
                 return Err(orphan(path));
@@ -212,11 +215,11 @@ impl<'s, S: PageStore + ?Sized> PagedView<'s, S> {
             while stack.len() > below {
                 finish(&mut stack);
             }
-            least += size_of::<OwnedNode>() + segment.len() + item.node.value().len();
+            least += size_of::<OwnedNode>() + segment.len() + node.value().len();
             if limit != NO_LIMIT && least > limit {
                 return Err(too_large());
             }
-            stack.push(owned(segment, item.node));
+            stack.push(owned(segment, node));
         }
         while stack.len() > 1 {
             finish(&mut stack);
@@ -306,6 +309,21 @@ fn last_segment(key: &[u8]) -> (usize, Vec<u8>) {
         j += if bytes[j] == 0 { 2 } else { 1 };
     }
     (depth, exact(segment))
+}
+
+/// How many segments the key `key` has.
+fn key_depth(key: &[u8]) -> usize {
+    let mut depth = 0;
+    let mut i = 0;
+    while i + 1 < key.len() {
+        if key[i] == 0 {
+            depth += usize::from(key[i + 1] == 0x01);
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    depth
 }
 
 /// A read of `path` that reached a page that does not read or check.
@@ -428,8 +446,11 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
         let base = path.len();
         let max = max.max(1);
         let mut given = 0;
-        // The path of the last node given, below `path`.
-        let mut last: Option<Vec<u8>> = None;
+        // The key of the last node given, while `have_last`, and the key
+        // being read: two buffers for the page, swapped, so that a key lent
+        // from its page is copied and never allocated alone.
+        let (mut last, mut current) = (Vec::new(), Vec::new());
+        let mut have_last = false;
         let start = key::encode(path);
         let end = key::subtree_end(&start);
         let hi = end.as_deref().map_or(Bound::Unbounded, Bound::Excluded);
@@ -445,7 +466,7 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
                         },
                     });
                     given += 1;
-                    last = Some(Vec::new());
+                    have_last = true;
                 }
                 tree.walk(path)
             }
@@ -469,15 +490,20 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
         };
         loop {
             if given >= max {
-                return Ok(last.as_deref().map(resume));
+                return Ok(have_last.then(|| resume(&last)));
             }
-            let item = match items.next() {
+            let lent = items.next_lent(|key, node| {
+                current.clear();
+                current.extend_from_slice(key);
+                let (depth, segment) = last_segment(key);
+                (depth, segment, node)
+            });
+            let (depth, segment, node) = match lent {
                 None => return Ok(None),
                 Some(Ok(item)) => item,
-                Some(Err(_)) if given > 0 => return Ok(last.as_deref().map(resume)),
+                Some(Err(_)) if given > 0 => return Ok(have_last.then(|| resume(&last))),
                 Some(Err(e)) => return Err(unreadable(path, &e)),
             };
-            let (depth, segment) = last_segment(item.key.as_bytes());
             let Some(below) = depth.checked_sub(base) else {
                 return Err(orphan(path));
             };
@@ -489,10 +515,11 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
             out.push(Step {
                 depth: below,
                 segment: Cow::Owned(segment),
-                head: head(item.node),
+                head: head(node),
             });
             given += 1;
-            last = Some(item.key.into_bytes());
+            std::mem::swap(&mut last, &mut current);
+            have_last = true;
         }
     }
 
