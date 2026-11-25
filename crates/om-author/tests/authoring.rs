@@ -544,32 +544,57 @@ fn authoring_does_not_require_desktop_layouts_or_tables() {
 }
 
 /// A catalog upload (op13) from an account without [Full Access] is
-/// refused, whatever catalog node it names, and stores nothing: the file's
-/// bytes and the script's steps are as they were, also after a restart. The
-/// server fails the request with a system exception; its reply carries no
-/// status, so answering it as done would read as stored.
+/// refused for its privileges, whatever catalog node it names, and stores
+/// nothing: the file's bytes and the script's steps are as they were, also
+/// after a restart. The server fails the request with a system exception
+/// (its reply carries no status, so answering it as done would read as
+/// stored), and that failure is the privilege check's: the same four
+/// uploads from the [Full Access] account are done, on a copy of the file
+/// hosted for them alone.
 #[test]
 fn native_catalog_uploads_cannot_bypass_authoring_permissions() {
     use om_protocol::{write, Resume};
+    let destinations = || {
+        [
+            vec![vec![17]],
+            vec![vec![17], vec![5]],
+            vec![vec![17], vec![5], serial::encode(GREETING)],
+            vec![vec![17], vec![5], serial::encode(GREETING), vec![4]],
+        ]
+    };
+    let upload_to = |dest: Vec<Vec<u8>>| write::Upload {
+        payload: Vec::new(),
+        resume: Resume::start(),
+        terminal: Vec::new(),
+        flags: write::UPLOAD_VALUE,
+        dest,
+    };
+
+    // With [Full Access] each upload is done: nothing else about these
+    // requests makes the server fail them.
+    let allowed = TempFile::new("author-native-allowed", &scripts(), true);
+    let allowing = host(&allowed, "OpenMaker upload control");
+    let (mut admin, admin_file) = session(&allowing, "Admin", ACCOUNT, PASSWORD);
+    for dest in destinations() {
+        let upload = upload_to(dest);
+        let answer = admin.perform(&write::build_upload_to_host(9901, admin_file, &upload));
+        assert!(answer.is_ok(), "{:02x?}: {answer:02x?}", upload.dest);
+    }
+    admin.disconnect().unwrap();
+    allowing.stop();
+
     let file = TempFile::new("author-native-denial", &scripts(), true);
     let host = host(&file, "OpenMaker upload test");
     let original = std::fs::read(&file.0).unwrap();
     let (mut clerk, file_id) = session(&host, "Clerk", CLERK, CLERK_PASSWORD);
-    for dest in [
-        vec![vec![17]],
-        vec![vec![17], vec![5]],
-        vec![vec![17], vec![5], serial::encode(GREETING)],
-        vec![vec![17], vec![5], serial::encode(GREETING), vec![4]],
-    ] {
-        let upload = write::Upload {
-            payload: Vec::new(),
-            resume: Resume::start(),
-            terminal: Vec::new(),
-            flags: write::UPLOAD_VALUE,
-            dest,
-        };
+    for dest in destinations() {
+        let upload = upload_to(dest);
         let answer = clerk.perform(&write::build_upload_to_host(9902, file_id, &upload));
-        assert!(answer.is_err(), "{:02x?}: {answer:02x?}", upload.dest);
+        assert!(
+            matches!(&answer, Err(error) if error.to_string().contains("SystemException")),
+            "{:02x?}: {answer:02x?}",
+            upload.dest
+        );
         assert_eq!(std::fs::read(&file.0).unwrap(), original);
     }
     clerk.disconnect().unwrap();
