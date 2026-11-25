@@ -254,6 +254,11 @@ pub(crate) struct Shared {
     /// While set, HostTimeStamp fails ([`crate::Server::failing_timestamps`]).
     #[cfg(debug_assertions)]
     pub failing_timestamps: Arc<AtomicBool>,
+    /// The next write admitted finds its file made read-only before the
+    /// engine takes the write lock
+    /// ([`crate::ServerHandle::read_only_before_next_write`]).
+    #[cfg(debug_assertions)]
+    pub read_only_before_write: AtomicBool,
 }
 
 /// The sockets of a server's accepted connections, so that they can be
@@ -3113,45 +3118,73 @@ fn request_notification(
 }
 
 /// The open file a write names, if this session is logged in to it and
-/// the file may be written (a local file that cannot be is refused here,
-/// before the write changes anything, [`file_read_only`]).
+/// the file may be written; otherwise why not ([`Unwritable`]). The one
+/// admission decision of a write request: a file found read-only here is
+/// refused before the write changes anything ([`file_read_only`]), and one
+/// that becomes read-only after it is refused by the engine, which decides
+/// again under the write lock; each request answers either refusal as a
+/// write that was not stored, never as one that was.
 fn writable<'s>(
     shared: &Shared,
     peer: &str,
     session: &'s Session,
     header: &Header,
-) -> Option<&'s OpenFile> {
-    let file = session.open.get(&header.file_id)?;
+) -> Result<&'s OpenFile, Unwritable> {
+    let file = session
+        .open
+        .get(&header.file_id)
+        .ok_or(Unwritable::Session)?;
     if set_access(file).is_none() {
         info!("{peer}: refusing a write before Login");
-        return None;
+        return Err(Unwritable::Session);
     }
     if file_read_only(shared, file) {
         info!(
             "{peer}: refusing a write to read-only {:?}",
             file.hosted.name
         );
-        return None;
+        return Err(Unwritable::ReadOnly(format!(
+            "{:?} is hosted read-only",
+            file.hosted.name
+        )));
     }
     if views_records_only(file) {
         info!(
             "{peer}: refusing a record write to {:?} under [Read-Only Access]",
             file.hosted.name
         );
-        return None;
+        return Err(Unwritable::Session);
     }
-    Some(file)
+    Ok(file)
 }
 
-/// Why a write to the file `header` names is refused for the file itself,
-/// for a session logged in to it: the file is hosted read-only. A write
-/// whose reply has no status to carry the refusal (op13, op73) then fails
-/// with a system exception rather than answer as if it ran (#737); what
-/// FileMaker Server answers for a file it serves read-only is unmeasured.
-fn hosted_read_only(shared: &Shared, session: &Session, header: &Header) -> Option<String> {
-    let file = session.open.get(&header.file_id)?;
-    (set_access(file).is_some() && file_read_only(shared, file))
-        .then(|| format!("{:?} is hosted read-only", file.hosted.name))
+/// Why [`writable`] refused a write.
+enum Unwritable {
+    /// The session may not write the file: it does not have it open, has
+    /// not logged in to it, or its set reads records only.
+    Session,
+    /// The file is hosted read-only, which it stays while it is hosted
+    /// (`Store::set_read_only`). A write whose reply has no status to carry
+    /// the refusal (op13, op14, op70, op73) fails with the system exception
+    /// a write that was not stored gets, rather than answer as if it ran
+    /// (#737); what FileMaker Server answers for a file it serves read-only
+    /// is unmeasured.
+    ReadOnly(String),
+}
+
+/// Debug builds: hold `hosted` read-only now when a test asked for it
+/// (`ServerHandle::read_only_before_next_write`), after its request was
+/// admitted and before the engine takes the write lock, as another
+/// connection's op73 can make a file read-only between the two.
+fn before_engine_write(shared: &Shared, hosted: &Hosted) {
+    #[cfg(debug_assertions)]
+    if shared.read_only_before_write.swap(false, Ordering::Relaxed) {
+        shared
+            .engine
+            .hold_read_only(hosted, crate::store::ReadOnlyCause::DeferredWork);
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = (shared, hosted);
 }
 
 /// The privilege set `file`'s session logged in with, as it was then
@@ -3289,7 +3322,7 @@ fn create_record(
     txn: &[u8],
 ) -> Result<Vec<u8>, PerformError> {
     let request = write::parse_create_record_request(txn)?;
-    let Some(file) = writable(shared, peer, session, header) else {
+    let Ok(file) = writable(shared, peer, session, header) else {
         return Ok(write::CreateRecordReply {
             conflict: None,
             status: u32::from(ACCESS_DENIED),
@@ -3317,6 +3350,7 @@ fn create_record(
         room,
         durable: true,
     };
+    before_engine_write(shared, &file.hosted);
     let outcome = shared
         .engine
         .submit(&file.hosted, Operation::ReserveRecordIds(reserve));
@@ -3358,6 +3392,7 @@ fn get_serial(
         }) {
         Some(file) => {
             let advance = AdvanceSerial { request };
+            before_engine_write(shared, &file.hosted);
             let outcome = shared
                 .engine
                 .submit(&file.hosted, Operation::AdvanceSerial(advance));
@@ -3418,19 +3453,22 @@ fn upload(
     // was dropped with its session in the file (closed, logged out of): it
     // fails, as a dropped transfer does, rather than answer that the upload
     // completed (the reply has no status to carry an error, spec 3.3).
-    let Some(file) = writable(shared, peer, session, header) else {
-        if request.resume.has_more() {
-            return Err(Refused.into());
-        }
-        // An upload to a catalog of a file hosted read-only is not stored,
-        // and fails as one whose save failed does (#737).
-        if let (true, Some(why)) = (to_file, hosted_read_only(shared, session, header)) {
+    let file = match writable(shared, peer, session, header) {
+        Ok(file) => file,
+        // Nothing is stored or staged on a file hosted read-only, whatever
+        // the part and whether it goes into the file or the temporary area:
+        // the upload fails as one whose save failed does (#737), so that
+        // neither it nor a commit of what it would have staged is taken
+        // for done.
+        Err(Unwritable::ReadOnly(why)) => {
             return Err(PerformError::Status(format!(
-                "upload to {:02x?} not stored: {why}",
-                request.dest
+                "upload to {:02x?} not {}: {why}",
+                request.dest,
+                if to_file { "stored" } else { "staged" }
             )));
         }
-        return Ok(done);
+        Err(Unwritable::Session) if request.resume.has_more() => return Err(Refused.into()),
+        Err(Unwritable::Session) => return Ok(done),
     };
     // Native uploads can replace a script through any catalog ancestor or
     // descendant. Apply the same account boundary as opcode 240 to every
@@ -3526,6 +3564,7 @@ fn upload_to_file(
         path: request.dest.clone(),
         node,
     };
+    before_engine_write(shared, hosted);
     match shared
         .engine
         .submit(hosted, Operation::UploadToCatalog(upload))
@@ -3538,9 +3577,10 @@ fn upload_to_file(
             );
             Ok(())
         }
-        // op13's reply has no status: one that was not stored, or whose
-        // outcome is unknown, fails with a system exception, as op70's does
-        // (docs/server-storage.md 5).
+        // op13's reply has no status: one that was not stored (its save
+        // failed, or the file was hosted read-only when the engine took the
+        // write lock), or whose outcome is unknown, fails with a system
+        // exception, as op70's does (docs/server-storage.md 5).
         Reply::UploadToCatalog(Err(error)) => Err(PerformError::Status(upload_not_stored(
             &request.dest,
             &error,
@@ -3574,19 +3614,25 @@ fn update_table(
     txn: &[u8],
 ) -> Result<Vec<u8>, PerformError> {
     let table = schema::parse_update_table_request(txn)?;
-    // The reply is empty: on a file hosted read-only the work is not done,
-    // and the request fails as op13's does (#737).
-    if let Some(why) = hosted_read_only(shared, session, header) {
-        return Err(PerformError::Status(format!(
-            "table update not done: {why}"
-        )));
-    }
-    if let (Some(file), [table]) = (writable(shared, peer, session, header), table.as_slice()) {
+    // The reply is empty: on a file hosted read-only, found so here or by
+    // the engine under its write lock, the work is not done, and the
+    // request fails as op13's does (#737).
+    let file = match writable(shared, peer, session, header) {
+        Ok(file) => Some(file),
+        Err(Unwritable::ReadOnly(why)) => {
+            return Err(PerformError::Status(format!(
+                "table update not done: {why}"
+            )));
+        }
+        Err(Unwritable::Session) => None,
+    };
+    if let (Some(file), [table]) = (file, table.as_slice()) {
         let account = file.account.as_deref().map_or("", |account| &account.name);
         let update = UpdateTable {
             table: table.clone(),
             account: account.to_owned(),
         };
+        before_engine_write(shared, &file.hosted);
         match shared
             .engine
             .submit(&file.hosted, Operation::UpdateTable(update))
@@ -3676,9 +3722,15 @@ fn commit(
 ) -> Result<Vec<u8>, PerformError> {
     let request = write::parse_commit_request(txn)?;
     let done = write::upload_reply(&Resume::no_stream(), max_return as usize);
-    // Each part is held only for a request that may write.
-    let Some(file) = writable(shared, peer, session, header) else {
-        return Ok(done);
+    // Each part is held only for a request that may write. On a file hosted
+    // read-only nothing is committed, and the commit fails as one whose
+    // save failed does, below (#737), rather than answer that it was done.
+    let file = match writable(shared, peer, session, header) {
+        Ok(file) => file,
+        Err(Unwritable::ReadOnly(why)) => {
+            return Err(PerformError::Status(format!("commit not saved: {why}")));
+        }
+        Err(Unwritable::Session) => return Ok(done),
     };
     let hosted = file.hosted.clone();
     // `writable` admits only a session with a set.
@@ -3743,6 +3795,7 @@ fn commit(
         staged,
         withheld,
     };
+    before_engine_write(shared, &hosted);
     let outcome = shared
         .engine
         .submit(&hosted, Operation::CommitRecords(commit));
@@ -3854,7 +3907,7 @@ fn upload_binary(
     if !session.open.contains_key(&header.file_id) {
         return Ok(failed(FILE_NOT_OPEN));
     }
-    let Some(file) = writable(shared, peer, session, header) else {
+    let Ok(file) = writable(shared, peer, session, header) else {
         return Ok(failed(ACCESS_DENIED));
     };
     if !views_every_record(file) {
@@ -3903,6 +3956,7 @@ fn upload_binary(
         data,
         bytes,
     };
+    before_engine_write(shared, &hosted);
     let outcome = shared
         .engine
         .submit(&hosted, Operation::StoreContainerData(store));
@@ -3924,14 +3978,15 @@ fn adjust_reference_count(
 ) -> Result<Vec<u8>, PerformError> {
     let request = container::parse_adjust_reference_count_request(txn)?;
     let count = match writable(shared, peer, session, header) {
-        Some(file)
+        Ok(file)
             if !views_every_record(file) || !container_member_editable(file, &request.path) =>
         {
             info!("{peer}: refusing a container count its privilege set does not allow");
             container::COUNT_FAILED
         }
-        Some(file) => {
+        Ok(file) => {
             let adjust = AdjustContainerCount { request };
+            before_engine_write(shared, &file.hosted);
             let outcome = shared
                 .engine
                 .submit(&file.hosted, Operation::AdjustContainerCount(adjust));
@@ -3940,7 +3995,7 @@ fn adjust_reference_count(
                 other => return Err(mismatched(&other)),
             }
         }
-        None => container::COUNT_FAILED,
+        Err(_) => container::COUNT_FAILED,
     };
     Ok(container::adjust_reference_count_reply(count))
 }

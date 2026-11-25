@@ -17,6 +17,7 @@ use fixture::{TempFile, COUNT, DOUBLED, NAME, OCCURRENCE, TABLE};
 use om_formula::Key;
 use om_hbam::slot::uint_segment;
 use om_hbam::{OwnedNode, RidList};
+use om_protocol::authoring;
 use om_protocol::schema::{self, Upgrade};
 use om_protocol::write::{self, attention, Lock, Unlock, Upload};
 use om_protocol::{DownloadRequest, Resume};
@@ -461,38 +462,342 @@ fn deferred_work_a_stop_interrupted_is_finished_at_startup() {
     assert_eq!(std::fs::read(&file.0).unwrap(), before);
 }
 
-/// #737: on a file hosted read-only (here its deferred work cannot be
-/// done at startup), an upload to a catalog (op13) and a table update
-/// (op73) fail with a system exception, as a write that was not stored
-/// fails, rather than answer as if they ran: neither reply has a status to
-/// carry the refusal. The connection carries on, and the file is as it was.
-/// What FileMaker Server answers for a file it serves read-only is
-/// unmeasured.
-#[test]
-fn catalog_writes_to_a_file_hosted_read_only_fail() {
+/// The Tasks file with field work deferred for a field whose definition is
+/// gone (Name's), which no server can do: it is hosted read-only from the
+/// start. Its field catalog comes back too.
+fn read_only_tasks(tag: &str) -> (TempFile, OwnedNode) {
     let mut root = fixture::tree(&[], true);
-    let t = uint_segment(TABLE);
     let mut catalog = field_catalog(&root);
     catalog.remove(&[&[5], &uint_segment(NAME)]);
     defer(&mut catalog, NAME, 0x1e1);
-    root.put(&[&t, &[3]], catalog.clone());
-    let file = TempFile::from_tree("recalc-read-only-catalog-writes", &root);
+    root.put(&[&uint_segment(TABLE), &[3]], catalog.clone());
+    (TempFile::from_tree(tag, &root), catalog)
+}
+
+/// A write request: what it is, its bytes for a file id, and whether its
+/// reply (or system exception) is a refusal. No refusal may be the reply
+/// of a write that was done.
+type WriteRow<'a> = (
+    &'a str,
+    Box<dyn Fn(u32) -> Vec<u8> + 'a>,
+    fn(&Result<Vec<u8>, String>) -> bool,
+);
+
+/// Every request a client sends that changes a file (an op86 program with
+/// schema instructions apart: it needs the session's key), each with how
+/// its refusal reads: a system exception where the reply has no status,
+/// otherwise the status or count of a refusal.
+fn write_requests<'a>(catalog: &'a OwnedNode) -> Vec<WriteRow<'a>> {
+    use om_protocol::container;
+    let exception = |reply: &Result<Vec<u8>, String>| reply.is_err();
+    let status = |reply: &Result<Vec<u8>, String>| {
+        let bytes = reply.as_deref().unwrap_or_default();
+        bytes.get(..4).is_some_and(|code| code != [0; 4])
+    };
+    vec![
+        (
+            "op13 node into the file",
+            Box::new(move |id| {
+                write::build_upload_to_host(1, id, &into_catalog(catalog, write::UPLOAD_NODE))
+            }),
+            exception,
+        ),
+        (
+            "op13 value into the file",
+            Box::new(move |id| {
+                let dest = vec![uint_segment(TABLE), vec![3], vec![9]];
+                let value = upload(write::UPLOAD_VALUE, dest, Vec::new());
+                write::build_upload_to_host(2, id, &value)
+            }),
+            exception,
+        ),
+        (
+            "op14 node into the file (temporary-area flag clear)",
+            Box::new(move |id| {
+                write::build_upload(3, id, &into_catalog(catalog, write::UPLOAD_NODE))
+            }),
+            exception,
+        ),
+        (
+            "op13 into the temporary area",
+            Box::new(move |id| write::build_upload_to_host(4, id, &to_temp_area())),
+            exception,
+        ),
+        (
+            "op14 into the temporary area",
+            Box::new(move |id| write::build_upload(5, id, &to_temp_area())),
+            exception,
+        ),
+        (
+            "op70 commit",
+            Box::new(move |id| {
+                // Record 1's Name, as staged by op14 ([`stage_name`]).
+                let changed = OwnedNode::list(
+                    om_hbam::serial::encode(1),
+                    vec![OwnedNode::leaf(uint_segment(NAME), Vec::new())],
+                );
+                let list = write::commit_list_tables(vec![(uint_segment(TABLE), vec![changed])]);
+                let commit = write::Commit {
+                    list: list.unwrap(),
+                    resume: Resume::start(),
+                    flags: write::COMMIT_COMPLETE_BEFORE_RETURNING,
+                    txn: 0x31,
+                };
+                write::build_commit(6, id, &commit)
+            }),
+            exception,
+        ),
+        (
+            "op71 create a record",
+            Box::new(move |id| {
+                let create = write::CreateRecord {
+                    table: vec![uint_segment(TABLE)],
+                    count: 1,
+                    txn: 0x31,
+                };
+                write::build_create_record(7, id, &create)
+            }),
+            status,
+        ),
+        (
+            "op72 advance a serial",
+            Box::new(move |id| {
+                let serial = write::GetSerial {
+                    table: vec![uint_segment(TABLE)],
+                    field: vec![uint_segment(fixture::CODE)],
+                    value: String::new(),
+                    increment: 1,
+                    flags: write::SERIAL_INCREMENT,
+                };
+                write::build_get_serial(8, id, &serial)
+            }),
+            status,
+        ),
+        (
+            "op73 update a table",
+            Box::new(move |id| schema::build_update_table(9, id, &vec![uint_segment(TABLE)])),
+            exception,
+        ),
+        (
+            "op87 adjust a reference count",
+            Box::new(move |id| {
+                let adjust = container::AdjustReferenceCount {
+                    path: vec![uint_segment(TABLE), vec![0x1f], vec![5], vec![1]],
+                    delta: 1,
+                };
+                container::build_adjust_reference_count(10, id, &adjust)
+            }),
+            |reply| {
+                reply
+                    .as_deref()
+                    .is_ok_and(|b| b == container::COUNT_FAILED.to_be_bytes())
+            },
+        ),
+        (
+            "op88 upload container data",
+            Box::new(move |id| {
+                let binary = container::UploadBinary {
+                    payload: b"not stored".to_vec(),
+                    resume: Resume::start(),
+                    table: vec![uint_segment(TABLE)],
+                    field: vec![uint_segment(NAME)],
+                    solved_path: String::new(),
+                    reserved: [0; 16],
+                };
+                container::build_upload_binary(11, id, &binary)
+            }),
+            |reply| {
+                reply.as_ref().is_ok_and(|bytes| {
+                    container::parse_upload_binary_reply(bytes)
+                        .is_ok_and(|reply| reply.status != 0 && reply.member.is_empty())
+                })
+            },
+        ),
+        (
+            "op240 Save",
+            Box::new(move |id| {
+                authoring::build_request(12, id, &authoring::Request::Save).unwrap()
+            }),
+            |reply| {
+                reply.as_ref().is_ok_and(|bytes| {
+                    matches!(
+                        authoring::parse_reply(&authoring::Request::Save, bytes),
+                        Ok(authoring::Reply::Refused { .. })
+                    )
+                })
+            },
+        ),
+        (
+            "op240 create a field",
+            Box::new(move |id| authoring::build_request(13, id, &create_field(catalog)).unwrap()),
+            |reply| {
+                reply.as_ref().is_ok_and(|bytes| {
+                    matches!(
+                        authoring::parse_reply(
+                            &create_field(&OwnedNode::list(Vec::new(), Vec::new())),
+                            bytes
+                        ),
+                        Ok(authoring::Reply::Refused { .. })
+                    )
+                })
+            },
+        ),
+    ]
+}
+
+/// An upload of `payload` to `dest` with `flags`, in one part.
+fn upload(flags: u8, dest: Vec<Vec<u8>>, payload: Vec<u8>) -> Upload {
+    Upload {
+        payload,
+        resume: Resume::start(),
+        terminal: b"terminal".to_vec(),
+        flags,
+        dest,
+    }
+}
+
+/// An upload of Tasks' field catalog into the file, as Manage Database
+/// sends it.
+fn into_catalog(catalog: &OwnedNode, flags: u8) -> Upload {
+    let dest = vec![uint_segment(TABLE), vec![3]];
+    upload(flags, dest, catalog.to_wire().unwrap())
+}
+
+/// An upload of an edit of record 1 into the temporary area, as a commit's
+/// records are staged.
+fn to_temp_area() -> Upload {
+    let edit = OwnedNode::list(
+        Vec::new(),
+        vec![OwnedNode::list(
+            om_hbam::serial::encode(1),
+            vec![OwnedNode::leaf(uint_segment(NAME), b"Staged".to_vec())],
+        )],
+    );
+    let dest = vec![uint_segment(TABLE), vec![5]];
+    upload(write::UPLOAD_FLAGS, dest, edit.to_wire().unwrap())
+}
+
+/// op240's request to add a text field Priority to Tasks, at `catalog`'s
+/// revision.
+fn create_field(catalog: &OwnedNode) -> authoring::Request {
+    authoring::Request::CreateField(authoring::CreateField {
+        table: TABLE,
+        expected: authoring::catalog_revision(catalog),
+        data_type: 1,
+        name: "Priority".into(),
+        comment: String::new(),
+    })
+}
+
+/// op86 with a schema instruction (DeleteTable of Tasks), keyed for the
+/// session as FileMaker Pro keys it.
+fn delete_table_program(session: &Session, file_id: u32) -> Vec<u8> {
+    use om_query::program::{leaf, opcode};
+    let t = uint_segment(TABLE);
+    let mut program = OwnedNode::list(Vec::new(), Vec::new());
+    for (key, value) in [
+        (leaf::OPCODE, vec![opcode::DELETE_TABLE]),
+        (leaf::SRC, [vec![t.len() as u8], t].concat()),
+        (leaf::FILE_ID, file_id.to_be_bytes().to_vec()),
+        (
+            leaf::ACCESS_KEY,
+            om_crypto::query_access_key(1, session.connection_key(), file_id).to_vec(),
+        ),
+    ] {
+        program.put(&[&[1], &[1], &[key]], OwnedNode::leaf(Vec::new(), value));
+    }
+    program.to_wire().unwrap()
+}
+
+/// #737 and the writes like it: on a file hosted read-only (here its
+/// deferred work cannot be done at startup), every request that would
+/// change the file is refused and none is answered as a write that was
+/// done: a system exception where the reply has no status (op13 and op14,
+/// into the file or the temporary area; op70; op73), otherwise the status
+/// or count of a refusal. The connection carries on, and the file is as it
+/// was. What FileMaker Server answers for a file it serves read-only is
+/// unmeasured (#790).
+#[test]
+fn every_write_to_a_file_hosted_read_only_is_refused() {
+    let (file, catalog) = read_only_tasks("recalc-read-only-writes");
     let before = std::fs::read(&file.0).unwrap();
     let (mut client, id) = server::logged_in(server::start(&file), "designer");
-    let upload = Upload {
-        payload: catalog.to_wire().unwrap(),
-        resume: Resume::start(),
-        terminal: Vec::new(),
-        flags: write::UPLOAD_NODE,
-        dest: vec![t.clone(), vec![3]],
-    };
-    let uploaded = client.perform(&write::build_upload_to_host(1001, id, &upload));
-    assert!(uploaded.is_err(), "op13: {uploaded:02x?}");
-    let updated = client.perform(&schema::build_update_table(1002, id, &vec![t.clone()]));
-    assert!(updated.is_err(), "op73: {updated:02x?}");
+    for (what, request, refused) in write_requests(&catalog) {
+        let reply = client.perform(&request(id)).map_err(|e| e.to_string());
+        assert!(refused(&reply), "{what}: {reply:02x?}");
+    }
+    let program = delete_table_program(&client, id);
+    let reply = client.query(&program).unwrap();
+    assert!(
+        reply.slots.windows(3).any(|s| s == [2, 0, 200]),
+        "op86: {:02x?}",
+        reply.slots
+    );
     let records = records_of(&mut client, TABLE);
     assert_eq!(cell(&records, 1, DOUBLED), Some("6"));
     assert_eq!(std::fs::read(&file.0).unwrap(), before);
+}
+
+/// Lock record 1 for transaction 0x31 and stage a new Name for it (op60,
+/// op14), as FileMaker Pro does before its commit.
+fn stage_name(client: &mut Session, name: &str) {
+    let (t, record) = (uint_segment(TABLE), om_hbam::serial::encode(1));
+    let path: [&[u8]; 3] = [&t, &[5], &record];
+    assert!(matches!(
+        client.lock(&path, 0x31, true).unwrap(),
+        write::LockReply::Granted { .. }
+    ));
+    let cell = OwnedNode::leaf(uint_segment(NAME), om_scsu::encode_scsu(name));
+    let staged = OwnedNode::list(record, vec![cell]);
+    client.upload_records(&t, vec![staged]).unwrap();
+}
+
+/// A write admitted while its file was writable, whose file becomes
+/// read-only before the engine takes the write lock (as another
+/// connection's op73 can make it), is refused by the engine and answered
+/// as not stored: op13 into a catalog, op73 and op70 fail with a system
+/// exception, never with the reply of a write that was done. Each request
+/// is first sent to a server whose file stays writable, where it is
+/// answered as done, so that it is a write; each runs on servers of its
+/// own, as a file stays read-only once it is.
+#[test]
+fn a_write_whose_file_becomes_read_only_before_it_is_stored_fails() {
+    let root = fixture::tree(&[], true);
+    let catalog = field_catalog(&root);
+    let live = [
+        "op13 node into the file",
+        "op73 update a table",
+        "op70 commit",
+    ];
+    for (what, request, refused) in write_requests(&catalog) {
+        if !live.contains(&what) {
+            continue;
+        }
+        for read_only in [false, true] {
+            let file = TempFile::from_tree("recalc-read-only-meanwhile", &root);
+            let before = std::fs::read(&file.0).unwrap();
+            let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+            let (mut client, id) = server::logged_in(port, "designer");
+            if what == "op70 commit" {
+                stage_name(&mut client, "Changed");
+            }
+            if read_only {
+                handle.read_only_before_next_write();
+            }
+            let reply = client.perform(&request(id)).map_err(|e| e.to_string());
+            assert_eq!(refused(&reply), read_only, "{what}: {reply:02x?}");
+            let records = records_of(&mut client, TABLE);
+            let name = if read_only || what != "op70 commit" {
+                "Write tests"
+            } else {
+                "Changed"
+            };
+            assert_eq!(cell(&records, 1, NAME), Some(name), "{what}");
+            if read_only {
+                assert_eq!(std::fs::read(&file.0).unwrap(), before, "{what}");
+            }
+        }
+    }
 }
 
 #[test]

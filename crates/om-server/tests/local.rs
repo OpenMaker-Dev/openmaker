@@ -1076,6 +1076,8 @@ fn read_only_queries_refuse_schema_writes_before_execution() {
     assert!(!reply.slots.windows(3).any(|s| s == [2, 0, 200]));
     let after = session.download(&[&table]).unwrap().node_state;
     session.disconnect().unwrap();
+    // A window closing keeps no found set in a read-only file, and says so.
+    assert!(!host.save_found_set(fixture::OCCURRENCE, TABLE, None, Some(1)));
     assert!(host.close());
     assert_eq!(std::fs::read(&path).unwrap(), before_bytes);
     assert_eq!(std::fs::read(&copy).unwrap(), b"owned review sentinel");

@@ -737,6 +737,19 @@ impl ServerHandle {
             .fail_reads(file, path.iter().map(|segment| segment.to_vec()).collect());
     }
 
+    /// Hold the file of the next write a client sends read-only
+    /// (`ReadOnlyCause::DeferredWork`) after the request is admitted and
+    /// before the engine takes the write lock, as another connection's op73
+    /// can make it: for tests that such a write is answered as not stored.
+    /// Only in debug builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn read_only_before_next_write(&self) {
+        self.shared
+            .read_only_before_write
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Make every save of hosted file `id` fail at `fault` (before the
     /// rename, or flushing the folder after it), or work again with `None`:
     /// for tests of an operation whose change is not stored, or whose
