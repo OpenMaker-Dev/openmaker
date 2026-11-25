@@ -656,6 +656,65 @@ fn an_upload_into_an_index_has_it_checked_again() {
     session.disconnect().unwrap();
 }
 
+/// A commit of a value its field's rules key to nothing, a date that does
+/// not parse and a time past the hour's minutes, into a value index a find
+/// built and the commit checks first: the record leaves the index, and the
+/// index no longer agrees with the current rules, which would not account
+/// for the value, so its verified mark is forgotten (review of #811,
+/// round 1; `derived::record_keys`). The checking transaction checks every
+/// mark that an index agrees when the commit ends.
+#[test]
+fn a_value_without_a_key_has_its_index_checked_again() {
+    use om_hbam::serial;
+    use om_hbam::slot::uint_segment;
+    const CLOCK: u64 = 0x20;
+    let mut root = fixture::tree(&[], true);
+    fixture::add_field(&mut root, fixture::TABLE, CLOCK, "Clock", 1, 4, 0, 0, 0);
+    root.put(
+        &[
+            &uint_segment(fixture::TABLE),
+            &[5],
+            &serial::encode(2),
+            &uint_segment(CLOCK),
+        ],
+        om_scripts::text_node(&[], "10:30:00"),
+    );
+    let file = fixture::TempFile::from_tree("unkeyed-values", &root);
+    let port = server::start(&file);
+    let (mut session, file_id) = server::logged_in(port, "unkeyed values");
+    // Record 1's Due, record 2's Clock.
+    for (record, field, data_type, held, unkeyed) in [
+        (1, fixture::DUE, DataType::Date, "10/1/2026", "99/99/2026"),
+        (2, CLOCK, DataType::Time, "10:30:00", "10:99"),
+    ] {
+        // A find on the field builds its value index and stores it.
+        let finders: Vec<Vec<u8>> = find::finders(
+            fixture::TABLE,
+            field,
+            data_type,
+            held,
+            DateOrder::MonthDayYear,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|finder| finder.bytes)
+        .collect();
+        let program = find::checked_program(file_id, fixture::TABLE, field, &finders, None);
+        let reply = session.query(&program).unwrap();
+        let found: Vec<u64> = find::found(&reply.slots).unwrap().iter().collect();
+        assert_eq!(found, [record]);
+        let indexed = |record| {
+            index_on_disk(&file, field, 0)
+                .iter()
+                .any(|(key, ids)| key.as_slice() != [1] && ids.contains(&record))
+        };
+        assert!(indexed(record), "{held} is indexed");
+        commit_cells(&mut session, record, &[(field, unkeyed)]).unwrap();
+        assert!(!indexed(record), "{unkeyed} has no key");
+    }
+    session.disconnect().unwrap();
+}
+
 /// A German file's legacy Number index used a period as the decimal
 /// separator. Both spellings now key as 15, so only the sweep can move
 /// the edited record; the untouched record keeps its old membership.

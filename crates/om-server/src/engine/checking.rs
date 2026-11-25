@@ -53,11 +53,15 @@ pub(crate) struct Check {
     bases: Bases,
 }
 
-/// What a check keeps once the operation ended, to check a roll-back of
-/// it ([`Settled::after_roll_back`]).
+/// What a check keeps once the operation ended, to check its save
+/// ([`Settled::after_stored`]) or a roll-back of it
+/// ([`Settled::after_roll_back`]).
 pub(crate) struct Settled {
     start: Arc<Derived>,
     start_bases: Arc<Bases>,
+    /// How many field indexes failed saves had taken out when the
+    /// operation ended (`Store::dropped_indexes`).
+    dropped: usize,
 }
 
 /// `node` as a node of the store engine's edits, without its children.
@@ -257,12 +261,14 @@ impl Check {
             );
         }
         marks_hold(store, "by its end");
+        bases_have_tables(store, "by its end");
         if self.tree {
             derived_agrees(store);
         }
         Settled {
             start: self.start,
             start_bases: self.start_bases,
+            dropped: store.dropped_indexes().len(),
         }
     }
 }
@@ -280,18 +286,46 @@ impl Settled {
                  than the operation found it"
             );
         }
-        let start = self.start.marks();
-        for (id, agrees) in store.derived().marks() {
-            assert!(
-                start.get(id) == Some(agrees),
-                "a roll-back left a verified-index mark of table {:02x?} field {:02x?} index \
-                 {} the operation did not find",
-                id.0,
-                id.1,
-                id.2
+        // The marks from before the operation, less those of the indexes
+        // the save that failed took out, exactly.
+        let dropped = &store.dropped_indexes()[self.dropped..];
+        let mut expected = self.start.marks().clone();
+        expected
+            .retain(|(table, field, _), _| !dropped.iter().any(|(t, f)| t == table && f == field));
+        if let Some(id) = expected
+            .keys()
+            .chain(store.derived().marks().keys())
+            .find(|id| expected.get(*id) != store.derived().marks().get(*id))
+        {
+            panic!(
+                "a roll-back left the verified-index mark of table {:02x?} field {:02x?} index \
+                 {} other than the operation found it",
+                id.0, id.1, id.2
             );
         }
         marks_hold(store, "after a roll-back");
+        bases_have_tables(store, "after a roll-back");
+    }
+
+    /// The operation's change was stored, with what its save wrote last
+    /// (a commit's record ids, its sweeps, its counts): every mark that an
+    /// index agrees holds, and every basis is of a table the tree holds.
+    pub(crate) fn after_stored(&self, store: &Store) {
+        marks_hold(store, "after its save");
+        bases_have_tables(store, "after its save");
+    }
+}
+
+/// Every basis of stored calculations `store` keeps is of a table its tree
+/// holds: a deleted table's goes with it.
+fn bases_have_tables(store: &Store, when: &str) {
+    for table in store.bases().keys() {
+        let segments: [&[u8]; 1] = [table];
+        assert!(
+            store.tree_view().head(&segments).is_some(),
+            "a basis of stored calculations is kept for table {table:02x?}, which the tree \
+             does not hold, {when}"
+        );
     }
 }
 

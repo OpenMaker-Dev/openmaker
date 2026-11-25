@@ -533,6 +533,10 @@ impl FileEngine {
         };
         let outcome = match saved {
             Ok(()) => {
+                #[cfg(debug_assertions)]
+                if let Some(settled) = &settled {
+                    settled.after_stored(&store);
+                }
                 stored(file, &released_libraries, &emptied_libraries);
                 locks.keep();
                 for line in stored_lines.into_iter().chain(lines) {

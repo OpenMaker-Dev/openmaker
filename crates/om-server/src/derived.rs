@@ -740,6 +740,31 @@ pub(crate) fn written_form(
 /// current rules give no value-index key, which another rule (FileMaker's)
 /// may have given one.
 #[allow(clippy::too_many_arguments)]
+/// The keys index `kind` gives a record whose field holds `texts`, and
+/// whether they account for its value: a value index gives a value that
+/// is not blank no key when the current rules key it to nothing (a date
+/// or time that does not parse, text the form does not key), which another
+/// rule (FileMaker's) may key, so an index holding such a record does not
+/// agree with the current rules. One rule for the check of an index
+/// ([`index_entries`], `Store::check_index`) and for the commit that keeps
+/// it current (`Store::reindex_plan`), so a commit cannot keep a mark that
+/// an index agrees past a value the check would refuse.
+pub(crate) fn record_keys(
+    kind: u8,
+    data_type: DataType,
+    texts: &[String],
+    reading: Reading,
+    form: TextKeys,
+) -> (BTreeSet<Vec<u8>>, bool) {
+    if kind == keys::VALUE_INDEX {
+        let keys = record_value_entries(data_type, texts, reading, form);
+        let accounted = !keys.is_empty() || texts.iter().all(|t| t.trim().is_empty());
+        (keys, accounted)
+    } else {
+        (word_entries(texts, form), true)
+    }
+}
+
 pub(crate) fn index_entries(
     view: &dyn View,
     derived: &Derived,
@@ -760,16 +785,8 @@ pub(crate) fn index_entries(
             continue;
         };
         let texts = field_texts(&record, field, repetitions);
-        let keys: BTreeSet<Vec<u8>> = if kind == keys::VALUE_INDEX {
-            record_value_entries(data_type, &texts, reading, form)
-        } else {
-            word_entries(&texts, form)
-        };
-        if accounted
-            && kind == keys::VALUE_INDEX
-            && keys.is_empty()
-            && texts.iter().any(|t| !t.trim().is_empty())
-        {
+        let (keys, accounted_for) = record_keys(kind, data_type, &texts, reading, form);
+        if accounted && !accounted_for {
             return Ok(None);
         }
         for key in keys {

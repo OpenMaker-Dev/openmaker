@@ -226,6 +226,10 @@ fn apply(writes: Vec<Write>, file: &str, tx: &mut Transaction<'_>) {
                         ),
                     }
                     tx.release_library(vec![table.clone(), vec![LIBRARY]]);
+                    // Its stored values go with it, and what they were
+                    // computed with: a table made later at the same key
+                    // starts without a basis.
+                    tx.set_basis(table, None);
                 }
                 if !path.is_empty() {
                     let _ = tx.remove(path);
@@ -296,7 +300,8 @@ mod tests {
 
     #[test]
     fn deleted_tables_take_their_libraries() {
-        // A table with a container library member, and another table.
+        // A table with a container library member and a basis of stored
+        // calculations, and another table with a basis.
         let mut root = OwnedNode::default();
         let member = [&[0x80, 0x02][..], &[LIBRARY], &[5], &[1], &[0x12]];
         root.put(&member, OwnedNode::leaf(Vec::new(), vec![0, 0, 0, 1]));
@@ -305,7 +310,12 @@ mod tests {
             OwnedNode::leaf(Vec::new(), vec![1, 1]),
         );
         let mut store = store_of(root);
-        // DeleteTable (schema-path.md 3.4): the library goes with [T].
+        for table in [[0x80, 0x02], [0x80, 0x03]] {
+            store.set_basis_in(None, &table, Some(Default::default()));
+        }
+        // DeleteTable (schema-path.md 3.4): the library goes with [T], and
+        // its basis with it (review of #811, round 1), so that a table made
+        // later at the same key starts without one.
         let remove = |path: Vec<Vec<u8>>| vec![Write::Remove { path }];
         let released = written(&mut store, |tx| {
             apply(remove(vec![vec![0x80, 0x02]]), "", tx);
@@ -314,6 +324,8 @@ mod tests {
         assert_eq!(released, vec![vec![vec![0x80, 0x02], vec![LIBRARY]]]);
         assert!(store.node(&member).is_none());
         assert!(store.node(&[&[0x80, 0x03]]).is_some());
+        let bases: Vec<&Vec<u8>> = store.bases().keys().collect();
+        assert_eq!(bases, [&vec![0x80, 0x03]]);
         // Removing a catalog member is no table's deletion.
         let released = written(&mut store, |tx| {
             apply(

@@ -36,7 +36,7 @@ use om_data::rules::RecordEnvironment;
 use om_hbam::slot::{be_uint, uint_segment};
 use om_hbam::writer::{holds_value, put_refusals, unwritable_in_tree, value_on_path, Unwritable};
 use om_hbam::{serial, Catalog, DataType, HbamFile, KeyTree, OwnedNode, RidList};
-use om_query::keys::{record_value_entries, word_entries, Reading, TextKeys};
+use om_query::keys::{Reading, TextKeys};
 
 use crate::anchored::{FileAt, FileId, Folder};
 use crate::derived::{self, cell_text, counts_key, field_texts, Derived, Marks, ENGLISH};
@@ -168,6 +168,12 @@ pub struct Store {
     /// [`crate::ServerHandle::failing_saves`]). Only in debug builds.
     #[cfg(debug_assertions)]
     pub(crate) save_fault: Option<SaveFault>,
+    /// Every field index a save that failed took out
+    /// ([`Store::drop_unwritable_indexes`]), as (table, field), in order: a
+    /// test's check of a roll-back is told which marks may go
+    /// (`engine::checking`). Only in debug builds.
+    #[cfg(debug_assertions)]
+    dropped_indexes: Vec<(Vec<u8>, Vec<u8>)>,
     /// Why the file takes no more changes: a save renamed its new copy over
     /// the file and could not flush the folder, so whether the file on disk
     /// keeps the change is unknown ([`SaveError::Unknown`]). Every later
@@ -749,6 +755,8 @@ impl Store {
             fail_commit_saves: false,
             #[cfg(debug_assertions)]
             save_fault: None,
+            #[cfg(debug_assertions)]
+            dropped_indexes: Vec::new(),
             unknown: None,
             generation: 0,
             accounts_at: 0,
@@ -1745,6 +1753,9 @@ impl Store {
                 if self.root.remove(&segments).is_some() {
                     removed = true;
                     self.forget_verified(None, &node.path);
+                    #[cfg(debug_assertions)]
+                    self.dropped_indexes
+                        .push((node.path[0].clone(), node.path[2].clone()));
                     if !dropped.iter().any(|d| d.path == node.path) {
                         dropped.push(node);
                     }
@@ -3445,6 +3456,8 @@ impl Store {
             fail_commit_saves: false,
             #[cfg(debug_assertions)]
             save_fault: None,
+            #[cfg(debug_assertions)]
+            dropped_indexes: Vec::new(),
             unknown: None,
             generation: 0,
             accounts_at: 0,
@@ -3516,7 +3529,8 @@ impl Store {
     ) -> Result<(), String> {
         let segment = serial::encode(id);
         let path: [&[u8]; 3] = [table, &[keys::RECORDS], &segment];
-        let plan = self.reindex_plan(table, id, old, record.as_ref(), recount)?;
+        let mut unaccounted = Vec::new();
+        let plan = self.reindex_plan(table, id, old, record.as_ref(), recount, &mut unaccounted)?;
         if let Some(reason) = self.record_refusal(table, &segment, record.as_ref(), &plan) {
             return Err(reason);
         }
@@ -3556,6 +3570,13 @@ impl Store {
             if self.move_record(table, &field, index, id, &before, &after) {
                 recount.insert((table.to_vec(), field, index, counts_key(index)));
             }
+        }
+        // A value the current rules key to nothing makes its index disagree
+        // with them (`derived::record_keys`): the index's mark is forgotten,
+        // whatever the check before this write found.
+        for (field, index) in unaccounted {
+            let path = vec![table.to_vec(), vec![keys::INDEXES], field, vec![index]];
+            self.forget_verified(journal.as_deref_mut(), &path);
         }
         for (field, index, after) in sweeps {
             let records = BTreeMap::from([(id, after)]);
@@ -3673,6 +3694,7 @@ impl Store {
         old: Option<&OwnedNode>,
         new: Option<&OwnedNode>,
         pending: &BTreeSet<Recount>,
+        unaccounted: &mut Vec<(Vec<u8>, u8)>,
     ) -> Result<Vec<Reindex>, String> {
         let mut plan = Vec::new();
         let Some(definition) = be_uint(table).and_then(|t| self.derived.catalog().table(t)) else {
@@ -3725,16 +3747,18 @@ impl Store {
                     ENGLISH
                 }
             };
+            // The keys and whether they account for the value, as the check
+            // of the index finds them (`derived::record_keys`).
+            let keys_of = |kind: u8, record: Option<&OwnedNode>, texts: &[String]| match record {
+                None => (BTreeSet::new(), true),
+                Some(_) => derived::record_keys(kind, data_type, texts, self.reading(), form),
+            };
             if value {
-                let keys_of = |record: Option<&OwnedNode>, texts: &[String]| {
-                    if record.is_none() {
-                        return BTreeSet::new();
-                    }
-                    record_value_entries(data_type, texts, self.reading(), form)
-                };
-                let (before, after) = (keys_of(old, &old_texts), keys_of(new, &new_texts));
-                if new.is_some() && after.is_empty() && new_texts.iter().any(|t| !t.is_empty()) {
+                let (before, _) = keys_of(keys::VALUE_INDEX, old, &old_texts);
+                let (after, accounted) = keys_of(keys::VALUE_INDEX, new, &new_texts);
+                if !accounted {
                     warn!("no index key for {data_type:?} value {new_texts:?}; record {id} is left out of the index");
+                    unaccounted.push((field.clone(), keys::VALUE_INDEX));
                 }
                 if before != after || old_texts != new_texts || changes {
                     plan.push((field.clone(), keys::VALUE_INDEX, before, after));
@@ -3742,8 +3766,8 @@ impl Store {
             }
             if word {
                 let (before, after) = (
-                    word_entries(&old_texts, form),
-                    word_entries(&new_texts, form),
+                    keys_of(keys::WORD_INDEX, old, &old_texts).0,
+                    keys_of(keys::WORD_INDEX, new, &new_texts).0,
                 );
                 if before != after || old_texts != new_texts || changes {
                     plan.push((field.clone(), keys::WORD_INDEX, before, after));
@@ -3790,6 +3814,13 @@ impl Store {
         marks.insert(id, agrees);
         self.keep_marks(journal, marks);
         agrees
+    }
+
+    /// The field indexes saves that failed took out, in order
+    /// (`engine::checking`).
+    #[cfg(debug_assertions)]
+    pub(crate) fn dropped_indexes(&self) -> &[(Vec<u8>, Vec<u8>)] {
+        &self.dropped_indexes
     }
 
     /// Whether index `id` holds the keys the current rules give its
@@ -4235,6 +4266,8 @@ pub(crate) mod tests {
             fail_commit_saves: false,
             #[cfg(debug_assertions)]
             save_fault: None,
+            #[cfg(debug_assertions)]
+            dropped_indexes: Vec::new(),
             unknown: None,
             generation: 0,
             accounts_at: 0,
