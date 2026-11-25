@@ -1263,7 +1263,7 @@ pub fn run(
             schema::change_schema(op, file, tx).map_err(SchemaNotChanged::Refused),
         )),
         (Operation::StoreIndexes(op), Hold::Transaction(tx)) => {
-            tx.store_indexes(op.indexes);
+            schema::store_indexes(op.indexes, file, tx);
             Outcome::new(Reply::StoreIndexes(Ok(())))
         }
         (Operation::UpdateTable(op), Hold::Transaction(tx)) => Outcome::new(Reply::UpdateTable(
