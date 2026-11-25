@@ -824,17 +824,19 @@ than a second reader and writer.
 - **Save a Copy as.** The host writes a copy of the current file or a
   compacted copy (3.3) to a new file only.
   - *Contents.* Each copy is an export of the version the host holds
-    (docs/server-storage.md 5, "Exports"), written and checked against it
-    while the host holds the file for reading. A copy of the current file
-    is the file's bytes as the last save left them, or as the file was
-    opened when no save wrote it (read from the file the host holds
-    locked, while its path still leads there). While changes a failed save
-    left wait in memory, or for a file the host could not lock, it is the
-    key tree written as a new packed file (hbam-writer.md 7.2), as the
-    next save would write it; a copy that would lack changes a failed save
-    left (a file opened read-only for content OpenMaker cannot write) is
-    refused. A compacted copy is the key tree written as a new packed file
-    from the change number the next save starts from.
+    (docs/server-storage.md 5, "Exports"). A copy of the current file is
+    the file on disk when it holds that version: its bytes as the last
+    save left them, or as the file was opened when no save wrote it,
+    opened under the host's read lock (from its path, while that leads to
+    the file the host holds locked) and copied after it, checked against
+    what was read (length and SHA-256). While changes a failed save left
+    wait in memory, or for a file the host could not lock, it is the key
+    tree written as a new packed file (hbam-writer.md 7.2), as the next
+    save would write it, under the read lock. A copy of a file opened
+    read-only for content OpenMaker cannot write, while changes its
+    refused saves left wait in memory, would lack them and is refused. A
+    compacted copy is the key tree written as a new packed file from the
+    change number the next save starts from, under the read lock.
   - *Destinations.* Linux only. The resolved path must lead through
     existing directories on ext2, ext3, ext4 or tmpfs. Each ancestor must
     be owned by root or the effective user and either deny group and other

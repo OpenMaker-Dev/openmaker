@@ -1005,29 +1005,24 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
   - If that folder, or `RC_Data_FMS`, is a link or cannot be read, the run
     fails before the backup is published. No older backup is deleted, and
     no backup lacks data that exists.
-- **Consistency.** Each file's copy is an export of one version of it
-  (docs/server-storage.md 5, "Exports"), written under a temporary name
-  beside its final one, read back and compared with that version node by
-  node, then renamed. A version a save wrote is the saved file byte for
-  byte, and a file no save wrote since it was opened is the bytes it was
-  opened from, so the copy of a file is the file on disk as before.
-- **What clients see.** The run holds the file's store for reading while
-  the file's export is written and checked, and lets go before it is
-  flushed and renamed. A write to that file waits for that hold: 63 ms for
-  a file of 10 MB, 674 ms for 105 MB, 3.4 s for 524 MB
-  ([performance/export.md](performance/export.md)), where it waited for one
-  `open` before. A save in progress delays the backup. FileMaker Server
-  instead pauses each file at the end of its copy (re 3).
-- **Unsaved changes.** Changes a failed save left in memory are in the
-  copy: it holds what the server serves. A file hosted read-only because it
-  holds content OpenMaker cannot write is copied as the bytes it was opened
-  from; changes its refused saves left in memory are then not in the copy,
-  and the run logs a warning.
+- **Consistency.** OpenMaker Server writes each change as a complete new file
+  renamed over the old one, never in place. So a run opens each file while it
+  holds the file's store for reading, and lets go once the file is open. The
+  open descriptor keeps reading that saved version whatever later saves
+  rename over it, so each copy is one saved version of the file. The copy is
+  written under a temporary name in its folder of the backup and checked
+  against what was read (its length and SHA-256) before it is renamed
+  ([server-storage.md](server-storage.md) 5, "Exports").
+- **What clients see.** The store is held for one `open` call, never while
+  the file is copied. Clients see nothing: a write waits at most for that
+  call, and a save in progress delays the backup, not the client.
+  FileMaker Server instead pauses each file at the end of its copy (re 3).
+- **Unsaved changes.** Changes a failed save left in memory are not in the
+  copy, and the run logs a warning.
 - **Unchanged files.** A file not saved since the schedule's last complete
-  backup made in this process, with no changes a failed save left in memory
-  then or now, becomes a hard link to that backup's copy, as in FileMaker
-  Server (re 2.3), while that copy is still the file the run made. After a
-  restart, a schedule's first run copies every file.
+  backup made in this process becomes a hard link to that backup's copy, as
+  in FileMaker Server (re 2.3), while that copy is still the file the run
+  made. After a restart, a schedule's first run copies every file.
   FileMaker decides instead by the newest earlier backup on disk: same size,
   no unwritten changes and a modification time not later than the copy's (re
   2.3). OpenMaker counts its own saves, since a save replaces the file whole
