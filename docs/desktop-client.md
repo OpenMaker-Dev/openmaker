@@ -42,7 +42,14 @@ own chrome uses are in [design.md](design.md). Related notes:
   whose `CFBundleName` the menu bar shows; without it the menu bar would
   show the executable's name. The Dock and Command-Tab still show `om-gui`:
   LaunchServices names an unbundled process after its file
-  ([#821](https://github.com/OpenMaker-Dev/openmaker/issues/821)). Mode
+  ([#821](https://github.com/OpenMaker-Dev/openmaker/issues/821)). Their
+  icon is OpenMaker's logo ([assets/README.md](assets/README.md)), which
+  eframe sets once the app runs. Every window carries the logo as its
+  window icon: Windows shows it in title bars, and eframe also makes it
+  the first window's large taskbar icon (other windows' taskbar icons are
+  unchecked); X11 window managers that draw window icons show it. Wayland
+  has no window icons: the shell shows the icon of the desktop entry
+  matching the app id `openmaker`, which the Ubuntu package installs. Mode
   and other shortcuts use the platform's command key: ⌘ on macOS, Ctrl on
   Linux and Windows.
 - The UI font is the bundled Inter (OFL), a cross-platform stand-in for the

@@ -736,10 +736,11 @@ impl ScriptWorkspace {
             ctx.global_style_mut(|s| s.visuals.resize_corner_size = corner);
             self.dialogs(ctx, &mut actions);
         } else {
-            let builder = egui::ViewportBuilder::default()
+            let mut builder = egui::ViewportBuilder::default()
                 .with_title(&title)
                 .with_inner_size([1100.0, 700.0])
                 .with_min_inner_size([640.0, 360.0]);
+            builder.icon = crate::app_icon();
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of("script_workspace"),
                 builder,
