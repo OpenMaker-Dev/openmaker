@@ -369,7 +369,14 @@ mod portal {
     fn try_ask(request: &Request, parent: &str, shown: &Arc<Mutex<Shown>>) -> zbus::Result<Answer> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static TOKENS: AtomicU64 = AtomicU64::new(0);
-        let connection = Connection::session()?;
+        // A portal that never answers the call must not keep Open and
+        // Create waiting: after this the panel is unavailable and
+        // OpenMaker's chooser asks. Starting the portal on first use takes
+        // a second or two. The user's own time in the chooser is not
+        // bounded: its answer is a signal, not the call's reply.
+        let connection = zbus::blocking::connection::Builder::session()?
+            .method_timeout(std::time::Duration::from_secs(30))
+            .build()?;
         // Listen before asking, so the answer cannot come first. The
         // connection is this request's own.
         let rule = zbus::MatchRule::builder()
