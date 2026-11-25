@@ -49,6 +49,11 @@ fn design_catalogs(read: Read<'_>) -> Result<Option<Vec<u8>>, ReadError> {
     Ok(OwnedNode::list(Vec::new(), children).to_wire())
 }
 
+/// What the Design schema is compiled from, read through one reading: the
+/// catalogs' wire ([`design_catalogs`]), and the derived state's catalog,
+/// locale and file language.
+type DesignParts = (Option<Vec<u8>>, Arc<om_hbam::Catalog>, Locale, Option<u32>);
+
 /// The file's calculation schema with its layouts (objects, names), script
 /// list and data sources, for the Design functions, from the catalogs
 /// `wire` holds ([`design_catalogs`]).
@@ -88,7 +93,7 @@ impl ServerHost {
     /// The Design view of the file's schema as the engine holds it now
     /// ([`Self::with_design`]).
     pub(super) fn design(&self) -> Option<Arc<CalcSchema>> {
-        self.with_design(false, |_, _| Ok(()))
+        self.with_design(false, false, |_, _| Ok(()))
             .and_then(|(design, ())| design)
     }
 
@@ -97,12 +102,17 @@ impl ServerHost {
     /// ([`ServerHost::one_call`]). It is compiled from the catalogs the Design
     /// functions read and the catalog, locale and language of that
     /// reading's derived state, all of one version, and kept by that
-    /// version, which a later call of the same version reuses. `then` reads
-    /// the accounts when `accounts` (`Reading::serve_with_accounts`). `None`
-    /// when the read fails, which ends the run ([`ServerHost::read`]).
+    /// version, which a later call of the same version reuses. It is
+    /// compiled once the reading is let go, unless `then` needs it
+    /// (`schema_first`, for GetNextSerialValue, which resolves its field in
+    /// the version whose serial value it reads); `then` is given it when it
+    /// is kept already or compiled first. `then` reads the accounts when
+    /// `accounts` (`Reading::serve_with_accounts`). `None` when the read
+    /// fails, which ends the run ([`ServerHost::read`]).
     fn with_design<T: PartialEq + std::fmt::Debug>(
         &self,
         accounts: bool,
+        schema_first: bool,
         mut then: impl FnMut(Option<&CalcSchema>, Read<'_>) -> Result<T, ReadError>,
     ) -> Option<(Option<Arc<CalcSchema>>, T)> {
         if let Err(error) = self.reads.begin(&self.hosted) {
@@ -118,8 +128,16 @@ impl ServerHost {
             .as_ref()
             .filter(|(of, _)| *of == version)
             .map(|(_, design)| design.clone());
-        let design = match cached {
-            Some(design) => design,
+        let compile = |(wire, catalog, locale, language): DesignParts| {
+            let design = wire.and_then(|wire| {
+                design_schema(&wire, &catalog, locale, language, &self.hosted.name)
+            });
+            *self.schema.design.borrow_mut() = Some((version, design.clone()));
+            design
+        };
+        // The schema kept or compiled first, else what it is compiled from.
+        let design: Result<Option<Arc<CalcSchema>>, DesignParts> = match cached {
+            Some(design) => Ok(design),
             None => {
                 let parts = reading.serve(|read| {
                     Ok::<_, ReadError>((
@@ -129,26 +147,24 @@ impl ServerHost {
                         read.derived.file_language(),
                     ))
                 });
-                let (wire, catalog, locale, language) = match parts {
-                    Ok(parts) => parts,
+                match parts {
+                    Ok(parts) if schema_first => Ok(compile(parts)),
+                    Ok(parts) => Err(parts),
                     Err(error) => {
                         drop(reading);
                         self.note_failed_read(&error);
                         return None;
                     }
-                };
-                let design = wire.and_then(|wire| {
-                    design_schema(&wire, &catalog, locale, language, &self.hosted.name)
-                });
-                *self.schema.design.borrow_mut() = Some((version, design.clone()));
-                design
+                }
             }
         };
+        let schema = design.as_ref().ok().and_then(Option::as_deref);
         let then = match accounts {
-            true => reading.serve_with_accounts(|read| then(design.as_deref(), read)),
-            false => reading.serve(|read| then(design.as_deref(), read)),
+            true => reading.serve_with_accounts(|read| then(schema, read)),
+            false => reading.serve(|read| then(schema, read)),
         };
         drop(reading);
+        let design = design.unwrap_or_else(compile);
         match then {
             Ok(then) => Some((design, then)),
             Err(error) => {
@@ -246,7 +262,7 @@ impl ServerHost {
         let serial = name.eq_ignore_ascii_case("GetNextSerialValue");
         // The account the session's facts describe, from the same reading;
         // its facts are worked out once the reading is let go.
-        let (schema, (next, account)) = self.with_design(true, |schema, read| {
+        let (schema, (next, account)) = self.with_design(true, serial, |schema, read| {
             let next = match (serial, schema) {
                 (true, Some(schema)) => self.next_serial_in(schema, read, args, context)?,
                 _ => None,

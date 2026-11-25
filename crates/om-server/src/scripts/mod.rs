@@ -2178,7 +2178,7 @@ mod tests {
         fail: u64,
         after: bool,
     ) -> (
-        u16,
+        PerformScriptReply,
         u64,
         Option<om_hbam::OwnedNode>,
         Option<om_hbam::OwnedNode>,
@@ -2186,17 +2186,18 @@ mod tests {
         use std::sync::atomic::Ordering::Relaxed;
         let file = TempFile::from_tree(&format!("read-fault-{script}-{fail}"), tree);
         let shared = shared(&file);
+        // A run that does not end after its failed read stops at a step
+        // budget the corpus's scripts are far within, rather than hang.
+        shared.scripts.set_limits(ScriptLimits {
+            steps: 1_000,
+            ..ScriptLimits::DEFAULT
+        });
         let hosted = hosted(&shared);
         hosted.read_fault.fail(fail, after);
         let reply = perform(&shared, request(&shared, script, "", 0));
         let reads = hosted.read_fault.reads.load(Relaxed);
         let ended = hosted.read_store().node(&[]).cloned();
-        (
-            reply.error,
-            reads,
-            ended,
-            hosted.read_fault.tree_at_failure(),
-        )
+        (reply, reads, ended, hosted.read_fault.tree_at_failure())
     }
 
     /// docs/server-storage.md 5, "A script session's reads": a read of the
@@ -2204,20 +2205,23 @@ mod tests {
     /// missing reaches the file. For each script of a corpus that between
     /// them make every kind of read (`read_fault_corpus`), the k-th read of
     /// the run fails, for every k up to the run's number of reads, and with
-    /// `after` every read after it too: the run ends with 802, and the
-    /// file's whole tree when the session has ended is the tree when that
-    /// read failed. Returns the runs made.
+    /// `after` every read after it too: the run ends with 802; no step runs
+    /// after the one the read failed in (the script's result, from its last
+    /// step, is none, or the one it gives without a failure when the read
+    /// that failed is the session's close's); and the file's whole tree
+    /// when the session has ended is the tree when that read failed.
+    /// Returns the runs made.
     fn every_failed_read_ends_the_run(after: bool) -> usize {
         let scripts = read_fault_corpus();
         let tree = read_fault_tree(&scripts);
         let mut runs = 0;
         let mut failures = Vec::new();
         for script in &scripts {
-            let (error, reads, _, _) = run_with_failed_read(&tree, script.id, 0, false);
-            assert_ne!(error, 802, "{}: without a failed read", script.name);
+            let (whole, reads, _, _) = run_with_failed_read(&tree, script.id, 0, false);
+            assert_ne!(whole.error, 802, "{}: without a failed read", script.name);
             assert!(reads > 1, "{}: {reads} reads", script.name);
             for fail in 1..=reads {
-                let (error, _, ended, at_failure) =
+                let (reply, _, ended, at_failure) =
                     run_with_failed_read(&tree, script.id, fail, after);
                 let what = format!("{}: read {fail} of {reads} failing", script.name);
                 runs += 1;
@@ -2225,8 +2229,14 @@ mod tests {
                     failures.push(format!("{what}: no read failed"));
                     continue;
                 };
-                if error != 802 {
-                    failures.push(format!("{what}: the run ended with {error}"));
+                if reply.error != 802 {
+                    failures.push(format!("{what}: the run ended with {}", reply.error));
+                }
+                if !reply.result.is_empty() && reply.result != whole.result {
+                    failures.push(format!(
+                        "{what}: a step ran after it, the result is {:?}",
+                        reply.result
+                    ));
                 }
                 if ended != Some(at_failure) {
                     failures.push(format!("{what}: the file changed after the read failed"));
