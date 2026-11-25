@@ -923,31 +923,23 @@ impl Run {
                 .filter(|b| b.len() >= 128)
                 .map(|b| (u64::from_le_bytes(b[48..56].try_into().unwrap()), b))
         };
-        let run = store.log_segments();
-        // A give-up in this open made its fence after the walk.
-        let fence = match &opened.gave_up {
-            Some(GaveUp::UnreadableEnd {
-                done: Some(done), ..
-            }) => done.fence,
-            _ => None,
-        };
-        let anchor = (run.first..run.first + run.count)
-            .rev()
-            .filter(|n| Some(*n) != fence)
-            .find_map(|n| header_first(n).filter(|(first, _)| *first <= start.index + 1));
+        // The segment the open walked to its start, as it says.
+        let anchor = opened
+            .log
+            .walked_before_start
+            .and_then(header_first)
+            .filter(|(first, _)| *first <= start.index);
         let stops = anchor
             .as_ref()
             .and_then(|(_, bytes)| chain_stops(bytes, start.index, &start.hash.0));
         // The device's damage shows in a read once the cache drops what it
         // held: a segment whose cache was dropped during this open may have
         // been read before it was.
-        let changed = anchor.as_ref().is_some_and(|(first, _)| {
-            let segment = (run.first..run.first + run.count)
-                .find(|n| header_first(*n).is_some_and(|(f, _)| f == *first));
-            let path = segment.map(|n| format!("{}/{n:016x}", log::FOLDER));
+        let changed = opened.log.walked_before_start.is_some_and(|n| {
+            let path = format!("{}/{n:016x}", log::FOLDER);
             self.sim.events().iter().any(|e| {
                 matches!(e, sim::Event::Evicted { step, path: p }
-                    if *step >= self.opening && Some(p) == path.as_ref())
+                    if *step >= self.opening && *p == path)
             })
         });
         match opened.before_start {

@@ -872,7 +872,8 @@ the marker.
    that segment's header, and the first place it stops holding, bytes that
    do not check or a read the device fails past an entry's fixed fields,
    is reported (`Opened::before_start`: the segment, the offset, the first
-   entry from which it does not hold, and whether the read failed): an open
+   entry from which it does not hold, and whether the read failed; and
+   `Opened::walked_before_start`, the segment so walked): an open
    from a checkpoint before that place could not replay past it. Nothing
    is given up for it. Segments listed wholly before that segment are not
    read at open beyond their headers (step 1); damage in them is found when

@@ -197,6 +197,10 @@ pub struct Opened {
     /// place could not replay past it. Segments wholly before that one are
     /// not read (format section 3.6).
     pub before_start: Option<ChainFault>,
+    /// The segment the open walked through entries before the start to
+    /// reach it, when the segment that holds the start's successor holds
+    /// any: the one `before_start` speaks of.
+    pub walked_before_start: Option<u64>,
 }
 
 /// Where the chain of entries before an open's start stops checking
@@ -998,6 +1002,7 @@ impl Log {
         let mut why: Option<CutWhy> = None;
         let mut unreadable_end: Option<UnreadableEnd> = None;
         let mut before_start: Option<ChainFault> = None;
+        let mut walked_before_start: Option<u64> = None;
         if let Some(first) = segs.first() {
             if first.header.first > after_start {
                 return Err(damage(
@@ -1147,6 +1152,7 @@ impl Log {
                 }
             };
             // The chain before the start, checked on the way to it.
+            walked_before_start = (before.index < start.index).then_some(segs[from].number);
             before_start = scanner.chain_fault().map(|stop| ChainFault {
                 segment: segs[stop.seg].number,
                 offset: stop.offset,
@@ -1246,6 +1252,7 @@ impl Log {
                 unreadable_end,
                 removed,
                 before_start,
+                walked_before_start,
             },
         })
     }
