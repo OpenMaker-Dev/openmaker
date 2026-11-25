@@ -22,8 +22,9 @@ use crate::engine::{
 };
 use crate::eventlog::{Event, EventLog, SaveOutcome};
 use crate::filelock::FileLock;
+use crate::filelock::{self, LockKind, Locked, NotOpened, Settled};
 use crate::locks::LockTable;
-use crate::store::{Journal, LeftoverCopy, SaveError, Store};
+use crate::store::{clear_leftover_copy, copy_beside, Journal, LeftoverCopy, SaveError, Store};
 use crate::thumbnail;
 
 /// An account defined in a file's security catalog.
@@ -239,11 +240,11 @@ pub struct Hosted {
     /// The accounts in the file's security catalog as the store holds it
     /// at a schema generation ([`Hosted::accounts`]).
     accounts: RwLock<Accounts>,
-    /// Deferred field work [`Store::recover`] finished in memory and not
-    /// saved yet: a local file keeps it provisional until an eligible
-    /// account logs in ([`Hosted::commit_recovery`]); closing before that
-    /// leaves the file as it was.
-    pending_recovery: std::sync::atomic::AtomicBool,
+    /// Whether the deferred field work the file records as pending is still
+    /// to be finished and saved ([`Hosted::recover`]): a server's file's as
+    /// it is loaded, a local file's when an account it admits first logs
+    /// in, so that closing before that leaves the file as it was.
+    recovery_due: std::sync::atomic::AtomicBool,
     /// Why the file takes no more changes, once a save's outcome was
     /// unknown (`Store::writes_refused`): kept here too, so that the
     /// administrator's list of files reads it without waiting for the
@@ -334,17 +335,21 @@ impl std::fmt::Debug for Hosted {
 impl Hosted {
     /// The hosted file `hosted`, whose contents `file` holds, with server
     /// id `id`, as the file holds it: deferred field work a stop
-    /// interrupted is finished by [`Hosted::finish_deferred_work`] before
-    /// the file is served. A local file comes with its lock and whether it
-    /// is read-only. A file FileMaker Server calls insecure is refused
-    /// unless `insecure_files` (a local file never is). A failed save is
-    /// recorded in `events`.
+    /// interrupted is finished by [`Hosted::recover`]. It comes with its
+    /// lock (none where the file cannot be locked here), which its store
+    /// holds for as long as the file is hosted, moved to each new copy a
+    /// save renames over it, and with whether it is read-only. `desktop`: a
+    /// local file served to the desktop. A file FileMaker Server calls
+    /// insecure is refused unless `insecure_files` (a local file never is).
+    /// A failed save is recorded in `events`.
+    #[allow(clippy::too_many_arguments)]
     fn load(
         id: u32,
         hosted: &HostedFile,
         at: FileAt,
         file: &HbamFile,
-        local: Option<(Option<FileLock>, bool)>,
+        (lock, read_only): (Option<FileLock>, bool),
+        desktop: bool,
         insecure_files: bool,
         events: &EventLog,
     ) -> Result<Self, HostingError> {
@@ -352,7 +357,7 @@ impl Hosted {
             name: hosted.name.clone(),
             error,
         };
-        if local.is_none() && !insecure_files {
+        if !desktop && !insecure_files {
             if let Some(why) = insecurity(file).map_err(open)? {
                 return Err(HostingError::Insecure {
                     name: hosted.name.clone(),
@@ -366,14 +371,14 @@ impl Hosted {
             }
         })?;
         let mut store = Store::load(file, &hosted.name).map_err(open)?;
-        if let Some((lock, local_read_only)) = local {
+        if desktop {
             store.serve_desktop();
-            if let Some(lock) = lock {
-                store.set_lock(lock);
-            }
-            if local_read_only {
-                store.set_read_only();
-            }
+        }
+        if let Some(lock) = lock {
+            store.set_lock(lock);
+        }
+        if read_only {
+            store.set_read_only();
         }
         let accounts = RwLock::new(Accounts::of(&store));
         Ok(Hosted {
@@ -387,37 +392,44 @@ impl Hosted {
             thumbnails: Mutex::new(thumbnail::Cache::default()),
             internal_creation,
             accounts,
-            pending_recovery: std::sync::atomic::AtomicBool::new(false),
+            recovery_due: std::sync::atomic::AtomicBool::new(true),
             unknown: std::sync::OnceLock::new(),
             events: events.clone(),
         })
     }
 
-    /// Finish the deferred field work the file records as pending, with
-    /// `engine`, before the file is served (schema-path.md "Implementation
-    /// notes (recalculation)"; [`Operation::FinishDeferredWork`]): in
-    /// memory, where every reader sees it from then on, and unsaved until
-    /// [`Self::commit_recovery`].
-    pub(crate) fn finish_deferred_work(&self, engine: &FileEngine) {
+    /// Finish and save, with `engine`, the deferred field work the file
+    /// records as pending (schema-path.md "Implementation notes
+    /// (recalculation)"; [`Operation::FinishDeferredWork`]), once: a
+    /// server's file as it is loaded, before it is served, a local file
+    /// when an account it admits first logs in, so that a local file closed
+    /// before that is left as it was. The work and its save are one
+    /// operation: when the save fails, the work is taken back, the file is
+    /// served as its disk holds it, read-only, and the failure is logged and
+    /// alerted; when the save's outcome is unknown, the file keeps the work
+    /// and takes no more changes (docs/server-storage.md 5).
+    pub(crate) fn recover(&self, engine: &FileEngine) {
         use std::sync::atomic::Ordering;
-        let finished = engine.submit(self, Operation::FinishDeferredWork);
-        let changed = finished.reply == Reply::FinishDeferredWork(true);
-        self.pending_recovery.store(changed, Ordering::Release);
-    }
-
-    /// Save, with `engine`, what [`Self::finish_deferred_work`] finished
-    /// when the file was loaded, if it is still unsaved: a server's file at
-    /// once, a local file once an eligible account logged in
-    /// ([`Operation::SaveFile`]). A failed save is logged and alerted, and
-    /// the work waits in memory for the next save.
-    pub(crate) fn commit_recovery(&self, engine: &FileEngine) {
-        use std::sync::atomic::Ordering;
-        if self.pending_recovery.swap(false, Ordering::AcqRel) {
-            info!(
-                "{:?}: saving the deferred field work finished on opening",
+        if !self.recovery_due.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        match engine.submit(self, Operation::FinishDeferredWork).reply {
+            Reply::FinishDeferredWork(Ok(true)) => info!(
+                "{:?}: saved the deferred field work finished on opening",
                 self.name
-            );
-            engine.submit(self, Operation::SaveFile);
+            ),
+            Reply::FinishDeferredWork(Ok(false)) => {}
+            Reply::FinishDeferredWork(Err(error)) if error.unknown => warn!(
+                "{:?}: the deferred field work finished on opening may or may not be on \
+                 disk: {error}",
+                self.name
+            ),
+            Reply::FinishDeferredWork(Err(error)) => warn!(
+                "{:?}: the deferred field work finished on opening was taken back, and the \
+                 file is served read-only: {error}",
+                self.name
+            ),
+            other => warn!("{:?}: the engine answered {other:?}", self.name),
         }
     }
 
@@ -1103,6 +1115,10 @@ pub enum PasswordChangeError {
     Inactive,
     /// The file could not be written, and nothing changed.
     Unwritten(String),
+    /// The file was written but could not be confirmed on disk: the
+    /// password may or may not be the new one there, and the file takes no
+    /// more changes until it is hosted again (docs/server-storage.md 5).
+    OutcomeUnknown(String),
 }
 
 /// Why Reset Account Password or Enable Account changed nothing.
@@ -1126,24 +1142,29 @@ pub enum AccountEditError {
     /// The account could not be rewritten, or the file could not be
     /// written, and nothing changed.
     Unwritten(String),
+    /// The file was written but could not be confirmed on disk: the edit
+    /// may or may not be in it, and the file takes no more changes until it
+    /// is hosted again (docs/server-storage.md 5).
+    OutcomeUnknown(String),
 }
 
 impl AccountEditError {
     /// FileMaker's error code; `None` for an account or file that could not
-    /// be written.
+    /// be written, or whose save could not be confirmed.
     pub fn code(&self) -> Option<i32> {
         match self {
             Self::Missing => Some(213),
             Self::NotFileAccount => Some(206),
             Self::TooLong => Some(11),
             Self::Unsupported | Self::FullAccess => Some(3),
-            Self::Unwritten(_) => None,
+            Self::Unwritten(_) | Self::OutcomeUnknown(_) => None,
         }
     }
 }
 
 impl PasswordChangeError {
-    /// FileMaker's error code; `None` for a file that could not be written.
+    /// FileMaker's error code; `None` for a file that could not be written,
+    /// or whose save could not be confirmed.
     pub fn code(&self) -> Option<i32> {
         match self {
             Self::Refused => Some(212),
@@ -1152,7 +1173,7 @@ impl PasswordChangeError {
             Self::Unchanged => Some(209),
             Self::TooLong => Some(11),
             Self::Inactive => Some(210),
-            Self::Unwritten(_) => None,
+            Self::Unwritten(_) | Self::OutcomeUnknown(_) => None,
         }
     }
 }
@@ -1511,6 +1532,13 @@ pub enum HostingError {
         name: String,
         hosted_as: String,
     },
+    /// Another OpenMaker has the file open (it holds the file's lock: a
+    /// desktop that opened it, another OpenMaker Server hosting it), or it
+    /// kept being replaced while it was opened: two of them would each save
+    /// over the other's changes.
+    InUse {
+        name: String,
+    },
     /// A file FileMaker Server would not host, and the server does not host
     /// insecure files ([`crate::ServerConfig::insecure_files`]).
     Insecure {
@@ -1530,6 +1558,10 @@ impl std::fmt::Display for HostingError {
             HostingError::SameFile { name, hosted_as } => {
                 write!(f, "{name} is the file already hosted as {hosted_as}")
             }
+            HostingError::InUse { name } => write!(
+                f,
+                "{name} is open in another OpenMaker, which holds its lock"
+            ),
             HostingError::Insecure { name, why } => write!(
                 f,
                 "{name} is not password protected: {why} (hosting it needs --allow-insecure-files)"
@@ -1698,6 +1730,19 @@ impl Slot {
         true
     }
 
+    /// Stop serving the file at once, whatever holds it, for a server that
+    /// has stopped: it is closed, and the store, which holds the file's
+    /// lock, goes when the last of its users lets go of it, which the
+    /// returned handle tells. `None` when it was not served.
+    pub(crate) fn release(&self) -> Option<std::sync::Weak<Hosted>> {
+        let mut state = self.state();
+        let file = state.file.take()?;
+        state.status = FileStatus::Closed;
+        state.closed_file = file.read_store().file();
+        state.closing = None;
+        Some(Arc::downgrade(&file))
+    }
+
     /// Give up a close that was begun: the file is open again.
     pub(crate) fn cancel_close(&self) {
         let mut state = self.state();
@@ -1841,15 +1886,13 @@ impl Hosting {
     /// Host one file a local client opened, already read from its locked
     /// descriptor: `lock` (none where the file cannot be locked, and then
     /// `read_only`) stays with the file's store, and a `read_only` file is
-    /// never written. Deferred work finished with `engine` on loading stays
-    /// unsaved until an eligible account logs in
-    /// ([`Hosted::commit_recovery`]).
+    /// never written. Its deferred work is finished and saved when an
+    /// account it admits first logs in ([`Hosted::recover`]).
     pub(crate) fn local(
         hosted: &HostedFile,
         file: &HbamFile,
         lock: Option<FileLock>,
         read_only: bool,
-        engine: &FileEngine,
     ) -> Result<Self, HostingError> {
         let configured = vec![hosted.clone()];
         // The path the desktop opened and locked, as it named it.
@@ -1862,11 +1905,11 @@ impl Hosting {
             hosted,
             at,
             file,
-            Some((lock, read_only)),
+            (lock, read_only),
+            true,
             false,
             &EventLog::default(),
         )?;
-        hosted.finish_deferred_work(engine);
         Ok(Hosting {
             slots: vec![Slot::serving(Arc::new(hosted))],
             configured,
@@ -1919,9 +1962,12 @@ impl Hosting {
 
 /// Load the file `hosted` describes with server id `id`, finishing and
 /// saving first, with `engine`, the deferred field work it records as
-/// pending: a server's files are recovered as they are loaded. An insecure
-/// file is refused, before anything is written, unless `insecure_files`. A
-/// failed save, that one included, is recorded in `events`.
+/// pending: a server's files are recovered as they are loaded. The file is
+/// locked ([`open_for_hosting`]) before anything else, and its store holds
+/// the lock for as long as it is hosted: a file another OpenMaker has open
+/// is not hosted ([`HostingError::InUse`]). An insecure file is refused,
+/// before anything is written, unless `insecure_files`. A failed save,
+/// that one included, is recorded in `events`.
 fn load_hosted(
     id: u32,
     hosted: &HostedFile,
@@ -1931,10 +1977,32 @@ fn load_hosted(
     taken: &dyn Fn(FileId) -> Option<String>,
     engine: &FileEngine,
 ) -> Result<Arc<Hosted>, HostingError> {
-    let (bytes, on_disk) = read_regular_file(at).map_err(|e| HostingError::Open {
+    let failed = |e: std::io::Error| HostingError::Open {
         name: hosted.name.clone(),
         error: om_hbam::Error::from(e),
+    };
+    // Another name of this server for the same file is named as such,
+    // before it is locked (its lock is this server's own).
+    let entry = at.folder().and_then(|folder| folder.entry(at.name()));
+    if let Some(hosted_as) = entry
+        .ok()
+        .flatten()
+        .filter(|entry| entry.regular)
+        .and_then(|entry| entry.id)
+        .and_then(taken)
+    {
+        return Err(HostingError::SameFile {
+            name: hosted.name.clone(),
+            hosted_as,
+        });
+    }
+    let opened = open_for_hosting(at).map_err(|refused| match refused {
+        NotOpened::InUse => HostingError::InUse {
+            name: hosted.name.clone(),
+        },
+        NotOpened::Failed(e) => failed(e),
     })?;
+    let on_disk = crate::anchored::file_identity(opened.locked.file()).map_err(failed)?;
     // Before anything is saved, recovery included.
     if let Some(hosted_as) = on_disk.and_then(taken) {
         return Err(HostingError::SameFile {
@@ -1942,16 +2010,28 @@ fn load_hosted(
             hosted_as,
         });
     }
+    let bytes = {
+        use std::io::Read as _;
+        let mut bytes = Vec::new();
+        opened
+            .locked
+            .file()
+            .read_to_end(&mut bytes)
+            .map_err(failed)?;
+        bytes
+    };
     let file = HbamFile::from_bytes(bytes).map_err(|error| HostingError::Open {
         name: hosted.name.clone(),
         error,
     })?;
+    let read_only = opened.read_only.is_some();
     let loaded = Arc::new(Hosted::load(
         id,
         hosted,
         at.clone(),
         &file,
-        None,
+        (opened.locked.into_lock(), read_only),
+        false,
         insecure_files,
         events,
     )?);
@@ -1959,9 +2039,11 @@ fn load_hosted(
     // this file (#468).
     loaded.store_for_writing().set_file(on_disk);
     drop(file);
-    // A copy a save left when it stopped part way would stop every save:
-    // removed under the file's lock, before any save.
-    match crate::store::clear_leftover_copy_at(at, on_disk) {
+    if let Some(why) = opened.read_only {
+        warn!("{:?}: hosted read-only: {why}", hosted.name);
+        events.alert(Event::hosted_read_only(&hosted.name, why));
+    }
+    match opened.leftover {
         LeftoverCopy::None => {}
         LeftoverCopy::Removed => {
             warn!(
@@ -1981,24 +2063,92 @@ fn load_hosted(
             events.alert(Event::leftover_copy_kept(&hosted.name, &why));
         }
     }
-    loaded.finish_deferred_work(engine);
-    loaded.commit_recovery(engine);
+    loaded.recover(engine);
     Ok(loaded)
 }
 
-/// The bytes of the regular file `at`, from the folder it was first hosted
-/// from, and its device and inode, read through the one handle whose type
-/// was checked: opened without
-/// blocking (a FIFO named as a database would otherwise hold startup before
-/// the server listens), and refused unless it is a regular file, so that
-/// one swapped in after a check cannot be read instead.
-fn read_regular_file(at: &FileAt) -> std::io::Result<(Vec<u8>, Option<FileId>)> {
-    use std::io::Read as _;
-    let mut file = at.folder()?.open_regular(at.name())?;
-    let on_disk = crate::anchored::file_identity(&file)?;
-    let mut data = Vec::new();
-    file.read_to_end(&mut data)?;
-    Ok((data, on_disk))
+/// A file OpenMaker Server opened for hosting ([`open_for_hosting`]).
+pub(crate) struct OpenedForHosting {
+    /// Its descriptor, locked where the file can be locked here.
+    pub(crate) locked: Locked,
+    /// Why it is hosted read-only.
+    pub(crate) read_only: Option<&'static str>,
+    /// What was beside it under the name of a save's new copy.
+    pub(crate) leftover: LeftoverCopy,
+}
+
+/// Why a file with other names is hosted read-only.
+const OTHER_NAMES: &str =
+    "it has other names (hard links), which a save would leave with the old contents";
+
+/// Open the file `at` for hosting and lock it (`filelock::open_locked`, the
+/// one implementation the desktop's local host shares), from the folder it
+/// was first hosted from, through one descriptor opened without following a
+/// link and without blocking (a FIFO named as a database would otherwise
+/// hold startup before the server listens), and refused unless it is a
+/// regular file, so that one swapped in after a check cannot be read
+/// instead. The lock is exclusive, and kept for as long as the file is
+/// hosted: a file another OpenMaker has open is in use. A file with other
+/// names is hosted read-only under a shared lock, as the desktop opens it:
+/// a save, which renames a new copy over one name, would leave the others
+/// with the old contents. Only under the exclusive lock, where no other
+/// OpenMaker can be in the middle of a save of the file, is a copy a save
+/// left when it stopped part way removed (`store::clear_leftover_copy`).
+/// Where the file cannot be locked here (no `flock`), it is hosted
+/// unlocked, as before, and a leftover copy is left.
+pub(crate) fn open_for_hosting(at: &FileAt) -> Result<OpenedForHosting, NotOpened<std::io::Error>> {
+    open_for_hosting_with(at, &mut |_| {})
+}
+
+/// [`open_for_hosting`], running `before_lock` between each open and its
+/// lock (tests).
+pub(crate) fn open_for_hosting_with(
+    at: &FileAt,
+    before_lock: &mut dyn FnMut(u32),
+) -> Result<OpenedForHosting, NotOpened<std::io::Error>> {
+    filelock::open_locked(
+        &mut |attempt| {
+            let folder = at.folder()?;
+            let file = folder.open_regular(at.name())?;
+            let others = matches!(filelock::link_count(&file), Ok(n) if n > 1);
+            let kind = if others {
+                LockKind::Shared
+            } else {
+                LockKind::Exclusive
+            };
+            before_lock(attempt);
+            Ok((file, kind, folder))
+        },
+        &mut |file, folder| folder.is_entry(file, at.name()),
+        &mut |locked, folder| {
+            let leftover = match &locked {
+                Locked::Lock(lock) if lock.kind() == LockKind::Shared => {
+                    return Ok(Settled::Done(OpenedForHosting {
+                        locked,
+                        read_only: Some(OTHER_NAMES),
+                        leftover: LeftoverCopy::None,
+                    }))
+                }
+                Locked::Lock(lock) => {
+                    // A name added between the open and the lock: open
+                    // again, shared.
+                    if !matches!(filelock::link_count(lock.file()), Ok(1)) {
+                        return Ok(Settled::Again);
+                    }
+                    clear_leftover_copy(&folder, at.name())
+                }
+                Locked::Unlocked(_) => match copy_beside(&folder, at.name()) {
+                    Ok(None) => LeftoverCopy::None,
+                    _ => LeftoverCopy::Kept("the file cannot be locked here".into()),
+                },
+            };
+            Ok(Settled::Done(OpenedForHosting {
+                locked,
+                read_only: None,
+                leftover,
+            }))
+        },
+    )
 }
 
 /// The name of the slot other than `id` among `slots` that serves the file

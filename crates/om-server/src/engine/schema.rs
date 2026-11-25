@@ -3,8 +3,7 @@
 //! op73's table updates and the deferred field work a file is opened with
 //! (schema-path.md 3.3, 3.4, 3.6, 7.2; query-program.md 7.1). Each change
 //! goes into the transaction's journal, which the engine stores or takes
-//! back (`FileEngine::submit`); the deferred work finished at opening is
-//! made in place, as its save waits.
+//! back (`FileEngine::submit`).
 
 use super::{ChangeSchema, Environment, Transaction, UpdateTable, UploadToCatalog};
 

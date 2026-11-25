@@ -42,9 +42,8 @@ pub enum Hold<'h, 'a> {
 /// serial value, op13's and op86's catalog writes (moved into it, not
 /// copied), the member keys op86 writes, a find's stored indexes, op87's
 /// and op88's library entries, and op73's records, work list, global
-/// values, indexes, library entries and basis. The deferred field work
-/// finished at opening is made in place, without the journal: its save
-/// waits, and nothing takes it back.
+/// values, indexes, library entries and basis, which the deferred field
+/// work finished at opening keeps the same way.
 pub struct Transaction<'a> {
     pub(super) store: &'a mut Store,
     /// Every change the operation made to the tree, which the engine
@@ -152,6 +151,10 @@ impl<'a> Transaction<'a> {
         self.committing = true;
         self.store
             .write_record_in(&mut self.journal, table, id, record);
+        #[cfg(test)]
+        if PANIC_WRITING_RECORDS.with(std::cell::Cell::get) {
+            panic!("a test's panic after writing a record");
+        }
     }
 
     /// Store container data a server script set into a cell of a record of
@@ -229,6 +232,10 @@ impl<'a> Transaction<'a> {
             Err(panic) => {
                 let journal = std::mem::replace(&mut self.journal, self.store.begin_commit());
                 self.store.roll_back(journal);
+                // Begun again from the store as it was put back, so that the
+                // engine, rolling this one back, leaves it so: its unsaved
+                // state the one before the operation.
+                self.journal = self.store.begin_commit();
                 std::panic::resume_unwind(panic)
             }
         }
@@ -343,14 +350,16 @@ impl<'a> Transaction<'a> {
     }
 
     /// The deferred field work the file records as pending, as op73 does
-    /// it for each table (`Store::recover`): whether it changed the file.
-    /// Work that cannot be done is kept, and the file hosted read-only.
+    /// it for each table (`Store::recover`), every change in the journal:
+    /// whether it changed the file. Work that cannot be done is kept, and
+    /// the file hosted read-only.
     pub fn recover(
         &mut self,
         environment: &mut dyn FnMut() -> RecordEnvironment,
         unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> bool {
-        self.store.recover(environment, unique_id)
+        self.store
+            .recover(Some(&mut self.journal), environment, unique_id)
     }
 }
 
@@ -359,6 +368,10 @@ thread_local! {
     /// Makes [`Transaction::store_indexes`] panic on this thread
     /// (`engine::tests`).
     pub(super) static PANIC_STORING_INDEXES: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+    /// Makes [`Transaction::write_record`] panic on this thread once it
+    /// wrote (`engine::tests`).
+    pub(super) static PANIC_WRITING_RECORDS: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
 }
 

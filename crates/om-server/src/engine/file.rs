@@ -56,11 +56,9 @@ enum Needs {
 /// changes ([`FileEngine::submit`]).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Save {
-    /// Nothing to save: lock-table edits only, a server script's op71,
+    /// Nothing to save: lock-table edits only, or a server script's op71,
     /// whose reservation its commit saves, or its end
-    /// ([`Save::Requested`]), or the deferred field work finished at
-    /// opening, whose save waits (`Hosted::commit_recovery`). What it
-    /// changed stays in memory, unsaved.
+    /// ([`Save::Requested`]). What it changed stays in memory, unsaved.
     Nothing,
     /// The operation's commit, when it began one: op70, an authoring edit,
     /// a server script's commit and Set Next Serial Value, the account
@@ -77,13 +75,13 @@ enum Save {
     /// is saved if it holds changes the disk lacks, unless it is hosted
     /// read-only.
     Always,
-    /// op73: [`Save::Always`] when its work changed the file, which is
-    /// otherwise not saved.
+    /// op73 and the deferred field work finished at opening:
+    /// [`Save::Always`] when the work changed the file, which is otherwise
+    /// not saved.
     IfChanged,
     /// op240's save, when the file may be written: the reply then says
     /// whether the disk holds every change the file holds. A server
-    /// script's end and the save of the deferred work finished at opening
-    /// submit it too.
+    /// script's end submits it too.
     Requested,
 }
 
@@ -139,9 +137,25 @@ fn save(operation: &Operation) -> Save {
         | Operation::StoreIndexes(_)
         | Operation::StoreContainerData(_)
         | Operation::AdjustContainerCount(_) => Save::Always,
-        Operation::UpdateTable(_) => Save::IfChanged,
+        Operation::UpdateTable(_) | Operation::FinishDeferredWork => Save::IfChanged,
         Operation::SaveFile => Save::Requested,
         _ => Save::Nothing,
+    }
+}
+
+/// Whether `operation` would change the file, as its value says before it
+/// runs: on a file that takes no more changes, only these are refused
+/// (docs/server-storage.md 5). op72 that neither replaces nor advances the
+/// serial (flags 0) and op87 with a delta of 0 read, and so does a find's
+/// draft with no index to store; every other operation that takes the store
+/// for writing may change it.
+fn changes_file(operation: &Operation) -> bool {
+    use om_protocol::write::{SERIAL_INCREMENT, SERIAL_REPLACE};
+    match operation {
+        Operation::AdvanceSerial(op) => op.request.flags & (SERIAL_REPLACE | SERIAL_INCREMENT) != 0,
+        Operation::AdjustContainerCount(op) => op.request.delta != 0,
+        Operation::StoreIndexes(op) => !op.indexes.is_empty(),
+        _ => true,
     }
 }
 
@@ -359,7 +373,7 @@ impl FileEngine {
         operation: impl FnOnce(&mut Store) -> (Operation, Taken),
     ) -> Outcome {
         let (operation, taken) = operation(&mut store);
-        if let Some(why) = store.writes_refused() {
+        if let Some(why) = store.writes_refused().filter(|_| changes_file(&operation)) {
             let error = StorageError::refused(why);
             taken.put_back(&mut store);
             warn!("{:?}: not done: {error}", file.name);
@@ -412,7 +426,10 @@ impl FileEngine {
             Save::Reservation => reserved,
             Save::Always => !store.is_read_only(),
             Save::IfChanged => {
-                matches!(outcome.reply, Reply::UpdateTable(Ok(true))) && !store.is_read_only()
+                matches!(
+                    outcome.reply,
+                    Reply::UpdateTable(Ok(true)) | Reply::FinishDeferredWork(Ok(true))
+                ) && !store.is_read_only()
             }
             Save::Requested => outcome.reply == Reply::SaveFile(Ok(())),
         };
@@ -492,6 +509,12 @@ impl FileEngine {
                             "{}: keeping the window's found set failed, taken back: {error}",
                             file.name
                         );
+                    }
+                    // The work list is back, and the file cannot hold the
+                    // work finished: served read-only, as when the work
+                    // cannot be done (`Store::recover`).
+                    if outcome.reply == Reply::FinishDeferredWork(Ok(true)) {
+                        store.set_read_only();
                     }
                     outcome.not_stored(&error)
                 }

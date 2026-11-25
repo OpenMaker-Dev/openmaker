@@ -5697,6 +5697,10 @@ fn password_change_error(
         Refusal::TooLong => "The new password can have at most 100 characters.".into(),
         Refusal::Inactive => format!("The account “{account}” is inactive in this file."),
         Refusal::Unwritten(reason) => format!("The new password could not be saved: {reason}."),
+        Refusal::OutcomeUnknown(reason) => format!(
+            "The new password was written, but whether the file on disk keeps it is unknown: \
+             {reason}. Close the file and open it again."
+        ),
     };
     match refusal.code() {
         Some(code) => DataError::with_code(code, message),

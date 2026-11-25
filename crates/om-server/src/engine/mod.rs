@@ -148,7 +148,9 @@
 //! its write lock, `Store::writes_refused`) and the file's
 //! (`Hosted::writes_refused`, set once under the store and read without a
 //! lock, so that the administrator's list of files never waits for the
-//! store). Nothing
+//! store). The file's own lock on disk (`crate::filelock`), which the store
+//! holds for as long as the file is hosted and a save moves to the new
+//! copy, is not one of these: it is never waited for. Nothing
 //! else: the caller delivers notices after it returns, taking the file's
 //! registrations and then the mailboxes (`writes::notify`), and a session's
 //! own state (its temporary area, the records it was served withheld, the
@@ -250,9 +252,7 @@ pub enum Operation {
     /// op240's Save: write the file now if it holds changes the disk lacks,
     /// such as a client's op13 uploads, and answer whether the disk holds
     /// them all. A server script's end submits it too, for what its
-    /// reservations left unsaved (`scripts::host`, `ServerHost::close`), and
-    /// so does the save of the deferred field work finished on opening
-    /// (`Hosted::commit_recovery`).
+    /// reservations left unsaved (`scripts::host`, `ServerHost::close`).
     SaveFile,
     /// A server script's commit of its records.
     CommitScriptRecords(CommitScriptRecords),
@@ -275,11 +275,10 @@ pub enum Operation {
     /// Delete Account (135).
     DeleteAccount(DeleteAccount),
     /// Finish the deferred field work the file records as pending
-    /// (schema-path.md 7.2; `Store::recover`), as a file is opened for
-    /// hosting, before it is served. It saves nothing: a server saves it
-    /// at once, a local file once an account it admits logs in
-    /// ([`Operation::SaveFile`], `Hosted::commit_recovery`), and closing a
-    /// local file before that leaves the file as it was.
+    /// (schema-path.md 7.2; `Store::recover`), and save it: a server's
+    /// file as it is loaded, before it is served, a local file when an
+    /// account it admits first logs in (`Hosted::recover`), so that closing
+    /// a local file before that leaves the file as it was.
     FinishDeferredWork,
     /// Keep the found set and record a window of a local file closes on
     /// (file-metadata.md 11; `LocalHost::save_found_set`).
@@ -750,8 +749,9 @@ pub enum Reply {
     EnableAccount(Result<bool, AccountEditError>),
     DeleteAccount(Result<(), AccountEditError>),
     /// Whether the work changed the file. Work that cannot be done is
-    /// kept, and the file is hosted read-only (`Store::recover`).
-    FinishDeferredWork(bool),
+    /// kept, and the file is hosted read-only (`Store::recover`); so is
+    /// work that could not be stored, which is taken back.
+    FinishDeferredWork(Result<bool, StorageError>),
     /// Whether the file holds the window's found set: not on a read-only
     /// file, for a table without a data version, where the occurrence
     /// holds one FileMaker Pro never wrote that way, nor when the save
@@ -900,10 +900,17 @@ impl Outcome {
     /// unknown, the extension's status for it; op240's Save as failed or
     /// unknown; a server script's commit and Set Next Serial Value with the
     /// save's FileMaker error, the commit's message saying the file could
-    /// not be saved; an account edit as unwritten with the save's message;
-    /// a found set as not kept.
+    /// not be saved; an account edit as unwritten with the save's message,
+    /// or as of an unknown outcome; a found set as not kept.
     fn not_stored(self, error: &StorageError) -> Outcome {
         let unwritten = || format!("the file could not be saved: {error}");
+        let account_error = || {
+            if error.unknown {
+                AccountEditError::OutcomeUnknown(error.message.clone())
+            } else {
+                AccountEditError::Unwritten(unwritten())
+            }
+        };
         let reply = match self.reply {
             Reply::EditDesign(Edited { not_stored, reply }) => Reply::EditDesign(Edited {
                 reply: if error.unknown {
@@ -969,19 +976,16 @@ impl Outcome {
                 Reply::CommitScriptRecords(Err((u32::from(error.code), unwritten())))
             }
             Reply::SetNextSerial(_) => Reply::SetNextSerial(Err(u32::from(error.code))),
-            Reply::ChangePassword(Ok(())) => {
-                Reply::ChangePassword(Err(PasswordChangeError::Unwritten(unwritten())))
-            }
-            Reply::ResetPassword(Ok(())) => {
-                Reply::ResetPassword(Err(AccountEditError::Unwritten(unwritten())))
-            }
-            Reply::EnableAccount(Ok(_)) => {
-                Reply::EnableAccount(Err(AccountEditError::Unwritten(unwritten())))
-            }
-            Reply::DeleteAccount(Ok(())) => {
-                Reply::DeleteAccount(Err(AccountEditError::Unwritten(unwritten())))
-            }
+            Reply::ChangePassword(Ok(())) => Reply::ChangePassword(Err(if error.unknown {
+                PasswordChangeError::OutcomeUnknown(error.message.clone())
+            } else {
+                PasswordChangeError::Unwritten(unwritten())
+            })),
+            Reply::ResetPassword(Ok(())) => Reply::ResetPassword(Err(account_error())),
+            Reply::EnableAccount(Ok(_)) => Reply::EnableAccount(Err(account_error())),
+            Reply::DeleteAccount(Ok(())) => Reply::DeleteAccount(Err(account_error())),
             Reply::SaveFoundSet(_) => Reply::SaveFoundSet(false),
+            Reply::FinishDeferredWork(_) => Reply::FinishDeferredWork(Err(error.clone())),
             other => other,
         };
         Outcome {
@@ -1041,7 +1045,7 @@ fn not_run(operation: Operation, error: &StorageError) -> Outcome {
         Operation::ResetPassword(_) => Reply::ResetPassword(Ok(())),
         Operation::EnableAccount(_) => Reply::EnableAccount(Ok(false)),
         Operation::DeleteAccount(_) => Reply::DeleteAccount(Ok(())),
-        Operation::FinishDeferredWork => Reply::FinishDeferredWork(false),
+        Operation::FinishDeferredWork => Reply::FinishDeferredWork(Ok(false)),
         Operation::SaveFoundSet(_) => Reply::SaveFoundSet(false),
         // Not refused: they change only the lock table, or read.
         other => return refusal(other, NOT_HELD),
@@ -1306,7 +1310,7 @@ pub fn run(
             Reply::DeleteAccount(crate::hosting::delete_account(op, tx, environment)),
         ),
         (Operation::FinishDeferredWork, Hold::Transaction(tx)) => Outcome::new(
-            Reply::FinishDeferredWork(schema::finish_deferred_work(tx, environment)),
+            Reply::FinishDeferredWork(Ok(schema::finish_deferred_work(tx, environment))),
         ),
         (Operation::SaveFoundSet(op), Hold::Transaction(tx)) => {
             Outcome::new(Reply::SaveFoundSet(save_found_set(op, file, tx)))
@@ -1446,7 +1450,7 @@ fn refusal(operation: Operation, why: &'static str) -> Outcome {
         Operation::DeleteAccount(_) => {
             Reply::DeleteAccount(Err(AccountEditError::Unwritten(why.into())))
         }
-        Operation::FinishDeferredWork => Reply::FinishDeferredWork(false),
+        Operation::FinishDeferredWork => Reply::FinishDeferredWork(Ok(false)),
         Operation::SaveFoundSet(_) => Reply::SaveFoundSet(false),
     })
 }

@@ -284,6 +284,21 @@ impl Event {
         Self::new(Log::Event, Level::Error, number, message)
     }
 
+    /// Hosted file `name` is served read-only, for the reason `why` (it has
+    /// other names). OpenMaker's own message.
+    pub fn hosted_read_only(name: &str, why: &str) -> Self {
+        Self::new(
+            Log::Event,
+            Level::Warning,
+            0,
+            format!(
+                "Database \"{}\" is served read-only: {}.",
+                database(name),
+                value(why)
+            ),
+        )
+    }
+
     /// Hosted file `name` was opened with the copy a save that stopped part
     /// way left beside it (`<file>.omsave`), which it removed. OpenMaker's
     /// own message.

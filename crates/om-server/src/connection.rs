@@ -2042,9 +2042,9 @@ fn login(
             file.withheld.lock().expect("withheld records lock").clear();
             file.account = Some(account);
             if shared.local {
-                // Deferred work the local file's opening finished is saved
+                // Deferred work the local file holds is finished and saved
                 // now that an account it admits has logged in.
-                file.hosted.commit_recovery(&shared.engine);
+                file.hosted.recover(&shared.engine);
             }
             LoginReply {
                 error_code: 0,
@@ -2510,10 +2510,27 @@ fn query(
                 file_id: file.hosted.id,
                 connection_key: Some(session.key),
             };
+            // Whether the program itself changes the file: its schema
+            // instructions, a key it reserves. Only such a program fails
+            // when what it stores is not stored.
+            let changes = query_changes_file(&program);
             let outcome = {
                 let store = file.hosted.read_store();
-                if store.is_read_only() && query_changes_file(&program) {
+                if store.is_read_only() && changes {
                     return Err(Refused.into());
+                }
+                // A file that takes no more changes (a save's outcome was
+                // unknown) refuses them before they run, so that no key is
+                // reserved that could never be stored
+                // (docs/server-storage.md 5).
+                if let Some(why) = store.writes_refused().filter(|_| changes) {
+                    warn!(
+                        "{peer}: {:?}: query program refused: {why}",
+                        file.hosted.name
+                    );
+                    let code = crate::hosting::save_error(&std::io::Error::other(why.to_owned()));
+                    return Ok(reply(error_slot(code), Resume::complete())
+                        .to_result_within(max_return as usize));
                 }
                 let restricted = !full_access(file);
                 let source = QuerySource {
@@ -2585,12 +2602,22 @@ fn query(
                     // The program's writes were not stored: its reply is
                     // the error slot with the save's FileMaker error
                     // (query-program.md 11.2).
-                    Reply::ChangeSchema(Err(SchemaNotChanged::NotStored(error))) => {
+                    Reply::ChangeSchema(Err(SchemaNotChanged::NotStored(error))) if changes => {
                         warn!(
                             "{peer}: {:?}: query program's writes not stored: {error}",
                             file.hosted.name
                         );
                         slots = error_slot(error.code);
+                    }
+                    // What another request left waiting (a key it reserved)
+                    // was not stored: it waits again, and this program,
+                    // which changes nothing, keeps its answer.
+                    Reply::ChangeSchema(Err(SchemaNotChanged::NotStored(error))) => {
+                        warn!(
+                            "{peer}: {:?}: what other queries left waiting was not stored, \
+                             waiting again: {error}",
+                            file.hosted.name
+                        );
                     }
                     other => return Err(mismatched(&other)),
                 }

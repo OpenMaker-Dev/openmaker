@@ -1168,3 +1168,146 @@ fn a_script_whose_end_save_fails_ends_with_the_save_error() {
     assert_eq!((reply.error, reply.result.as_str()), (0, "0"));
     client.disconnect().unwrap();
 }
+
+/// An op86 program of one instruction with `operands` (leaf, value),
+/// signed for `session` (query-program.md 2).
+fn program(session: &om_session::Session, file_id: u32, operands: &[(u8, Vec<u8>)]) -> Vec<u8> {
+    use om_query::program::leaf;
+    let mut program = OwnedNode::list(Vec::new(), Vec::new());
+    let signed = [
+        (leaf::FILE_ID, file_id.to_be_bytes().to_vec()),
+        (
+            leaf::ACCESS_KEY,
+            om_crypto::query_access_key(1, session.connection_key(), file_id).to_vec(),
+        ),
+    ];
+    for (key, value) in operands.iter().cloned().chain(signed) {
+        program.put(&[&[1], &[1], &[key]], OwnedNode::leaf(Vec::new(), value));
+    }
+    program.to_wire().unwrap()
+}
+
+/// Whether op86's reply is the error slot with 800 alone
+/// (query-program.md 11.2).
+fn failed_to_store(slots: &[u8]) -> bool {
+    slots == [0x80, 0x06, 0x00, 0x03, 0x02, 0x03, 0x20, 0x40]
+}
+
+/// The review's P1 on op86: a program that reserves a member key whose
+/// storing fails answers its error slot, and the key waits for the next
+/// write; a program that only reads keeps its answer meanwhile, though the
+/// key it finds waiting cannot be stored either. On a file that takes no
+/// more changes a program that would change it is refused before it runs,
+/// so it reserves nothing, and programs that read go on answering.
+#[test]
+fn a_program_that_only_reads_keeps_its_answer_when_what_waits_cannot_be_stored() {
+    use om_query::program::{leaf, opcode};
+    let file = TempFile::from_tree("save-op86-waiting", &with_photo());
+    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+    let id = handle.files()[0].id;
+    let (mut client, file_id) = server::logged_in(port, "op86-waiting");
+    let table = uint_segment(TABLE);
+    let generate = program(
+        &client,
+        file_id,
+        &[
+            (leaf::OPCODE, vec![opcode::GENERATE_MEMBER_KEY]),
+            (leaf::OPERAND1, vec![1, 4]),
+        ],
+    );
+    let read = program(
+        &client,
+        file_id,
+        &[
+            (leaf::OPCODE, vec![opcode::GET_KEY]),
+            (leaf::SRC, [vec![table.len() as u8], table.clone()].concat()),
+        ],
+    );
+    let answer = client.query(&read).unwrap().slots;
+    assert!(!failed_to_store(&answer));
+
+    let blocked = BlockedSaves::new(&file);
+    let reply = client.query(&generate).unwrap();
+    assert!(failed_to_store(&reply.slots), "{:02x?}", reply.slots);
+    // The key waits, and cannot be stored: the read keeps its answer.
+    assert_eq!(client.query(&read).unwrap().slots, answer);
+    drop(blocked);
+    assert_eq!(client.query(&read).unwrap().slots, answer, "and stores it");
+
+    // A file that takes no more changes.
+    assert!(handle.failing_saves(id, Some(om_server::SaveFault::FolderFlush)));
+    let serial = client
+        .get_serial(&table, &uint_segment(COUNT), "", 1, write::SERIAL_INCREMENT)
+        .unwrap();
+    assert!(handle.failing_saves(id, None));
+    assert_eq!(serial.status, u32::from(CANNOT_WRITE));
+    let reply = client.query(&generate).unwrap();
+    assert!(failed_to_store(&reply.slots), "{:02x?}", reply.slots);
+    assert_eq!(client.query(&read).unwrap().slots, answer);
+    client.disconnect().unwrap();
+}
+
+/// The review's P0: OpenMaker Server holds the lock of a file it hosts from
+/// opening it until it stops hosting it, through each save, which moves the
+/// lock to the new file before the rename. Meanwhile another server is
+/// refused the file (not hosted, with an alert), and so is the desktop
+/// (in use, 300). Closed, the file opens elsewhere; opened again, it is
+/// locked again.
+#[cfg(unix)]
+#[test]
+fn a_hosted_file_is_locked_while_it_is_hosted_through_its_saves() {
+    let file = TempFile::from_tree("save-locked", &with_photo());
+    let other = TempFile::from_tree("save-locked-other", &with_photo());
+    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+    let id = handle.files()[0].id;
+    let client = rcgen::generate_simple_self_signed(vec!["OpenMaker".into()]).unwrap();
+    let cert = client.cert.pem().into_bytes();
+    let desktop = || om_server::LocalHost::open(&file.0, &cert);
+    let second =
+        || server::start_hosting(&[("Tasks.fmp12", &file), ("Other.fmp12", &other)], |s| s);
+    // The second server is refused the file and hosts the other one; it
+    // then stops, letting go of that one.
+    let refused = |handle: om_server::ServerHandle| {
+        let hosted: Vec<String> = handle.files().into_iter().map(|f| f.name).collect();
+        assert_eq!(hosted, ["Other.fmp12"]);
+        let alerts = handle.alerts();
+        assert!(
+            alerts
+                .iter()
+                .any(|a| a.message.contains("open in another OpenMaker")),
+            "{alerts:?}"
+        );
+        assert!(handle.shutdown(std::time::Duration::from_secs(5)));
+        handle.close_connections();
+        assert!(handle.release_files(std::time::Duration::from_secs(5)));
+    };
+    assert_eq!(desktop().unwrap_err().code(), 300);
+    refused(second().1);
+
+    // A save moves the lock to the file it renames over the old one.
+    let (mut session, _) = server::logged_in(port, "locked");
+    let serial = session
+        .get_serial(
+            &uint_segment(TABLE),
+            &uint_segment(COUNT),
+            "",
+            1,
+            write::SERIAL_INCREMENT,
+        )
+        .unwrap();
+    assert_eq!(serial.status, 0);
+    assert_eq!(desktop().unwrap_err().code(), 300);
+    refused(second().1);
+    session.disconnect().unwrap();
+
+    // Closed, the file is let go; opened again, it is locked again.
+    handle
+        .close_file(id, &om_server::Notice::default())
+        .unwrap();
+    wait_for(&handle, id, om_server::FileStatus::Closed);
+    let opened = desktop().unwrap();
+    assert!(opened.close());
+    handle.open_file(id).unwrap();
+    wait_for(&handle, id, om_server::FileStatus::Open);
+    assert_eq!(desktop().unwrap_err().code(), 300);
+}

@@ -374,8 +374,18 @@ type Reindex = (Vec<u8>, u8, BTreeSet<Vec<u8>>, BTreeSet<Vec<u8>>);
 
 impl Journal {
     /// Keep the node at `path` of `root` as it is now, unless this commit
-    /// already kept it.
+    /// already kept it, and what a change there would create on its way
+    /// ([`Self::save_parents`]): a missing parent is kept as missing, so a
+    /// roll-back removes all the change created, the parent included.
     fn save_node(&mut self, root: &OwnedNode, path: Vec<Vec<u8>>) {
+        if self.save_parents(root, &path) {
+            self.keep_node(root, path);
+        }
+    }
+
+    /// Keep the node at `path` of `root` as it is now, unless this commit
+    /// already kept it; its parents are not looked at.
+    fn keep_node(&mut self, root: &OwnedNode, path: Vec<Vec<u8>>) {
         if self.saved.contains(&path) {
             return;
         }
@@ -400,7 +410,7 @@ impl Journal {
             match node.child(&parents[depth - 1]) {
                 Some(child) if child.push => node = child,
                 _ => {
-                    self.save_node(root, parents[..depth].to_vec());
+                    self.keep_node(root, parents[..depth].to_vec());
                     return false;
                 }
             }
@@ -411,9 +421,7 @@ impl Journal {
     /// Keep what putting a node at `path` of `root` changes: its parents
     /// ([`Self::save_parents`]) and the node there now, copied.
     fn save_path(&mut self, root: &OwnedNode, path: Vec<Vec<u8>>) {
-        if self.save_parents(root, &path) {
-            self.save_node(root, path);
-        }
+        self.save_node(root, path);
     }
 
     /// Remove the node at `path` of `root`, kept here (moved, not copied)
@@ -580,56 +588,6 @@ pub(crate) fn clear_leftover_copy(folder: &Folder, name: &std::ffi::OsStr) -> Le
     }
 }
 
-/// [`clear_leftover_copy`] for a server opening the file `at` for hosting,
-/// whose device and inode as it read it are `read` (`None` where it has
-/// none): the server holds no lock on the files it hosts, so it takes the
-/// file's lock for this, exclusive and without waiting, through a
-/// descriptor of the file opened in its folder, and keeps it while it
-/// looks and removes. A file another OpenMaker has open (its lock is
-/// held), one that cannot be locked here, and one replaced since it was
-/// read keep their copy. Nothing is locked when nothing is there.
-pub(crate) fn clear_leftover_copy_at(at: &FileAt, read: Option<FileId>) -> LeftoverCopy {
-    use crate::filelock::LockKind;
-    let folder = match at.folder() {
-        Ok(folder) => folder,
-        Err(e) => return LeftoverCopy::Kept(format!("its folder could not be opened: {e}")),
-    };
-    match copy_beside(&folder, at.name()) {
-        Ok(None) => return LeftoverCopy::None,
-        Ok(Some(_)) => {}
-        Err(e) => return LeftoverCopy::Kept(format!("it could not be looked at: {e}")),
-    }
-    let file = match folder.open_regular(at.name()) {
-        Ok(file) => file,
-        Err(e) => return LeftoverCopy::Kept(format!("the file could not be opened: {e}")),
-    };
-    let lock = match FileLock::acquire(file, LockKind::Exclusive) {
-        Ok(lock) => lock,
-        Err((e, _)) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            return LeftoverCopy::Kept(
-                "another program has the file open (it holds the file's lock)".into(),
-            )
-        }
-        Err((e, _)) => {
-            return LeftoverCopy::Kept(format!("the file could not be locked here: {e}"))
-        }
-    };
-    let current = match crate::anchored::file_identity(lock.file()) {
-        Ok(Some(id)) => {
-            folder.is_entry(lock.file(), at.name()).unwrap_or(false) && read == Some(id)
-        }
-        // No inode identities (Windows): no locks either, so not reached.
-        Ok(None) => false,
-        Err(_) => false,
-    };
-    if !current {
-        return LeftoverCopy::Kept("the file was replaced since it was read".into());
-    }
-    let found = clear_leftover_copy(&folder, at.name());
-    drop(lock);
-    found
-}
-
 /// Whether `file`, the copy a save created, is still entry `name` of the
 /// file's folder.
 fn owned_copy(folder: &Folder, file: &std::fs::File, name: &std::ffi::OsStr) -> bool {
@@ -766,6 +724,7 @@ impl Store {
     /// whether anything changed.
     pub fn recover(
         &mut self,
+        mut journal: Option<&mut Journal>,
         environment: &mut dyn FnMut() -> RecordEnvironment,
         unique_id: &mut dyn FnMut() -> [u8; 16],
     ) -> bool {
@@ -792,13 +751,14 @@ impl Store {
         }
         let mut changed = false;
         for table in pending {
-            info!(
-                "{}: finishing the deferred field work of table {table:02x?}",
-                self.name
+            note(
+                &self.name,
+                journal.as_deref_mut(),
+                format!("finished the deferred field work of table {table:02x?}"),
             );
             // The preflight checked every pending table before any changed.
             changed |= self
-                .update_table(None, &table, environment, unique_id)
+                .update_table(journal.as_deref_mut(), &table, environment, unique_id)
                 .unwrap_or(false);
         }
         changed
@@ -1195,6 +1155,9 @@ impl Store {
             .node(&[table, &[keys::RECORDS], &serial::encode(id)])
             .cloned();
         journal.save_node(&self.root, vec![table.to_vec(), vec![keys::RECORD_IDS]]);
+        // The first record of a table creates its record list `[T, 05]`.
+        let at = vec![table.to_vec(), vec![keys::RECORDS], serial::encode(id)];
+        journal.save_parents(&self.root, &at);
         let (existed, exists) = (old.is_some(), record.is_some());
         let mut recount = std::mem::take(&mut journal.recount);
         let put = self.put_record(
@@ -1341,20 +1304,15 @@ impl Store {
                 journal.refused.get_or_insert(reason);
                 continue;
             }
-            let Some(count) = self
+            // The member's counts, or the member with its entries in the
+            // header when it goes: the decision the adjustment makes.
+            let Some(changed) = self
                 .node(&library)
-                .and_then(|l| library::member(l, &member))
-                .map(library::reference_count)
+                .and_then(|l| library::adjust_keys(l, &member, delta))
             else {
                 continue;
             };
             let base = vec![table.to_vec(), vec![LIBRARY]];
-            let changed: Vec<Vec<Vec<u8>>> = if i64::from(count) + i64::from(delta) <= 0 {
-                // The member goes, with its entries in the header.
-                library::deletion_keys(&member).into_iter().collect()
-            } else {
-                library::count_keys(&member).into_iter().collect()
-            };
             for keys in changed {
                 let mut path = base.clone();
                 path.extend(keys);
@@ -1468,7 +1426,10 @@ impl Store {
             journal.refused.get_or_insert(reason);
             return Vec::new();
         }
-        match library::store_keys(self.node(&[table, &[LIBRARY]]), &data.md5) {
+        // One decision, which the journal keeps and the store carries out.
+        let library = self.node(&[table, &[LIBRARY]]);
+        let plan = library::store_plan(library, &data.md5);
+        match plan.keys(library) {
             None => journal.save_node(&self.root, base),
             Some(keys) => {
                 for keys in keys {
@@ -1479,7 +1440,8 @@ impl Store {
             }
         }
         self.dirty = true;
-        match library::store(self.root.ensure(&[table, &[LIBRARY]]), data, unique_id) {
+        let library = self.root.ensure(&[table, &[LIBRARY]]);
+        match library::store_as(library, data, &plan, unique_id) {
             Some(Stored::New(member) | Stored::Existing(member)) => member,
             // Not reached: `library_refusal` checked the same counters.
             None => {
@@ -1693,8 +1655,11 @@ impl Store {
         match done {
             Ok(value) => value,
             Err(panic) => {
-                let journal = std::mem::replace(journal, self.begin_commit());
-                self.roll_back(journal);
+                let taken = std::mem::replace(journal, self.begin_commit());
+                self.roll_back(taken);
+                // Begun again from the store as it was put back, so that a
+                // handler outside, rolling this one back, leaves it so.
+                *journal = self.begin_commit();
                 std::panic::resume_unwind(panic)
             }
         }
@@ -2111,7 +2076,9 @@ impl Store {
             return None;
         }
         let base: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).collect();
-        match library::store_keys(self.node(path), &data.md5) {
+        // One decision, which the journal keeps and the store carries out.
+        let plan = library::store_plan(self.node(path), &data.md5);
+        match plan.keys(self.node(path)) {
             None => journal.save_path(&self.root, base),
             Some(keys) => {
                 for keys in keys {
@@ -2121,7 +2088,7 @@ impl Store {
                 }
             }
         }
-        let stored = library::store(self.root.ensure(path), data, unique_id)?;
+        let stored = library::store_as(self.root.ensure(path), data, &plan, unique_id)?;
         self.dirty = true;
         Some(stored)
     }
@@ -2216,21 +2183,13 @@ impl Store {
             warn!("{}: reference count not changed: {reason}", self.name);
             return None;
         }
-        let count = self
-            .library_member(path, member)
-            .map(library::reference_count)?;
-        if delta != 0 {
-            let base: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).collect();
-            let changed: Vec<Vec<Vec<u8>>> = if i64::from(count) + i64::from(delta) <= 0 {
-                library::deletion_keys(member).into_iter().collect()
-            } else {
-                library::count_keys(member).into_iter().collect()
-            };
-            for keys in changed {
-                let mut at = base.clone();
-                at.extend(keys);
-                journal.save_node(&self.root, at);
-            }
+        // The decision the adjustment makes; none for a delta of 0.
+        let changed = library::adjust_keys(self.node(path)?, member, delta)?;
+        let base: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).collect();
+        for keys in changed {
+            let mut at = base.clone();
+            at.extend(keys);
+            journal.save_node(&self.root, at);
         }
         let count = library::adjust(self.root.at_mut(path)?, member, delta)?;
         self.dirty |= delta != 0;
@@ -2355,18 +2314,18 @@ impl Store {
                 continue;
             }
             path.push(&[CATALOG_INDEX]);
+            // Each key the index has passed already stays; one that
+            // advances is kept in the journal, with the index it creates,
+            // as it is changed.
             for (key, value) in [(LAST_MEMBER_ID, id), (MOD_COUNT, count)] {
                 let current = self.root.at(&path).and_then(|index| index.child(&[key]));
                 if modcount::serial_value(current) < value {
                     let mut at: Vec<Vec<u8>> = path.iter().map(|s| s.to_vec()).collect();
                     at.push(vec![key]);
                     journal.save_path(&self.root, at);
-                }
-            }
-            let index = self.root.ensure(&path);
-            for (key, value) in [(LAST_MEMBER_ID, id), (MOD_COUNT, count)] {
-                if modcount::serial_value(index.child(&[key])) < value {
-                    index.set_child(modcount::serial_leaf(key, value));
+                    self.root
+                        .ensure(&path)
+                        .set_child(modcount::serial_leaf(key, value));
                 }
             }
             self.dirty = true;
@@ -2640,8 +2599,8 @@ impl Store {
     /// fails takes it all back: each record as it was before its first
     /// change, the work list, global values, indexes and library entries
     /// replaced or removed, and the table's basis; the log lines that say
-    /// what changed wait in it too. Without one (the deferred work finished
-    /// at opening, whose save waits) the changes are made in place.
+    /// what changed wait in it too. Without one (a test's) the changes are
+    /// made in place.
     /// Returns whether anything changed.
     pub fn update_table(
         &mut self,
@@ -3258,14 +3217,10 @@ impl Store {
                 continue;
             }
             if let Some(journal) = journal.as_deref_mut() {
-                let count = self
-                    .library_member(&path, &member)
-                    .map_or(0, library::reference_count);
-                let changed: Vec<Vec<Vec<u8>>> = if i64::from(count) - i64::from(release) <= 0 {
-                    library::deletion_keys(&member).into_iter().collect()
-                } else {
-                    library::count_keys(&member).into_iter().collect()
-                };
+                let changed = self
+                    .node(&path)
+                    .and_then(|l| library::adjust_keys(l, &member, -release))
+                    .unwrap_or_default();
                 for keys in changed {
                     let mut at = vec![table.to_vec(), vec![LIBRARY]];
                     at.extend(keys);
@@ -4808,6 +4763,65 @@ mod tests {
         assert_ne!(store.file(), Some((read.dev(), read.ino())));
         assert_eq!(store.file(), published);
         assert!(written.is_some_and(|n| n > 3), "{written:?}");
+    }
+
+    /// The review's P0: OpenMaker Server holds a hosted file's lock while
+    /// it hosts it, through its saves, so another OpenMaker that starts
+    /// hosting the file meanwhile finds it in use and never touches the
+    /// copy a save is writing: while the save writes its copy, after the
+    /// rename (the lock moved to the new file), and when it opened the old
+    /// file just before the rename (its lock on it guards nothing, and the
+    /// open is tried again). Once the store is gone, the file opens.
+    #[cfg(unix)]
+    #[test]
+    fn a_hosted_files_lock_holds_through_its_saves() {
+        use crate::filelock::NotOpened;
+        use crate::hosting::{open_for_hosting, open_for_hosting_with};
+        let disk = crate::scripts::fixture::TempFile::new("store-lock", &[], true);
+        let at = FileAt::open(&disk.0).unwrap();
+        let opened = open_for_hosting(&at).unwrap();
+        assert!(opened.read_only.is_none());
+        let bytes = {
+            use std::io::Read as _;
+            let mut bytes = Vec::new();
+            opened.locked.file().read_to_end(&mut bytes).unwrap();
+            bytes
+        };
+        let read = crate::anchored::file_identity(opened.locked.file()).unwrap();
+        let hbam = HbamFile::from_bytes(bytes).unwrap();
+        let mut store = Store::load(&hbam, "Tasks.fmp12").unwrap();
+        store.set_lock(opened.locked.into_lock().unwrap());
+        store.set_file(read);
+        let in_use = |result: Result<_, NotOpened<_>>| matches!(result, Err(NotOpened::InUse));
+
+        // While the save writes its copy, the file is locked, and the
+        // copy is the save's.
+        store.dirty = true;
+        let mut during = None;
+        store
+            .save_observed(&at, &mut |copy| {
+                during = Some((in_use(open_for_hosting(&at)), copy.exists()));
+            })
+            .unwrap();
+        assert_eq!(during, Some((true, true)));
+        // After the rename the new file is locked.
+        assert!(in_use(open_for_hosting(&at)));
+        assert_ne!(store.file(), read, "a new file");
+        // Opened just before a save's rename: the open's lock on the old
+        // file is not kept, and the file is in use.
+        let mut saved = false;
+        let refused = open_for_hosting_with(&at, &mut |attempt| {
+            if attempt == 0 {
+                store.dirty = true;
+                saved = store.save(&at).unwrap();
+            }
+        });
+        assert!(saved && in_use(refused));
+        // Hosted no more: the file opens, and nothing was left beside it.
+        drop(store);
+        let opened = open_for_hosting(&at).unwrap();
+        assert_eq!(opened.leftover, LeftoverCopy::None);
+        assert!(!save_copy_path(&disk.0).exists());
     }
 
     #[test]

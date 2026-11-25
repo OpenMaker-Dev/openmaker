@@ -780,7 +780,9 @@ than a second reader and writer.
   open checks the descriptor's device and inode against the path after
   locking and opens again when they differ; a file that keeps changing, or
   is locked by another window or process, is refused with FileMaker's error
-  300. Its bytes are read through the locked descriptor and decoded; a file
+  300. OpenMaker Server holds the same lock on every file it hosts, taken
+  the same way (`filelock::open_locked`), so a file a server hosts on this
+  computer is in use too (docs/server-storage.md 5, "The file's lock"). Its bytes are read through the locked descriptor and decoded; a file
   that is not HBAM7 is refused with 807, one that does not decode (damaged
   or encrypted) with 805. Nothing is written before an admitted login.
 - **Read-only files.** A file is opened read-only when it cannot be written
@@ -869,10 +871,12 @@ than a second reader and writer.
     the resulting store [I]. A later I/O failure or a destination that
     becomes occupied during the commit returns 800.
 - **Recovery.** Deferred field work an earlier stop left in the file
-  (schema-path.md) is finished in memory when the file opens and saved only
-  once an admitted account logs in to a writable file: a wrong password,
-  a refused account, Cancel or a failed open leave the file as it was.
-  OpenMaker Server's own files are still recovered as it starts.
+  (schema-path.md) is finished and saved, as one operation, when an
+  admitted account first logs in to a writable file: a wrong password, a
+  refused account, Cancel or a failed open leave the file as it was. When
+  that save fails the work is taken back and the file is served as its
+  disk holds it, read-only. OpenMaker Server's own files are recovered
+  the same way as it starts.
 - **Closing.** Closing the file disconnects its session and gives up the
   session's hold on the host (below, "Related files and other files"). When
   no other session of the window's files has the file open, the host stops,

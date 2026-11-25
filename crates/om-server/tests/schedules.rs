@@ -356,6 +356,10 @@ fn move_to_while_running(handle: &ServerHandle, clock: &ManualClock, now: Zoned,
 #[test]
 fn time_limits_end_the_run_or_only_warn() {
     let file = TempFile::new("sched-limits", &[fixture::slow(30.0)], true);
+    // A server holds the lock of each file it hosts until its state ends,
+    // past its shutdown, which leaves open connections served: the second
+    // server hosts a copy of its own.
+    let again = TempFile::new("sched-limits-again", &[fixture::slow(30.0)], true);
     let quick = TempFile::new("sched-limits-quick", &[fixture::slow(0.6)], true);
     let clock = ManualClock::new(at(8, 0));
     let mut ending = schedule("Ending", "Slow");
@@ -381,7 +385,7 @@ fn time_limits_end_the_run_or_only_warn() {
         duration: Duration::from_millis(100),
         ..ScriptLimits::DEFAULT
     };
-    let handle = start(&file, vec![ending], &clock, limits);
+    let handle = start(&again, vec![ending], &clock, limits);
     let last = run_now(&handle, "Server limit");
     assert_eq!(last.aborted, Some(AbortReason::TimeLimit));
     assert!(!last.exceeded_time_limit, "{last:?}");

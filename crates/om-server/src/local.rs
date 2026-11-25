@@ -58,7 +58,7 @@ use crate::connection::Shared;
 use crate::engine::{
     ChangePassword, Credentials, FileEngine, Operation, Password, Reply, SaveFoundSet,
 };
-use crate::filelock::{link_count, same_file, FileLock, LockKind};
+use crate::filelock::{self, link_count, same_file, LockKind, Locked, NotOpened, Settled};
 use crate::hosting::Hosting;
 use crate::server::{Server, ServerHandle};
 use crate::store::{clear_leftover_copy, LeftoverCopy};
@@ -80,10 +80,6 @@ const SUGGESTED_ACCOUNT: [&[u8]; 4] = [&[23], &[1], &[1], &[16]];
 /// File Options' "Log in using" password (`KRequests`, local-files.md 3.1):
 /// text, masked, not hashed.
 const STORED_PASSWORD: [&[u8]; 4] = [&[23], &[1], &[1], &[6]];
-
-/// How many times an open tries again when the file at the path was
-/// replaced between its open and its lock (another OpenMaker saving it).
-const OPEN_ATTEMPTS: u32 = 8;
 
 /// Why a local file is served read-only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,22 +113,6 @@ impl std::fmt::Display for ReadOnly {
                  changes"
             }
         })
-    }
-}
-
-/// The file a host serves, locked when it can be.
-enum Locked {
-    Lock(FileLock),
-    /// No locks here: the file is read-only ([`ReadOnly::NoLocks`]).
-    Unlocked(File),
-}
-
-impl Locked {
-    fn file(&self) -> &File {
-        match self {
-            Locked::Lock(lock) => lock.file(),
-            Locked::Unlocked(file) => file,
-        }
     }
 }
 
@@ -195,6 +175,13 @@ impl std::fmt::Display for LocalHostError {
 
 impl std::error::Error for LocalHostError {}
 
+/// An error reading or locking the file.
+impl From<io::Error> for LocalHostError {
+    fn from(e: io::Error) -> Self {
+        LocalHostError::Unreadable(e)
+    }
+}
+
 /// One local file, hosted privately for the client that opened it.
 pub struct LocalHost {
     handle: Option<ServerHandle>,
@@ -252,12 +239,9 @@ impl LocalHost {
             name: name.clone(),
             path: path.clone(),
         };
-        let lock = match locked {
-            Locked::Lock(lock) => Some(lock),
-            Locked::Unlocked(_) => None,
-        };
+        let lock = locked.into_lock();
         let engine = FileEngine::default();
-        let hosting = Hosting::local(&hosted, &hbam, lock, read_only.is_some(), &engine)
+        let hosting = Hosting::local(&hosted, &hbam, lock, read_only.is_some())
             .map_err(|e| LocalHostError::Undecodable(e.to_string()))?;
         drop(hbam);
 
@@ -672,87 +656,75 @@ impl Read for FromStart<'_> {
     }
 }
 
-/// Open and lock the file at `path` as it is now, and say whether (and why)
-/// it is to be read-only. The lock counts only while the descriptor it is
-/// on is still the file at `path` (another OpenMaker's save may have put a
-/// new file there since the open, leaving the old one's lock free): when
-/// it is not, the open is tried again, and the file is in use when it keeps
-/// changing. A file opened for writing, its lock held, loses the copy a
-/// save that stopped part way left beside it ([`clear_copy`]); an entry
-/// there that is not such a copy, or that could not be removed, makes the
-/// file read-only. `before_lock` runs between each open and its lock
-/// (tests).
+/// Open and lock the file at `path` as it is now (`filelock::open_locked`,
+/// the one implementation OpenMaker Server shares), and say whether (and
+/// why) it is to be read-only: exclusive when it can be written, shared
+/// when it cannot, unlocked and read-only where it cannot be locked here
+/// ([`ReadOnly::NoLocks`]). A name added between the check and the lock
+/// opens it again, shared. A file opened for writing, its lock held, loses
+/// the copy a save that stopped part way left beside it ([`clear_copy`]);
+/// an entry there that is not such a copy, or that could not be removed,
+/// makes the file read-only. `before_lock` runs between each open and its
+/// lock (tests).
 fn open_locked(
     path: &Path,
     before_lock: &mut dyn FnMut(u32),
 ) -> Result<(Locked, Option<ReadOnly>), LocalHostError> {
-    let in_use = || LocalHostError::InUse(path.to_path_buf());
-    let mut copy_kept = false;
-    for attempt in 0..OPEN_ATTEMPTS {
-        let (file, mut read_only) = open_file(path)?;
-        if read_only.is_none() && (copy_kept || copy_in_the_way(path)) {
-            read_only = Some(ReadOnly::CopyInTheWay);
-        }
-        if read_only.is_none() && matches!(link_count(&file), Ok(n) if n > 1) {
-            read_only = Some(ReadOnly::OtherNames);
-        }
-        before_lock(attempt);
-        let kind = if read_only.is_some() {
-            LockKind::Shared
-        } else {
-            LockKind::Exclusive
-        };
-        let locked = match FileLock::acquire(file, kind) {
-            Ok(lock) => Locked::Lock(lock),
-            Err((e, _)) if e.kind() == io::ErrorKind::WouldBlock => return Err(in_use()),
-            Err((e, file)) if e.kind() == io::ErrorKind::Unsupported => {
-                read_only = read_only.or(Some(ReadOnly::NoLocks));
-                Locked::Unlocked(file)
+    let copy_kept = std::cell::Cell::new(false);
+    let opened = filelock::open_locked(
+        &mut |attempt| {
+            let (file, mut read_only) = open_file(path)?;
+            if read_only.is_none() && (copy_kept.get() || copy_in_the_way(path)) {
+                read_only = Some(ReadOnly::CopyInTheWay);
             }
-            Err((e, _)) => return Err(LocalHostError::Unreadable(e)),
-        };
-        match same_file(locked.file(), path) {
-            Ok(true) => {}
-            // Replaced (or removed) since the open: the lock guards nothing.
-            Ok(false) => {
-                info!("{} changed while opening; opening again", path.display());
-                continue;
+            if read_only.is_none() && matches!(link_count(&file), Ok(n) if n > 1) {
+                read_only = Some(ReadOnly::OtherNames);
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-            // No file identity here (Windows): the file has no lock either.
-            Err(e) if e.kind() == io::ErrorKind::Unsupported => {
-                read_only = read_only.or(Some(ReadOnly::NoLocks));
+            before_lock(attempt);
+            let kind = if read_only.is_some() {
+                LockKind::Shared
+            } else {
+                LockKind::Exclusive
+            };
+            Ok((file, kind, read_only))
+        },
+        &mut |file, _| same_file(file, path),
+        &mut |locked, read_only| {
+            if let Locked::Unlocked(_) = locked {
+                let read_only = read_only.or(Some(ReadOnly::NoLocks));
+                return Ok(Settled::Done((locked, read_only)));
             }
-            Err(e) => return Err(LocalHostError::Unreadable(e)),
-        }
-        // A name added between the check and the lock: open again shared.
-        if read_only.is_none() && !matches!(link_count(locked.file()), Ok(1)) {
-            continue;
-        }
-        // Opened for writing, with the lock: no other OpenMaker can be in
-        // the middle of a save of the file.
-        if read_only.is_none() {
-            match clear_copy(path) {
-                LeftoverCopy::None => {}
-                LeftoverCopy::Removed => warn!(
-                    "{}: removed the copy an earlier save left beside it",
-                    path.display()
-                ),
-                LeftoverCopy::Kept(why) => {
-                    warn!(
-                        "{}: an entry named like a save's copy is beside it and was left as it \
-                         is ({why}); opening it read-only",
+            // A name added between the check and the lock: open again shared.
+            if read_only.is_none() && !matches!(link_count(locked.file()), Ok(1)) {
+                return Ok(Settled::Again);
+            }
+            // Opened for writing, with the lock: no other OpenMaker can be in
+            // the middle of a save of the file.
+            if read_only.is_none() {
+                match clear_copy(path) {
+                    LeftoverCopy::None => {}
+                    LeftoverCopy::Removed => warn!(
+                        "{}: removed the copy an earlier save left beside it",
                         path.display()
-                    );
-                    // Open again shared.
-                    copy_kept = true;
-                    continue;
+                    ),
+                    LeftoverCopy::Kept(why) => {
+                        warn!(
+                            "{}: an entry named like a save's copy is beside it and was left \
+                             as it is ({why}); opening it read-only",
+                            path.display()
+                        );
+                        copy_kept.set(true);
+                        return Ok(Settled::Again);
+                    }
                 }
             }
-        }
-        return Ok((locked, read_only));
-    }
-    Err(in_use())
+            Ok(Settled::Done((locked, read_only)))
+        },
+    );
+    opened.map_err(|refused| match refused {
+        NotOpened::InUse => LocalHostError::InUse(path.to_path_buf()),
+        NotOpened::Failed(e) => e,
+    })
 }
 
 /// Whether an entry is where a save of the file at `path` makes its new
@@ -818,6 +790,7 @@ fn folder_writable(path: &Path) -> bool {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::filelock::FileLock;
 
     fn folder(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("om-local-open-{tag}-{}", std::process::id()));

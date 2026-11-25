@@ -1,19 +1,23 @@
 //! Advisory locks that keep two OpenMaker processes (or two opens in one
-//! process, through another path to the same file) from writing one local
-//! file at the same time.
+//! process, through another path to the same file) from writing one file
+//! at the same time: the desktop's local host and OpenMaker Server each
+//! hold the lock of every file they host, from opening it ([`open_locked`],
+//! the one implementation for both) until they stop hosting it.
 //!
 //! The lock is `flock` on an open descriptor: exclusive for a file opened
 //! for writing, shared for one opened read-only, never waiting. Saves
 //! replace the file with a new one ([`crate::store::Store::save`]), so the
 //! store locks the new file before it is renamed into place and only then
-//! lets go of the old one. A descriptor opened just before such a rename
-//! still names the old file, whose lock is free once the save is done: a
-//! lock only counts when the descriptor is still the file at its path
-//! ([`same_file`]), which the opener checks after locking
-//! (`crate::local`). The OS releases the lock with the descriptor, also when
-//! the process ends. Platforms without `flock` (Windows) and file systems
-//! that do not support it (some network shares) report
-//! [`io::ErrorKind::Unsupported`]; a file opened there is never written.
+//! lets go of the old one: whoever opens the file by its name finds it
+//! locked, before the rename and after. A descriptor opened just before
+//! such a rename still names the old file, whose lock is free once the
+//! save is done: a lock only counts when the descriptor is still the file
+//! at its name, which [`open_locked`] checks after locking. The OS releases
+//! the lock with the descriptor, also when the process ends. Platforms
+//! without `flock` (Windows) and file systems that do not support it (some
+//! network shares) report [`io::ErrorKind::Unsupported`]; the desktop
+//! opens a file there read-only, and OpenMaker Server hosts it unlocked, as
+//! it always did.
 
 use std::fs::File;
 use std::io;
@@ -55,6 +59,101 @@ impl FileLock {
     pub fn file(&self) -> &File {
         &self.file
     }
+}
+
+/// A host's file: locked, or open without a lock where it cannot be locked
+/// here.
+#[derive(Debug)]
+pub(crate) enum Locked {
+    Lock(FileLock),
+    Unlocked(File),
+}
+
+impl Locked {
+    /// The open file.
+    pub fn file(&self) -> &File {
+        match self {
+            Locked::Lock(lock) => lock.file(),
+            Locked::Unlocked(file) => file,
+        }
+    }
+
+    /// The lock, where there is one.
+    pub fn into_lock(self) -> Option<FileLock> {
+        match self {
+            Locked::Lock(lock) => Some(lock),
+            Locked::Unlocked(_) => None,
+        }
+    }
+}
+
+/// What an attempt of [`open_locked`] does with the file it locked.
+pub(crate) enum Settled<T> {
+    /// Keep it.
+    Done(T),
+    /// Open it again: what was learned changes how (a name was added
+    /// between the open and the lock, a leftover copy stays).
+    Again,
+}
+
+/// Why [`open_locked`] did not open a file.
+#[derive(Debug)]
+pub(crate) enum NotOpened<E> {
+    /// Another open holds its lock, or it kept being replaced.
+    InUse,
+    Failed(E),
+}
+
+/// How many times [`open_locked`] tries again when the file at the name
+/// was replaced between its open and its lock (another OpenMaker saving
+/// it).
+const OPEN_ATTEMPTS: u32 = 8;
+
+/// Open a host's file and lock it without waiting, so that the lock is on
+/// the file its name leads to now: the one implementation for the
+/// desktop's local host and OpenMaker Server. `open` opens the file (given
+/// the attempt's number) and says how to lock it, with what it learned on
+/// the way (`C`). The lock counts only while the descriptor is still the
+/// file at its name (`current`): one opened just before another
+/// OpenMaker's save renamed a new file there holds the old file, whose lock
+/// is free once that save is done, so the open is tried again; a file whose
+/// lock another open holds, or that keeps changing, is in use. Where the
+/// file cannot be locked (no `flock` here) or checked (no file identity),
+/// it comes back unlocked. `settle` then decides with the file locked and
+/// current: keep it, or open again.
+pub(crate) fn open_locked<C, T, E: From<io::Error>>(
+    open: &mut dyn FnMut(u32) -> Result<(File, LockKind, C), E>,
+    current: &mut dyn FnMut(&File, &C) -> io::Result<bool>,
+    settle: &mut dyn FnMut(Locked, C) -> Result<Settled<T>, E>,
+) -> Result<T, NotOpened<E>> {
+    for attempt in 0..OPEN_ATTEMPTS {
+        let (file, kind, context) = open(attempt).map_err(NotOpened::Failed)?;
+        let mut locked = match FileLock::acquire(file, kind) {
+            Ok(lock) => Locked::Lock(lock),
+            Err((e, _)) if e.kind() == io::ErrorKind::WouldBlock => return Err(NotOpened::InUse),
+            Err((e, file)) if e.kind() == io::ErrorKind::Unsupported => Locked::Unlocked(file),
+            Err((e, _)) => return Err(NotOpened::Failed(e.into())),
+        };
+        match current(locked.file(), &context) {
+            Ok(true) => {}
+            // Replaced (or removed) since the open: the lock guards nothing.
+            Ok(false) => continue,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            // No file identity here (Windows): the lock cannot be checked,
+            // and guards nothing.
+            Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+                if let Locked::Lock(lock) = locked {
+                    locked = Locked::Unlocked(lock.file);
+                }
+            }
+            Err(e) => return Err(NotOpened::Failed(e.into())),
+        }
+        match settle(locked, context).map_err(NotOpened::Failed)? {
+            Settled::Done(done) => return Ok(done),
+            Settled::Again => continue,
+        }
+    }
+    Err(NotOpened::InUse)
 }
 
 /// Whether `file` is the file at `path` now: the same device and inode,

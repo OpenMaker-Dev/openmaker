@@ -5746,11 +5746,17 @@ impl Accounts for ServerHost {
         match reply {
             Reply::ChangePassword(Ok(())) => Ok(()),
             Reply::ChangePassword(Err(e)) => {
-                if let crate::hosting::PasswordChangeError::Unwritten(reason) = &e {
-                    warn!(
+                match &e {
+                    crate::hosting::PasswordChangeError::Unwritten(reason) => warn!(
                         "{:?}: Change Password changed nothing: {reason}",
                         self.hosted.name
-                    );
+                    ),
+                    crate::hosting::PasswordChangeError::OutcomeUnknown(reason) => warn!(
+                        "{:?}: Change Password may or may not have changed the password: \
+                         {reason}",
+                        self.hosted.name
+                    ),
+                    _ => {}
                 }
                 Err(ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into())
             }
@@ -5836,10 +5842,18 @@ impl Accounts for ServerHost {
 impl ServerHost {
     /// The step error for Reset Account Password's or Enable Account's
     /// `e`: its FileMaker code, or 3 for an account or file that could not
-    /// be written, logged.
+    /// be written or whose save could not be confirmed, each logged as what
+    /// it is.
     fn account_edit_error(&self, step: &str, e: &crate::hosting::AccountEditError) -> HostError {
-        if let crate::hosting::AccountEditError::Unwritten(reason) = e {
-            warn!("{:?}: {step} changed nothing: {reason}", self.hosted.name);
+        match e {
+            crate::hosting::AccountEditError::Unwritten(reason) => {
+                warn!("{:?}: {step} changed nothing: {reason}", self.hosted.name)
+            }
+            crate::hosting::AccountEditError::OutcomeUnknown(reason) => warn!(
+                "{:?}: {step} may or may not have changed the account: {reason}",
+                self.hosted.name
+            ),
+            _ => {}
         }
         ErrorCode(e.code().unwrap_or(ErrorCode::UNAVAILABLE.0)).into()
     }

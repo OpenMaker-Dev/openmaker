@@ -511,9 +511,10 @@ FileMaker Server's behaviour here is unmeasured.
 saves succeeding the file is written as often as before, and reads every
 save's outcome ("Failed saves", below):
 
-- op70: its commit. A save that fails takes the commit back, its records
-  stay locked, and the staged records go back to the session's temporary
-  area;
+- op70: its commit. A save that fails takes the commit back and its
+  records stay locked; the staged records the commit did not reach go
+  back to the session's temporary area, as when it is refused (those it
+  reached are gone, and the client uploads them again);
 - a client's op71: the new last issued id, before the ids are answered
   (#927); on a read-only file the save fails. A failed save takes back
   the reservation and the locks it took. A server script's op71 saves
@@ -532,7 +533,7 @@ save's outcome ("Failed saves", below):
   whether the disk holds every change the file holds (status 800, 809 or
   810 when it does not), or that it is hosted read-only. A server
   script's end submits it, and a failed save there is the script's
-  error, and so does the save of the deferred work finished at opening;
+  error;
 - a server script's commit and its Set Next Serial Value: their commit, as
   op70. A failed save takes the change back, a commit's records stay
   locked, and the step fails with the save's FileMaker error
@@ -542,14 +543,17 @@ save's outcome ("Failed saves", below):
   save's message (3 for a script step);
 - a saved found set: its commit, as the desktop saved it. A failed save
   takes it back and is logged as a warning, with no alert;
-- finishing deferred work saves nothing. Its save waits: a server saves
-  the file as soon as it is loaded, a local file once an account it
-  admits logs in (`SaveFile`, `Hosted::commit_recovery`), and a local
-  file closed before that is left as it was. In between, every reader
-  sees the finished work in memory, as before: the operation runs when
-  the file is loaded, before it is served, with the engine that then
-  serves it. A failed save of it is logged and alerted, and the work
-  waits in memory for the next save;
+- finishing deferred work: the work and its save are one operation, which
+  saves when the work changed the file (`Hosted::recover`). A server runs
+  it as it loads the file, before the file is served; a local file when
+  an account it admits first logs in, so that a local file closed before
+  that is left as it was. A failed save takes the work back: the file is
+  served as its disk holds it, the work list there and the stored values
+  as stored, read-only, as when the work cannot be done
+  (`Store::recover`), and the failure is logged and alerted. Hosting the
+  file again tries again. (Before, the work was finished in memory and
+  saved by a separate Save, whose failure left it served and unsaved, and
+  a local file finished it when it opened.);
 - the lock requests, a server script's locks and their releases, and the
   release of a session's locks save nothing.
 
@@ -661,7 +665,14 @@ log says so; op240's Save answers that the disk lacks them.
 *Taking a change back.* Every operation that changes the tree writes into
 one journal (`store::Journal`, which `engine::Transaction` holds), which
 keeps what each change replaced; `Store::roll_back` puts it back, newest
-first, byte for byte, the root's list flag included. What it keeps:
+first, byte for byte, the root's list flag included. Each entry keeps,
+with the node a change writes, the first of its parents the change
+creates (as absent), so that taking it back removes what it created: the
+first record of a table takes its record list `[T, 05]` back with it. The
+journal keeps what the change itself decided, never a second account of
+it: op88's choice between the member that already holds the data and a
+new one is made once (`library::store_plan`), and so is op87's between
+counting and deleting (`library::adjust_keys`). What it keeps:
 
 | Operation | What the journal keeps |
 |---|---|
@@ -673,7 +684,7 @@ first, byte for byte, the root's list flag included. What it keeps:
 | a find's indexes | the index nodes it put, absent as a rule |
 | op88 | the library header and the new member's absence, or the counts of the member that already held the data; a new library's absence |
 | op87 | the member's counts, or, when it is deleted, the member and the header |
-| op73 | each record before its first change, the work list, the global values it drops, the indexes it rebuilds or drops (moved), the library entries it releases or stores, and the table's basis of stored calculations |
+| op73, the deferred work finished at opening | each record before its first change, the work list, the global values it drops, the indexes it rebuilds or drops (moved), the library entries it releases or stores, and the table's basis of stored calculations |
 | an authoring edit, an account edit, a found set | the catalog members and nodes it replaced, and the parents it created (as before, the parents added) |
 
 What follows from the tree is taken back with it: the schema is read again
@@ -685,9 +696,9 @@ the same. The member keys and indexes a draft took from what reads left
 waiting wait again, for the next write. Thumbnails of the libraries a
 deleted table took or a script's commit emptied are forgotten, a new
 field's basis is counted and the log lines that say a change was made are
-written only for a change the file holds (stored or unknown). The deferred
-work finished at opening writes no journal: its save waits, and nothing
-takes it back. A run left by a panic is taken back the same way.
+written only for a change the file holds (stored or unknown). A run left
+by a panic is taken back the same way, and the file is left without
+unsaved changes when it had none before.
 
 What a journal costs, on the file of a million records measured in
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) (522 MB on
@@ -709,9 +720,9 @@ file again from disk, costs nothing while an operation runs but a full
 load on each failure (2.2 s on that file, all readers waiting, and the
 memory of the load), and is exact only when the file on disk holds the
 tree as it was before the operation. It does not while changes wait
-unsaved (a server script's reserved record ids until its commit, a local
-file's deferred work until a login, the field indexes taken out after a
-save failed on content the file cannot hold), and it reads the disk that
+unsaved (a server script's reserved record ids until its commit, the
+field indexes taken out after a save failed on content the file cannot
+hold), and it reads the disk that
 just failed a write. A journal needs neither, op70 and the edits kept one
 already, and a commit refused part way (a write the file cannot hold) is
 taken back without a load: one mechanism for every operation.
@@ -726,20 +737,20 @@ create file on disk".
 
 | Request | Not stored, or unknown | What the reply can carry |
 |---|---|---|
-| op70 | a system exception (MARSHAL), as before; not stored, the staged records go back to the temporary area and the records stay locked | no status (write-path.md 3.4) |
+| op70 | a system exception (MARSHAL), as before; not stored, the records stay locked and the staged records the commit did not reach go back to the temporary area | no status (write-path.md 3.4) |
 | op71 | status 800, 809 or 810, the key `[00]` | a status (write-path.md 3.1) |
 | op72 | status 800, 809 or 810, an empty value | a status (write-path.md 3.2) |
 | op13 | a system exception (MARSHAL), as op70 | no status (schema-path.md 3.3) |
 | op73 | a system exception (MARSHAL), as its refusals | an empty reply (write-path.md 3.6) |
-| op86 with schema instructions or issued member keys | the error slot `[00] = 02 <800, 809 or 810>` alone | the error slot (query-program.md 11.2) |
-| op86 that only finds, a server script's find | the find's answer: the indexes it built wait again for the next write, logged | (a find's answer says nothing is stored) |
+| op86 with schema instructions (UploadMultiple, GenerateMemberKey, DeleteTable) | the error slot `[00] = 02 <800, 809 or 810>` alone | the error slot (query-program.md 11.2) |
+| op86 without them, a server script's find | the program's answer: what it found waiting and could not store (indexes finds built, member keys other programs reserved) waits again for the next write, logged | (a program that changes nothing stores nothing of its own) |
 | op87 | `ffffffff` | the failure count (containers.md 5.3) |
 | op88 | status 800, 809 or 810, the save's message as the error text, no member | a status and a text (containers.md 3.2) |
 | op240, an edit | status 800, 809 or 810 with what the file keeps; unknown: status 65535 (`OUTCOME_UNKNOWN`), which `om-author` reports as `outcome_unknown` | OpenMaker's own extension (docs/authoring.md) |
 | op240, Save | status 800, 809 or 810; unknown: status 65535 | as above |
 | a server script's commit, Set Next Serial Value, and the serial numbers New Record and Duplicate Record take | the step's error 800, 809 or 810 | Get ( LastError ) |
 | a server script's end | its result's error 800, 809 or 810 (op30's reply, a schedule's last error), whatever its last step's was | op30's error |
-| an account edit | "not written" with the save's message (3 for a script step) | as its refusals |
+| an account edit | "not written" with the save's message; unknown: an outcome-unknown error, which a script's log and the desktop's message say may or may not be in the file (3 for a script step either way) | as its refusals |
 | the desktop's found set | not kept, a warning in the log | — |
 
 *No more changes.* After an unknown outcome the store refuses every later
@@ -748,8 +759,14 @@ would change the file before running it, so nothing is drawn from its
 environment, with its storage error (code 800) saying that the file takes
 no more changes until it is hosted again; op240's Save answers status
 65535, as whether the disk holds what the file holds is what is unknown.
-What a draft took waits again. Reads, op60 and the operations that change
-only the lock table go on. One alert is raised (`Event::save_failed`: the
+Whether an operation would change the file is decided from its value: an
+op72 that neither replaces nor advances the serial (flags 0), an op87
+with a delta of 0 and a find's draft with no index to store read, and
+are answered (`engine::file`, `changes_file`). An op86 program with
+schema instructions is refused before it runs, with its error slot, so
+that it reserves no key that could never be stored; one without them
+runs. What a draft took waits again. Reads, op60 and the operations that
+change only the lock table go on. One alert is raised (`Event::save_failed`: the
 file may or may not keep the change and takes no more until it is hosted
 again), and the administrator's list of files gives the reason in the
 file's `error` with its status unchanged (`FileInfo::error`;
@@ -759,13 +776,44 @@ state is held in the store (checked under its write lock) and once more in
 the file (`Hosted::writes_refused`, set once, read without a lock), so that
 the list of files does not wait for a busy store.
 
+*The file's lock.* OpenMaker Server holds the lock of every file it
+hosts (`crate::filelock`, `flock`, exclusive), from opening it until it
+stops hosting it, as the desktop's local host holds its file's; both open
+and lock a file the same way (`filelock::open_locked`, the one
+implementation). The lock is on the open file: a save, which renames a
+new copy over the file's name, locks the new copy before the rename and
+lets go of the old file after it (`Store::save`), so whoever opens the
+file by its name finds it locked, before the rename and after. One that
+opened the old file just before the rename gets that file's lock, freed
+after the save, and finds its descriptor no longer the file at the name;
+it opens again and finds the new file locked. So:
+
+- a file another OpenMaker has open is not hosted: at startup it is left
+  out with an alert (`HostingError::InUse`, as a file another of the
+  server's own names already hosts is, `HostingError::SameFile`), and an
+  administrator's open of it leaves it closed with that reason
+  (`FileInfo::error`); the desktop cannot open a file a server hosts (300,
+  "in use"), and a second server cannot host it;
+- a file with other names (hard links) is hosted read-only, under a shared
+  lock, with an alert, as the desktop opens it: a save would leave the
+  other names with the old contents;
+- where the file cannot be locked (no `flock` on that file system or
+  platform), the server hosts it unlocked, as before, and the desktop
+  opens it read-only;
+- the server lets go of the lock when it stops hosting the file: an
+  administrator's close once the file is drained, a load that fails after
+  the lock was taken, and the end of the server's state (the process's
+  end, or, for a server embedded in another program, its connections
+  closed and `ServerHandle::release_files`). A shutdown alone keeps the
+  files, and their locks, for the connections it leaves open.
+
 *A leftover copy.* A save that stops part way (the process or the machine
 stopped) leaves `<file>.omsave`, whose name a save creates only where
 nothing is, so every later save of the file fails while it is there. When
-a file is opened for hosting, before anything is saved, the entry is
-looked at once in the file's own folder without following a link, and
-(`store::clear_leftover_copy`, the one implementation for the server and
-the desktop):
+a file is opened for hosting with its exclusive lock, before anything is
+saved, the entry is looked at once in the file's own folder without
+following a link, and (`store::clear_leftover_copy`, the one
+implementation for the server and the desktop):
 
 - a regular file with no other name, as a save creates it, is removed by
   name through the same folder handle, which never follows a link, and the
@@ -778,17 +826,10 @@ the desktop):
   without closing the file, and the next save works. The desktop opens
   the file read-only (`ReadOnly::CopyInTheWay`), as it did.
 
-Removal happens only while the host holds the file's lock
-([local-files.md](re/local-files.md) 4, `crate::filelock`): an OpenMaker
-that has a file open holds that lock from opening to closing, its saves
-included, so none can be in the middle of a save of the file. The desktop
-holds it for writing from its open on. OpenMaker Server holds no lock on
-the files it hosts, so it takes the lock for this, exclusive and without
-waiting, through a descriptor of the file opened in its folder and checked
-to be the file it read, and leaves the copy when it cannot: another
-OpenMaker has the file open, or the file system has no locks. Another
-OpenMaker Server hosting the same file holds no lock and is not seen
-([#724](https://github.com/OpenMaker-Dev/openmaker/issues/724)).
+Removal happens only under the exclusive lock the host holds for hosting
+the file: every OpenMaker that has the file open holds its lock from
+opening to closing, its saves included, so none can be in the middle of a
+save of the file. A file hosted read-only, or unlocked, keeps its copy.
 
 ## 6. The store engine
 

@@ -142,6 +142,7 @@ fn is_storage_error(reply: &Reply) -> bool {
         }
         Reply::EnableAccount(r) => matches!(r, Err(AccountEditError::Unwritten(_))),
         Reply::SaveFoundSet(kept) => !kept,
+        Reply::FinishDeferredWork(r) => matches!(r, Err(e) if e.code == ERROR && !e.unknown),
         _ => false,
     }
 }
@@ -164,7 +165,7 @@ fn each_failed_save_takes_its_step_back(
     last: &OwnedNode,
 ) -> Vec<usize> {
     let mut taken_back = Vec::new();
-    for failing in 0..steps.len() {
+    'failing: for failing in 0..steps.len() {
         let (disk, file) = host(&format!("{tag}-{failing}"), tree);
         let drawn = Arc::new(AtomicU64::new(0));
         let engine = FileEngine::new(Box::new(Rewound(Arc::clone(&drawn))));
@@ -199,6 +200,13 @@ fn each_failed_save_takes_its_step_back(
                 before,
                 "step {step}: {operation:?}"
             );
+            if *operation == Operation::FinishDeferredWork {
+                // Its work list is back, and the file is served read-only,
+                // as when the work cannot be done: nothing after it runs
+                // as recorded.
+                assert!(file.is_read_only(), "step {step}: read-only");
+                continue 'failing;
+            }
             drawn.store(draws, Ordering::Relaxed);
             assert_eq!(&submit(), outcome, "step {step} again: {operation:?}");
         }
@@ -1831,6 +1839,7 @@ fn a_recorded_sequence_of_script_operations_replays_to_the_same_replies_and_lock
 fn a_save_whose_folder_flush_fails_leaves_the_file_taking_no_more_changes() {
     let mut tree = fixture::tree(&[], true);
     fixture::add_tasks(&mut tree, 1..=3);
+    fixture::add_photo(&mut tree);
     let disk = fixture::TempFile::from_tree("engine-unknown", &tree);
     let events = EventLog::new("test".into());
     let hosted = HostedFile {
@@ -1947,7 +1956,47 @@ fn a_save_whose_folder_flush_fails_leaves_the_file_taking_no_more_changes() {
     assert_eq!(untouched(&file, &disk), before);
     assert_eq!(drawn.load(Ordering::Relaxed), draws, "nothing ran");
 
-    // Reads, lock requests and their releases go on.
+    // Reads go on, also the forms of op72 and op87 that only read (the
+    // review's P1): a serial read with flags 0, a count with a delta of 0.
+    let read = Operation::AdvanceSerial(AdvanceSerial {
+        request: GetSerial {
+            table: vec![table.clone()],
+            field: vec![uint_segment(fixture::COUNT)],
+            value: String::new(),
+            increment: 1,
+            flags: 0,
+        },
+    });
+    let Reply::AdvanceSerial(serial) = engine.submit(&file, read).reply else {
+        panic!("not op72's reply");
+    };
+    assert_eq!((serial.status, serial.value.as_str()), (0, "1"));
+    let photo = vec![
+        table.clone(),
+        vec![0x1f],
+        vec![5],
+        serial::encode(fixture::PHOTO_MEMBER),
+    ];
+    let count = |delta| {
+        Operation::AdjustContainerCount(AdjustContainerCount {
+            request: om_protocol::container::AdjustReferenceCount {
+                path: photo.clone(),
+                delta,
+            },
+        })
+    };
+    assert_eq!(
+        engine.submit(&file, count(0)).reply,
+        Reply::AdjustContainerCount(1)
+    );
+    assert_eq!(
+        engine.submit(&file, count(1)).reply,
+        Reply::AdjustContainerCount(COUNT_FAILED),
+        "a change is refused"
+    );
+    assert_eq!(untouched(&file, &disk), before);
+
+    // Lock requests and their releases go on.
     let lock = Operation::TakeLock(TakeLock {
         user,
         holder: "A (Admin)".into(),
@@ -2655,7 +2704,7 @@ fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays
     let outcome = submit(Operation::UploadToCatalog(upload), Given::Nothing, true);
     assert_eq!(outcome.reply, Reply::UploadToCatalog(Ok(true)));
     let outcome = submit(Operation::FinishDeferredWork, Given::Nothing, true);
-    assert_eq!(outcome.reply, Reply::FinishDeferredWork(true));
+    assert_eq!(outcome.reply, Reply::FinishDeferredWork(Ok(true)));
     assert!(node_at(&file, &deferred).is_none(), "the work list is done");
     assert_eq!(
         node_at(&file, &doubled).and_then(|n| n.value),
@@ -2710,10 +2759,10 @@ fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays
     let last = recorded.last().unwrap().3.clone();
     let taken_back =
         each_failed_save_takes_its_step_back("engine-accounts-failing", &tree, &steps, &last);
-    // Each account edit that changed the file, op13 and the found set; the
-    // refusals, the edit that changed nothing and the deferred work, whose
-    // save waits, save nothing.
-    assert_eq!(taken_back, [0, 1, 3, 4, 6, 8, 10]);
+    // Each account edit that changed the file, op13, the deferred work and
+    // the found set; the refusals and the edit that changed nothing save
+    // nothing.
+    assert_eq!(taken_back, [0, 1, 3, 4, 6, 8, 9, 10]);
 
     // A file opened with that work pending has it finished, and saved, by
     // the engine that loads it.
@@ -2723,10 +2772,7 @@ fn a_recorded_sequence_of_account_deferred_work_and_found_set_operations_replays
     let saved = fixture::TempFile::from_tree("engine-deferred-at-load", &pending);
     let (loading, log) = recording();
     let file = load_with(&saved, &loading);
-    assert_eq!(
-        *log.lock().unwrap(),
-        [Operation::FinishDeferredWork, Operation::SaveFile]
-    );
+    assert_eq!(*log.lock().unwrap(), [Operation::FinishDeferredWork]);
     assert!(node_at(&file, &deferred).is_none());
     let on_disk = om_hbam::HbamFile::open(&saved.0).unwrap();
     assert!(on_disk.subtree(&path).unwrap().is_none(), "saved");
@@ -3105,7 +3151,7 @@ fn each_kind_of_operation_draws_from_its_environment_as_written_here() {
     // The same work, finished as at opening.
     drawn(&file, upload(&work), Given::Nothing);
     let (outcome, draws) = drawn(&file, Operation::FinishDeferredWork, Given::Nothing);
-    assert_eq!(outcome.reply, Reply::FinishDeferredWork(true));
+    assert_eq!(outcome.reply, Reply::FinishDeferredWork(Ok(true)));
     assert_eq!(draws, RECORD_ENVIRONMENT);
 
     // op88 into Notes' library, which is new; the same data again is the
@@ -3290,4 +3336,351 @@ fn each_virtual_stopwatch_measures_from_its_own_start() {
     assert_eq!(second(), Duration::ZERO);
     assert_eq!(first(), Duration::from_millis(2));
     assert_eq!(environment.readings.load(Ordering::Relaxed), 4);
+}
+
+/// Each step of `operations`, submitted in order to a fresh load of `tree`
+/// by [`engine`], with its outcome, and the tree they left: a recording for
+/// [`each_failed_save_takes_its_step_back`].
+fn recorded(
+    tag: &str,
+    tree: &OwnedNode,
+    operations: Vec<Operation>,
+) -> (Vec<(Operation, Given, Outcome)>, OwnedNode) {
+    let (_file, file) = host(tag, tree);
+    let engine = engine();
+    let steps = operations
+        .into_iter()
+        .map(|operation| {
+            let outcome = engine.submit(&file, operation.clone());
+            (operation, Given::Nothing, outcome)
+        })
+        .collect();
+    let last = file.read_store().node(&[]).unwrap().clone();
+    (steps, last)
+}
+
+/// docs/server-storage.md 5: taking a change back restores what did not
+/// exist as well as what did. On a file whose Notes has no record yet (no
+/// record list `[T, 05]`, record-id list or last issued id), whose Tasks has
+/// no library and no index, and whose layout catalog has no index `[4,
+/// 01]`, each step creates the node it writes into; each is taken back
+/// when its save fails, and nothing it created is left behind: the first
+/// op71 and op70 of a table (the case of the review's P1 on the first
+/// record), op72's first serial value, op88's first library member and
+/// op87's count, a find's first index, op86's first member key of a
+/// catalog and its write under a parent that did not exist, op13's upload
+/// under one, and a found set at an occurrence with nothing kept yet.
+#[test]
+fn a_change_whose_save_fails_takes_back_the_nodes_it_created() {
+    let mut tree = fixture::tree(&[], true);
+    let notes = uint_segment(fixture::NOTES);
+    let tasks = uint_segment(fixture::TABLE);
+    for key in [0x05, 0x0d, 0x00] {
+        tree.remove(&[&notes, &[key]]);
+    }
+    for key in [0x01, 0x1f] {
+        assert!(tree.at(&[&tasks, &[key]]).is_none());
+    }
+    assert!(tree.at(&[&[4], &[1]]).is_none());
+    tree.put(
+        &[&[3], &[0x10], &[5], &tasks, &[0xfb]],
+        OwnedNode::leaf(Vec::new(), 7u32.to_be_bytes().to_vec()),
+    );
+    let (_scratch, scratch) = host("engine-bare-access", &tree);
+    let access = scratch
+        .account(fixture::ACCOUNT)
+        .unwrap()
+        .access
+        .clone()
+        .unwrap();
+    let user = LockUser {
+        connection: 1,
+        txn: 7,
+    };
+    let record = vec![notes.clone(), vec![0x05], serial::encode(1)];
+    let staged = OwnedNode::list(
+        serial::encode(1),
+        vec![
+            text_node(&uint_segment(fixture::BODY), "The first note"),
+            serial_leaf(MOD_COUNT, 1),
+        ],
+    );
+    let list = OwnedNode::list(
+        Vec::new(),
+        vec![OwnedNode::list(
+            notes.clone(),
+            vec![OwnedNode::list(
+                vec![0x05],
+                vec![OwnedNode::leaf(serial::encode(1), vec![COMMIT_NEW])],
+            )],
+        )],
+    );
+    let library = vec![tasks.clone(), vec![0x1f]];
+    let member = vec![tasks.clone(), vec![0x1f], vec![5], serial::encode(1)];
+    let operations = vec![
+        Operation::ReserveRecordIds(ReserveRecordIds {
+            user,
+            holder: "A (Admin)".into(),
+            request: CreateRecord {
+                table: vec![notes.clone()],
+                count: 1,
+                txn: user.txn,
+            },
+            room: writes::MAX_LOCKS,
+            durable: true,
+        }),
+        Operation::CommitRecords(CommitRecords {
+            user,
+            account: fixture::ACCOUNT.into(),
+            access,
+            list,
+            staged: Staged::from([(record, staged)]),
+            withheld: Withheld::default(),
+        }),
+        Operation::AdvanceSerial(AdvanceSerial {
+            request: GetSerial {
+                table: vec![tasks.clone()],
+                field: vec![uint_segment(fixture::COUNT)],
+                value: String::new(),
+                increment: 1,
+                flags: SERIAL_INCREMENT,
+            },
+        }),
+        Operation::StoreContainerData(StoreContainerData {
+            table: vec![tasks.clone()],
+            data: Ok(file_data(b"the first member")),
+            bytes: 16,
+        }),
+        Operation::AdjustContainerCount(AdjustContainerCount {
+            request: om_protocol::container::AdjustReferenceCount {
+                path: member,
+                delta: 1,
+            },
+        }),
+        Operation::StoreIndexes(StoreIndexes {
+            indexes: vec![(tasks.clone(), uint_segment(fixture::NAME), 0)],
+        }),
+        Operation::ChangeSchema(ChangeSchema {
+            writes: vec![om_query::Write::Put {
+                path: vec![vec![0x30], vec![1], vec![2]],
+                node: text_node(&[], "under a new parent"),
+            }],
+            member_keys: vec![(vec![vec![4]], (5, 9))],
+            indexes: Vec::new(),
+        }),
+        Operation::UploadToCatalog(UploadToCatalog {
+            path: vec![vec![0x31], vec![1]],
+            node: OwnedNode::list(Vec::new(), vec![text_node(&[2], "uploaded")]),
+        }),
+        Operation::SaveFoundSet(SaveFoundSet {
+            occurrence: uint_segment(fixture::OCCURRENCE),
+            table: tasks.clone(),
+            records: Some(RidList::from_iter([1])),
+            current: Some(1),
+        }),
+    ];
+    let (steps, last) = recorded("engine-bare-recorded", &tree, operations);
+    fn path(p: &[Vec<u8>]) -> Vec<&[u8]> {
+        p.iter().map(Vec::as_slice).collect()
+    }
+    for (created, what) in [
+        (vec![notes.clone(), vec![0x05]], "Notes' record list"),
+        (vec![notes.clone(), vec![0x0d]], "Notes' record-id list"),
+        (vec![notes.clone(), vec![0x00]], "Notes' last issued id"),
+        (library.clone(), "Tasks' library"),
+        (vec![tasks.clone(), vec![0x01]], "Tasks' indexes"),
+        (vec![vec![4], vec![1]], "the layout catalog's index"),
+        (vec![vec![0x30]], "op86's new parent"),
+        (vec![vec![0x31]], "op13's new parent"),
+    ] {
+        assert!(last.at(&path(&created)).is_some(), "{what} created");
+    }
+    let taken_back = each_failed_save_takes_its_step_back("engine-bare", &tree, &steps, &last);
+    assert_eq!(taken_back, (0..steps.len()).collect::<Vec<_>>());
+}
+
+/// The review's P1 on op88: a library whose MD5 index names, for the
+/// uploaded data, a member under a key that is not a serial key, which a
+/// store does not reuse. The store adds a new member and changes the
+/// header, and the journal keeps those, from the same decision
+/// (`library::store_plan`): a save that fails leaves the library as it
+/// was.
+#[test]
+fn an_upload_a_library_names_under_a_key_it_does_not_reuse_is_taken_back() {
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_photo(&mut tree);
+    let tasks = uint_segment(fixture::TABLE);
+    let data = file_data(b"named under another key");
+    tree.put(
+        &[&tasks, &[0x1f], &[1], &[8], &data.md5],
+        OwnedNode::list(Vec::new(), vec![OwnedNode::leaf(vec![0xff], Vec::new())]),
+    );
+    tree.put(
+        &[&tasks, &[0x1f], &[5], &[0xff]],
+        OwnedNode::list(
+            Vec::new(),
+            vec![OwnedNode::leaf(vec![0x12], 1u32.to_be_bytes().to_vec())],
+        ),
+    );
+    let operations = vec![Operation::StoreContainerData(StoreContainerData {
+        table: vec![tasks.clone()],
+        data: Ok(data),
+        bytes: 23,
+    })];
+    let (steps, last) = recorded("engine-non-serial-recorded", &tree, operations);
+    let Reply::StoreContainerData(stored) = &steps[0].2.reply else {
+        panic!("not op88's reply");
+    };
+    assert_eq!((stored.status, stored.member.len()), (0, 1), "a new member");
+    let taken_back =
+        each_failed_save_takes_its_step_back("engine-non-serial", &tree, &steps, &last);
+    assert_eq!(taken_back, [0]);
+}
+
+/// The review's P1 on recovery: deferred field work a file is opened with
+/// is finished and saved as one operation, so when that save fails the
+/// work is taken back. The file is served as its disk holds it, the work
+/// list there and the stored calculation as stored, read-only, as when its
+/// work cannot be done; the file on disk is unchanged.
+#[test]
+fn deferred_work_whose_save_fails_at_opening_is_taken_back_and_the_file_served_read_only() {
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_tasks(&mut tree, 1..=3);
+    let table = uint_segment(fixture::TABLE);
+    let deferred = vec![table.clone(), vec![0x03], vec![0x01], vec![0xfd]];
+    let doubled = vec![
+        table.clone(),
+        vec![0x05],
+        serial::encode(1),
+        uint_segment(fixture::DOUBLED),
+    ];
+    let path: Vec<&[u8]> = doubled.iter().map(Vec::as_slice).collect();
+    tree.put(&path, text_node(&[], "99"));
+    let work = OwnedNode::list(
+        vec![0xfd],
+        vec![OwnedNode::leaf(
+            uint_segment(fixture::COUNT),
+            0x40u32.to_be_bytes().to_vec(),
+        )],
+    );
+    let deferred_path: Vec<&[u8]> = deferred.iter().map(Vec::as_slice).collect();
+    tree.put(&deferred_path, work.clone());
+    let disk = fixture::TempFile::from_tree("engine-recovery-failing", &tree);
+    let bytes = std::fs::read(&disk.0).unwrap();
+    // The save's new copy cannot be made where a folder stands.
+    let blocked = crate::store::save_copy_path(&disk.0);
+    std::fs::create_dir(&blocked).unwrap();
+    let file = load(&disk);
+    std::fs::remove_dir(&blocked).unwrap();
+    assert!(file.is_read_only());
+    assert_eq!(
+        node_at(&file, &deferred),
+        Some(work),
+        "the work list is back"
+    );
+    assert_eq!(
+        node_at(&file, &doubled).and_then(|n| n.value),
+        text_node(&[], "99").value,
+        "as stored"
+    );
+    assert!(!file.read_store().has_unsaved_changes());
+    assert_eq!(std::fs::read(&disk.0).unwrap(), bytes);
+    // Hosted again with saves working, it is recovered.
+    drop(file);
+    let file = load(&disk);
+    assert!(!file.is_read_only());
+    assert!(node_at(&file, &deferred).is_none());
+    assert_eq!(
+        node_at(&file, &doubled).and_then(|n| n.value),
+        text_node(&[], "2").value
+    );
+}
+
+/// The review's P2 on account edits: an edit whose save's outcome is
+/// unknown says so, and not that nothing was written.
+#[test]
+fn an_account_edit_whose_outcome_is_unknown_says_so() {
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_local_accounts(&mut tree);
+    index_accounts(&mut tree);
+    let (_disk, file) = host("engine-account-unknown", &tree);
+    file.fail_saves(Some(crate::store::SaveFault::FolderFlush));
+    let outcome = engine().submit(
+        &file,
+        Operation::DeleteAccount(DeleteAccount {
+            account: fixture::CLERK.into(),
+            stamp: None,
+        }),
+    );
+    file.fail_saves(None);
+    assert!(
+        matches!(
+            &outcome.reply,
+            Reply::DeleteAccount(Err(AccountEditError::OutcomeUnknown(_)))
+        ),
+        "{:?}",
+        outcome.reply
+    );
+    // The file keeps the edit, as the renamed file holds it.
+    assert!(file.account(fixture::CLERK).is_none());
+    assert!(file.writes_refused().is_some());
+}
+
+/// The review's P2 on panics: a record commit that panics part way, inside
+/// its own guard, on a file without unsaved changes is put back by that
+/// guard and then by the engine's, and the file is left as it was, without
+/// unsaved changes, so no later operation saves for nothing.
+#[test]
+fn a_commit_that_panics_leaves_a_clean_file_clean() {
+    let mut tree = fixture::tree(&[], true);
+    fixture::add_tasks(&mut tree, 1..=3);
+    let (_disk, file) = host("engine-panic-clean", &tree);
+    let before = untouched(&file, &_disk);
+    assert!(!before.unsaved);
+    let table = uint_segment(fixture::TABLE);
+    let user = LockUser {
+        connection: 1,
+        txn: 7,
+    };
+    let record = vec![table.clone(), vec![0x05], serial::encode(1)];
+    let edited = OwnedNode::list(
+        serial::encode(1),
+        vec![
+            text_node(&uint_segment(fixture::NAME), "Never kept"),
+            serial_leaf(MOD_COUNT, 2),
+        ],
+    );
+    let list = OwnedNode::list(
+        Vec::new(),
+        vec![OwnedNode::list(
+            table.clone(),
+            vec![OwnedNode::list(
+                vec![0x05],
+                vec![OwnedNode::list(
+                    serial::encode(1),
+                    vec![OwnedNode::leaf(uint_segment(fixture::NAME), Vec::new())],
+                )],
+            )],
+        )],
+    );
+    let commit = Operation::CommitRecords(CommitRecords {
+        user,
+        account: fixture::ACCOUNT.into(),
+        access: file
+            .account(fixture::ACCOUNT)
+            .unwrap()
+            .access
+            .clone()
+            .unwrap(),
+        list,
+        staged: Staged::from([(record, edited)]),
+        withheld: Withheld::default(),
+    });
+    super::transaction::PANIC_WRITING_RECORDS.with(|panics| panics.set(true));
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        engine().submit(&file, commit)
+    }));
+    super::transaction::PANIC_WRITING_RECORDS.with(|panics| panics.set(false));
+    assert!(ran.is_err());
+    assert_eq!(untouched(&file, &_disk), before);
 }

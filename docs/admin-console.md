@@ -693,7 +693,10 @@ notice at once (inf).
 loads from disk, with the checks the server makes at startup (the
 administrator may have replaced it), then `NORMAL`. A file still closing
 cannot be opened (`FileError::NotAllowed`). One that fails to load stays
-`CLOSED` with the reason, in `FileInfo::error` and in `FileError::Load`.
+`CLOSED` with the reason, in `FileInfo::error` and in `FileError::Load`;
+so does one another OpenMaker has open, whose lock it holds (the server
+holds the lock of every file it hosts from opening it until it is closed,
+docs/server-storage.md 5, "The file's lock").
 
 **Pausing a file.** `ServerHandle::pause_file(id)` and `resume_file(id)`
 (the Admin API's `PAUSED` and `RESUMED`). Only an open file is paused and
