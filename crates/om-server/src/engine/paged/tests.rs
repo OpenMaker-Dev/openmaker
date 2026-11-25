@@ -821,18 +821,24 @@ fn the_page_file_keeps_an_import_and_fails_the_reads_a_damaged_page_reaches() {
         Target::Folder(&to),
         Progress::none(),
     );
-    assert!(
-        matches!(
-            refused,
-            Err(ExportError::Read(ReadError::Unreadable { .. }))
-        ),
-        "{refused:?}"
-    );
-    assert!(
-        !scratch.names().iter().any(|n| n == "damaged.fmp12"),
-        "{:?}",
-        scratch.names()
-    );
+    let left = scratch.names().iter().any(|n| n == "damaged.fmp12");
+    if cfg!(unix) {
+        assert!(
+            matches!(
+                refused,
+                Err(ExportError::Read(ReadError::Unreadable { .. }))
+            ),
+            "{refused:?}"
+        );
+        // Made unnamed (Linux with unnamed files), nothing is under its
+        // name; made under its name, what was written stays there
+        // (`crate::staged`), as for every export.
+        assert_eq!(left, !unnamed_files(&folder), "{:?}", scratch.names());
+    } else {
+        // No folder descriptors: an export to a folder is unsupported.
+        assert!(matches!(refused, Err(ExportError::Io(_))), "{refused:?}");
+        assert!(!left);
+    }
     println!(
         "{} nodes, {} calls compared; the damaged leaf {leaf} stopped the walk after {read}",
         imported.nodes, compared.calls
@@ -950,53 +956,427 @@ fn an_import_refuses_what_it_cannot_keep_and_leaves_nothing() {
     ));
 }
 
-/// A list that carries an explicit empty value (#754): the reader gives
-/// it so and the file engine keeps it so, and so does the import, so that
-/// both views answer it alike. Its export is what the file engine's writer
-/// writes, a bare list, and imports again with another root hash.
+/// Whether exports into `folder` are made unnamed and linked to their
+/// name once complete (`crate::staged`): only then does a failed export
+/// leave nothing under its name.
+fn unnamed_files(folder: &crate::anchored::Folder) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        crate::staged::Staged::unnamed(folder.descriptor(), OsStr::new("probe")).is_ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = folder;
+        false
+    }
+}
+
+/// What an export would give back in another shape is refused, with its
+/// path and nothing left: a list that carries an explicit empty value
+/// (#754), which the file engine keeps in memory and its writer writes as a
+/// bare list, and a value over 1,000 bytes held whole, which the writer
+/// writes in pieces.
 #[test]
-fn a_list_with_an_empty_value_reads_as_the_file_engine_holds_it() {
-    let bytes = file_of(&[&[0x80, 0x26, 0x05, 0x00, 0x80, 0x01, 0x01, 0x61, 0x40, 0x40]]);
-    let file = HbamFile::from_bytes(bytes.clone()).unwrap();
+fn what_an_export_would_reshape_is_refused() {
+    let empty_value = file_of(&[&[0x80, 0x26, 0x05, 0x00, 0x80, 0x01, 0x01, 0x61, 0x40, 0x40]]);
+    // The file engine holds it as the reader gives it.
+    let file = HbamFile::from_bytes(empty_value.clone()).unwrap();
     let root = file.key_tree().unwrap().root.to_owned_node();
-    let page_zero = file.superblock().raw.to_vec();
-    let tree_view = crate::engine::view::TreeView::new(&root, 0);
-    let (memory, imported) = import_into_memory(&bytes, Batch::default());
-    let view = PagedView::open(&memory, imported.root).unwrap();
-    let both = Both::new(&tree_view, &view);
-    let dynamic: &dyn View = &both;
-    assert_eq!(
-        dynamic.node(&[&[5]]).unwrap(),
-        Some(Head {
-            list: true,
-            value: Some(Cow::Owned(Vec::new()))
-        })
-    );
-    let steps: Vec<Step> = dynamic.walk(&[]).map(Result::unwrap).collect();
-    assert_eq!(steps.len(), 3);
-    let scratch = Scratch::new("empty-value");
-    let change_number = om_hbam::writer::change_number(&page_zero).unwrap();
-    let mut theirs = scratch.create("file.fmp12");
-    write_checked(
-        &tree_view,
-        &page_zero,
-        change_number,
-        &mut theirs,
-        Progress::none(),
+    assert_eq!(root.at(&[&[5]]).unwrap().value.as_deref(), Some(&[][..]));
+    let mut whole = leaves_then(&leaf(b"v", &long_value(1001)));
+    whole.push(0x40);
+    let whole = file_of(&[&whole]);
+    let mut at_the_limit = leaves_then(&leaf(b"v", &long_value(1000)));
+    at_the_limit.push(0x40);
+    let at_the_limit = file_of(&[&at_the_limit]);
+    import_into_memory(&at_the_limit, Batch::default());
+    for (bytes, path) in [(&empty_value, vec![vec![5]]), (&whole, vec![b"v".to_vec()])] {
+        let mut store = MemStore::new(Numbering::Sequential);
+        let refused = import(
+            Cursor::new(bytes),
+            &mut store,
+            &tree_name(),
+            1,
+            Batch::default(),
+        );
+        assert!(
+            matches!(&refused, Err(ImportError::Unwritable { path: p, .. }) if *p == path),
+            "{refused:?}"
+        );
+        assert!(store.trees().is_empty());
+    }
+}
+
+/// Page 0 as an export needs it: a change number at its largest, or with
+/// less room than an export's pages take, is refused before anything is
+/// written; one with just that room imports, and exports.
+#[test]
+fn a_page_zero_an_export_could_not_number_from_is_refused() {
+    let mut body = leaves_then(&[]);
+    body.push(0x40);
+    let with = |scn: u64| {
+        let mut bytes = file_of(&[&body]);
+        bytes[0x802..0x80a].copy_from_slice(&scn.to_be_bytes());
+        bytes
+    };
+    let room = u64::MAX - u64::from(u32::MAX);
+    for scn in [u64::MAX, room + 1] {
+        let mut store = MemStore::new(Numbering::Sequential);
+        let refused = import(
+            Cursor::new(&with(scn)),
+            &mut store,
+            &tree_name(),
+            1,
+            Batch::default(),
+        );
+        assert!(
+            matches!(&refused, Err(ImportError::Unwritable { path, .. }) if path.is_empty()),
+            "{scn}: {refused:?}"
+        );
+        assert!(store.trees().is_empty());
+    }
+    let (store, imported) = import_into_memory(&with(room), Batch::default());
+    let view = PagedView::open(&store, imported.root).unwrap();
+    let scratch = Scratch::new("change-number");
+    paged_export(&view, &imported.page_zero, &scratch, "room.fmp12");
+}
+
+/// The entries an import may take are worked out before anything is
+/// written: from the last index an entry can have back, a file is refused
+/// whole, never with a panic or a number that wraps; entry 0 is no entry.
+#[test]
+fn an_import_whose_entries_could_not_be_numbered_is_refused() {
+    let mut body = leaves_then(&[]);
+    body.push(0x40);
+    let bytes = file_of(&[&body]);
+    // Three pages of 4,096 bytes, and the two entries more.
+    let needed = 3 * 4096 + 2;
+    let one = Batch {
+        nodes: 1,
+        bytes: 1 << 20,
+    };
+    for first in [0, u64::MAX, u64::MAX - needed + 1] {
+        let mut store = MemStore::new(Numbering::Sequential);
+        let refused = import(Cursor::new(&bytes), &mut store, &tree_name(), first, one);
+        assert!(
+            matches!(refused, Err(ImportError::Entries { first: f, needed: n }) if f == first && n == needed),
+            "{first}: {refused:?}"
+        );
+        assert!(store.trees().is_empty());
+    }
+    let mut store = MemStore::new(Numbering::Sequential);
+    let first = u64::MAX - needed;
+    let imported = import(Cursor::new(&bytes), &mut store, &tree_name(), first, one).unwrap();
+    assert_eq!(imported.entries, (first, first + 4));
+}
+
+/// Where an import's batches go, recorded: each one's nodes and bytes.
+struct Recording {
+    store: MemStore,
+    batches: Vec<(usize, usize)>,
+}
+
+impl Units for Recording {
+    fn has_tree(&self, tree: &TreeName) -> bool {
+        self.store.has_tree(tree)
+    }
+
+    fn apply(
+        &mut self,
+        tree: &TreeName,
+        root: Option<Root>,
+        entry: u64,
+        edits: &[Edit],
+    ) -> Result<Root, tree::Error> {
+        let bytes = edits
+            .iter()
+            .map(|edit| match edit {
+                Edit::Put { path, node } => key::encoded_len(path) + node.value().len(),
+                Edit::Delete { path } => key::encoded_len(path),
+            })
+            .sum();
+        self.batches.push((edits.len(), bytes));
+        self.store.apply(tree, root, entry, edits)
+    }
+
+    fn drop_tree(&mut self, tree: &TreeName, entry: u64) -> Result<(), tree::Error> {
+        self.store.drop_tree(tree, entry)
+    }
+}
+
+/// A batch never passes its limits: the byte limit is checked before a
+/// node joins it, and a node larger than the limit alone is a batch of its
+/// own.
+#[test]
+fn a_batch_keeps_within_its_limits() {
+    let mut body = leaves_then(&[]);
+    body.push(0x40);
+    let bytes = file_of(&[&body]);
+    // Five leaves, each of a key `x` (3 bytes encoded) and 2 bytes.
+    for (limit, expected) in [
+        (10, vec![(2, 10), (2, 10), (1, 5)]),
+        (7, vec![(1, 5); 5]),
+        (3, vec![(1, 5); 5]),
+    ] {
+        let mut units = Recording {
+            store: MemStore::new(Numbering::Sequential),
+            batches: Vec::new(),
+        };
+        let batch = Batch {
+            nodes: 4096,
+            bytes: limit,
+        };
+        import(Cursor::new(&bytes), &mut units, &tree_name(), 1, batch).unwrap();
+        assert_eq!(units.batches, expected, "a limit of {limit} bytes");
+    }
+    let mut units = Recording {
+        store: MemStore::new(Numbering::Sequential),
+        batches: Vec::new(),
+    };
+    let batch = Batch {
+        nodes: 2,
+        bytes: 1 << 20,
+    };
+    import(Cursor::new(&bytes), &mut units, &tree_name(), 1, batch).unwrap();
+    assert_eq!(units.batches, vec![(2, 10), (2, 10), (1, 5)]);
+}
+
+/// A read that fails partway through a call gives what came before it and
+/// "more", and the next call fails: here the read that fails is the
+/// look-ahead at the last child, whose value is on an overflow page that
+/// does not check.
+#[test]
+fn a_failed_look_ahead_answers_more_and_the_next_page_fails() {
+    let store = MemStore::new(Numbering::Sequential);
+    let list = vec![b"l".to_vec()];
+    let child = |segment: &[u8]| vec![b"l".to_vec(), segment.to_vec()];
+    let root = apply_unit(
+        &store,
+        &tree_name(),
+        None,
+        1,
+        &[
+            Edit::list(list.clone()),
+            Edit::leaf(child(b"a"), b"a".to_vec()),
+            Edit::leaf(child(b"b"), long_value(6000)),
+        ],
     )
     .unwrap();
-    let ours = paged_export(&view, &imported.page_zero, &scratch, "paged.fmp12");
-    assert!(std::fs::read(scratch.0.join("file.fmp12")).unwrap() == ours);
-    let (again_store, again) = import_into_memory(&ours, Batch::default());
-    let again_view = PagedView::open(&again_store, again.root).unwrap();
+    let overflow: Vec<u64> = om_store::tree::check(&store, root)
+        .unwrap()
+        .pages
+        .iter()
+        .filter(|(n, h)| store.read(*n, h).unwrap().kind() == PageKind::Overflow)
+        .map(|(n, _)| *n)
+        .collect();
+    assert!(!overflow.is_empty());
+    for page in overflow {
+        assert!(store.damage(page, 100, 0xff));
+    }
+    let view = PagedView::open(&store, root).unwrap();
+    let at = refs(&list);
+    let mut out = Vec::new();
     assert_eq!(
-        again_view.node(&[&[5]]).unwrap(),
-        Some(Head {
-            list: true,
-            value: None
-        })
+        view.children_page(&at, Bound::Unbounded, Direction::Forward, 1, &mut out),
+        Ok(true)
     );
-    assert_ne!(again.root.hash, imported.root.hash);
+    assert_eq!(out.len(), 1);
+    let mut next = Vec::new();
+    assert!(matches!(
+        view.children_page(&at, Bound::Excluded(b"a"), Direction::Forward, 1, &mut next),
+        Err(ReadError::Unreadable { .. })
+    ));
+    let mut whole = Vec::new();
+    assert_eq!(
+        view.subtrees_page(
+            &at,
+            Bound::Unbounded,
+            Direction::Forward,
+            1,
+            NO_LIMIT,
+            &mut whole
+        ),
+        Ok(true)
+    );
+    assert_eq!(whole.len(), 1);
+    // Asked for both, the listing gives `a` and "more", where the next
+    // page fails.
+    let mut both = Vec::new();
+    assert_eq!(
+        view.children_page(&at, Bound::Unbounded, Direction::Forward, 5, &mut both),
+        Ok(true)
+    );
+    assert_eq!(both.len(), 1);
+    let mut steps = Vec::new();
+    assert_eq!(
+        view.walk_page(&at, None, 5, &mut steps),
+        Ok(Some(vec![b"a".to_vec()]))
+    );
+    assert_eq!(steps.len(), 2);
+    // Through the iterators the error comes after what was given.
+    let dynamic: &dyn View = &view;
+    let listed: Vec<_> = dynamic
+        .children(&at, Bound::Unbounded, Direction::Forward)
+        .collect();
+    assert!(matches!(
+        listed[..],
+        [Ok(_), Err(ReadError::Unreadable { .. })]
+    ));
+    let walked: Vec<_> = dynamic.walk(&at).collect();
+    assert!(matches!(
+        walked[..],
+        [Ok(_), Ok(_), Err(ReadError::Unreadable { .. })]
+    ));
+}
+
+/// On the page file, an import refused after it committed batches (and
+/// checkpoints) leaves no page in use and none dying: once its pages have
+/// settled and two checkpoints have passed, as the page file's rules keep
+/// them until then, the pages in use are what they were before it. (`MemStore`, a store for tests, keeps every page it was
+/// given by design.)
+#[test]
+fn a_refused_import_leaves_no_page_in_use_on_the_page_file() {
+    let mut long = leaf(&[b'z'; 220], b"v");
+    long.push(0x40);
+    let (_, good) = fixture_files().swap_remove(1);
+    let sim = Sim::new(3);
+    let fs = sim.fs();
+    let lock = fs.lock().unwrap();
+    let pf = PageFile::create(&fs, &lock, small_config()).unwrap();
+    let mut units = OnPageFile {
+        pf: &pf,
+        checkpoints: 0,
+    };
+    let kept = TreeName::new(b"file:2".to_vec()).unwrap();
+    import(Cursor::new(&good), &mut units, &kept, 1, SMALL).unwrap();
+    // Pages a map on disk recorded unsettled are reused two checkpoints
+    // after they settle (docs/server-storage-format.md 4.5, "Holds"):
+    // four rounds of a checkpoint and a reclaim settle everything here.
+    // The pages in use: those neither free nor dying.
+    let settle = |units: &mut OnPageFile<'_>| {
+        for _ in 0..4 {
+            units.checkpoint().unwrap();
+            units.pf.reclaim(usize::MAX);
+        }
+        let space = units.pf.space();
+        (space.end - 1 - space.free - space.dying, space.dying)
+    };
+    let before = settle(&mut units);
+    // Two hundred batches of one leaf, then a key the writer cannot write.
+    // Leaves of 1,000 bytes, three a page: the root list stays open across
+    // the pages, and the tree passes the page file's budget of 8 pages
+    // waiting for a checkpoint.
+    let mut pages = vec![leaves_then(&[])];
+    for key in 0..200u16 {
+        if key % 3 == 0 {
+            pages.push(Vec::new());
+        }
+        let page = pages.last_mut().expect("a page");
+        page.extend(leaf(
+            &[b'k', (key >> 8) as u8, key as u8],
+            &long_value(1000),
+        ));
+    }
+    pages.last_mut().expect("a page").extend(long);
+    let bodies: Vec<&[u8]> = pages.iter().map(Vec::as_slice).collect();
+    let refused_file = file_of(&bodies);
+    let checkpoints = units.checkpoints;
+    let first = units.pf.newest_entry() + 1;
+    let one = Batch {
+        nodes: 1,
+        bytes: 1 << 20,
+    };
+    let refused = import(
+        Cursor::new(&refused_file),
+        &mut units,
+        &tree_name(),
+        first,
+        one,
+    );
+    assert!(
+        matches!(refused, Err(ImportError::Unwritable { .. })),
+        "{refused:?}"
+    );
+    assert!(
+        units.checkpoints > checkpoints,
+        "the import checkpointed along the way"
+    );
+    assert_eq!(units.pf.tree_names(), vec![kept]);
+    let after = settle(&mut units);
+    assert_eq!(after, before, "pages in use and dying");
+    println!(
+        "pages in use and dying, before the refused import and after it settled: {before:?}, \
+         {after:?}"
+    );
+}
+
+/// A tree of random shape: lists empty and full, values empty, short and
+/// long (which the writer writes in pieces), segments with zero and `ff`
+/// bytes, as the writer writes them.
+fn random_tree(rng: &mut Rng, depth: usize) -> Vec<OwnedNode> {
+    let mut segments = std::collections::BTreeSet::new();
+    let width = match rng.below(8) {
+        0 => 0,
+        1 if depth < 2 => 40 + rng.below(80),
+        _ => 1 + rng.below(6),
+    };
+    for _ in 0..width {
+        let len = 1 + rng.below(4);
+        let segment: Vec<u8> = (0..len)
+            .map(|_| match rng.below(4) {
+                0 => 0,
+                1 => 0xff,
+                _ => rng.next() as u8,
+            })
+            .collect();
+        segments.insert(segment);
+    }
+    segments
+        .into_iter()
+        .map(|segment| {
+            if depth < 5 && rng.below(3) == 0 {
+                OwnedNode::list(segment, random_tree(rng, depth + 1))
+            } else {
+                let len = match rng.below(6) {
+                    0 => 0,
+                    1 => 1001 + rng.below(3000),
+                    _ => rng.below(60),
+                };
+                OwnedNode::leaf(
+                    segment,
+                    (0..len).map(|_| rng.next() as u8).collect::<Vec<_>>(),
+                )
+            }
+        })
+        .collect()
+}
+
+/// What import accepts, export gives back: for random trees as the writer
+/// writes them, in random batches, the import's export imported again in
+/// the same batches has the same root hash (as every fixture file and
+/// FileMaker template does in the tests above).
+#[test]
+fn an_export_of_what_import_accepts_imports_to_the_same_root_hash() {
+    let scratch = Scratch::new("round-trip");
+    let mut nodes = 0;
+    for seed in 1..=40u64 {
+        let mut rng = Rng(seed * 0x9e37_79b9);
+        let root = OwnedNode::list(Vec::new(), random_tree(&mut rng, 0));
+        let bytes =
+            om_hbam::writer::rebuild(&root, &om_hbam::new_superblock("Random").unwrap()).unwrap();
+        let batch = Batch {
+            nodes: 1 + rng.below(64),
+            bytes: 1 + rng.below(8_000),
+        };
+        let (store, imported) = import_into_memory(&bytes, batch);
+        let view = PagedView::open(&store, imported.root).unwrap();
+        let exported = paged_export(&view, &imported.page_zero, &scratch, "export.fmp12");
+        let (_, again) = import_into_memory(&exported, batch);
+        assert_eq!(again.root.hash, imported.root.hash, "seed {seed}");
+        assert_eq!(again.nodes, imported.nodes, "seed {seed}");
+        nodes += imported.nodes;
+    }
+    println!("{nodes} nodes in 40 trees");
 }
 
 /// The FileMaker templates (the 66 Mac templates `om-hbam`'s ignored tests

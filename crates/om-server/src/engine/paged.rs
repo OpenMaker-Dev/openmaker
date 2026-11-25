@@ -25,6 +25,19 @@
 //! own (docs/server-storage-format.md 2.8): from the stamps index pages
 //! hold, never false when something under the path changed.
 //!
+//! **A read that fails partway.** A call that has already given some
+//! children, subtrees or walk steps when a read fails ends there and gives
+//! them, with "more may follow" (`Ok(true)`, or the walk's place to resume
+//! after the last step given), as the trait lets a view give fewer than it
+//! was asked for. A failed look-ahead past a full page of children answers
+//! "more" too, never "no more". So nothing is lost and nothing is made up:
+//! the next call starts after what was given and reaches the failed read
+//! first, which fails it with [`ReadError::Unreadable`], or reads what is
+//! there if the read now succeeds. A call whose first read fails fails.
+//! The readers of views read a short page with "more" as such: the
+//! iterators ask for the next page, and `security`'s one-child probe asks
+//! for one child, which this view gives or fails on.
+//!
 //! **Import.** [`import`] reads an `.fmp12` with `om_hbam`'s streaming
 //! reader ([`NodeStream`]) and puts every node, with its kind and value,
 //! empty lists included, into a new tree through `om_store::tree::apply`,
@@ -35,8 +48,10 @@
 //! entry of the store: when the store's write path takes it, its batches
 //! become the parts of a group whose last entry adds the file
 //! (docs/server-storage.md 6.9, 6.10), and the entry indexes it now takes
-//! from its caller come from the log. It refuses, with a typed error
-//! ([`ImportError`]), and with the tree it made dropped again:
+//! from its caller come from the log. What it accepts, [`export`] gives
+//! back: an export imported again has the same root hash. It refuses, with
+//! a typed error ([`ImportError`]), and with the tree it made dropped
+//! again:
 //!
 //! - a file that does not read as an `.fmp12`, the encrypted ones among
 //!   them: OpenMaker does not read encrypted files, and its readers find
@@ -44,13 +59,20 @@
 //!   file engine refuses to host it;
 //! - a file holding content `om_hbam`'s writer cannot write
 //!   (`om_hbam::writer::unwritable`: a key segment or a path too long, a
-//!   list holding a value, an item no page can hold) or whose page 0 it
-//!   does not write: the file engine hosts such a file read-only and
-//!   exports its own bytes (section 2, rule 2), and the store keeps that
-//!   image only once its kept original images are built (section 6.10);
+//!   list holding a value, an item no page can hold), or writes in another
+//!   shape (a list that carries an empty value, below, and a value over
+//!   1,000 bytes held whole, which it writes in pieces), or whose page 0 it
+//!   does not write (not one 4,096-byte page, or a change number with no
+//!   room left for the pages an export numbers): the file engine hosts
+//!   such a file, read-only where it cannot write it, and exports its own
+//!   bytes (section 2, rule 2); the store keeps that image only once its
+//!   kept original images are built (section 6.10);
 //! - an item past the store's bounds (section 6.11), which no file the
 //!   reader reads can hold: a slot's value has a 2-byte length and a path
-//!   at most 17 segments of at most 255 bytes, within the 64 KiB of each.
+//!   at most 17 segments of at most 255 bytes, within the 64 KiB of each;
+//! - a file whose entries could not all be numbered after the first one it
+//!   is given, below the last index an entry can have: a bound worked out
+//!   from the file's length before anything is written.
 //!
 //! **Page 0.** [`Imported::page_zero`] is the file's page 0 as it was
 //! read. The file engine keeps it in its derived state
@@ -61,12 +83,11 @@
 //!
 //! **A list that carries an empty value**
 //! ([#754](https://github.com/OpenMaker-Dev/openmaker/issues/754)): the
-//! reader gives such a key as a list with an empty value, the file engine
-//! keeps it so in memory, and so does the import (a node that is both,
-//! with an empty value): the two views answer it alike. Its export is what
-//! the file engine's writer gives, a bare list, so an export imported again
-//! has another root hash where a file held one. No file FileMaker wrote
-//! holds one (`om-hbam` `tests/templates.rs`,
+//! reader gives such a key as a list with an empty value and the file
+//! engine keeps it so in memory, but its writer writes a bare list, so an
+//! export could not give it back. Until #754 settles which of the two a
+//! file holds, the import refuses it, naming its path. No file FileMaker
+//! wrote holds one (`om-hbam` `tests/templates.rs`,
 //! `no_shipped_file_holds_a_list_with_a_value`).
 //!
 //! **Export.** [`export`] is the file engine's written export
@@ -74,7 +95,10 @@
 //! read back and compared with a second walk, with the imported page 0 and
 //! its own change number, so that it is the file engine's compacted copy
 //! of the same file byte for byte. A read of the view that fails is
-//! [`ExportError::Read`], and nothing is left under the export's name.
+//! [`ExportError::Read`]. Where the export is made unnamed and linked to
+//! its name only once it checks (Linux with unnamed files), nothing is left
+//! under its name; where it is made under its name, a failed export leaves
+//! what was written there, as every export does (`crate::staged`).
 
 use std::borrow::Cow;
 use std::fmt;
@@ -82,6 +106,7 @@ use std::io::{Read as IoRead, Seek};
 use std::ops::Bound;
 
 use om_hbam::stream::NodeStream;
+use om_hbam::writer::MAX_INLINE_VALUE;
 use om_hbam::OwnedNode;
 use om_store::page::{EntryPages, MemStore, PageStore, Root, TreeName};
 use om_store::tree::{self, key, Edit, Node, Tree};
@@ -89,7 +114,10 @@ use om_store::tree::{self, key, Edit, Node, Tree};
 use super::export::{self, ExportError, Exported, Progress, Target};
 use super::view::{owned_path, Child, Direction, Head, ReadError, Step, Version, View, NO_LIMIT};
 
-/// One version of a file's tree in a page store (the module doc).
+/// One version of a file's tree in a page store (the module doc). A call
+/// whose read fails after it has given something gives that with "more may
+/// follow", never "no more", and the next call fails on the same read (the
+/// module doc, "A read that fails partway").
 pub struct PagedView<'s, S: ?Sized> {
     store: &'s S,
     root: Root,
@@ -572,9 +600,9 @@ pub enum ImportError {
     /// The file does not read as an `.fmp12`: among them an encrypted
     /// file, whose pages do not decode (the module doc).
     File(om_hbam::Error),
-    /// The file holds what `om_hbam`'s writer cannot write, at `path`
-    /// (empty for page 0): the store does not keep such a file yet (the
-    /// module doc).
+    /// The file holds, at `path` (empty for page 0), what an export could
+    /// not give back as it is: what `om_hbam`'s writer cannot write, or
+    /// writes in another shape (the module doc, "What import accepts").
     Unwritable {
         path: Vec<Vec<u8>>,
         reason: &'static str,
@@ -589,6 +617,10 @@ pub enum ImportError {
         path: Vec<Vec<u8>>,
         why: tree::Refusal,
     },
+    /// The entries a file this large may take, `needed`, do not all fit
+    /// between `first` and the last index an entry can have, or `first` is
+    /// 0, which is no entry: nothing was written.
+    Entries { first: u64, needed: u64 },
     /// A tree of that name exists: nothing was written.
     Exists,
     /// Writing a batch into the page store failed.
@@ -607,7 +639,7 @@ impl fmt::Display for ImportError {
             ImportError::File(e) => write!(f, "the file does not read as an .fmp12: {e}"),
             ImportError::Unwritable { path, reason } => write!(
                 f,
-                "the file holds what the writer cannot write at {path:02x?}: {reason}"
+                "the file holds what an export could not give back at {path:02x?}: {reason}"
             ),
             ImportError::NoKind { path } => {
                 write!(f, "a key at {path:02x?} is neither a list nor a value")
@@ -618,6 +650,10 @@ impl fmt::Display for ImportError {
                     "an item at {path:02x?} is past the store's bounds: {why:?}"
                 )
             }
+            ImportError::Entries { first, needed } => write!(
+                f,
+                "{needed} entries from entry {first} do not fit below the last entry index"
+            ),
             ImportError::Exists => f.write_str("a tree of that name exists"),
             ImportError::Store(e) => write!(f, "the page store refused a batch: {e}"),
             ImportError::Left { error, drop } => write!(
@@ -632,7 +668,19 @@ impl std::error::Error for ImportError {}
 
 /// Read the `.fmp12` `source` into a new tree named `tree` through `units`,
 /// its batches as entries `first_entry`, `first_entry + 1`, ... (the module
-/// doc). `first_entry` must be after every entry the page store has.
+/// doc). `first_entry` must be after every entry the page store has, and
+/// the entries the file may take must fit below the last index an entry can
+/// have ([`ImportError::Entries`], checked before anything is written).
+///
+/// **What import accepts, export gives back:** for every file it accepts,
+/// [`export`] of the tree followed by an import of that export gives a tree
+/// with the same root hash. So it refuses ([`ImportError::Unwritable`])
+/// what the file writer cannot write, and what it writes in another shape:
+/// a list that carries an empty value, which it writes as a bare list
+/// ([#754](https://github.com/OpenMaker-Dev/openmaker/issues/754)), and a
+/// value over [`MAX_INLINE_VALUE`] bytes held whole, which it writes in
+/// pieces; and a page 0 it does not write, or whose change number leaves
+/// no room for the pages an export numbers from it.
 pub fn import<R: IoRead + Seek, U: Units + ?Sized>(
     source: R,
     units: &mut U,
@@ -645,17 +693,18 @@ pub fn import<R: IoRead + Seek, U: Units + ?Sized>(
     }
     let mut made = Made {
         root: None,
-        entry: first_entry,
+        next: first_entry,
+        last: first_entry,
     };
     match fill(source, units, tree, &mut made, batch) {
-        Ok((page_zero, nodes)) => Ok(Imported {
-            root: made.root.expect("the last batch makes the tree"),
+        Ok((page_zero, nodes, root)) => Ok(Imported {
+            root,
             page_zero,
-            entries: (first_entry, made.entry - 1),
+            entries: (first_entry, made.last),
             nodes,
         }),
         Err(error) if made.root.is_none() => Err(error),
-        Err(error) => match units.drop_tree(tree, made.entry) {
+        Err(error) => match units.drop_tree(tree, made.next) {
             Ok(()) => Err(error),
             Err(drop) => Err(ImportError::Left {
                 error: Box::new(error),
@@ -665,38 +714,48 @@ pub fn import<R: IoRead + Seek, U: Units + ?Sized>(
     }
 }
 
-/// What an import made so far: the tree's root once a batch made it, and
-/// the next entry.
+/// What an import made so far: the tree's root once a batch made it, the
+/// next entry, and the last one a batch took.
 struct Made {
     root: Option<Root>,
-    entry: u64,
+    next: u64,
+    last: u64,
 }
 
-/// The import's work ([`import`]): page 0 and the nodes put.
+/// The import's work ([`import`]): page 0, the nodes put and the root.
 fn fill<R: IoRead + Seek, U: Units + ?Sized>(
     source: R,
     units: &mut U,
     tree: &TreeName,
     made: &mut Made,
     batch: Batch,
-) -> Result<(Vec<u8>, u64), ImportError> {
+) -> Result<(Vec<u8>, u64, Root), ImportError> {
     let mut stream = NodeStream::new(source).map_err(ImportError::File)?;
     let page_zero = stream.superblock().raw.to_vec();
-    if om_hbam::writer::closed_page_zero(&page_zero, 0).is_none() {
-        return Err(ImportError::Unwritable {
-            path: Vec::new(),
-            reason: "page 0 is not one 4,096-byte page",
+    check_page_zero(&page_zero)?;
+    // Every node takes at least one byte of the file, so the file has
+    // fewer nodes than bytes, and an import fewer batches than nodes, and
+    // one more (a file of no nodes) and the entry that drops the tree.
+    let needed = u64::from(stream.page_count())
+        .saturating_mul(u64::from(stream.page_size()))
+        .saturating_add(2);
+    if made.next == 0 || made.next.checked_add(needed).is_none() {
+        return Err(ImportError::Entries {
+            first: made.next,
+            needed,
         });
     }
+    let entries = |first: u64| ImportError::Entries { first, needed };
     let mut edits: Vec<Edit> = Vec::new();
     let mut bytes = 0;
     let mut nodes = 0u64;
     let mut flush = |edits: &mut Vec<Edit>, made: &mut Made| -> Result<(), ImportError> {
         let root = units
-            .apply(tree, made.root, made.entry, edits)
+            .apply(tree, made.root, made.next, edits)
             .map_err(ImportError::Store)?;
         made.root = Some(root);
-        made.entry += 1;
+        made.last = made.next;
+        made.next = made.next.checked_add(1).ok_or_else(|| entries(made.next))?;
         edits.clear();
         Ok(())
     };
@@ -709,25 +768,87 @@ fn fill<R: IoRead + Seek, U: Units + ?Sized>(
             (false, None) => return Err(ImportError::NoKind { path }),
         };
         check(&path, &kind)?;
-        bytes += key::encoded_len(&path) + kind.value().len();
-        edits.push(Edit::Put { path, node: kind });
-        nodes += 1;
-        if edits.len() >= batch.nodes.max(1) || bytes >= batch.bytes {
+        // The batch's limits are checked before the node joins it: a batch
+        // never passes them, but for a node larger than the byte limit
+        // alone, which is a batch of its own (the bounds of section 6.11
+        // hold a node to 64 KiB of path and 64 KiB of value).
+        let size = key::encoded_len(&path) + kind.value().len();
+        if !edits.is_empty() && (edits.len() >= batch.nodes.max(1) || bytes + size > batch.bytes) {
             flush(&mut edits, made)?;
             bytes = 0;
         }
+        edits.push(Edit::Put { path, node: kind });
+        bytes += size;
+        nodes += 1;
     }
     if !edits.is_empty() || made.root.is_none() {
         flush(&mut edits, made)?;
     }
-    Ok((page_zero, nodes))
+    let root = made.root.ok_or(ImportError::Store(tree::Error::Store(
+        om_store::page::StoreError::Failed("no batch made the tree".into()),
+    )))?;
+    Ok((page_zero, nodes, root))
 }
 
-/// Refuse a node the writer cannot write back, or the store cannot hold.
+/// Refuse a page 0 an export could not write the file with: one that is
+/// not one 4,096-byte page, the only page size the file writer writes, or
+/// whose change number leaves no room for the pages an export numbers from
+/// it (one each; an `.fmp12` has at most 2^32 pages). The reader checked the
+/// rest the writer copies: the magic and the page size it gives.
+fn check_page_zero(page_zero: &[u8]) -> Result<(), ImportError> {
+    let refuse = |reason| {
+        Err(ImportError::Unwritable {
+            path: Vec::new(),
+            reason,
+        })
+    };
+    if om_hbam::writer::closed_page_zero(page_zero, 0).is_none() {
+        return refuse("page 0 is not one 4,096-byte page");
+    }
+    let room = om_hbam::writer::change_number(page_zero)
+        .and_then(|number| number.checked_add(u64::from(u32::MAX)));
+    if room.is_none() {
+        return refuse("page 0's change number leaves no room for the pages an export numbers");
+    }
+    Ok(())
+}
+
+/// Refuse a node an export could not give back as it is, or the store
+/// cannot hold ([`import`], "What import accepts, export gives back").
 fn check(path: &[Vec<u8>], node: &Node) -> Result<(), ImportError> {
     let Some((segment, parents)) = path.split_last() else {
         return Err(ImportError::NoKind { path: Vec::new() });
     };
+    let edit = [Edit::Put {
+        path: path.to_vec(),
+        node: node.clone(),
+    }];
+    match tree::check_edits(&edit) {
+        Ok(()) => {}
+        Err(tree::Error::Refused { why, .. }) => {
+            return Err(ImportError::Bounds {
+                path: path.to_vec(),
+                why,
+            })
+        }
+        Err(e) => return Err(ImportError::Store(e)),
+    }
+    let reshaped = match node {
+        Node::Both(v) if v.is_empty() => Some(
+            "a list that carries an empty value, which the file writer writes as a bare list \
+             (#754)",
+        ),
+        Node::Value(v) if v.len() > MAX_INLINE_VALUE => {
+            Some("a value over 1,000 bytes held whole, which the file writer writes in pieces")
+        }
+        _ => None,
+    };
+    if let Some(reason) = reshaped {
+        return Err(ImportError::Unwritable {
+            path: path.to_vec(),
+            reason,
+        });
+    }
     let parents: Vec<&[u8]> = parents.iter().map(Vec::as_slice).collect();
     let as_written = OwnedNode {
         segment: segment.clone(),
@@ -744,25 +865,15 @@ fn check(path: &[Vec<u8>], node: &Node) -> Result<(), ImportError> {
             reason: refused.reason,
         });
     }
-    let edit = [Edit::Put {
-        path: path.to_vec(),
-        node: node.clone(),
-    }];
-    match tree::check_edits(&edit) {
-        Ok(()) => Ok(()),
-        Err(tree::Error::Refused { why, .. }) => Err(ImportError::Bounds {
-            path: path.to_vec(),
-            why,
-        }),
-        Err(e) => Err(ImportError::Store(e)),
-    }
+    Ok(())
 }
 
 /// Export the file `view` reads, whose page 0 as imported is `page_zero`,
 /// to `target` (`super::export`, written from the view): the walk, written
 /// with that page 0 from the change number it holds and checked against a
 /// second walk. It is what the file engine's compacted copy of the same
-/// file holds. Nothing is left under a folder's name when it fails.
+/// file holds. When it fails, what is left under a folder's name is what
+/// `crate::staged` leaves: nothing where the file was made unnamed.
 pub fn export(
     view: &dyn View,
     page_zero: &[u8],
