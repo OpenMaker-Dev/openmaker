@@ -1,36 +1,48 @@
 //! The Secret paths of a script or layout member: the credentials in a
-//! step's data that [`STEP_SECRETS`] names for the step they belong to,
-//! ODBC profiles, and every slot of step data whose step OpenMaker cannot
-//! identify with certainty.
+//! step's data that [`STEP_SECRETS`] names for the step they belong to, and
+//! everything in step data that is not identified with certainty.
 //!
 //! A script's step list `[11, 5, S, 04]` is its steps' 28-byte descriptors
 //! (script-steps.md 2): the data key `mDataKey` in bytes 0-5 (a length,
 //! then the key's segments each after its length), the step id `mStepID`
 //! as a big-endian `i16` in bytes 20-21 (negative when disabled). The step
-//! keeps its data at `[11, 5, S, 05, <data key>]` (4.2). A button keeps its
+//! keeps its data at `[11, 5, S, 05, <data key>]` (4.2); `[11, 5, S, 05,
+//! 00]` is the last issued data key, no step's data. A button keeps its
 //! step in the layout's object store `[4, 5, L, 07]` (`LayoutObjectStore`,
 //! `LayoutObject.buttonObj.scriptStep` or `groupObj.scriptStep`;
 //! protobuf-schemas.md, `LayoutObject.proto`) and its data at
 //! `[4, 5, L, 05, <object key as a serial key>, 11]` (layout-model.md
 //! 5.3.3).
 //!
-//! In step data a slot is a two-byte segment `[00 n]` holding a list value
-//! (a `u32`), a text `01`, a number `03`, a calculation `05`, a field spec
-//! `10`, occurrence keys `11` and a path list `82` (script-steps.md 4.2).
-//! The credentials the specs name are calculations, so of a credential
-//! slot the calculation `05` is Secret, and the text `01` if it has one;
-//! its number `03` is another setting (Create PDF's slot 7 also holds
-//! "allow screen reader", 12.2). An ODBC profile `86` is Secret whole.
+//! **In a step's data, Design is only what an identified step's spec
+//! names.** Each node below a data node is classed by its keys, its step
+//! and, for a credential slot's other parts, its own shape ([`piece`]),
+//! never by what any other node holds, so that no change to a credential
+//! or to unidentified content can change how anything else is classed:
 //!
-//! "Not Secret" means identified and known not to hold a credential. So
-//! every slot of a step's data is Secret, whole, when the step is not
-//! identified with certainty: no step list or object store, one that does
-//! not decode to its end, a descriptor whose data key does not decode, two
-//! descriptors or objects naming one data key with different steps, a
-//! button whose step fields disagree (the layout decoder takes the last of
-//! repeated fields, `om_layout`), a step id the step catalog does not have
-//! (0, a button with no action, included), a data key no step names; and
-//! when a credential slot of the step does not have the shape above.
+//! - a slot `[00 n]` (script-steps.md 4.2) is Design with its list value,
+//!   its text `01`, number `03`, calculation `05`, field spec `10`,
+//!   occurrence keys `11` and path list `82`; any other part is not
+//!   identified;
+//! - of a slot [`STEP_SECRETS`] names as a credential slot, the text `01`
+//!   and the calculation `05` are credentials, the slot's own value, which
+//!   no spec gives one, is not identified, and a number `03`, field spec
+//!   `10`, occurrence keys `11` or path list `82` is Design only in the
+//!   shape 4.2 gives it (a number of 1 to 4 bytes, a field spec of 14), so
+//!   that a credential written where none belongs is not taken for one;
+//! - the step-level keys 4.2 names are Design, but for the profile `86`,
+//!   which can hold a data source's user name and password (11.5) and is
+//!   not read here, and the profile extension `87` of a step other than
+//!   Print Setup and Print, which no spec describes; any other key, and a
+//!   data node's own value, are not identified;
+//! - all of a step's data is not identified when the step is not
+//!   identified with certainty: no step list or object store, one that
+//!   does not decode to its end, a descriptor whose data key does not
+//!   decode or is `00`, two descriptors or objects naming one data key with
+//!   different steps, a button whose step fields disagree (the layout
+//!   decoder takes the last of repeated fields, `om_layout`), a step id the
+//!   step catalog does not have (0, a button with no action, included), a
+//!   data key no step names.
 //!
 //! The decoders find a script's step list `04` and step data `05`, a
 //! layout's attribute records `05` and object store `07`, and a button's
@@ -49,7 +61,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
 use super::revision::split_value;
-use super::rules::{is_odbc_profile, PROFILE, STEP_SECRETS};
+use super::rules::{PROFILE, STEP_SECRETS};
 use super::{Kind, Path};
 use crate::serial;
 use crate::slot::be_uint;
@@ -57,11 +69,26 @@ use crate::tree::OwnedNode;
 
 /// Step data's key in a script member.
 const STEP_DATA: &[u8] = &[0x05];
+/// The last issued data key in a script's step data (script-steps.md 4.2).
+const LAST_DATA_KEY: &[u8] = &[0x00];
 /// A layout object's step data in its attribute record.
 const BUTTON_STEP: &[u8] = &[0x11];
-/// A slot's text and calculation (script-steps.md 4.2).
+/// A slot's text and calculation (script-steps.md 4.2): a credential
+/// slot's credentials.
 const SLOT_TEXT: &[u8] = &[0x01];
 const SLOT_FORMULA: &[u8] = &[0x05];
+/// The parts of a slot script-steps.md 4.2 names.
+const SLOT_PARTS: &[u8] = &[0x01, 0x03, 0x05, 0x10, 0x11, 0x82];
+/// The step-level keys script-steps.md 4.2 names, but the profile `86` and
+/// its extension `87`.
+const STEP_KEYS: &[u8] = &[
+    0x06, 0x0a, 0x20, 0x82, 0x83, 0x84, 0x85, 0x88, 0x8c, 0xd7, 0xd8, 0xd9, 0xda, 0xf0,
+];
+/// `87`: Print Setup's and Print's page format (script-steps.md 11.6), and
+/// for other steps a profile extension no spec describes.
+const PAGE_FORMAT: &[u8] = &[0x87];
+const PRINT_SETUP: u16 = 42;
+const PRINT: u16 = 43;
 
 /// The step catalog (`docs/re/catalogs/script-steps.csv`).
 const STEPS: &str = include_str!("../../../../docs/re/catalogs/script-steps.csv");
@@ -83,6 +110,15 @@ fn known_steps() -> &'static BTreeSet<u16> {
     })
 }
 
+/// What a Secret path covers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Scope {
+    /// The node and everything below it.
+    Subtree,
+    /// The node's own value only; what lies below is classed on its own.
+    Own,
+}
+
 /// A Secret path of a member.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Secret {
@@ -91,10 +127,101 @@ pub(super) struct Secret {
     pub holds: &'static str,
     /// An identified credential: the text or calculation of a credential
     /// slot of a step identified with certainty. Every other Secret path
-    /// (a slot of a step not identified, an ODBC profile, a member the
-    /// decoders could read differently) is Secret because what it holds
-    /// could not be identified, and may hold design too.
+    /// is Secret because what it holds could not be identified, and may
+    /// hold design too.
     pub credential: bool,
+    pub scope: Scope,
+}
+
+/// What a node in a step's data is, by its keys and its step alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Piece {
+    Design,
+    /// An identified credential, with everything below it.
+    Credential(&'static str),
+    /// Not identified, with everything below it.
+    Unidentified(&'static str),
+    /// The node's own value is not identified; what lies below is classed
+    /// on its own.
+    OwnUnidentified(&'static str),
+}
+
+/// What the node at `below` (relative to a data node, which is the empty
+/// path) holds, `step` being the data node's step when it is identified
+/// with certainty (module doc); `node` is the node, when the member holds
+/// it.
+pub(super) fn piece(step: Option<u16>, below: &[&[u8]], node: Option<&OwnedNode>) -> Piece {
+    let Some((&first, rest)) = below.split_first() else {
+        return Piece::OwnUnidentified("the own value of a step's data, which no spec names");
+    };
+    let Some(step) = step else {
+        return Piece::Unidentified("data of a step OpenMaker cannot identify with certainty");
+    };
+    if first.len() == 2 {
+        let holds = credential(step, first);
+        return match (rest.first(), holds) {
+            (None, Some(_)) => Piece::OwnUnidentified(
+                "the own value of a credential slot, which no spec gives one",
+            ),
+            (None, None) => Piece::Design,
+            (Some(&part), Some(holds)) if part == SLOT_TEXT || part == SLOT_FORMULA => {
+                Piece::Credential(holds)
+            }
+            (Some(&part), _) if !(part.len() == 1 && SLOT_PARTS.contains(&part[0])) => {
+                Piece::Unidentified("a part of a slot no spec names")
+            }
+            (Some(&part), Some(_))
+                if rest.len() == 1 && node.is_some_and(|n| !part_shape(part, n)) =>
+            {
+                Piece::Unidentified("a part of a credential slot not in the shape the spec gives")
+            }
+            (Some(_), _) => Piece::Design,
+        };
+    }
+    if first == PROFILE {
+        return Piece::Unidentified(
+            "a profile, which can hold a data source's user name and password",
+        );
+    }
+    if first == PAGE_FORMAT {
+        return match step {
+            PRINT_SETUP | PRINT => Piece::Design,
+            _ => Piece::Unidentified("a profile extension, which no spec describes"),
+        };
+    }
+    if first.len() == 1 && STEP_KEYS.contains(&first[0]) {
+        return Piece::Design;
+    }
+    Piece::Unidentified("a key of step data no spec names")
+}
+
+/// Whether a slot's number `03`, field spec `10`, occurrence keys `11` or
+/// path list `82` has the shape script-steps.md 4.2 gives it.
+fn part_shape(part: &[u8], node: &OwnedNode) -> bool {
+    // A leaf holding bytes, or a split value (file-format.md 3.6).
+    let bytes =
+        |n: &OwnedNode| (n.children.is_empty() && n.value.is_some()) || split_value(n).is_some();
+    let leaf_of = |range: std::ops::RangeInclusive<usize>| {
+        node.children.is_empty()
+            && node
+                .value
+                .as_ref()
+                .is_some_and(|v| range.contains(&v.len()))
+    };
+    match part {
+        // Numeric data: 1 to 4 bytes (`SetNumericData<T>`, 4.2, 11.7).
+        [0x03] => leaf_of(1..=4),
+        // A field spec: 14 bytes (`DBFieldSpec`).
+        [0x10] => leaf_of(14..=14),
+        // Occurrence keys, with a count `04` when several.
+        [0x11] => {
+            bytes(node)
+                || (node.value.is_none() && node.children.iter().all(|k| k.children.is_empty()))
+        }
+        // A path list: text.
+        [0x82] => bytes(node),
+        _ => false,
+    }
 }
 
 /// The step each data node belongs to, by data key: `None` inside where
@@ -111,6 +238,7 @@ fn step_data(kind: Kind, member: &OwnedNode) -> Option<(Vec<(Path, &OwnedNode)>,
             let nodes = data
                 .children
                 .iter()
+                .filter(|n| n.segment != LAST_DATA_KEY)
                 .map(|n| (vec![STEP_DATA.to_vec(), n.segment.clone()], n))
                 .collect();
             Some((nodes, script_steps(member)))
@@ -135,59 +263,13 @@ fn step_data(kind: Kind, member: &OwnedNode) -> Option<(Vec<(Path, &OwnedNode)>,
 }
 
 /// The step that the data at `at` (relative to the member) belongs to,
-/// when it is identified with certainty and its credential slots have the
-/// shape the spec gives.
-fn resolve(at: &[Vec<u8>], data: Option<&OwnedNode>, steps: &Steps) -> Option<u16> {
+/// when it is identified with certainty.
+fn resolve(at: &[Vec<u8>], steps: &Steps) -> Option<u16> {
     // The data key: `K` of `[05, K]` in a script, `O` of `[05, O, 11]` on
     // a layout.
     let key = at.get(1)?;
     let step = (*steps.as_ref()?.get(key)?)?;
-    if !known_steps().contains(&step) {
-        return None;
-    }
-    if let (Some(secret), Some(data)) = (STEP_SECRETS.iter().find(|s| s.step == step), data) {
-        for (slot, _) in secret.slots {
-            if data
-                .child(&slot.to_be_bytes())
-                .is_some_and(|s| !slot_shape(s))
-            {
-                return None;
-            }
-        }
-    }
-    Some(step)
-}
-
-/// Whether a slot has the shape script-steps.md 4.2 gives it.
-fn slot_shape(slot: &OwnedNode) -> bool {
-    // A leaf holding bytes, or a split value (file-format.md 3.6).
-    let bytes =
-        |n: &OwnedNode| (n.children.is_empty() && n.value.is_some()) || split_value(n).is_some();
-    if slot.value.as_ref().is_some_and(|v| v.len() != 4) {
-        return false;
-    }
-    slot.children.iter().all(|c| match c.segment.as_slice() {
-        // Text, a path list: text values.
-        [0x01] | [0x82] => bytes(c),
-        // Numeric data: 1 to 4 bytes (`SetNumericData<T>`, 4.2, 11.7).
-        [0x03] => {
-            c.children.is_empty() && c.value.as_ref().is_some_and(|v| (1..=4).contains(&v.len()))
-        }
-        // A calculation: context, formatted and Polish streams (calc-encoding.md 1).
-        [0x05] => {
-            c.value.is_none()
-                && c.children
-                    .iter()
-                    .all(|f| matches!(f.segment.as_slice(), [4] | [5] | [6]) && bytes(f))
-        }
-        // A field spec: 14 bytes (`DBFieldSpec`).
-        [0x10] => c.children.is_empty() && c.value.as_ref().is_some_and(|v| v.len() == 14),
-        // Occurrence keys, with a count `04` when several.
-        [0x11] => {
-            bytes(c) || (c.value.is_none() && c.children.iter().all(|k| k.children.is_empty()))
-        }
-        _ => false,
-    })
+    known_steps().contains(&step).then_some(step)
 }
 
 /// Whether a key of `node` longer than one byte reads by number as one of
@@ -203,7 +285,7 @@ fn aliasing(node: &OwnedNode, numbers: &[u8]) -> bool {
 /// a member of `kind`: a key that reads as the step list or step data of a
 /// script, the attribute records or object store of a layout, or a
 /// button's step data in an attribute record.
-fn misread(kind: Kind, member: &OwnedNode) -> bool {
+pub(super) fn misread(kind: Kind, member: &OwnedNode) -> bool {
     match kind {
         Kind::Script => aliasing(member, &[0x04, STEP_DATA[0]]),
         Kind::Layout => {
@@ -216,67 +298,81 @@ fn misread(kind: Kind, member: &OwnedNode) -> bool {
     }
 }
 
-/// The Secret paths of `member`, relative to it.
+fn unidentified(path: Path, holds: &'static str, scope: Scope) -> Secret {
+    Secret {
+        path,
+        holds,
+        credential: false,
+        scope,
+    }
+}
+
+/// The Secret paths of `member`, relative to it, in order: each node in
+/// its step data that [`piece`] does not find Design, and every key of a
+/// member the decoders could read differently.
 pub(super) fn of(kind: Kind, member: &OwnedNode) -> Vec<Secret> {
     let mut out = Vec::new();
     if misread(kind, member) {
         return member
             .children
             .iter()
-            .map(|c| Secret {
-                path: vec![c.segment.clone()],
-                holds: "a member whose keys the decoders can read differently",
-                credential: false,
+            .map(|c| {
+                unidentified(
+                    vec![c.segment.clone()],
+                    "a member whose keys the decoders can read differently",
+                    Scope::Subtree,
+                )
             })
             .collect();
+    }
+    if kind == Kind::Script && member.child(STEP_DATA).is_some_and(|d| d.value.is_some()) {
+        out.push(unidentified(
+            vec![STEP_DATA.to_vec()],
+            "the own value of a script's step data, which no spec names",
+            Scope::Own,
+        ));
     }
     let Some((nodes, steps)) = step_data(kind, member) else {
         return out;
     };
     for (at, data) in nodes {
-        let step = resolve(&at, Some(data), &steps);
+        let step = resolve(&at, &steps);
+        let mut put = |path: Path, piece: Piece, node: &OwnedNode| match piece {
+            Piece::Design => {}
+            Piece::Credential(holds) => out.push(Secret {
+                path,
+                holds,
+                credential: true,
+                scope: Scope::Subtree,
+            }),
+            Piece::Unidentified(holds) => out.push(unidentified(path, holds, Scope::Subtree)),
+            Piece::OwnUnidentified(holds) => {
+                if node.value.is_some() {
+                    out.push(unidentified(path, holds, Scope::Own));
+                }
+            }
+        };
+        put(at.clone(), piece(step, &[], Some(data)), data);
         for child in &data.children {
-            let mut slot = at.clone();
-            slot.push(child.segment.clone());
-            if child.segment == PROFILE {
-                if profile_is_secret(child) {
-                    out.push(Secret {
-                        path: slot,
-                        holds: "an ODBC connection profile, with its user name and password",
-                        credential: false,
-                    });
-                }
+            let mut path = at.clone();
+            path.push(child.segment.clone());
+            let own = piece(step, &[&child.segment], Some(child));
+            put(path.clone(), own, child);
+            if matches!(own, Piece::Unidentified(_)) || child.segment.len() != 2 {
                 continue;
             }
-            if child.segment.len() != 2 {
-                continue;
-            }
-            match step {
-                None => out.push(Secret {
-                    path: slot,
-                    holds: "a slot of a step OpenMaker cannot identify with certainty",
-                    credential: false,
-                }),
-                Some(step) => {
-                    let Some(holds) = credential(step, &child.segment) else {
-                        continue;
-                    };
-                    for part in [SLOT_TEXT, SLOT_FORMULA] {
-                        if child.child(part).is_some() {
-                            let mut path = slot.clone();
-                            path.push(part.to_vec());
-                            out.push(Secret {
-                                path,
-                                holds,
-                                credential: true,
-                            });
-                        }
-                    }
-                }
+            for part in &child.children {
+                let mut part_path = path.clone();
+                part_path.push(part.segment.clone());
+                put(
+                    part_path,
+                    piece(step, &[&child.segment, &part.segment], Some(part)),
+                    part,
+                );
             }
         }
     }
-    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out.sort_by(|a, b| a.path.cmp(&b.path).then(a.scope.cmp(&b.scope)));
     out
 }
 
@@ -291,26 +387,31 @@ fn credential(step: u16, segment: &[u8]) -> Option<&'static str> {
         .map(|(_, holds)| *holds)
 }
 
-/// Whether a step's profile `86` is Secret: an ODBC connection profile, or
-/// one that does not read.
-fn profile_is_secret(node: &OwnedNode) -> bool {
-    node.assembled().is_none_or(|value| is_odbc_profile(&value))
-}
-
 /// Whether the path `below` (relative to a member of `kind`) is Secret: in
-/// or above a Secret path of [`of`], or, for a path the member does not
-/// hold, where one would be.
+/// or above a Secret path of [`of`] covering its subtree, at or above one
+/// covering a node's own value, or, for a path the member does not hold,
+/// where one would be.
 pub(super) fn is_secret(kind: Kind, member: &OwnedNode, below: &[&[u8]]) -> bool {
     if misread(kind, member) {
         return true;
     }
-    let related = |path: &Path| path.iter().zip(below).all(|(a, b)| a == b);
-    if of(kind, member).iter().any(|s| related(&s.path)) {
+    let secret = of(kind, member).into_iter().any(|s| {
+        let prefix = s.path.iter().zip(below).all(|(a, b)| a == b);
+        match s.scope {
+            Scope::Subtree => prefix,
+            Scope::Own => prefix && below.len() <= s.path.len(),
+        }
+    });
+    if secret {
         return true;
     }
     // A path the member does not hold: decide by where it would be.
     let depth = match kind {
-        Kind::Script if below.first() == Some(&STEP_DATA) => 2,
+        Kind::Script
+            if below.first() == Some(&STEP_DATA) && below.get(1) != Some(&LAST_DATA_KEY) =>
+        {
+            2
+        }
         Kind::Layout
             if below.first() == Some(&&[0x05][..]) && below.get(2) == Some(&BUTTON_STEP) =>
         {
@@ -318,32 +419,14 @@ pub(super) fn is_secret(kind: Kind, member: &OwnedNode, below: &[&[u8]]) -> bool
         }
         _ => return false,
     };
-    let Some(&part) = below.get(depth) else {
-        return false;
-    };
-    if member.at(below).is_some() {
-        return false;
-    }
-    if part == PROFILE {
-        return true;
-    }
-    if part.len() != 2 {
+    if below.len() <= depth || member.at(below).is_some() {
         return false;
     }
     let Some((_, steps)) = step_data(kind, member) else {
         return true;
     };
     let at: Path = below[..depth].iter().map(|s| s.to_vec()).collect();
-    let data = member.at(&below[..depth]);
-    match resolve(&at, data, &steps) {
-        None => true,
-        Some(step) => {
-            credential(step, part).is_some()
-                && below
-                    .get(depth + 1)
-                    .is_none_or(|p| *p == SLOT_TEXT || *p == SLOT_FORMULA)
-        }
-    }
+    piece(resolve(&at, &steps), &below[depth..], None) != Piece::Design
 }
 
 /// Each step of a script's step list, by its data key's segment; `None`
@@ -361,7 +444,11 @@ fn script_steps(member: &OwnedNode) -> Steps {
         }
         let key = d.get(1..1 + len).filter(|_| len <= 5)?;
         let (&seg_len, segment) = key.split_first()?;
-        if usize::from(seg_len) != segment.len() || serial::decode(segment).is_none() {
+        // `00` is the last issued data key, never a step's (4.2).
+        if usize::from(seg_len) != segment.len()
+            || serial::decode(segment).is_none()
+            || segment == LAST_DATA_KEY
+        {
             return None;
         }
         let step = i16::from_be_bytes([d[20], d[21]]).unsigned_abs();

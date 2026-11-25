@@ -249,7 +249,12 @@ text, then calculation slot 2 when `kCalculation` is set) [O shape, Med slots].
 `[17, 5, S, 5, K]` where K is the segment of `mDataKey`.
 `ScriptStep::MakeDataKey` allocates K as the next serial key in `[17, 5, S, 5]`
 (`DBCatalogItemList::MakeDataKey` -> `HBAbstractKey::GenerateSerialKey`) [O].
-Steps without data still get a key and UUIDs.
+Steps without data still get a key and UUIDs. `[17, 5, S, 5, 00]` holds a
+key string, its length then a key (`01 21` for key `21`): in the 66
+FileMaker Pro 26 starter files it is in each of the 198 scripts with step
+data and equals the highest data key there [O]; [I] the last issued data
+key, kept as a catalog keeps its last issued id `[cat, 1, 00]`
+(schema-path.md 5.1). No step's data key is `00`.
 
 Slot nodes are two-byte segments `[00 nn]` (`HBInt16Key(slot)`) [O]:
 

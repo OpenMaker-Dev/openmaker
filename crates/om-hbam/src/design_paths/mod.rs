@@ -15,11 +15,12 @@
 //! step's data holds a password depends on the step, which only the tree
 //! shows, and a path-only answer of Design for a stored password could be
 //! taken as final. "Not Secret" means identified and known not to hold a
-//! credential: what cannot be identified with certainty is Secret. The
-//! rules reach the first-level keys of members and
-//! catalog indexes; below a rule everything is that rule's, so what a
-//! value or a step's data holds beyond the rules is not seen (a password
-//! typed into a calculation is formula text, Design).
+//! credential: what cannot be identified with certainty is Secret, and in
+//! a step's data Design is only what an identified step's spec names
+//! (`secrets`' module doc). The rules reach the first-level keys of members
+//! and catalog indexes and the step data above; below a rule everything is
+//! that rule's, so what a value holds beyond the rules is not seen (a
+//! password typed into a calculation is formula text, Design).
 //!
 //! **Objects.** [`objects`] lists a tree's design objects: every member
 //! `[cat, 5, id]` of a Design catalog, decoded by OpenMaker or not, and
@@ -41,12 +42,14 @@
 //! exchange as a revision to guard an edit.
 //!
 //! **Design revisions** ([`design`]). An object's
-//! [`Object::design_revision`] is the hash of its Design content alone, in
-//! its member (or index) and its index entries, built by adding what
-//! [`group_in`] puts in Design and nothing else: the revision history,
-//! comparisons and the text form show and keep. An object holding
-//! unidentified content (a path in no group, or a path that is Secret
-//! because what it holds could not be identified) has none.
+//! [`Object::design_revision`] is the hash of its Design pieces alone, in
+//! its member (or index) and its index entries: each node's being there
+//! and its own value, each of its own path's group, built by adding what
+//! [`group_in`] puts in Design and nothing else; the revision history,
+//! comparisons and the text form show and keep it. An object holding an
+//! unidentified piece (in no group, or Secret because what it holds could
+//! not be identified) has none, and a member the decoders could read
+//! differently is not classified at all.
 //!
 //! **Comparison** ([`compare`], [`compare_files`]). Two files' objects
 //! matched with or without a base, and each matched object compared by
@@ -62,8 +65,8 @@ mod secrets;
 
 pub use compare::{
     compare, compare_files, design_tree, Agreement, Alone, ChangedBy, CompareError, Comparison,
-    Difference, FromBase, Ident, Matched, PossibleMatch, Presence, Which, COMPARE_DESIGNS,
-    NAME_CANDIDATES,
+    Difference, FromBase, Ident, Matched, PossibleMatch, Presence, ReadFailure, Which,
+    COMPARE_DESIGNS, NAME_CANDIDATES,
 };
 pub use design::{DesignRevision, DESIGN_REVISION_VERSION};
 pub use report::{report, Member, MemberIs, Report};
@@ -73,9 +76,8 @@ pub use revision::{
     MOD_COUNT, MOD_TIME, MOD_USER,
 };
 pub use rules::{
-    hex, is_odbc_profile, markdown_secrets, markdown_table, pattern_text, rules, Catalog, Group,
-    Key, Rule, Seg, StepSecret, CATALOGS, COMMON_INDEX, COMMON_MEMBER, OCCURRENCE_BASE,
-    STEP_SECRETS, TABLE_BASE,
+    hex, markdown_secrets, markdown_table, pattern_text, rules, Catalog, Group, Key, Rule, Seg,
+    StepSecret, CATALOGS, COMMON_INDEX, COMMON_MEMBER, OCCURRENCE_BASE, STEP_SECRETS, TABLE_BASE,
 };
 
 use rules::group_of;
@@ -142,31 +144,81 @@ impl Kind {
 }
 
 /// A design object: a member of a Design catalog, or the catalog as a
-/// whole (its index).
+/// whole (its index). Only [`objects`] makes one, from a tree, so what it
+/// holds is that tree's member at its own path, read with its step data.
 #[derive(Clone, Debug)]
 pub struct Object<'t> {
+    kind: Kind,
+    catalog: bool,
+    key: Vec<u8>,
+    table: Option<Vec<u8>>,
+    name: Option<String>,
+    path: Path,
+    node: &'t OwnedNode,
+    entries: Vec<(Path, &'t OwnedNode)>,
+    /// A catalog's members that are objects: their entries in its index
+    /// are theirs, any other entry is the catalog's.
+    members: Vec<Vec<u8>>,
+}
+
+impl<'t> Object<'t> {
     /// The kind of the catalog's members.
-    pub kind: Kind,
-    /// The catalog as a whole, not one member.
-    pub catalog: bool,
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+
+    /// Whether it is the catalog as a whole, not one member.
+    pub fn is_catalog(&self) -> bool {
+        self.catalog
+    }
+
     /// The member's key segment: its id within its catalog (and, for a
     /// field, its table); empty for a catalog. Deploys match objects by
     /// kind and key (`docs/server-storage.md` section 9).
-    pub key: Vec<u8>,
+    pub fn key(&self) -> &[u8] {
+        &self.key
+    }
+
     /// A field's (or the field catalog's) table's key.
-    pub table: Option<Vec<u8>>,
+    pub fn table(&self) -> Option<&[u8]> {
+        self.table.as_deref()
+    }
+
     /// The member's name when it has one that decodes: `10`, a theme's
-    /// display name `0a` (layout-model.md 7.5); a catalog's name.
-    pub name: Option<String>,
+    /// display name `0a` (layout-model.md 7.5); a catalog's name. For a
+    /// report, [`Object::design_name`].
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
     /// The member's or the index's path.
-    pub path: Path,
-    pub node: &'t OwnedNode,
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn node(&self) -> &'t OwnedNode {
+        self.node
+    }
+
     /// A member's entries in its catalog's index (a script's
     /// `[11, 1, 07, S]`), with their paths: part of the object.
-    pub entries: Vec<(Path, &'t OwnedNode)>,
-}
+    pub fn entries(&self) -> &[(Path, &'t OwnedNode)] {
+        &self.entries
+    }
 
-impl Object<'_> {
+    /// The name, only where the node it is read from is Design content
+    /// (a catalog's always): what a report may show.
+    pub fn design_name(&self) -> Option<String> {
+        if self.catalog {
+            return self.name.clone();
+        }
+        let classified = design::classify(self).ok()?;
+        classified
+            .design_name()
+            .then(|| self.name.clone())
+            .flatten()
+    }
+
     /// The id FileMaker shows for it: the key read as a serial key
     /// (file-metadata.md 1), except a base directory's four-byte key
     /// (containers.md 8.1) and a font's two-byte one (layout-model.md 8),
@@ -197,7 +249,7 @@ impl Object<'_> {
     /// be identified. A catalog's covers its index without its members'
     /// entries.
     pub fn design_revision(&self) -> Option<DesignRevision> {
-        design::classify(self)?.revision()
+        design::classify(self).ok()?.revision()
     }
 
     /// The member's Secret paths, relative to it, with what each holds.
@@ -284,6 +336,17 @@ pub fn objects(root: &OwnedNode) -> Vec<Object<'_>> {
             if let Some(index) = index {
                 let mut at = path.clone();
                 at.push(vec![0x01]);
+                let members = node
+                    .child(&[0x05])
+                    .map(|members| {
+                        members
+                            .children
+                            .iter()
+                            .filter(|m| !m.children.is_empty())
+                            .map(|m| m.segment.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 out.push(Object {
                     kind,
                     catalog: true,
@@ -293,6 +356,7 @@ pub fn objects(root: &OwnedNode) -> Vec<Object<'_>> {
                     path: at,
                     node: index,
                     entries: Vec::new(),
+                    members,
                 });
             }
             let Some(members) = node.child(&[0x05]) else {
@@ -320,6 +384,7 @@ pub fn objects(root: &OwnedNode) -> Vec<Object<'_>> {
                     path: at,
                     node: member,
                     entries,
+                    members: Vec::new(),
                 });
             }
         }
@@ -348,11 +413,13 @@ fn member_of(path: &[&[u8]]) -> Option<(Kind, usize)> {
     }
 }
 
-/// The group of `path` in the tree `root`. Secret where a step rule finds
-/// a credential at, below or above it (a member or slot holding one is
-/// Secret), for every slot of step data whose step is not identified with
-/// certainty, and for a path in step data under a member the tree does not
-/// hold; otherwise its path rule's. "Not Secret" means identified and
+/// The group of `path` in the tree `root`. Secret where the step rules
+/// find a credential at, below or above it (a member or slot holding one is
+/// Secret), where they find step data not identified (all of a step's data
+/// whose step is not identified with certainty, a profile, a key or part no
+/// spec names, a data node's or credential slot's own value, and what
+/// holds one), and for a path in step data under a member the tree does
+/// not hold; otherwise its path rule's. "Not Secret" means identified and
 /// known not to hold a credential.
 pub fn group_in(root: &OwnedNode, path: &[&[u8]]) -> Group {
     if let Some((kind, depth)) = member_of(path) {

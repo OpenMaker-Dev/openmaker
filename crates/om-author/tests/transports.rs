@@ -491,11 +491,9 @@ fn designs_are_compared_from_the_cli_and_mcp_without_a_connection() {
     let mut renamed = base.clone();
     let greeting = om_hbam::design_paths::objects(&base)
         .into_iter()
-        .find(|o| {
-            o.kind == om_hbam::design_paths::Kind::Script && o.name.as_deref() == Some("Greeting")
-        })
+        .find(|o| o.kind() == om_hbam::design_paths::Kind::Script && o.name() == Some("Greeting"))
         .expect("the Greeting script");
-    let mut name_path: Vec<&[u8]> = greeting.path.iter().map(Vec::as_slice).collect();
+    let mut name_path: Vec<&[u8]> = greeting.path().iter().map(Vec::as_slice).collect();
     name_path.push(&[0x10]);
     renamed.put(&name_path, om_scripts::text_node(&[], "Hello"));
     let (a, b) = (scratch.dir.join("a.fmp12"), scratch.dir.join("b.fmp12"));

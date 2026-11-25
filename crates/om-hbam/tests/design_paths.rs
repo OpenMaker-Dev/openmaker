@@ -130,23 +130,23 @@ enum Old {
 /// code's: equal unless a split value explains the difference; and its
 /// legacy token, which a host still accepts, always equal.
 fn against_oracle(object: &design_paths::Object<'_>) -> Old {
-    let (old, legacy) = match object.kind {
+    let (old, legacy) = match object.kind() {
         Kind::Script => (
-            oracle::script(object.node),
-            design_paths::legacy_script_form_revision(object.node),
+            oracle::script(object.node()),
+            design_paths::legacy_script_form_revision(object.node()),
         ),
         _ => (
-            oracle::catalog(object.node),
-            design_paths::legacy_catalog_revision(object.node),
+            oracle::catalog(object.node()),
+            design_paths::legacy_catalog_revision(object.node()),
         ),
     };
     assert_eq!(legacy, old);
     let token = object.edit_token();
-    if holds_split_value(object.node) {
+    if holds_split_value(object.node()) {
         assert_ne!(token, old);
         Old::Split
     } else {
-        assert_eq!(token, old, "{:?} {:02x?}", object.kind, object.key);
+        assert_eq!(token, old, "{:?} {:02x?}", object.kind(), object.key());
         Old::Equal
     }
 }
@@ -228,7 +228,7 @@ fn scripts_layouts_and_value_lists_keep_the_old_revisions_but_for_secrets_and_sp
 
     let compared: Vec<(Kind, Old)> = design_paths::objects(&root)
         .iter()
-        .map(|object| (object.kind, against_oracle(object)))
+        .map(|object| (object.kind(), against_oracle(object)))
         .collect();
     assert_eq!(
         compared,
@@ -255,7 +255,12 @@ fn revisions(root: &OwnedNode) -> BTreeMap<Id, [u8; 32]> {
         .iter()
         .map(|o| {
             (
-                (o.kind, o.catalog, o.table.clone(), o.key.clone()),
+                (
+                    o.kind(),
+                    o.is_catalog(),
+                    o.table().map(<[u8]>::to_vec),
+                    o.key().to_vec(),
+                ),
                 o.edit_token(),
             )
         })
@@ -320,10 +325,10 @@ fn every_path_is_grouped_every_member_accounted_for_and_revisions_kept() {
                 };
                 for member in list.children.iter().filter(|m| !m.children.is_empty()) {
                     assert!(
-                        listed.iter().any(|o| !o.catalog
-                            && o.kind == catalog.kind.unwrap()
-                            && o.key == member.segment
-                            && o.table == table),
+                        listed.iter().any(|o| !o.is_catalog()
+                            && o.kind() == catalog.kind.unwrap()
+                            && o.key() == member.segment
+                            && o.table() == table.as_deref()),
                         "{ctx}: {} member {:02x?} is no object",
                         catalog.name,
                         member.segment
@@ -357,15 +362,17 @@ fn every_path_is_grouped_every_member_accounted_for_and_revisions_kept() {
         // gave them, but where a Secret path or a split value explains the
         // difference.
         for object in &listed {
-            *objects.entry((object.kind, object.catalog)).or_default() += 1;
+            *objects
+                .entry((object.kind(), object.is_catalog()))
+                .or_default() += 1;
             if !object.secrets().is_empty() {
-                *with_secrets.entry(object.kind).or_default() += 1;
+                *with_secrets.entry(object.kind()).or_default() += 1;
             }
-            if !object.catalog
-                && matches!(object.kind, Kind::Script | Kind::Layout | Kind::ValueList)
+            if !object.is_catalog()
+                && matches!(object.kind(), Kind::Script | Kind::Layout | Kind::ValueList)
             {
                 *compared
-                    .entry((object.kind, against_oracle(object)))
+                    .entry((object.kind(), against_oracle(object)))
                     .or_default() += 1;
             }
         }
@@ -455,23 +462,26 @@ fn design_revisions_and_names_per_kind() {
     for path in &files {
         let (_, root) = tree(path);
         let objects = design_paths::objects(&root);
-        // An object with no name is matched with none, itself included:
-        // listed as a possible match by id.
+        // A file compared with itself matches every object, those with no
+        // name by their content, and finds them all the same.
         let itself = design_paths::compare(&root, &root, None).unwrap();
-        for possible in &itself.possible_matches {
-            assert_eq!(possible.agrees, design_paths::Agreement::Id);
-            assert_eq!(possible.source.name, None);
-            table
-                .entry((possible.source.kind, possible.source.catalog))
-                .or_default()
-                .2 += 1;
-        }
+        assert_eq!(itself.matched.len(), objects.len());
+        assert!(itself.possible_matches.is_empty());
+        assert!(itself.only_in_source.is_empty() && itself.only_in_target.is_empty());
         assert!(itself
             .matched
             .iter()
             .all(|m| m.difference == design_paths::Difference::Same));
         for object in &objects {
-            let entry = table.entry((object.kind, object.catalog)).or_default();
+            if !object.is_catalog() && object.design_name().is_none() {
+                table
+                    .entry((object.kind(), object.is_catalog()))
+                    .or_default()
+                    .2 += 1;
+            }
+            let entry = table
+                .entry((object.kind(), object.is_catalog()))
+                .or_default();
             if object.design_revision().is_some() {
                 entry.0 += 1;
                 continue;
@@ -484,11 +494,16 @@ fn design_revisions_and_names_per_kind() {
                     .into_iter()
                     .map(|(_, holds)| format!("Secret: {holds}")),
             );
-            assert!(!reasons.is_empty(), "{:?} {:02x?}", object.kind, object.key);
+            assert!(
+                !reasons.is_empty(),
+                "{:?} {:02x?}",
+                object.kind(),
+                object.key()
+            );
             reasons.sort();
             reasons.dedup();
             for reason in reasons {
-                *why.entry((object.kind, object.catalog, reason))
+                *why.entry((object.kind(), object.is_catalog(), reason))
                     .or_default() += 1;
             }
         }
@@ -571,6 +586,7 @@ fn two_language_versions_compare_class_by_class() {
     };
     let same = design_paths::compare_files(&en, &en, None).unwrap();
     print("Tasks en with itself", &same);
+    assert!(!same.matched.is_empty() && same.possible_matches.is_empty());
     assert!(same
         .matched
         .iter()
@@ -581,6 +597,7 @@ fn two_language_versions_compare_class_by_class() {
     print("Tasks en and de, en as the base", &with);
     // With English as the base every object both files have is matched,
     // and only the German side changed any.
+    assert!(!with.matched.is_empty() && !without.matched.is_empty());
     assert!(with.possible_matches.is_empty());
     assert!(with.matched.iter().all(|m| {
         let base = m.base.as_ref().unwrap();

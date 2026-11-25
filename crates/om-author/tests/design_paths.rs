@@ -18,7 +18,12 @@ type Id = (Kind, Option<Vec<u8>>, Vec<u8>);
 fn revisions(root: &OwnedNode) -> BTreeMap<Id, Revision> {
     design_paths::objects(root)
         .iter()
-        .map(|o| ((o.kind, o.table.clone(), o.key.clone()), o.edit_token()))
+        .map(|o| {
+            (
+                (o.kind(), o.table().map(<[u8]>::to_vec), o.key().to_vec()),
+                o.edit_token(),
+            )
+        })
         .collect()
 }
 

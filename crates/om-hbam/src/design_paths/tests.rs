@@ -58,10 +58,18 @@ fn every_rule_has_a_path_that_hits_it_and_none_overlaps_another() {
             );
         }
     }
-    // The tree walk agrees: each rule covers its one path, nothing is left.
+    // The tree walk agrees: each rule covers its one path, nothing is left,
+    // but for a script's step data: its example path is a data node's own
+    // value, which no spec names, and the step rules make it Secret
+    // (secrets.rs).
     let report = report(&root);
     assert_eq!(report.unclassified_count(), 0, "{report}");
-    assert_eq!(report.hits.len(), all.len());
+    let unhit: Vec<String> = (0..all.len())
+        .filter(|i| !report.hits.contains_key(i))
+        .map(|i| all[i].pattern_text())
+        .collect();
+    assert_eq!(unhit, ["[11, 05, *, 05]"]);
+    assert_eq!(report.groups.get(&Group::Secret), Some(&1), "{report}");
     assert!(report.hits.values().all(|&n| n == 1));
 }
 
@@ -270,7 +278,9 @@ fn a_stored_credential_is_secret_and_what_lies_beside_it_is_design() {
     );
     assert_eq!(in_script(&root, &[&[5], &[1], &[0, 11]]), Group::Secret);
     assert_eq!(in_script(&root, &[]), Group::Secret);
-    // Beside it: the slot's number, another slot, a file profile.
+    // Beside it: the slot's number, another slot. A profile, whatever its
+    // type, is not identified: an ODBC one holds a user name and password,
+    // and profiles are not read here.
     assert_eq!(
         in_script(&root, &[&[5], &[1], &[0, 11], &[3]]),
         Group::Design
@@ -279,7 +289,7 @@ fn a_stored_credential_is_secret_and_what_lies_beside_it_is_design() {
         in_script(&root, &[&[5], &[1], &[0, 3], &[5]]),
         Group::Design
     );
-    assert_eq!(in_script(&root, &[&[5], &[2], &[0x86]]), Group::Design);
+    assert_eq!(in_script(&root, &[&[5], &[2], &[0x86]]), Group::Secret);
     // A slot the step does not hold yet, where a credential would be.
     assert_eq!(
         in_script(&root, &[&[5], &[1], &[0, 21], &[5]]),
@@ -308,23 +318,30 @@ fn a_stored_credential_is_secret_and_what_lies_beside_it_is_design() {
         in_script(&script_tree(torn), &[&[5], &[2], &[0x86]]),
         Group::Secret
     );
-    // A step that keeps no credential: design.
+    // A step that keeps no credential: design. (The member holds a
+    // profile, so it is Secret as a whole.)
     let plain = script_tree(script(steps(1), slot(11, b"\"pw\"", 0), b"TABS"));
     assert_eq!(
         in_script(&plain, &[&[5], &[1], &[0, 11], &[5]]),
         Group::Design
     );
-    assert_eq!(in_script(&plain, &[]), Group::None);
+    assert_eq!(in_script(&plain, &[]), Group::Secret);
     let object = member(&root, Kind::Script);
     assert_eq!(
         object.secrets(),
-        vec![(
-            vec![vec![5], vec![1], vec![0, 11], vec![5]],
-            "the SMTP password"
-        )]
+        vec![
+            (
+                vec![vec![5], vec![1], vec![0, 11], vec![5]],
+                "the SMTP password"
+            ),
+            (
+                vec![vec![5], vec![2], vec![0x86]],
+                "a profile, which can hold a data source's user name and password"
+            )
+        ]
     );
     let counted = report(&root);
-    assert_eq!(counted.groups.get(&Group::Secret), Some(&2), "{counted}");
+    assert_eq!(counted.groups.get(&Group::Secret), Some(&3), "{counted}");
 }
 
 #[test]
@@ -370,45 +387,16 @@ fn step_data_whose_step_is_not_identified_with_certainty_is_secret() {
             "orphan",
             script(descriptor(9, 63), slot(11, b"\"pw\"", 0), profile),
         ),
-        // A credential slot not shaped as script-steps.md 4.2 gives: the
-        // password as the slot's own value, the slot a split value, an
-        // unknown part.
-        (
-            "value on the slot",
-            script(steps(63), leaf(&[0, 11], b"secret"), profile),
-        ),
-        (
-            "split slot",
-            script(
-                steps(63),
-                list(
-                    &[0, 11],
-                    vec![leaf(&[0], &[0, 0, 0, 6]), leaf(&[1], b"secret")],
-                ),
-                profile,
-            ),
-        ),
-        (
-            "unknown part",
-            script(
-                steps(63),
-                list(&[0, 11], vec![leaf(&[0x77], b"secret")]),
-                profile,
-            ),
-        ),
-        // A credential slot whose field spec `10` is not 14 bytes, and a
-        // descriptor whose data key is no serial key.
-        (
-            "short field spec",
-            script(
-                steps(63),
-                list(&[0, 11], vec![leaf(&[0x10], b"secret")]),
-                profile,
-            ),
-        ),
+        // A descriptor whose data key is no serial key, or is `00`, the
+        // last issued data key.
         ("data key no serial key", {
             let mut d = steps(63);
             d[2] = 0x80;
+            script(d, slot(11, b"\"pw\"", 0), profile)
+        }),
+        ("data key 00", {
+            let mut d = steps(63);
+            d[2] = 0x00;
             script(d, slot(11, b"\"pw\"", 0), profile)
         }),
     ];
@@ -417,6 +405,42 @@ fn step_data_whose_step_is_not_identified_with_certainty_is_secret() {
         assert_eq!(in_script(&root, &password), Group::Secret, "{case}");
         assert_eq!(in_script(&root, &subject), Group::Secret, "{case}");
         assert_eq!(in_script(&root, &[&[0x10]]), Group::Design, "{case}");
+    }
+    // A credential slot not shaped as script-steps.md 4.2 gives, of a step
+    // identified with certainty: the password as the slot's own value, the
+    // slot a split value, an unknown part, a field spec `10` that is not 14
+    // bytes. That part alone is Secret, whatever it holds; the step's other
+    // slots stay Design.
+    let odd: Vec<(&str, OwnedNode, Vec<&[u8]>)> = vec![
+        (
+            "value on the slot",
+            leaf(&[0, 11], b"secret"),
+            vec![&[5], &[1], &[0, 11]],
+        ),
+        (
+            "split slot",
+            list(
+                &[0, 11],
+                vec![leaf(&[0], &[0, 0, 0, 6]), leaf(&[1], b"secret")],
+            ),
+            vec![&[5], &[1], &[0, 11], &[0]],
+        ),
+        (
+            "unknown part",
+            list(&[0, 11], vec![leaf(&[0x77], b"secret")]),
+            vec![&[5], &[1], &[0, 11], &[0x77]],
+        ),
+        (
+            "short field spec",
+            list(&[0, 11], vec![leaf(&[0x10], b"secret")]),
+            vec![&[5], &[1], &[0, 11], &[0x10]],
+        ),
+    ];
+    for (case, slot11, at) in odd {
+        let root = script_tree(script(steps(63), slot11, profile));
+        assert_eq!(in_script(&root, &password), Group::Secret, "{case}");
+        assert_eq!(in_script(&root, &at), Group::Secret, "{case}");
+        assert_eq!(in_script(&root, &subject), Group::Design, "{case}");
     }
     // A path under a member the tree does not hold.
     assert_eq!(in_script(&OwnedNode::default(), &password), Group::Secret);

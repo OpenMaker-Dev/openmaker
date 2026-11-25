@@ -47,14 +47,13 @@ fn main() {
             println!("{path}:");
             for object in design_paths::objects(&root) {
                 let table = object
-                    .table
-                    .as_ref()
+                    .table()
                     .map(|t| format!("{}.", hex(t)))
                     .unwrap_or_default();
-                let key = if object.catalog {
+                let key = if object.is_catalog() {
                     "catalog".to_string()
                 } else {
-                    hex(&object.key)
+                    hex(object.key())
                 };
                 let secrets = object.secrets().len();
                 let revision = object
@@ -62,8 +61,8 @@ fn main() {
                     .map_or_else(|| "-".to_string(), |r| r.text());
                 println!(
                     "  {:<18} {table}{key:<8} {revision} {}{}",
-                    object.kind.name(),
-                    object.name.as_deref().unwrap_or("-"),
+                    object.kind().name(),
+                    object.design_name().as_deref().unwrap_or("-"),
                     if secrets > 0 {
                         format!(" ({secrets} Secret)")
                     } else {

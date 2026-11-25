@@ -28,8 +28,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path as FsPath;
 
-use super::design::{classify, Class, Classified, DesignRevision};
-use super::rules::Seg;
+use super::design::{classify, Class, Classified, DesignRevision, Refusal};
+use super::rules::{Group, CATALOGS};
 use super::{objects, Kind, Object};
 use crate::container::HbamFile;
 use crate::slot::KeySegment;
@@ -283,26 +283,115 @@ impl Which {
     }
 }
 
-/// Why a comparison could not be made.
-#[derive(Debug)]
+/// Why a file could not be read: what failed, never where in it, since a
+/// key's path can hold any content, a stored password's included.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadFailure {
+    /// No file at the path.
+    Missing,
+    /// The file may not be read.
+    PermissionDenied,
+    /// Reading the file failed otherwise.
+    Io,
+    /// Not a FileMaker file, or one this reader does not open (encrypted).
+    NotFileMaker,
+    /// A FileMaker file whose pages or keys do not decode.
+    Damaged,
+}
+
+impl ReadFailure {
+    fn of(error: &crate::Error) -> Self {
+        match error {
+            crate::Error::Io(io) => match io.kind() {
+                std::io::ErrorKind::NotFound => ReadFailure::Missing,
+                std::io::ErrorKind::PermissionDenied => ReadFailure::PermissionDenied,
+                _ => ReadFailure::Io,
+            },
+            crate::Error::NotHbam => ReadFailure::NotFileMaker,
+            _ => ReadFailure::Damaged,
+        }
+    }
+
+    fn text(self) -> &'static str {
+        match self {
+            ReadFailure::Missing => "there is no file at its path",
+            ReadFailure::PermissionDenied => "it may not be read",
+            ReadFailure::Io => "reading it failed",
+            ReadFailure::NotFileMaker => "it is not a FileMaker file this reader opens",
+            ReadFailure::Damaged => "its pages or keys do not decode",
+        }
+    }
+}
+
+/// Why a comparison could not be made. It names a file, a kind and an id
+/// at most, never a key's bytes or any content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompareError {
     /// A file could not be read as a FileMaker file.
-    Read { which: Which, error: crate::Error },
+    Read { which: Which, failure: ReadFailure },
     /// A tree deeper than a file's keys can be (file-format.md 2.2).
     TooDeep { which: Which },
+    /// A member with a key the decoders could read as another
+    /// (`[00 04]` as the step list `04`): which of its nodes are which is in
+    /// doubt, so it is not compared.
+    Misread {
+        which: Which,
+        kind: Kind,
+        id: Option<u64>,
+    },
+    /// Two objects of one kind (and table) that report one id: matching by
+    /// id would have to guess which is which.
+    Ambiguous {
+        which: Which,
+        kind: Kind,
+        table: Option<u64>,
+        id: Option<u64>,
+    },
+}
+
+fn id_text(id: Option<u64>) -> String {
+    id.map_or_else(|| "no id".to_string(), |id| format!("id {id}"))
 }
 
 impl std::fmt::Display for CompareError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CompareError::Read { which, error } => {
-                write!(f, "The {} file cannot be read: {error}", which.name())
+        match *self {
+            CompareError::Read { which, failure } => {
+                write!(
+                    f,
+                    "The {} file cannot be read: {}.",
+                    which.name(),
+                    failure.text()
+                )
             }
             CompareError::TooDeep { which } => write!(
                 f,
                 "The {} file's keys are nested deeper than a FileMaker file's can be.",
                 which.name()
             ),
+            CompareError::Misread { which, kind, id } => write!(
+                f,
+                "In the {} file, the {} with {} holds a key the decoders could read as another, \
+                 so what it holds cannot be told; it is not compared.",
+                which.name(),
+                kind.name(),
+                id_text(id)
+            ),
+            CompareError::Ambiguous {
+                which,
+                kind,
+                table,
+                id,
+            } => {
+                let table = table.map_or_else(String::new, |t| format!(" of table {t}"));
+                write!(
+                    f,
+                    "In the {} file, two {} objects{table} have {}: they cannot be told apart.",
+                    which.name(),
+                    kind.name(),
+                    id_text(id)
+                )
+            }
         }
     }
 }
@@ -335,18 +424,40 @@ impl Side {
     fn of(root: &OwnedNode, which: Which) -> Result<Side, CompareError> {
         let mut entries = Vec::new();
         for object in objects(root) {
-            let classified = classify(&object).ok_or(CompareError::TooDeep { which })?;
+            let classified = classify(&object).map_err(|refusal| match refusal {
+                Refusal::TooDeep => CompareError::TooDeep { which },
+                Refusal::Misread => CompareError::Misread {
+                    which,
+                    kind: object.kind(),
+                    id: object.id(),
+                },
+            })?;
             entries.push(Entry {
                 key: (
-                    object.kind,
-                    object.catalog,
-                    object.table.clone(),
-                    object.key.clone(),
+                    object.kind(),
+                    object.is_catalog(),
+                    object.table().map(<[u8]>::to_vec),
+                    object.key().to_vec(),
                 ),
                 ident: ident(&object, &classified),
                 revision: classified.revision(),
                 digests: classified.digests(),
             });
+        }
+        // One report identity per object: ids that read alike from keys
+        // that differ (a font's `01` and `00 01`), or a key twice in a tree
+        // built in memory, are refused.
+        let mut seen = BTreeSet::new();
+        for e in &entries {
+            let i = &e.ident;
+            if !seen.insert((i.kind, i.catalog, i.table, i.id)) {
+                return Err(CompareError::Ambiguous {
+                    which,
+                    kind: i.kind,
+                    table: i.table,
+                    id: i.id,
+                });
+            }
         }
         let by_key = entries
             .iter()
@@ -360,7 +471,7 @@ impl Side {
         self.by_key.get(key).map(|&i| &self.entries[i])
     }
 
-    /// Its table objects' keys.
+    /// Its table objects.
     fn tables(&self) -> impl Iterator<Item = &Entry> {
         self.entries
             .iter()
@@ -368,25 +479,17 @@ impl Side {
     }
 }
 
-/// How a report names `object`: its name only where the node it is read
-/// from is Design content.
+/// How a report names `object`: its name only where it is a Design piece.
 fn ident(object: &Object<'_>, classified: &Classified<'_>) -> Ident {
-    let name_key: &[u8] = match object.kind {
-        Kind::Theme => &[0x0a],
-        _ => &[0x10],
-    };
-    let design_name = object.catalog
-        || classified.top.children.iter().any(|c| {
-            c.segment == name_key
-                && matches!(c.own, Some((Class::Design, _)))
-                && c.children.is_empty()
-        });
+    let name = (object.is_catalog() || classified.design_name())
+        .then(|| object.name().map(str::to_string))
+        .flatten();
     Ident {
-        kind: object.kind,
-        catalog: object.catalog,
-        table: object.table.as_deref().and_then(crate::serial::decode),
+        kind: object.kind(),
+        catalog: object.is_catalog(),
+        table: object.table().and_then(crate::serial::decode),
         id: object.id(),
-        name: object.name.clone().filter(|_| design_name),
+        name,
     }
 }
 
@@ -396,6 +499,17 @@ fn table_matched(key: &Key, tables: &BTreeSet<Vec<u8>>) -> bool {
     match (&key.0, &key.2) {
         (Kind::Field, Some(table)) => tables.contains(table),
         _ => true,
+    }
+}
+
+/// Whether two objects with one key, the base lacking or not consulted,
+/// are one: their names agree, or neither has one and every class of their
+/// content is equal.
+fn same_object(s: &Entry, t: &Entry) -> bool {
+    match (&s.ident.name, &t.ident.name) {
+        (Some(a), Some(b)) => a == b,
+        (None, None) => s.digests == t.digests,
+        _ => false,
     }
 }
 
@@ -432,22 +546,22 @@ fn compare_sides(source: &Side, target: &Side, base: Option<&Side>) -> Compariso
         with_base: base.is_some(),
         ..Comparison::default()
     };
-    let mut paired_in_target = vec![false; target.entries.len()];
-    let mut alone_source = Vec::new();
-    for s in &source.entries {
+    let mut source_matched = vec![false; source.entries.len()];
+    let mut target_matched = vec![false; target.entries.len()];
+    for (si, s) in source.entries.iter().enumerate() {
         let Some(&ti) = target.by_key.get(&s.key) else {
-            alone_source.push(s);
             continue;
         };
         let t = &target.entries[ti];
         let in_base = base.and_then(|b| b.get(&s.key));
-        let matchable = table_matched(&s.key, &tables)
+        let one = table_matched(&s.key, &tables)
             && match base {
                 Some(_) => in_base.is_some(),
-                None => s.ident.name.is_some() && s.ident.name == t.ident.name,
+                None => same_object(s, t),
             };
-        if matchable {
-            paired_in_target[ti] = true;
+        if one {
+            source_matched[si] = true;
+            target_matched[ti] = true;
             out.matched.push(Matched {
                 source: s.ident.clone(),
                 target_name: t.ident.name.clone(),
@@ -460,33 +574,25 @@ fn compare_sides(source: &Side, target: &Side, base: Option<&Side>) -> Compariso
                     target: Difference::of(&b.digests, &t.digests),
                 }),
             });
-        } else if base.is_some() && in_base.is_none() {
-            // New on both sides with one id: unrelated objects.
-            alone_source.push(s);
-        } else {
-            paired_in_target[ti] = true;
-            out.possible_matches.push(PossibleMatch {
-                source: s.ident.clone(),
-                target: t.ident.clone(),
-                agrees: Agreement::Id,
-                source_revision: s.revision,
-                target_revision: t.revision,
-            });
+        } else if base.is_none() || in_base.is_some() {
+            // One id, not one object: listed for a person to settle. With
+            // a base that lacks both, they are two new objects instead.
+            out.possible_matches.push(possible(s, t, Agreement::Id));
         }
     }
-    let alone_target: Vec<&Entry> = target
-        .entries
-        .iter()
-        .zip(&paired_in_target)
-        .filter(|(_, paired)| !**paired)
-        .map(|(t, _)| t)
-        .collect();
-    out.only_in_source = alone(&alone_source, target, base);
-    out.only_in_target = alone(&alone_target, source, base);
+    let unmatched = |side: &'_ Side, matched: &[bool]| -> Vec<usize> {
+        (0..side.entries.len()).filter(|&i| !matched[i]).collect()
+    };
+    let (source_alone, target_alone) = (
+        unmatched(source, &source_matched),
+        unmatched(target, &target_matched),
+    );
     if base.is_none() {
-        // Possible matches by name, among the objects matched with none.
+        // Possible matches by name, among the objects matched with none,
+        // whether or not they agree with another in id.
         let mut by_name: BTreeMap<NameKey<'_>, Vec<&Entry>> = BTreeMap::new();
-        for t in &alone_target {
+        for &ti in &target_alone {
+            let t = &target.entries[ti];
             if let Some(name) = &t.ident.name {
                 by_name
                     .entry((t.key.0, t.key.1, t.key.2.as_deref(), name))
@@ -494,41 +600,57 @@ fn compare_sides(source: &Side, target: &Side, base: Option<&Side>) -> Compariso
                     .push(t);
             }
         }
-        for s in &alone_source {
+        for &si in &source_alone {
+            let s = &source.entries[si];
             let Some(name) = &s.ident.name else { continue };
             let Some(candidates) = by_name.get(&(s.key.0, s.key.1, s.key.2.as_deref(), name))
             else {
                 continue;
             };
-            for t in candidates.iter().take(NAME_CANDIDATES) {
-                out.possible_matches.push(PossibleMatch {
-                    source: s.ident.clone(),
-                    target: t.ident.clone(),
-                    agrees: Agreement::Name,
-                    source_revision: s.revision,
-                    target_revision: t.revision,
-                });
+            let mut listed = 0usize;
+            for t in candidates.iter().filter(|t| t.key != s.key) {
+                if listed == NAME_CANDIDATES {
+                    out.possible_matches_left_out = out.possible_matches_left_out.saturating_add(1);
+                    continue;
+                }
+                listed += 1;
+                out.possible_matches.push(possible(s, t, Agreement::Name));
             }
-            out.possible_matches_left_out += candidates.len().saturating_sub(NAME_CANDIDATES);
         }
     }
+    out.only_in_source = alone(source, &source_alone, target, base);
+    out.only_in_target = alone(target, &target_alone, source, base);
     out
 }
 
-/// The objects of one side matched with none of `other`'s.
-fn alone(entries: &[&Entry], other: &Side, base: Option<&Side>) -> Vec<Alone> {
-    entries
+fn possible(s: &Entry, t: &Entry, agrees: Agreement) -> PossibleMatch {
+    PossibleMatch {
+        source: s.ident.clone(),
+        target: t.ident.clone(),
+        agrees,
+        source_revision: s.revision,
+        target_revision: t.revision,
+    }
+}
+
+/// The objects `indexes` of `side` matched with none of `other`'s.
+fn alone(side: &Side, indexes: &[usize], other: &Side, base: Option<&Side>) -> Vec<Alone> {
+    indexes
         .iter()
-        .map(|e| {
+        .map(|&i| {
+            let e = &side.entries[i];
             let presence = match base {
                 None => Presence::Only,
-                Some(base) => match base.get(&e.key) {
-                    None => Presence::New {
-                        id_taken: other.get(&e.key).is_some(),
+                Some(base) => match (base.get(&e.key), other.get(&e.key)) {
+                    (None, other) => Presence::New {
+                        id_taken: other.is_some(),
                     },
-                    Some(b) => Presence::DeletedInOther {
+                    (Some(b), None) => Presence::DeletedInOther {
                         changed: Difference::of(&b.digests, &e.digests).is_change(),
                     },
+                    // In all three, and not matched: a field whose table
+                    // is not.
+                    (Some(_), Some(_)) => Presence::Only,
                 },
             };
             Alone {
@@ -540,18 +662,18 @@ fn alone(entries: &[&Entry], other: &Side, base: Option<&Side>) -> Vec<Alone> {
         .collect()
 }
 
-/// Whether a slot of a file holds what design objects are made of: all
-/// but each table's records, indexes, record list, global values and
-/// container library, and the occurrences' saved found sets.
+/// Whether a slot of a file belongs to a design catalog (or leads to
+/// one): [`design_tree`] keeps only these.
 fn design_slot(path: &[KeySegment<'_>]) -> bool {
-    match path {
-        [table, second, ..] if Seg::Table.matches(table.0) => second.0 == [0x03],
-        [occurrence, _, ..] if Seg::Occurrence.matches(occurrence.0) => false,
-        _ => true,
-    }
+    CATALOGS
+        .iter()
+        .filter(|c| c.group == Group::Design)
+        .any(|c| c.path.iter().zip(path).all(|(seg, s)| seg.matches(s.0)))
 }
 
-/// The part of a file's key tree its design objects are read from.
+/// The design catalogs of a file's key tree, and nothing else: the file is
+/// read whole and every slot decoded, and only the slots of design
+/// catalogs (and the keys leading to them) are kept in the tree.
 pub fn design_tree(file: &HbamFile) -> crate::Result<OwnedNode> {
     Ok(KeyTree::from_slots_where(file.slots(), design_slot)?
         .root
@@ -567,7 +689,10 @@ pub fn compare_files(
     let read = |path: &FsPath, which: Which| {
         HbamFile::open(path)
             .and_then(|file| design_tree(&file))
-            .map_err(|error| CompareError::Read { which, error })
+            .map_err(|error| CompareError::Read {
+                which,
+                failure: ReadFailure::of(&error),
+            })
     };
     let source = read(source, Which::Source)?;
     let target = read(target, Which::Target)?;

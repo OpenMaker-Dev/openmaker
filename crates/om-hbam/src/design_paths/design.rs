@@ -3,41 +3,47 @@
 //! (`docs/server-storage.md` section 9; `docs/authoring.md`,
 //! "Revisions").
 //!
-//! **Classes.** Each piece of an object's content is one [`Class`]: a
-//! node's value, or an empty list's being there, in its member (or index)
-//! and its index entries. The class follows [`super::group_in`]: Design,
-//! Data and Derived as there; an identified credential (the text or
-//! calculation of a credential slot of a step identified with certainty)
-//! is [`Class::Credential`]; everything else is [`Class::Unidentified`]: a
-//! path in no group, and a Secret path that is Secret because what it holds
-//! could not be identified (every slot of a step not identified with
-//! certainty, an ODBC profile, a member the decoders could read
-//! differently, and the own value of a node above a Secret path, such as a
-//! credential slot's list value), which may hold design as well. A split
-//! value (file-format.md 3.6) is one piece of content, its joined value,
-//! when all of it is one class; otherwise each of its pieces is its own.
-//! As for the edit token, its header's words after the length (a text's
-//! character count) are framing, in no projection.
-//! Modification stamps are left out as the edit token leaves them out
-//! (the script form only the top node's own), so they are no content.
+//! **Pieces and classes.** An object's content is its pieces: each node
+//! below the paths the rules name, being there, and each node's own value,
+//! in its member (or index) and its index entries. Each piece is one
+//! [`Class`], decided by its own path alone, never by what lies below it:
+//! a node's being there is its path's class, with or without children (a
+//! node above the rules, such as the member itself, is structure, no
+//! piece). The class follows [`super::group_in`]: Design, Data and Derived
+//! by the path rules; an identified credential (the text or calculation of
+//! a credential slot of a step identified with certainty) is
+//! [`Class::Credential`], with everything below it; everything else is
+//! [`Class::Unidentified`]: a path in no group, and everything in step data
+//! that is not identified (`secrets`' module doc: the data of a step not
+//! identified with certainty, a profile, a key or part no spec names, the
+//! own value of a data node or a credential slot). A split value
+//! (file-format.md 3.6) is one piece, its joined value, when all of it is
+//! one class; otherwise each of its pieces is its own. As for the edit
+//! token, its header's words after the length (a text's character count)
+//! are framing, in no projection. Modification stamps are left out where
+//! schema-path.md 8 places them, on the member or index itself, and
+//! nowhere else: a stamp-shaped key deeper is content like any other.
 //!
 //! **Projections.** A class's projection of an object is built by walking
-//! the object and adding what is in the class: the canonical form of the
-//! edit token ([`super::revision`]) over the nodes holding that class's
-//! content and the nodes above them, each node written with only its
-//! children that lead to such content, so no value, length or count of
-//! another class reaches it. The member (or index) comes first, always
-//! with its key; then the number of index entries holding content of the
-//! class, and each as its index key and its node. The bytes start with
-//! eight `ff` bytes, which no edit token's input can start with (they
-//! would be a segment length of 2^64 - 1), then [`DESIGN_REVISION_VERSION`]
-//! and the class.
+//! the object and adding the pieces of that class: the canonical form of
+//! the edit token ([`super::revision`]) over the nodes holding them and the
+//! nodes above them, each node written with only its children that lead to
+//! such pieces, so no value, length, count or being there of another class
+//! reaches it. The member (or index) comes first, always with its key; then
+//! the number of index entries holding pieces of the class, and each as its
+//! index key and its node. A catalog's index leaves out the entries of its
+//! members that are objects, and keeps any other. The bytes start with
+//! eight `ff` bytes, which no edit token's input can start with (they would
+//! be a segment length of 2^64 - 1), then [`DESIGN_REVISION_VERSION`] and
+//! the class.
 //!
 //! **Design revisions.** An object's [`DesignRevision`] is the SHA-256 of
-//! its Design projection, when the object holds no unidentified content;
+//! its Design projection, when the object holds no unidentified piece;
 //! otherwise it has none. A design revision is comparable only with one of
 //! the same version. The other projections are hashed only to compare two
-//! objects inside the process and are never given out.
+//! objects inside the process and are never given out. A member the
+//! decoders could read differently is not classified at all
+//! ([`Refusal::Misread`]): which of its nodes are which is in doubt.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -136,13 +142,10 @@ impl Class {
 }
 
 /// The canonical form an object is written in: the edit token's for its
-/// kind ([`super::edit_token`]).
+/// kind ([`super::edit_token`]), whose list flags the script form writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Form {
-    /// A script's member and entries: list flags written, the top node's
-    /// own stamps left out.
     Script,
-    /// Everything else: no list flags, every stamp left out.
     General,
 }
 
@@ -153,17 +156,21 @@ pub(crate) struct Classed<'t> {
     /// The list flag the script form writes: false for a split value
     /// written as its joined value.
     push: bool,
-    /// The node's own content and its class: its value (joined, for a split
-    /// value), or `None` for an empty list's being there. `None` for a node
-    /// that only holds others.
-    pub own: Option<(Class, Option<Cow<'t, [u8]>>)>,
-    /// The classes of the content at and below it.
+    /// The class of the node's being there: its path's (module doc); `None`
+    /// for structure above the rules.
+    pub here: Option<Class>,
+    /// Its own value (joined, for a split value) and that value's class.
+    pub value: Option<(Class, Cow<'t, [u8]>)>,
+    /// The classes of the pieces at and below it.
     mask: u8,
+    /// The nodes it and its subtree stand for that are a terminal or hold
+    /// a value (each piece of a split value written whole counted).
+    pub pieces: usize,
     pub children: Vec<Classed<'t>>,
 }
 
 impl Classed<'_> {
-    /// Whether content of `class` is at or below it.
+    /// Whether a piece of `class` is at or below it.
     pub fn holds(&self, class: Class) -> bool {
         self.mask & class.bit() != 0
     }
@@ -175,143 +182,197 @@ impl Classed<'_> {
 pub(crate) struct Classified<'t> {
     form: Form,
     pub top: Classed<'t>,
-    pub entries: Vec<(&'t [u8], Classed<'t>)>,
+    pub entries: Vec<(Vec<u8>, Classed<'t>)>,
+    /// The key of the member's name.
+    name_key: &'static [u8],
 }
 
-/// The object was deeper than [`MAX_DEPTH`].
+/// Why an object is not classified.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct TooDeep;
+pub(crate) enum Refusal {
+    /// Deeper than [`MAX_DEPTH`].
+    TooDeep,
+    /// A member the decoders could read differently (`secrets::misread`).
+    Misread,
+}
+
+/// What a member's Secret path marks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Mark {
+    /// The node and everything below it; an identified credential or not.
+    Subtree(bool),
+    /// The node's own value, not identified.
+    Own,
+}
 
 /// Where a node lies relative to the member's Secret paths.
 #[derive(Clone, Copy)]
 enum At {
-    /// No Secret path at, above or below it.
+    /// No Secret path at or below it.
     Rules,
-    /// At or below a Secret path: all of it is this class.
+    /// At or below a Secret path covering its subtree: all of it is this
+    /// class.
     Fixed(Class),
     /// Above the Secret paths in this range of the list.
     Above(usize, usize),
 }
 
 struct Walk<'s> {
-    form: Form,
-    /// The member's Secret paths, relative to it, in order, and whether
-    /// each is an identified credential.
-    secrets: &'s [(Path, bool)],
+    /// The member's Secret paths, relative to it, in order.
+    secrets: &'s [(Path, Mark)],
     /// How many segments the member's path has: where the Secret paths
     /// start.
     base: usize,
-    /// Index keys left out of the top node: a catalog's entries, which
-    /// belong to its members' objects.
-    skip: &'s [&'static [u8]],
+    /// A catalog's entries that belong to its members' objects.
+    entries: Option<Theirs<'s>>,
+}
+
+/// A catalog's index keys of entries, and its members that are objects,
+/// whose entries in those keys are theirs.
+#[derive(Clone, Copy)]
+struct Theirs<'s> {
+    keys: &'s [&'static [u8]],
+    members: &'s [Vec<u8>],
 }
 
 impl Walk<'_> {
-    /// Classify `node`, whose path has `depth` segments, with the path
-    /// rules `cands` and `best` narrowed to that path.
+    /// Classify `node`, whose path has `depth` segments, `level` below the
+    /// part's top, with the path rules narrowed to its path; `own` when its
+    /// own value is marked not identified.
     fn node<'t>(
         &self,
         node: &'t OwnedNode,
         depth: usize,
         rules: (&[&'static Rule], Option<&'static Rule>),
-        at: At,
-        top: bool,
-    ) -> Result<Classed<'t>, TooDeep> {
+        (at, own): (At, bool),
+        level: usize,
+    ) -> Result<Classed<'t>, Refusal> {
         if depth > MAX_DEPTH {
-            return Err(TooDeep);
+            return Err(Refusal::TooDeep);
         }
-        let own_class = match at {
+        let (cands, best) = rules;
+        let structural = !matches!(at, At::Fixed(_)) && best.is_none() && !cands.is_empty();
+        let path_class = match at {
             At::Fixed(class) => class,
-            At::Above(..) => Class::Unidentified,
-            At::Rules => rules.1.map_or(Class::Unidentified, |r| Class::of(r.group)),
+            _ => best.map_or(Class::Unidentified, |r| Class::of(r.group)),
+        };
+        let here = (!structural).then_some(path_class);
+        let value_class = if own || structural {
+            Class::Unidentified
+        } else {
+            path_class
         };
         // A split value is its joined value when all of it is one class,
         // as the edit token writes it whole.
         if let Some(joined) = split_value(node) {
-            let pieces = self.children(node, depth, rules, at, top, false)?;
+            let pieces = self.children(node, depth, rules, at, level, false)?;
             let mask = pieces.iter().fold(0, |m, p| m | p.mask);
-            if let Some(class) = Class::ALL.into_iter().find(|c| c.bit() == mask) {
+            let class = Class::ALL.into_iter().find(|c| c.bit() == mask);
+            if let Some(class) = class.filter(|c| !own && here.is_none_or(|h| h == *c)) {
                 return Ok(Classed {
                     segment: &node.segment,
                     push: false,
-                    own: Some((class, Some(Cow::Owned(joined)))),
+                    here,
+                    value: Some((class, Cow::Owned(joined))),
                     mask,
+                    pieces: pieces.iter().map(|p| p.pieces).sum(),
                     children: Vec::new(),
                 });
             }
         }
-        let children = self.children(node, depth, rules, at, top, true)?;
-        let own = match &node.value {
-            Some(value) => Some((own_class, Some(Cow::Borrowed(value.as_slice())))),
-            None if node.children.is_empty() => Some((own_class, None)),
-            None => None,
-        };
-        let mask = children
-            .iter()
-            .fold(own.as_ref().map_or(0, |(class, _)| class.bit()), |m, c| {
-                m | c.mask
-            });
+        let children = self.children(node, depth, rules, at, level, true)?;
+        let value = node
+            .value
+            .as_deref()
+            .map(|v| (value_class, Cow::Borrowed(v)));
+        let mask = children.iter().fold(
+            here.map_or(0, Class::bit) | value.as_ref().map_or(0, |(c, _)| c.bit()),
+            |m, c| m | c.mask,
+        );
+        let own_piece = usize::from(node.value.is_some() || node.children.is_empty());
         Ok(Classed {
             segment: &node.segment,
             push: node.push,
-            own,
+            here,
+            value,
             mask,
+            pieces: own_piece + children.iter().map(|c| c.pieces).sum::<usize>(),
             children,
         })
     }
 
-    /// `node`'s children, classified; without the stamps the form leaves
-    /// out (and, at the top, the skipped index keys) when `filter`.
+    /// `node`'s children, classified; when `filter`, without the top
+    /// node's stamps and a catalog's members' entries.
     fn children<'t>(
         &self,
         node: &'t OwnedNode,
         depth: usize,
         (cands, best): (&[&'static Rule], Option<&'static Rule>),
         at: At,
-        top: bool,
+        level: usize,
         filter: bool,
-    ) -> Result<Vec<Classed<'t>>, TooDeep> {
+    ) -> Result<Vec<Classed<'t>>, Refusal> {
+        let theirs = |child: &OwnedNode| {
+            level == 1
+                && self.entries.is_some_and(|theirs| {
+                    theirs.keys.contains(&node.segment.as_slice())
+                        && theirs.members.contains(&child.segment)
+                })
+        };
         let mut out = Vec::with_capacity(node.children.len());
         for child in &node.children {
-            if filter {
-                let stamp = is_stamp(&child.segment) && (top || self.form == Form::General);
-                if stamp || (top && self.skip.contains(&child.segment.as_slice())) {
-                    continue;
-                }
+            if filter && ((level == 0 && is_stamp(&child.segment)) || theirs(child)) {
+                continue;
             }
             let (deeper, rule) = step(cands, depth, &child.segment, best);
             let child_at = self.below(at, depth, &child.segment);
-            out.push(self.node(child, depth + 1, (&deeper, rule), child_at, false)?);
+            out.push(self.node(child, depth + 1, (&deeper, rule), child_at, level + 1)?);
         }
         Ok(out)
     }
 
     /// Where the child `segment` of a node whose path has `depth` segments
-    /// lies, the node being at `at`. The Secret paths in a range all share
-    /// the node's path below the member, so they are in order of their
-    /// next segment.
-    fn below(&self, at: At, depth: usize, segment: &[u8]) -> At {
+    /// lies, the node being at `at`, and whether its own value is marked.
+    /// The Secret paths in a range all share the node's path below the
+    /// member, so they are in order of their next segment, the shortest
+    /// first.
+    fn below(&self, at: At, depth: usize, segment: &[u8]) -> (At, bool) {
         let At::Above(lo, hi) = at else {
-            return at;
+            return (at, false);
         };
         let i = depth - self.base;
         let range = &self.secrets[lo..hi];
         let start = lo + range.partition_point(|(p, _)| p[i].as_slice() < segment);
         let end = lo + range.partition_point(|(p, _)| p[i].as_slice() <= segment);
-        if start == end {
-            return At::Rules;
+        let exact = self.secrets[start..end]
+            .iter()
+            .take_while(|(p, _)| p.len() == i + 1)
+            .count();
+        let mut own = false;
+        let mut subtree: Option<bool> = None;
+        for (_, mark) in &self.secrets[start..start + exact] {
+            match mark {
+                Mark::Own => own = true,
+                Mark::Subtree(credential) => {
+                    subtree = Some(subtree.unwrap_or(true) && *credential);
+                }
+            }
         }
-        let here = &self.secrets[start..end];
-        if here.iter().any(|(p, _)| p.len() == i + 1) {
-            let credential = here.iter().all(|(_, credential)| *credential);
-            At::Fixed(if credential {
+        if let Some(credential) = subtree {
+            let class = if credential {
                 Class::Credential
             } else {
                 Class::Unidentified
-            })
-        } else {
-            At::Above(start, end)
+            };
+            return (At::Fixed(class), false);
         }
+        let deeper = start + exact;
+        let at = if deeper == end {
+            At::Rules
+        } else {
+            At::Above(deeper, end)
+        };
+        (at, own)
     }
 
     /// Classify the node at `path`, the top of a part of an object.
@@ -320,72 +381,84 @@ impl Walk<'_> {
         path: &[Vec<u8>],
         node: &'t OwnedNode,
         at: At,
-    ) -> Result<Classed<'t>, TooDeep> {
+    ) -> Result<Classed<'t>, Refusal> {
         let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
         let (cands, best) = candidates(&segments);
-        self.node(node, path.len(), (&cands, best), at, true)
+        self.node(node, path.len(), (&cands, best), (at, false), 0)
     }
 }
 
-/// An object, classified; `None` when it is deeper than a file can be.
-pub(crate) fn classify<'t>(object: &Object<'t>) -> Option<Classified<'t>> {
+/// An object, classified.
+pub(crate) fn classify<'t>(object: &Object<'t>) -> Result<Classified<'t>, Refusal> {
     let form = match object.kind {
         Kind::Script if !object.catalog => Form::Script,
         _ => Form::General,
     };
     let segments: Vec<&[u8]> = object.path.iter().map(Vec::as_slice).collect();
-    let mut secrets: Vec<(Path, bool)> = Vec::new();
+    let mut marks: Vec<(Path, Mark)> = Vec::new();
     if !object.catalog {
         if let Some((kind, depth)) = member_of(&segments) {
             if depth == segments.len() {
-                secrets = secrets::of(kind, object.node)
+                if secrets::misread(kind, object.node) {
+                    return Err(Refusal::Misread);
+                }
+                marks = secrets::of(kind, object.node)
                     .into_iter()
-                    .map(|s| (s.path, s.credential))
+                    .map(|s| {
+                        let mark = match s.scope {
+                            secrets::Scope::Subtree => Mark::Subtree(s.credential),
+                            secrets::Scope::Own => Mark::Own,
+                        };
+                        (s.path, mark)
+                    })
                     .collect();
-                secrets.sort();
+                marks.sort();
             }
         }
     }
-    let skip = if object.catalog {
+    let keys = if object.catalog {
         entry_keys(Catalog::of(object.kind))
     } else {
         Vec::new()
     };
     let walk = Walk {
-        form,
-        secrets: &secrets,
+        secrets: &marks,
         base: segments.len(),
-        skip: &skip,
+        entries: object.catalog.then_some(Theirs {
+            keys: &keys,
+            members: &object.members,
+        }),
     };
-    let at = if secrets.iter().any(|(p, _)| p.is_empty()) {
-        At::Fixed(Class::Unidentified)
-    } else if secrets.is_empty() {
+    let at = if marks.is_empty() {
         At::Rules
     } else {
-        At::Above(0, secrets.len())
+        At::Above(0, marks.len())
     };
-    let top = walk.part(&object.path, object.node, at).ok()?;
+    let top = walk.part(&object.path, object.node, at)?;
     let entry_walk = Walk {
-        form,
         secrets: &[],
         base: 0,
-        skip: &[],
+        entries: None,
     };
     let mut entries = Vec::with_capacity(object.entries.len());
     for (path, node) in &object.entries {
-        let key = path.len().checked_sub(2).and_then(|i| path.get(i))?;
-        let key = entry_key(object.kind, key)?;
-        entries.push((key, entry_walk.part(path, node, At::Rules).ok()?));
+        // `[cat, 1, key, member]`: the index key.
+        let key = path
+            .len()
+            .checked_sub(2)
+            .map_or(Vec::new(), |i| path[i].clone());
+        entries.push((key, entry_walk.part(path, node, At::Rules)?));
     }
-    Some(Classified { form, top, entries })
-}
-
-/// The index key `key` of the catalog of `kind`, as the rule table holds
-/// it.
-fn entry_key(kind: Kind, key: &[u8]) -> Option<&'static [u8]> {
-    entry_keys(Catalog::of(kind))
-        .into_iter()
-        .find(|k| *k == key)
+    let name_key: &'static [u8] = match object.kind {
+        Kind::Theme => &[0x0a],
+        _ => &[0x10],
+    };
+    Ok(Classified {
+        form,
+        top,
+        entries,
+        name_key,
+    })
 }
 
 fn framed(out: &mut Vec<u8>, bytes: &[u8]) {
@@ -393,14 +466,14 @@ fn framed(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(bytes);
 }
 
-/// The canonical form of `node` restricted to content of `class`.
+/// The canonical form of `node` restricted to the pieces of `class`.
 fn write(node: &Classed<'_>, class: Class, form: Form, out: &mut Vec<u8>) {
     framed(out, node.segment);
     if form == Form::Script {
         out.push(u8::from(node.push));
     }
-    match &node.own {
-        Some((own, Some(value))) if *own == class => {
+    match &node.value {
+        Some((own, value)) if *own == class => {
             out.push(1);
             framed(out, value);
         }
@@ -414,7 +487,24 @@ fn write(node: &Classed<'_>, class: Class, form: Form, out: &mut Vec<u8>) {
 }
 
 impl Classified<'_> {
-    /// Whether the object holds content of `class`.
+    /// Whether the member's name is a Design piece: there, and its value,
+    /// a leaf's or a split value's written whole.
+    pub fn design_name(&self) -> bool {
+        self.top.children.iter().any(|c| {
+            c.segment == self.name_key
+                && c.children.is_empty()
+                && c.here == Some(Class::Design)
+                && matches!(c.value, Some((Class::Design, _)))
+        })
+    }
+
+    /// The pieces the object classified ([`Classed::pieces`]).
+    #[cfg(test)]
+    pub fn pieces(&self) -> usize {
+        self.top.pieces + self.entries.iter().map(|(_, e)| e.pieces).sum::<usize>()
+    }
+
+    /// Whether the object holds a piece of `class`.
     pub fn holds(&self, class: Class) -> bool {
         self.top.holds(class) || self.entries.iter().any(|(_, e)| e.holds(class))
     }
@@ -425,7 +515,7 @@ impl Classified<'_> {
         out.extend_from_slice(&DESIGN_REVISION_VERSION.to_be_bytes());
         out.push(class as u8);
         write(&self.top, class, self.form, &mut out);
-        let entries: Vec<&(&[u8], Classed<'_>)> = self
+        let entries: Vec<&(Vec<u8>, Classed<'_>)> = self
             .entries
             .iter()
             .filter(|(_, e)| e.holds(class))
@@ -444,8 +534,8 @@ impl Classified<'_> {
         Class::ALL.map(|class| om_crypto::sha256(&self.projection(class)))
     }
 
-    /// The design revision: `None` when the object holds unidentified
-    /// content.
+    /// The design revision: `None` when the object holds an unidentified
+    /// piece.
     pub fn revision(&self) -> Option<DesignRevision> {
         (!self.holds(Class::Unidentified))
             .then(|| DesignRevision(om_crypto::sha256(&self.projection(Class::Design))))

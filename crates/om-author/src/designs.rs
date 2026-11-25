@@ -7,7 +7,7 @@ use std::path::Path;
 
 use om_hbam::design_paths::{
     compare_files, Alone, ChangedBy, CompareError, Comparison, DesignRevision, Difference, Ident,
-    Matched, Presence, DESIGN_REVISION_VERSION,
+    Matched, Presence, ReadFailure, DESIGN_REVISION_VERSION,
 };
 use serde_json::{json, Map, Value};
 
@@ -24,19 +24,40 @@ pub fn compare_designs(params: &CompareDesignsParams) -> Result<Value, AuthorErr
     Ok(result(&comparison, params.include_same))
 }
 
+/// The command's error: the comparison's typed error, which names a file,
+/// a kind and an id at most, never a key's bytes.
 fn error(error: CompareError) -> AuthorError {
-    let kind = match &error {
-        CompareError::Read {
-            error: om_hbam::Error::Io(io),
-            ..
-        } => match io.kind() {
-            std::io::ErrorKind::NotFound => ErrorKind::NotFound,
-            std::io::ErrorKind::PermissionDenied => ErrorKind::PermissionDenied,
-            _ => ErrorKind::InvalidRequest,
-        },
-        _ => ErrorKind::InvalidRequest,
+    let (kind, details) = match error {
+        CompareError::Read { which, failure } => {
+            let (kind, reason) = match failure {
+                ReadFailure::Missing => (ErrorKind::NotFound, "missing"),
+                ReadFailure::PermissionDenied => (ErrorKind::PermissionDenied, "permission_denied"),
+                ReadFailure::Io => (ErrorKind::InvalidRequest, "io"),
+                ReadFailure::NotFileMaker => (ErrorKind::InvalidRequest, "not_filemaker"),
+                ReadFailure::Damaged => (ErrorKind::InvalidRequest, "damaged"),
+            };
+            (kind, json!({"file": which.name(), "reason": reason}))
+        }
+        CompareError::TooDeep { which } => (
+            ErrorKind::InvalidRequest,
+            json!({"file": which.name(), "reason": "too_deep"}),
+        ),
+        CompareError::Misread { which, kind, id } => (
+            ErrorKind::Unsupported,
+            json!({"file": which.name(), "reason": "misread", "kind": kind.name(), "id": id}),
+        ),
+        CompareError::Ambiguous {
+            which,
+            kind,
+            table,
+            id,
+        } => (
+            ErrorKind::InvalidRequest,
+            json!({"file": which.name(), "reason": "ambiguous", "kind": kind.name(),
+                   "table": table, "id": id}),
+        ),
     };
-    AuthorError::new(kind, error.to_string())
+    AuthorError::new(kind, error.to_string()).with_details(details)
 }
 
 fn revision(revision: &Option<DesignRevision>) -> Value {

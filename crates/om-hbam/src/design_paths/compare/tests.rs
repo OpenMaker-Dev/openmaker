@@ -117,9 +117,18 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
     let base = base();
     // One row per case: what the source and the target change, and for
     // the object it is about (kind, id): the difference between source
-    // and target, and with the base each side's difference from it.
+    // and target, with the base each side's difference from it, who
+    // changed it and whether that is a conflict.
     type Change = fn(&mut OwnedNode);
-    type Row = (&'static str, Change, Change, Kind, u64, [Difference; 3]);
+    type Row = (
+        &'static str,
+        Change,
+        Change,
+        Kind,
+        u64,
+        [Difference; 3],
+        (Option<ChangedBy>, bool),
+    );
     let rows: &[Row] = &[
         (
             "untouched",
@@ -128,6 +137,7 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             Kind::Script,
             2,
             [SAME, SAME, SAME],
+            (None, false),
         ),
         (
             "stamps only",
@@ -136,6 +146,7 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             Kind::Script,
             2,
             [SAME, SAME, SAME],
+            (None, false),
         ),
         (
             "renamed in the source",
@@ -144,6 +155,7 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             Kind::Script,
             2,
             [Difference::Design, Difference::Design, SAME],
+            (Some(ChangedBy::Source), false),
         ),
         (
             "a password changed in the target",
@@ -152,6 +164,7 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             Kind::Script,
             1,
             [SECRETS, SAME, SECRETS],
+            (Some(ChangedBy::Target), false),
         ),
         (
             "a serial number taken in the target",
@@ -170,6 +183,7 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
                     derived: false,
                 },
             ],
+            (None, false),
         ),
         (
             "a library item's count and digest",
@@ -191,6 +205,7 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
                     derived: true,
                 },
             ],
+            (None, false),
         ),
         (
             "an unexplained key changed",
@@ -203,6 +218,7 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
                 Difference::Unidentified { design: false },
                 SAME,
             ],
+            (Some(ChangedBy::Source), false),
         ),
         (
             "an unexplained key and the name changed",
@@ -218,6 +234,7 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
                 Difference::Unidentified { design: true },
                 SAME,
             ],
+            (Some(ChangedBy::Source), false),
         ),
         (
             "changed on both sides, differently: a conflict",
@@ -226,6 +243,7 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             Kind::Script,
             2,
             [Difference::Design, Difference::Design, Difference::Design],
+            (Some(ChangedBy::Both), true),
         ),
         (
             "changed on both sides, the same way",
@@ -234,10 +252,37 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             Kind::Script,
             2,
             [SAME, Difference::Design, Difference::Design],
+            (Some(ChangedBy::Both), false),
+        ),
+        (
+            "the same definition changed on both sides, a serial number taken on one",
+            |r| set(r, &[TABLE, &[3], &[5], &[1], &[0x02]], &[1, 1]),
+            |r| {
+                set(r, &[TABLE, &[3], &[5], &[1], &[0x02]], &[1, 1]);
+                set(r, &[TABLE, &[3], &[5], &[1], &[0x0c]], b"8");
+            },
+            Kind::Field,
+            1,
+            [
+                Difference::Outside {
+                    data: true,
+                    derived: false,
+                },
+                Difference::Design,
+                Difference::Design,
+            ],
+            (Some(ChangedBy::Both), false),
         ),
     ];
-    for &(case, change_source, change_target, kind, id, [difference, from_source, from_target]) in
-        rows
+    for &(
+        case,
+        change_source,
+        change_target,
+        kind,
+        id,
+        [difference, from_source, from_target],
+        (changed_by, conflict),
+    ) in rows
     {
         let (mut source, mut target) = (base.clone(), base.clone());
         change_source(&mut source);
@@ -251,18 +296,8 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             (from_source, from_target),
             "{case}"
         );
-        let expected_by = match (from_source.is_change(), from_target.is_change()) {
-            (true, true) => Some(ChangedBy::Both),
-            (true, false) => Some(ChangedBy::Source),
-            (false, true) => Some(ChangedBy::Target),
-            (false, false) => None,
-        };
-        assert_eq!(from.changed_by(), expected_by, "{case}");
-        assert_eq!(
-            m.conflict(),
-            case.ends_with("a conflict"),
-            "{case}: conflict"
-        );
+        assert_eq!(from.changed_by(), changed_by, "{case}");
+        assert_eq!(m.conflict(), conflict, "{case}: conflict");
         // Without a base the same objects are matched by kind, id and
         // name, where the name agrees, with the same difference.
         let without = compare(&source, &target, None).unwrap();
@@ -337,13 +372,25 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
             .map(|a| (a.object.kind, a.object.id, a.presence))
             .collect()
     };
+    // Every object matched with none is listed once, a possible match
+    // or not.
     assert_eq!(
         only(&without.only_in_source),
-        [(Kind::Script, Some(1), Presence::Only)]
+        [
+            (Kind::Table, Some(129), Presence::Only),
+            (Kind::Script, Some(1), Presence::Only),
+            (Kind::Script, Some(2), Presence::Only),
+            (Kind::Field, Some(1), Presence::Only),
+        ]
     );
     assert_eq!(
         only(&without.only_in_target),
-        [(Kind::Script, Some(4), Presence::Only)]
+        [
+            (Kind::Table, Some(129), Presence::Only),
+            (Kind::Script, Some(2), Presence::Only),
+            (Kind::Script, Some(4), Presence::Only),
+            (Kind::Field, Some(1), Presence::Only),
+        ]
     );
     assert_eq!(matched(&without, Kind::Script, 3).difference, SAME);
     assert!(without
@@ -351,6 +398,137 @@ fn objects_are_matched_by_id_with_a_base_and_by_id_and_name_without() {
         .iter()
         .all(|m| m.source.kind != Kind::Field && m.source.kind != Kind::Table));
     assert_eq!(serial::decode(TABLE), Some(129));
+}
+
+/// The scripts `names` as scripts 1, 2, ... of a file.
+fn scripts(names: &[&str]) -> OwnedNode {
+    let mut root = OwnedNode::default();
+    for (i, name) in names.iter().enumerate() {
+        root.put(&[&[0x11], &[5], &[i as u8 + 1]], script(name, b"pw"));
+    }
+    root
+}
+
+fn possible(c: &Comparison) -> Vec<(Option<u64>, Option<u64>, Agreement)> {
+    c.possible_matches
+        .iter()
+        .map(|p| (p.source.id, p.target.id, p.agrees))
+        .collect()
+}
+
+#[test]
+fn candidates_by_id_and_by_name_are_both_listed_and_ambiguous_ids_refused() {
+    // Agreement in id and in name, crossed: neither hides the other.
+    let crossed = compare(
+        &scripts(&["Alpha", "Beta"]),
+        &scripts(&["Beta", "Alpha"]),
+        None,
+    );
+    assert_eq!(
+        possible(&crossed.unwrap()),
+        [
+            (Some(1), Some(1), Agreement::Id),
+            (Some(2), Some(2), Agreement::Id),
+            (Some(1), Some(2), Agreement::Name),
+            (Some(2), Some(1), Agreement::Name),
+        ]
+    );
+    // At most eight by name for one object; the rest counted.
+    let mut many = vec!["Other"];
+    many.extend(["Same"; 10]);
+    let capped = compare(&scripts(&["Same"]), &scripts(&many), None).unwrap();
+    let by_name = capped
+        .possible_matches
+        .iter()
+        .filter(|p| p.agrees == Agreement::Name)
+        .count();
+    assert_eq!((by_name, capped.possible_matches_left_out), (8, 2));
+    // Objects with no name: one when kind, id and every class of content
+    // agree, a possible match otherwise; and a file matches itself whole.
+    let relationship = |definition: &[u8]| {
+        let mut root = OwnedNode::default();
+        root.put(
+            &[&[0x03], &[0xfb], &[5], &[1]],
+            list(&[], vec![leaf(&[0x02], definition)]),
+        );
+        root
+    };
+    let same = compare(&relationship(&[1]), &relationship(&[1]), None).unwrap();
+    assert_eq!(
+        (
+            same.matched.len(),
+            same.matched[0].difference,
+            same.possible_matches.len()
+        ),
+        (1, Difference::Same, 0)
+    );
+    let other = compare(&relationship(&[1]), &relationship(&[2]), None).unwrap();
+    assert_eq!(possible(&other), [(Some(1), Some(1), Agreement::Id)]);
+    let base = base();
+    let itself = compare(&base, &base, None).unwrap();
+    assert!(itself.possible_matches.is_empty() && itself.only_in_source.is_empty());
+    assert!(itself
+        .matched
+        .iter()
+        .all(|m| m.difference == Difference::Same));
+    // A name is reported only where it is one Design piece: not from a
+    // name node that holds a node of its own.
+    let mut odd = scripts(&["Alpha"]);
+    odd.put(&[&[0x11], &[5], &[1], &[0x10], &[0x7e]], leaf(&[], &[1]));
+    let object = objects(&odd).into_iter().find(|o| !o.is_catalog()).unwrap();
+    assert!(object.name().is_some());
+    assert_eq!(object.design_name(), None);
+    let compared = compare(&odd, &odd, Some(&odd)).unwrap();
+    assert_eq!(compared.matched[0].source.name, None);
+    // Two fonts whose keys differ but read as one id: refused, by kind and
+    // id.
+    let mut fonts = OwnedNode::default();
+    for key in [&[0x01][..], &[0x00, 0x01]] {
+        fonts.put(
+            &[&[0x19], &[5], key],
+            list(&[], vec![leaf(&[0x10], &om_scsu::encode_scsu("Helvetica"))]),
+        );
+    }
+    assert_eq!(
+        compare(&base, &fonts, None).unwrap_err(),
+        CompareError::Ambiguous {
+            which: Which::Target,
+            kind: Kind::Font,
+            table: None,
+            id: Some(1)
+        }
+    );
+}
+
+#[test]
+fn an_error_names_no_key_and_a_missing_file_is_missing() {
+    // A key path in a read error can hold any content: the comparison's
+    // error keeps what failed, not where.
+    let error = crate::Error::KeyOrder {
+        path: "the-stored-password".into(),
+    };
+    let failed = CompareError::Read {
+        which: Which::Base,
+        failure: ReadFailure::of(&error),
+    };
+    for text in [failed.to_string(), format!("{failed:?}")] {
+        assert!(!text.contains("password"), "{text}");
+    }
+    assert_eq!(
+        failed,
+        CompareError::Read {
+            which: Which::Base,
+            failure: ReadFailure::Damaged
+        }
+    );
+    let missing = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("no such file.fmp12");
+    assert_eq!(
+        compare_files(&missing, &missing, None).unwrap_err(),
+        CompareError::Read {
+            which: Which::Source,
+            failure: ReadFailure::Missing
+        }
+    );
 }
 
 #[test]
@@ -362,13 +540,20 @@ fn a_file_is_read_for_its_design_alone() {
     root.put(&[TABLE, &[1], &[1]], leaf(&[], b"an index"));
     root.put(&[TABLE, &[0x0d]], leaf(&[], &[1]));
     root.put(&[&[0xd0, 0x00, 0x01], &[7], &[1]], leaf(&[], &[1]));
+    // Accounts and the file's status: not kept either.
+    root.put(&[&[0x17], &[1], &[5], &[1], &[0x10]], leaf(&[], b"Admin"));
+    root.put(&[&[0x17], &[2], &[5], &[1], &[0x10]], leaf(&[], b"Full"));
+    root.put(&[&[0x02], &[0x01]], leaf(&[], &[1]));
     let bytes = crate::writer::rebuild(&root, &crate::new_superblock("Test").unwrap()).unwrap();
     let file = HbamFile::from_bytes(bytes).unwrap();
     let design = design_tree(&file).unwrap();
     assert!(design.at(&[TABLE, &[5]]).is_none());
     assert!(design.at(&[TABLE, &[1]]).is_none());
     assert!(design.at(&[TABLE, &[0x0d]]).is_none());
-    assert!(design.at(&[&[0xd0, 0x00, 0x01], &[7]]).is_none());
+    assert!(design.at(&[&[0xd0, 0x00, 0x01]]).is_none());
+    assert!(design.at(&[&[0x17], &[1]]).is_none());
+    assert!(design.at(&[&[0x02]]).is_none());
+    assert_eq!(design.at(&[&[0x17], &[2]]), root.at(&[&[0x17], &[2]]));
     assert_eq!(design.at(&[TABLE, &[3]]), root.at(&[TABLE, &[3]]));
     assert_eq!(design.at(&[&[0x11]]), root.at(&[&[0x11]]));
     let comparison = compare(&design, &root, None).unwrap();
