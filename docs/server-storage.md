@@ -1316,14 +1316,39 @@ Nor do op13, op14 and op70 answer done for what they did not store or
 stage, on any file: a request refused for the session (the file not open
 in it, no Login, a set that reads records only, op13 into the file without
 [Full Access], op70 with no privilege set or for a record its set
-refuses), a list that is not a slot list, and a continuation of an upload
-the connection does not hold each fail with the system exception. For the
-last, FileMaker Server's code answers an empty last page, as for a
-download (network-protocol.md 5.6.6c, step 1, derived and not exercised
-live), which an upload's client reads as done: OpenMaker's choice differs,
-unverified against FileMaker. op73 refused for the session still answers
+refuses) and a list that is not a slot list each fail with the system
+exception. An op70 stores every record its list names or none
+(`writes::unstorable`, as a server script's commit checks its records):
+each is checked under the write lock before anything is written, and a
+record it cannot store refuses the whole commit, with that exception, its
+staged records left staged and charged as they were: a table the file
+does not have, a record another lock user holds (another connection's,
+or the session's own under another transaction id), a new record whose
+id was not issued or that a record already has, a staged record whose
+modification count is not one. FileMaker Server half-writes a record
+another lock user holds and answers done (write-path.md 3.4); OpenMaker
+refuses. A record the list names with nothing staged for it, and the
+deletion of one that is not there, ask for nothing. op73 for a path that
+is not one table fails too; op73 refused for the session still answers
 its empty reply
 ([#801](https://github.com/OpenMaker-Dev/openmaker/issues/801)).
+
+A continuation whose cursor the connection does not hold (never issued,
+finished, or for another operation) answers as its request does. A
+download's (op90, op92, op86's results) gets the empty last page
+FileMaker Server's code gives (network-protocol.md 5.6.6c, step 1,
+derived and not exercised live), which a client reads as the end of the
+stream. An upload's (op13, op14, op70, op88, and op86 for a part of its
+program) fails with the system exception: nothing of it is held, and the
+empty last page would read as the upload done, a program run. That is
+OpenMaker's choice against FileMaker's code, unverified, and only where
+nothing was stored: the last part of an upload this connection completed
+in parts (one of its last 256), sent again by a client that retries
+after a timeout, is answered as the upload was, done for op13, op14 and
+op70, whose work was done then and is not done again; op88's member and
+a program's results are not answered twice, and fail. A cursor evicted
+or refused (an upload past a limit, a continuation refused) fails with
+IMP_LIMIT.
 `tests/recalc.rs` sends each request first to a writable copy, where it
 makes its change, read back, then to a file hosted read-only, and each that
 reaches the engine also to a file made read-only between its admission and

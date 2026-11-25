@@ -2580,7 +2580,8 @@ fn download_list(
         Upload::Partial(resume) => {
             return Ok(reply(Vec::new(), resume, 0).to_result_within(max_return as usize));
         }
-        Upload::Unknown => {
+        // A read: the empty last page FileMaker Server's code gives.
+        Upload::Unknown | Upload::Repeated => {
             let reply = reply(Vec::new(), unknown_cursor(peer, &request.resume), 0);
             return Ok(reply.to_result_within(max_return as usize));
         }
@@ -2648,9 +2649,18 @@ fn query(
             Upload::Partial(resume) => {
                 return Ok(reply(Vec::new(), resume).to_result_within(max_return as usize));
             }
-            Upload::Unknown => {
-                let reply = reply(Vec::new(), unknown_cursor(peer, &request.resume));
-                return Ok(reply.to_result_within(max_return as usize));
+            // A part of a program this connection does not hold, or the
+            // last part of one that ran: what the program does cannot be
+            // known, or was answered already, and a program may write
+            // (`query_changes_file`), which the empty last page would answer
+            // as done. It fails; a continuation of results keeps the empty
+            // last page (above).
+            Upload::Unknown | Upload::Repeated => {
+                return Err(PerformError::Status(format!(
+                    "a part of program upload {:#x}, which this connection does not hold: the \
+                     program is not run",
+                    request.resume.cursor
+                )));
             }
         };
         // Its tree is charged until the query is answered.
@@ -3421,11 +3431,24 @@ fn get_serial(
     Ok(reply.to_result())
 }
 
-/// The complete payload of an upload-style request, with the charge its
-/// bytes hold if they arrived in parts (keep it as long as the payload), or
-/// the resume block to answer with while its parts are still arriving (spec
-/// 5.6.6c). The caller has authorized the request: each part is held only
-/// for one that may run.
+/// What one part of an upload-style request gives its operation
+/// ([`upload_payload`]).
+enum Payload {
+    /// The complete payload, with the charge its bytes hold if they arrived
+    /// in parts: keep it as long as the payload.
+    Complete(Vec<u8>, Charge),
+    /// More parts follow: answer with this resume block (spec 5.6.6c).
+    Continues(Resume),
+    /// A repeat of the last part of an upload this connection completed in
+    /// parts (a client retrying after a timeout): the operation ran on it,
+    /// and nothing is done again ([`Upload::Repeated`]).
+    Repeated,
+}
+
+/// The complete payload of an upload-style request, the resume block to
+/// answer with while its parts are still arriving, or a repeat of a
+/// completed upload's last part ([`Payload`]). The caller has authorized
+/// the request: each part is held only for one that may run.
 fn upload_payload(
     shared: &Shared,
     peer: &str,
@@ -3433,14 +3456,21 @@ fn upload_payload(
     header: &Header,
     resume: &Resume,
     part: Vec<u8>,
-) -> Result<Result<(Vec<u8>, Charge), Resume>, PerformError> {
+) -> Result<Payload, PerformError> {
     let owner = Owner::of(header);
     let upload = session
         .transfers
         .upload(owner, resume, part, MAX_UPLOAD, || shared.handle());
     Ok(match upload? {
-        Upload::Complete(payload, held) => Ok((payload, held)),
-        Upload::Partial(resume) => Err(resume),
+        Upload::Complete(payload, held) => Payload::Complete(payload, held),
+        Upload::Partial(resume) => Payload::Continues(resume),
+        Upload::Repeated => {
+            debug!(
+                "{peer}: the last part of completed upload {:#x} again",
+                resume.cursor
+            );
+            Payload::Repeated
+        }
         // A continuation of an upload this connection does not hold (its
         // earlier parts never came, or it ended): nothing of it can be
         // stored, so it fails rather than answer the last page a download
@@ -3527,8 +3557,12 @@ fn upload(
     let part = std::mem::take(&mut request.payload);
     let (payload, _held) =
         match upload_payload(shared, peer, session, header, &request.resume, part)? {
-            Ok(payload) => payload,
-            Err(resume) => return Ok(write::upload_reply(&resume, max_return as usize)),
+            Payload::Complete(payload, held) => (payload, held),
+            Payload::Continues(resume) => {
+                return Ok(write::upload_reply(&resume, max_return as usize))
+            }
+            // Stored or staged when its last part first came: done, as then.
+            Payload::Repeated => return Ok(done),
         };
     let mut reading = reserve_tree(shared, session, payload.len());
     if to_file {
@@ -3676,6 +3710,14 @@ fn update_table(
         }
         Err(Unwritable::Session) => None,
     };
+    // FileMaker Pro names one table (`[T]`, schema-path.md 3.6); any other
+    // path names no table's work to do, and fails rather than answer the
+    // empty reply with nothing done.
+    if file.is_some() && table.len() != 1 {
+        return Err(PerformError::Status(format!(
+            "table update not done: {table:02x?} names no single table"
+        )));
+    }
     if let (Some(file), [table]) = (file, table.as_slice()) {
         let account = file.account.as_deref().map_or("", |account| &account.name);
         let update = UpdateTable {
@@ -3806,8 +3848,12 @@ fn commit(
     let (user, _) = lock_user(session, file, request.txn);
     let (list, held) =
         match upload_payload(shared, peer, session, header, &request.resume, request.list)? {
-            Ok(list) => list,
-            Err(resume) => return Ok(write::upload_reply(&resume, max_return as usize)),
+            Payload::Complete(list, held) => (list, held),
+            Payload::Continues(resume) => {
+                return Ok(write::upload_reply(&resume, max_return as usize))
+            }
+            // Committed when its last part first came: done, as then.
+            Payload::Repeated => return Ok(done),
         };
     // The list's tree is charged until the commit is done.
     let reading = reserve_tree(shared, session, list.len());
@@ -4002,8 +4048,17 @@ fn upload_binary(
     let part = std::mem::take(&mut request.payload);
     let (payload, held) =
         match upload_payload(shared, peer, session, header, &request.resume, part)? {
-            Ok(payload) => payload,
-            Err(resume) => {
+            Payload::Complete(payload, held) => (payload, held),
+            // Its member was answered when its last part first came, and
+            // is not answered again.
+            Payload::Repeated => {
+                return Err(PerformError::Status(format!(
+                    "the last part of container upload {:#x} again: its member is not \
+                     answered twice",
+                    request.resume.cursor
+                )))
+            }
+            Payload::Continues(resume) => {
                 // An intermediate part: no member yet (spec 3.3).
                 let reply = UploadBinaryReply {
                     resume,

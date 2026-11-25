@@ -48,10 +48,17 @@
 //! in to again), and uploading past a limit are [`Refused`]: the connection
 //! answers with a CORBA system exception, which the client reports as an
 //! error. An upload refused part way is dropped whole, its charge given
-//! back, and its cursor remembered like an evicted one. A cursor this connection never issued, or finished, gets the empty
-//! last page FileMaker Server's code gives instead, which a client reads as
-//! the end of the stream; an evicted cursor never does, so a client is
-//! never handed a silently truncated result.
+//! back, and its cursor remembered like an evicted one; an evicted cursor
+//! never reads as the end of a stream, so a client is never handed a
+//! silently truncated result. A continuation of a download (op90, op92,
+//! op86's results) whose cursor this connection never issued, or finished,
+//! gets the empty last page FileMaker Server's code gives, which a client
+//! reads as the end of the stream. An upload's continuation with such a
+//! cursor ([`Upload::Unknown`]) is a failure for its operation to answer,
+//! as nothing of it is held: the empty last page would read as the upload
+//! done (op13, op14, op70 and op88 fail it, and op86 for a program's
+//! part). A repeat of the last part of an upload this connection completed
+//! in parts is told apart ([`Upload::Repeated`]): the operation ran on it.
 //!
 //! Receiving an upload costs time linear in its size: the scan of the parts
 //! received ([`UploadScan`]) is kept with the transfer.
@@ -87,6 +94,12 @@ pub(crate) const MAX_PRE_LOGIN_UPLOAD: usize = 64 << 10;
 /// connections' downloads too, so this is far more than one connection's
 /// own transfers would evict.
 const EVICTED_REMEMBERED: usize = 4096;
+
+/// How many uploads completed in parts are remembered, so that a repeat of
+/// one's last part (a client retrying after a timeout) is answered as the
+/// upload that completed, not as a cursor never issued (6 KiB a
+/// connection): a retry follows its upload at once.
+const COMPLETED_REMEMBERED: usize = 256;
 
 /// The server's budget for the download streams connections keep paged:
 /// the bytes not yet sent and those sent, of each stream larger than one
@@ -318,8 +331,12 @@ pub(crate) enum Upload {
     Complete(Vec<u8>, Charge),
     /// More parts follow; answer with this resume block and no slots.
     Partial(Resume),
+    /// A repeat of the last part of an upload this operation completed on
+    /// this connection ([`COMPLETED_REMEMBERED`]): its operation ran on
+    /// it; nothing is held again.
+    Repeated,
     /// The cursor is not an upload this operation started on this
-    /// connection.
+    /// connection, or not one it remembers completing.
     Unknown,
 }
 
@@ -338,6 +355,9 @@ pub(crate) struct Transfers {
     clock: u64,
     /// The cursors evicted most recently, oldest first.
     evicted: VecDeque<u64>,
+    /// The uploads completed most recently in more than one part, oldest
+    /// first: cursor, owner and perform handle.
+    completed: VecDeque<(u64, Owner, u64)>,
 }
 
 /// The most slot bytes a reply may carry for this `maxreturn`.
@@ -361,6 +381,7 @@ impl Transfers {
             bytes: 0,
             clock: 0,
             evicted: VecDeque::new(),
+            completed: VecDeque::new(),
         }
     }
 
@@ -499,6 +520,12 @@ impl Transfers {
             return self.keep_upload(owner, new_handle(), new_handle(), (part, scan, charge));
         }
         let Some(held) = self.remove(resume.cursor) else {
+            if self
+                .completed
+                .contains(&(resume.cursor, owner, resume.perform))
+            {
+                return Ok(Upload::Repeated);
+            }
             return self.unknown(resume.cursor).map(|()| Upload::Unknown);
         };
         let (mut payload, mut scan, mut charge) = match held.transfer {
@@ -517,6 +544,7 @@ impl Transfers {
         // on what arrived.
         if part.is_empty() {
             warn!("an upload continued with an empty part; ending it");
+            self.remember_completed(resume.cursor, owner, resume.perform);
             return Ok(Upload::Complete(payload, charge));
         }
         if payload.len() + part.len() > max {
@@ -536,6 +564,7 @@ impl Transfers {
         payload.extend_from_slice(&part);
         scan.scan(&payload);
         if scan.complete() || scan.never_completes() {
+            self.remember_completed(resume.cursor, owner, resume.perform);
             return Ok(Upload::Complete(payload, charge));
         }
         self.keep_upload(owner, held.perform, resume.cursor, (payload, scan, charge))
@@ -713,6 +742,15 @@ impl Transfers {
         }
     }
 
+    /// Remember that the upload under `cursor` completed
+    /// ([`Upload::Repeated`]).
+    fn remember_completed(&mut self, cursor: u64, owner: Owner, perform: u64) {
+        self.completed.push_back((cursor, owner, perform));
+        if self.completed.len() > COMPLETED_REMEMBERED {
+            self.completed.pop_front();
+        }
+    }
+
     /// Put `held` under `cursor`.
     fn insert(&mut self, cursor: u64, held: Held) {
         self.bytes += held.transfer.bytes();
@@ -789,9 +827,10 @@ mod tests {
             transfers.upload(OWNER, &resume, Vec::new(), MAX_UPLOAD, counter()),
             Ok(Upload::Complete(p, _)) if p == [0x80, 0x20, 0x01]
         ));
+        // Its last part again: the upload it completed.
         assert!(matches!(
             transfers.upload(OWNER, &resume, Vec::new(), MAX_UPLOAD, counter()),
-            Ok(Upload::Unknown)
+            Ok(Upload::Repeated)
         ));
     }
 
@@ -897,10 +936,38 @@ mod tests {
             payload,
             [0x80, 0x00, 0x10, 0x20, 0x11, 0x80, 0x00, 0x01, 0x40, 0x00, 0xfb, 0x40]
         );
+        // The last part again is told apart from a cursor never issued, and
+        // from one another operation or perform handle names.
         assert!(matches!(
             transfers.upload(OWNER, &resume, vec![0x40], MAX_UPLOAD, &mut handles),
-            Ok(Upload::Unknown)
+            Ok(Upload::Repeated)
         ));
+        let other = Owner {
+            opcode: OWNER.opcode + 1,
+            ..OWNER
+        };
+        for (owner, resume) in [
+            (other, resume.clone()),
+            (
+                OWNER,
+                Resume {
+                    perform: resume.perform + 1,
+                    ..resume.clone()
+                },
+            ),
+            (
+                OWNER,
+                Resume {
+                    cursor: resume.cursor + 1000,
+                    ..resume.clone()
+                },
+            ),
+        ] {
+            assert!(matches!(
+                transfers.upload(owner, &resume, vec![0x40], MAX_UPLOAD, &mut handles),
+                Ok(Upload::Unknown)
+            ));
+        }
     }
 
     /// Abandoned transfers hold at most `MAX_IDLE` bytes besides the one in
