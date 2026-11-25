@@ -1052,10 +1052,10 @@ so readers and operations share one implementation.
 
 Still kept by the store, outside derived state: the basis of stored
 calculations (`Store::basis`, below), the verified-index marks
-(`Store::verified`), the schema generation (`Store::schema_generation`,
-which says when the accounts are decoded again; server scripts cached by
-it before, and cache by the derived state's version now), and the
-read-only flag and the file's identity on disk.
+(`Store::verified`), the store's generation (which says when the accounts are
+decoded again and the verified-index marks are stale; server scripts
+cached by it before, and cache by the derived state's version now), and
+the read-only flag and the file's identity on disk.
 
 The basis of stored calculations is not computed from the current view. It
 is what the stored values were last computed with, per table and field:
@@ -1370,46 +1370,80 @@ put creates missing parents and turns a parent that holds an empty value
 into an empty list, as `OwnedNode::put` does. No operation that moved
 needed a fourth.
 
+What the transaction answers about its own writes is the contract every
+engine's transaction keeps: every read gives the tree as written so far;
+a write that leaves the tree as it was (the same node put where it is, a
+missing node removed) is no change, with nothing to store or take back;
+`Transaction::derived` is the state of the tree as written, its catalog
+and its accounts both; `changed_since` is true for a path at, above or
+below one the transaction changed, and for every path once a store helper
+changed the tree (it may be true where nothing changed, never false where
+something did); and the transaction's version stays the one the
+operation started on.
+
 In the file engine each write is applied to the store's tree at once,
 under the commit's journal (`Store::write_in`), so a failed operation or
 save puts every node and flag back as before
 (`engine::tests::every_change_not_stored_leaves_every_node_and_flag_as_it_was`,
 the seeded test of [#751](https://github.com/OpenMaker-Dev/openmaker/pull/751),
 unchanged). A put the
-file cannot hold there (`om_hbam::writer::put_refusals`: beneath a value,
-or a node the writer cannot write) is refused and changes nothing; an
-operation logs it as before, or, where its own checks leave no refusal
-to expect (op87, op88, op240), fails its commit with it
-(`Transaction::refuse`). Whether a write reaches the derived state is
-decided by its path (`store::feeds_derived`): everything outside the
-tables and the file's container library `[1f]` does, and in a table its
-root and its field catalog `[T, 03]` do, but for a field's next serial
-value `[T, 03, 05, F, 0c]` and the deferred field work `[T, 03, 01, fd]`,
-which the derived state leaves out; a put that creates a parent or turns
-one into a list counts by that parent's path too. Such a write advances
-the schema generation (`Store::schema_generation`, which the
-verified-index marks, the accounts and the server script sessions follow)
-and has the schema read again before the derived state is next used, or
-when the operation ends (`Transaction::settle`). Every write counts the
-tree as changed since its save.
+file cannot hold there (`om_hbam::writer::put_refusals`, checked on the
+node where it is: beneath a value, or a node the writer cannot write) is
+refused and changes nothing; an operation logs it as before, or, where its
+own checks leave no refusal to expect (op87, op88, op240), fails its
+commit with it (`Transaction::refuse`). Whether a write reaches the
+derived state is decided by its path (`store::feeds_derived`): everything
+outside the tables and the file's container library `[1f]` does, and in a
+table its root and its field catalog `[T, 03]` do, but for a field's next
+serial value `[T, 03, 05, F, 0c]` and the deferred field work `[T, 03, 01,
+fd]`, which the derived state leaves out; a put that creates a parent or
+turns one that is not a list yet into one counts by that parent's path
+too. Such a write advances the store's generation, which the
+verified-index marks and the accounts follow, and has the schema and the
+accounts read again before the derived state is next used, or when the
+operation ends (`Transaction::settle`). A write at, above or below a
+table's records `[T, 05]`, its record list `[T, 0d]` or its indexes `[T,
+01]` forgets the verified-index marks it can make wrong
+(`Store::forget_verified`): a commit keeps its own marks as it keeps the
+indexes, but an upload into an index or a record does not. Every write
+that changed the tree counts it as changed since its save.
 
 Before, each operation changed the tree through the store's own helpers,
 which read the schema again after any upload or schema write, whatever
-its path. What follows from moving them: op13's upload, op86's writes and
-op240's edits to what the derived state does not read (records, the found
-set `[TO, 07]`, the file's container library `[1f]`) no longer read the
-schema again or advance the generation; op86 counts the tree as changed
-only when a write was made (a write it refuses, which `om-query` stops
-before, counted before); and Delete Account removes the account's member
-and writes the index instead of rewriting the whole catalog, so a catalog
-that holds something the file cannot write elsewhere no longer refuses
-it. No reply changes. The library's rules (`library::Reads`,
-`store_changes`, `adjust_changes`) read a library through a small
-interface and say their changes as puts and removals: op87 and op88
-write them through the transaction, a commit applies them to the library
-in memory, and both refuse through the same check read through a view
-(`library::refusal`). The header's member count is the number of entries
-in the member list `[L, 01, 07]`, which a view counts
+its path, and advanced the generation with it. What that did as a side
+effect, and which writes do it now:
+
+| Side effect | Before, after | Now, after |
+| --- | --- | --- |
+| The derived state read again (catalog, calculation catalogs, locale, file language), and with it the server script sessions' schema, which they keep by the derived state's version | every op13 upload, op86 write and op240 edit, and the account edits (not saved found sets, op71, op72, op87, op88, member keys) | a write at a path the derived state reads, or one that creates or turns such a parent; read at `Transaction::settle` |
+| The verified-index marks forgotten (`Store::index_agrees`) | each of those and a saved found set (the generation), op73's field work, a roll-back | all of them: a write the derived state reads, op73's field work, a roll-back (the generation); those of a table, a field or an index: a write at, above or below `[T, 05]`, `[T, 0d]` or `[T, 01]` (`Store::forget_verified`) |
+| The accounts decoded again (`Store::follow_accounts`) | after the operation, when the generation moved | at `Transaction::settle` with the schema, so `derived()` gives an account as written; after the operation when a later write moved the generation |
+| The tree counted as changed | every such write, one refused or one equal to what was there included | a write that changed the tree |
+| The derived state kept for a roll-back (`Journal::schema_from`) | at each such write | at `Transaction::settle`, before it changes |
+
+No reply changes, but for these cases, each OpenMaker's own and not
+compared with FileMaker: a write equal to what is there (op13 uploading
+what the file holds, an op86 put of it) was a change before, saved, and
+answered with the storage error when the save failed, and is none now, so
+the file is not rewritten and the request is answered as one with nothing
+to store; op72 or Set Next Serial Value giving the value a field holds
+kept nothing to take back before either, but counted the tree as changed,
+so its save was tried and could raise a save alert; an op86 whose every
+put is refused counted the tree as changed and so rewrote a clean file,
+and changes nothing now; a saved found set no longer advances the
+generation (an account edit still does: the accounts catalog `[23]` is
+read by the derived state); and Delete Account removes the account's
+member and writes the index instead of rewriting the whole catalog, so a
+catalog that holds something the file cannot write elsewhere no longer
+refuses it.
+
+The library's rules (`library::Reads`, `store_changes`, `adjust_changes`)
+read a library through a small interface and say their changes as puts
+and removals: op87 and op88 write them through the transaction, a commit
+applies them to the library in memory, and both refuse through the same
+check read through a view (`library::refusal`). The header's member count
+is the number of entries in the member list `[L, 01, 07]`, and a deleted
+table's library members are counted the same way, which a view gives
 (`View::count_children`): the file engine's tree, its readings and its
 transaction from the node's length, as before, and other views by
 listing.
@@ -1417,19 +1451,28 @@ listing.
 The checking transaction (`engine::checking`, debug builds, switched on
 with the test view: `Server::checking_reads`, `LocalHost::checking_reads`,
 `FileEngine::check_writes`) keeps the tree the operation started on and
-records its writes as edits. Every read through the transaction is
-answered again from the starting tree with the writes laid over it
-(`engine::Overlay`) and must be the file engine's answer; at the end, the
-starting tree changed by the edits must be the file engine's tree node
-for node and kind for kind, the derived state must be what that tree
-decodes to, and a written tree must count as changed. A difference
+applies the writes to it as they are recorded, as edits, in order. Every
+read through the transaction is answered again from that tree and must be
+the file engine's answer; at the end, that tree must be the file engine's
+tree node for node and kind for kind, the derived state must be what the
+tree decodes to, and a written tree must count as changed. A difference
 panics, naming paths only (an account's node holds its password's
 verifier). The server's, `om-author`'s and `om-gui`'s tests run with it.
-An operation still on the store's helpers is not checked
-(`Check::by_store`). It found one write that bypassed the derived state
-while the operations moved: op13's upload to `[T, 03, 01, fd]` created
-the missing `[T, 03, 01]`, which the calculation catalogs read, without
-reading the schema again.
+A store helper an operation not moved still calls changes the tree
+without saying what: what the operation wrote before it must be in the
+tree when the helper starts, and the check takes the tree as the helper
+left it before its next checked read or write (`Check::before_store`,
+`Check::fresh`), so only the helper's own changes go unchecked. It found
+one write that bypassed the derived state while the operations moved:
+op13's upload to `[T, 03, 01, fd]` created the missing `[T, 03, 01]`,
+which the calculation catalogs read, without reading the schema again.
+What it cannot catch: a write and a reply that agree with each other but
+are wrong (it compares the file engine with itself, not with the base or
+with FileMaker); the order of notices and locks; a roll-back (the seeded
+test covers it); the generation and the verified-index marks; the
+derived state between writes, which it compares only at the end, and not
+at all when the catalog does not decode; what a store helper changed; and
+whatever the test suite does not run.
 
 **Moving the other readers.** The readers below, but those marked moved,
 still hold the store (`Hosted::read_store`, or
@@ -1459,9 +1502,10 @@ first, each with the test view's runs of its tests:
    Serial Value, op13's upload, op86's member keys and schema writes,
    op87's and op88's library members, op240's edits, the account edits
    and the desktop's saved found sets ("The operations' transaction",
-   below). Still on the store, through `Transaction::view() -> &Store`
-   and the transaction's delegates to the store's helpers (an operation
-   that calls one is not checked, `Check::by_store`):
+   above). Still on the store, through `Transaction::view() -> &Store`
+   and the transaction's delegates to the store's helpers, whose own
+   changes the checking transaction does not check
+   (`Check::before_store`):
    - a commit's records (op70 and a server script's commit,
      `writes::commit`): one record whole each, with `Store::record_limit`
      and `views::hidden_fields`, written by `Store::write_record`, which
