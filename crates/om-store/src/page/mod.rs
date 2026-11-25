@@ -724,12 +724,23 @@ pub(crate) fn in_order(a: &[u8], b: &[u8], b_complete: bool) -> bool {
 /// Whether a key known as far as `a` (all of it when `a_complete`) sorts
 /// strictly before a key known as far as `b`, as the known parts prove:
 /// they differ, or `a` is all of a key and a proper start of `b`.
-fn known_in_order(a: &[u8], a_complete: bool, b: &[u8]) -> bool {
+pub(crate) fn known_in_order(a: &[u8], a_complete: bool, b: &[u8]) -> bool {
     let n = a.len().min(b.len());
     match a[..n].cmp(&b[..n]) {
         std::cmp::Ordering::Less => true,
         std::cmp::Ordering::Greater => false,
         std::cmp::Ordering::Equal => a_complete && a.len() < b.len(),
+    }
+}
+
+/// Whether a key known as far as `a` (all of it when `a_complete`) sorts
+/// at or before the whole key `b`, as the known part proves.
+pub(crate) fn known_at_most(a: &[u8], a_complete: bool, b: &[u8]) -> bool {
+    let n = a.len().min(b.len());
+    match a[..n].cmp(&b[..n]) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => a_complete && a.len() <= b.len(),
     }
 }
 
