@@ -488,8 +488,12 @@ engine applies an entry to the trees when it publishes it, or pins the
 published version while it applies ahead and checkpoints only once
 everything applied is published. A checkpoint is of one exact version:
 it covers every change of its entry and of those before, and none after
-(the page file refuses the rest; server-storage-format.md 4.6). The order
-of the writes and flushes, and what a crash at each step leaves, are in
+(the page file refuses the rest; server-storage-format.md 4.6). The
+engine calls the page file as 4.6 sets out: one caller applies entries
+in order, one at a time, with one open reservation an entry and one
+entry's units open at a time (one unit a tree, or one for the whole
+entry), and another checkpoints and reclaims. The order of the writes
+and flushes, and what a crash at each step leaves, are in
 server-storage-format.md 4.6.
 
 **What is kept.** The two newest checkpoints are kept whole, and so is

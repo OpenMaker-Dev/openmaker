@@ -815,22 +815,58 @@ rebuilt for them when those entries are applied again (4.7).
   pages 1 and 2), which is flushed, renamed to `pages`, and the store
   folder flushed. So `pages` exists only whole. A `pages.new` left by a
   creation that did not finish is removed first.
+- **The callers' contract.** One caller applies entries, in order, one
+  entry at a time: it reserves the entry, runs its units (each one
+  tree's changes, or the whole entry's: several trees' pages and
+  releases with the entry's changes to the set of trees, committed
+  once), and is done with the entry before it starts the next; it may
+  reserve later entries ahead and runs their units in their turn.
+  Another caller checkpoints and reclaims; readers come at any time. The
+  page file refuses what falls outside this, and makes each check in the
+  same hold of its lock as the change the check guards:
+  1. an entry has one open reservation at a time: a second, while the
+     first is open, is refused (one after the first is dropped is not);
+  2. units of one entry are open at a time: a unit of another entry
+     while one is open is refused, as is one of an entry before the last
+     one committed;
+  3. a reservation is checked, its pages promised and it is opened in one
+     hold, so a checkpoint sees it open or it sees the checkpoint's entry
+     fixed;
+  4. a checkpoint at `E` fixes `E` at its first check, in that check's
+     hold: it is refused while a reservation for an entry at or before
+     `E` is open, and from then until it is installed or fails, a
+     reservation, unit or commit at or before `E` is refused; a unit of a
+     later entry committed before it plans refuses it. So it covers every
+     unit committed at or before `E` and none after. A refusal, not a
+     wait: the two callers may be one thread, and a covered unit arriving
+     late is a defect of the caller to be reported, not a race to be
+     hidden;
+  5. every way out of a checkpoint clears what it fixed, an unwind
+     included; a checkpoint left by a panic makes the page file refuse
+     every later write until it is opened again, since its plan may have
+     changed the map in memory;
+  6. a unit's change to the set of trees acts on the trees it named when
+     it staged the change (each tree has an identity in memory, which a
+     rename keeps): a unit one of whose trees another unit made, dropped
+     or renamed since is refused whole at commit, so overlapping changes
+     by units of one entry give one result whatever order they commit
+     in, or the later is refused. A released page still in memory must
+     have the hash the unit released it with;
+  7. the restore point a checkpoint keeps counts in the floor (4.8) from
+     its first check, and a checkpoint that keeps one is refused while
+     any reservation is open;
+  8. a checkpoint checks every root it is given as an open will (a tree's
+     page, not an overflow page, written at or before `E`), whether the
+     root is in memory or on disk.
 - **A checkpoint** of the newest version, at entry `E` (every unit
   committed so far is of `E` or earlier), given every tree's root: the
   trees given must be exactly the trees that exist, those of the newest
   checkpoint and those made, dropped and renamed since by units (a
   change to the set of trees is part of a unit of its entry, checked and
-  committed with it). A checkpoint is of one exact version: it is
-  refused while a reservation for an entry it covers is open, and from
-  the moment it fixes its entry until it is on disk or fails, a
-  reservation or unit at or before that entry is refused. A refusal, not
-  a wait: the caller that applies entries and the caller that
-  checkpoints may be one thread, and a covered unit arriving late is a
-  defect of the caller to be reported, not a race to be hidden. The
-  writer keeps every limit the reader enforces (trees, restore points,
-  names, numbers), and the meta stream goes through the reader's own
-  decoding before any byte of it is written. Short of free pages for its
-  meta stream, it reclaims first.
+  committed with it). The writer keeps every limit the reader enforces
+  (trees, restore points, names, numbers), and the meta stream goes
+  through the reader's own decoding before any byte of it is written.
+  Short of free pages for its meta stream, it reclaims first.
   1. the pages the roots reach that are only in memory are found (a page
      on disk never refers to one in memory); a page in memory of the
      newest version that no root reaches, a root that left the newest
@@ -937,26 +973,42 @@ rebuilt for them when those entries are applied again (4.7).
   dropped point is still on disk, so a drop does not lower the floor,
   and a reopen, which lists them again, does not raise it) and one more,
   and a map in which every page of the file is dying (81 bytes a page,
-  more than a shared page's record or a free bit). A reopened page file
-  never computes a higher floor than the running one had at the same
-  point, which is what recovery needs. Of what the running page file
-  knows and a reopened one does not, pins and the reclaim cursor do not
-  enter the floor, restore point drops not yet checkpointed do not lower
-  it (above), and the map's end, which the running file may have grown
-  past the checkpoint's, only raises the running floor. Two, because the
-  next checkpoint retires nothing when the other pair is empty, and the
-  one after frees the first's meta stream only once it is on disk. Commits, the taking down of dropped subtrees and
-  reclaims never make a map larger than that, so the room stays enough
-  whatever is applied meanwhile; it is about 1% of the file. An ordinary
-  entry also leaves the **reserve** (256 pages by default), which
-  recovery, a follower's entries and the discard of a group may take.
-  Making a tree takes its root page and a fixed 4 pages of room for its
-  record in the tables (one more record adds at most a data page and a
-  directory page to each of the two meta streams), 5 pages to reserve; a
-  rename takes 4. The charge is fixed so that an entry takes the same
-  pages each time it is applied (`Reservation::taken` counts it). When the file cannot grow enough, the reservation
-  is refused with "full" and nothing is reserved: the store keeps reading
-  and can checkpoint.
+  more than a shared page's record or a free bit). Two, because the next
+  checkpoint retires nothing when the other pair is empty, and the one
+  after frees the first's meta stream only once it is on disk. From a
+  checkpoint's first check until it is installed or fails, the point it
+  keeps counts too. Recovery needs this: a reopened page file never
+  judges an entry against a higher floor than the one the running page
+  file judged that entry's reservation against. A reopen takes a
+  checkpoint `C` on disk and judges the entries after `C`'s entry. Each
+  such entry's reservation was judged either while `C` was the newest
+  checkpoint (`C`'s points are among those counted, and drops since do
+  not lower the count), or while `C` was being written, from its first
+  check on (its kept point counted then), or before `C`'s first check:
+  then the reservation was open at that check, so `C` kept no point (a
+  keep is refused while a reservation is open) and lists only points
+  counted already. Of the rest of what the running page file knows and a
+  reopened one does not, pins and the reclaim cursor do not enter the
+  floor, and the map's end, which the running file may have grown past
+  the checkpoint's, only raises the running floor; the trees are the
+  same at the same entry. Not covered: a reopen that falls back to the
+  older checkpoint because the newest cannot be read. The older one can
+  list restore points the newest retired, which the running floor no
+  longer counted, so replaying from it can need more room by their
+  records; recovery may take the reserve (256 pages by default), and
+  beyond that the replay is refused as full. Commits, the taking down of
+  dropped subtrees and reclaims never make a map larger than one in
+  which every page is dying, so the room stays enough whatever is
+  applied meanwhile; it is about 1% of the file. An ordinary entry also
+  leaves the **reserve** (256 pages by default), which recovery, a
+  follower's entries and the discard of a group may take. Making a tree
+  takes its root page and a fixed 4 pages of room for its record in the
+  tables (one more record adds at most a data page and a directory page
+  to each of the two meta streams), 5 pages to reserve; a rename takes
+  4. The charge is fixed so that an entry takes the same pages each time
+  it is applied (`Reservation::taken` counts it). When the file cannot
+  grow enough, the reservation is refused with "full" and nothing is
+  reserved: the store keeps reading and can checkpoint.
 - **Recovery fits.** Applying the entries after a checkpoint again frees
   exactly what normal running frees: a page that leaves the newest
   version is freed at once when it never reached the disk and no kept
