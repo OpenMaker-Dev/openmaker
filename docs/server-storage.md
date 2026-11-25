@@ -1432,11 +1432,34 @@ before; whether the file takes no more changes it keeps beside the store
 writes outside an operation are the engine's too: the identity of the
 file it loaded, set before anyone can reach the file
 (`FileEngine::loaded_from`), and the read-only hold of a file whose
-deferred work a panic left part way (`FileEngine::hold_read_only`). On
-the store engine every file is read-only (`ReadOnlyCause::StoreEngine`),
-no write's outcome is ever unknown (`writes_refused` is none), and its
-file on disk is the `.fmp12` it imported, or checked against what it
-holds, when it hosted the file.
+deferred work a panic left part way (`FileEngine::hold_read_only`). The
+read-only hold for deferred work comes from an operation only through its
+outcome: deferred field work that cannot be done (op73's or the file's at
+opening: an unknown work bit or field key, a value removal or conversion
+whose old type is unknown, a work list that is not a list) is decided from
+what the version holds, its tree and its bases, with the field catalog
+decoded from that tree, before anything changes, and comes back as the
+outcome (`store::WorkKept`, `store::NotUpdated::Kept`;
+`Outcome::holds_read_only`), not set by the store while it runs; and a save
+of finished deferred work that definitely failed (its work taken back) asks
+the same. The engine applies it in one place, after the operation's save
+(`FileEngine::submit`). Every server applying the same operation to the same
+version decides alike, as long as the decoded catalog is the tree's: a
+catalog that fails to decode leaves the previous one in place
+(`Store::reread_catalog`), so two stores with one tree and one set of bases
+can hold different catalogs and decide an op73 differently
+([#847](https://github.com/OpenMaker-Dev/openmaker/issues/847)). The rest
+of a save's outcome does not go through the operation's outcome: a save
+whose outcome is unknown (its copy renamed over the file, the folder's
+flush failed) records that the file takes no more changes, and the
+hosting publishes it, during the save itself (`Hosted::save_change`),
+before the engine applies the operation's outcome; and a save records
+the identity of the file it renamed into place as it renames it.
+On the store engine every file is read-only
+(`ReadOnlyCause::StoreEngine`), no operation's outcome holds it read-only
+for deferred work (it takes no changes), no write's outcome is ever
+unknown (`writes_refused` is none), and its file on disk is the `.fmp12`
+it imported, or checked against what it holds, when it hosted the file.
 
 The callers: the desktop host's read-only reasons (`LocalHost::read_only`,
 in the same order of precedence: the reason it was opened with, then no
@@ -2031,10 +2054,10 @@ first, each with the test view's runs of its tests:
      listing of the records with each changed record written through the
      transaction, and the container data it reads through a view rather
      than the library node whole
-     ([#808](https://github.com/OpenMaker-Dev/openmaker/issues/808)); and
-     the read-only decision for work it cannot do as the operation's
-     outcome, not a side effect on the file
-     ([#809](https://github.com/OpenMaker-Dev/openmaker/issues/809)).
+     ([#808](https://github.com/OpenMaker-Dev/openmaker/issues/808)). The
+     read-only hold for work it cannot do is its outcome now, decided from
+     the version before anything changes, which the engine applies ("The
+     engine's state of a file", above).
 
 For finds, what `om-query` still asks whole (see "Views") moves with the
 store engine: a measure of a subtree for UploadMultiple's work without
@@ -4120,7 +4143,7 @@ One executor serves FileMaker Pro's finds (op86, `om-query`) and SQL
 | Setting | Meaning |
 |---|---|
 | `--engine file` or `store` | the engine for the whole server, chosen when it starts; `file` by default |
-| `--store-dir` | the store folder (default `Store` in the state folder, which is made if missing, as the TLS identity makes it); one server at a time holds it (`om_store::sys::FolderLock`). Its parent must exist: the folder the server uses is the parent resolved (links in it followed) and its own name, which must be a plain one (a trailing separator is dropped), and the server makes at most that one folder, for its own user only (mode 700), flushing the parent after. Refused, with what to do and nothing made: a parent that does not exist (make it first), a name that is not plain, a link or a file, and a folder that is a database folder, is inside one or holds one, compared resolved. These are checked by the command line before the server makes anything a refusal would leave behind (`om_server::check_store_folder`), and again by the engine where it opens the folder (`StoreFolder::open_dir`, which `Server::bind_on` calls with the database folders of its `EngineSettings`). On Unix the engine also refuses a folder its group or others can reach, or another user owns, checked on the directory it opens (never a link), and looks at the path again once the store opened it: the same device, inode, owner and mode. Those are two looks at the path with the store's own opens by path between them: they rule out a folder replaced, or its owner or mode changed, and left so, not a swap and a swap back by someone who can rename entries in its parent ([#814](https://github.com/OpenMaker-Dev/openmaker/issues/814)). So the store folder's parent must be a folder only the server's user, or root, can change. Other systems take the folder as it is |
+| `--store-dir` | the store folder (default `Store` in the state folder, which is made if missing, as the TLS identity makes it); one server at a time holds it (`om_store::sys::FolderLock`). Its parent must exist: the folder the server uses is the parent resolved (links in it followed) and its own name, which must be a plain one (a trailing separator is dropped), and the server makes at most that one folder, for its own user only (mode 700), flushing the parent after. Refused, with what to do: a parent that does not exist (make it first), a name that is not plain, a link or a file, a folder that is a database folder, is inside one or holds one, compared resolved, and on Unix a folder its group or others can reach, or another user owns, checked on the directory opened (never a link), and one holding another program's files (no marker). Every one of these checks runs before the server makes anything else (`om_server::check_store_dir`, before the TLS identity is chosen and a default database folder made), so a refused start makes nothing but, with the default store folder, the state folder, which is the store folder's parent and is made to look. The engine checks again where it opens the folder (`StoreFolder::open_dir`, which `Server::bind_on` calls with the database folders of its `EngineSettings`), and on Unix looks at the path once more after the store opened it: the same device, inode, owner and mode. Those are two looks at the path with the store's own opens by path between them: the second detects a folder replaced, or its owner or mode changed, and left so, and refuses the start, but only after the store wrote its marker, lock and page file into whatever the path led to, a link to a folder outside the store folder included; and neither sees a swap and a swap back by someone who can rename entries in its parent ([#814](https://github.com/OpenMaker-Dev/openmaker/issues/814)). So the store folder's parent must be a folder only the server's user, or root, can change. Other systems take the folder as it is |
 | `--store-cache-mib` | the page cache's size (default 256): the store's pages kept in memory. What else the store engine holds is below ("Memory") |
 | `--export-on-stop` | a folder that gets an export of every file at a clean stop (not built) |
 
@@ -4167,7 +4190,12 @@ stored when it ends reports the commit's error, not 0.
   served: the same file, or another with the same bytes. A file whose
   stamp moved during that reading is refused (`StoreError::SourceChanged`),
   logged, and not hosted at this start, even when its digest is the one
-  recorded. Otherwise the file is imported, and after the import it is read
+  recorded. The stamp moves with a change of the file's metadata alone too:
+  a `chmod`, a new hard link (a backup tool's), a rename over the file
+  during a reading refuses a file whose bytes did not change, at this start.
+  A server that is left no file to host does not start (it exits with an
+  error, as when no file opens); the administrator starts it again once
+  nothing touches the file. Otherwise the file is imported, and after the import it is read
   whole once more: the import is recorded only when that digest is the
   first and the stamp is still the one taken first, and the store records,
   for the name clients open the file by, its tree, that digest and its page
@@ -4176,15 +4204,27 @@ stored when it ends reports the commit's error, not 0.
   used was read between two whole readings of the file that found the same
   bytes: unless a byte was changed and changed back between them while the
   stamp stayed the same, the imported tree is the tree of the bytes the
-  file held whole at one moment. Nothing short of the writer's cooperation
-  closes that limit; a file being written while the server starts is for
-  the administrator to avoid. The readings hold one buffer, whatever the
+  file held whole at one moment. That limit can be met on a real file: a
+  write through a shared memory mapping of the file can change a byte with
+  neither time moving, and change it back. The tree then recorded is of
+  bytes the file held only for a moment, under the digest of the file's
+  true bytes, so every later start finds that digest and serves that tree,
+  until the file's bytes change or the store folder is removed. Nothing
+  short of the writer's cooperation closes it here; a file being written
+  while the server starts is for the administrator to avoid, and an import
+  rebuilt through the store's log would close it
+  ([#853](https://github.com/OpenMaker-Dev/openmaker/issues/853)). The readings hold one buffer, whatever the
   file's size, and a first start reads the file three times. The import
-  reads the file it opened: one replaced at its path meanwhile is read as
-  the one opened. The store reads a source when it hosts the file, at a
-  start or at the Admin Console's open of a closed file: what is written
-  to the `.fmp12` later is found the next time, as a file with another
-  digest, imported again, its old tree dropped.
+  reads the file it opened: one replaced at its path after the last look
+  at its stamp is read as the one opened, and one replaced during the
+  readings is refused, as its change time moves. The store reads a source
+  when it hosts the file, at a start or at the Admin Console's open of a
+  closed file: what is written to the `.fmp12` later is found the next
+  time, as a file with another digest, imported again, its old tree
+  dropped. The store keeps the tree of every name it ever hosted: a file
+  the server no longer hosts keeps its tree in the store, and in every
+  later version's table of roots, until the store folder is removed
+  ([#853](https://github.com/OpenMaker-Dev/openmaker/issues/853)).
 - **A stop or a failure at any point.** An import goes into a tree under a
   name of its own (`om-server:importing:<n>`), in units of work outside the
   log (section 6.10). One unit then records the file, drops the tree it
@@ -4328,12 +4368,15 @@ in memory. Outside that bound, the store engine also holds:
   to about the limit before it stops); a file past it, its accounts
   included, is not hosted (`HostingError::TooLarge`; OpenMaker's choice),
   rather than hosted with every login failing. The accounts are read one
-  at a time, never a page of them at once. What the decoded accounts keep
-  together is held under the same limit (`hosting::kept_by_accounts`):
-  each account keeps its own copy of its privilege set's rules, so many
-  small accounts on one large set keep that set once for each, counted
-  as the set's tree; past the limit the file is not hosted, as too large,
-  however small each tree is. Without `--allow-insecure-files`, the check
+  at a time, never a page of them at once. What the decoded accounts would
+  keep together is held under the same limit, counted from the tree before
+  any account is decoded (`hosting::kept_by_accounts`): each account keeps
+  its own copy of its custom privilege set's rules, so many small accounts
+  on one large custom set keep that set once for each, counted as the
+  set's tree (FileMaker's built-in sets keep no rules and are not counted);
+  past the limit the file is not hosted, refused before any account is
+  decoded, its message saying that its accounts would keep too much
+  (`HostingError::AccountsTooLarge`), however small each tree is. Without `--allow-insecure-files`, the check
   for an insecure file reads the accounts and the privilege sets each
   whole, as one tree within the limit: a file whose accounts each fit and
   together do not is refused as too large. The file engine has none of

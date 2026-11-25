@@ -1543,9 +1543,11 @@ step", "Export Field Contents script step"). The desktop does both. On
 macOS the Insert commands' file comes from the system's open panel
 (`NSOpenPanel`, shown modeless while the window waits on the step's
 prompt, titled with the command and saying the field the file goes into;
-`om-gui` `file_panel`). On Linux and Windows, in the GUI tests, and for
-Export Field Contents, an in-app dialog takes a path (absolute, or
-relative to the Documents folder). Neither offers "Store only a reference
+`om-gui` `file_panel`), and on Linux from the desktop's file chooser,
+asked through xdg-desktop-portal and titled with the command. On Windows,
+on Linux without a file chooser portal, in the GUI tests, and for Export
+Field Contents, an in-app dialog takes a path (absolute, or relative to
+the Documents folder). Neither offers "Store only a reference
 to the file", which FileMaker Pro's panel has: how FileMaker stores a
 reference is unmeasured ("External storage: still open", step 5), so such
 a step still stops as unsupported. That FileMaker Pro shows the panel

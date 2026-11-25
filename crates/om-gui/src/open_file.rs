@@ -37,13 +37,18 @@ pub(crate) struct OpenFileDialog {
 }
 
 impl OpenFileDialog {
+    /// The system's open panel in the chooser's place: FileMaker files, in
+    /// the same folder.
+    pub fn panel_request() -> crate::file_panel::Request {
+        crate::file_panel::Request::open("Open File", "")
+            .of_kind("fmp12")
+            .in_folder(documents())
+            .reporting_modifiers()
+    }
+
     /// The chooser, showing the user's Documents folder (or home).
     pub fn new() -> Self {
-        let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let documents = home.join("Documents");
-        Self::in_folder(if documents.is_dir() { documents } else { home })
+        Self::in_folder(documents())
     }
 
     pub fn in_folder(folder: PathBuf) -> Self {
@@ -172,6 +177,20 @@ impl OpenFileDialog {
             });
         });
         action
+    }
+}
+
+/// The user's Documents folder, or home without one: where the choosers
+/// and panels of Open and Create New start.
+pub(crate) fn documents() -> PathBuf {
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let documents = home.join("Documents");
+    if documents.is_dir() {
+        documents
+    } else {
+        home
     }
 }
 

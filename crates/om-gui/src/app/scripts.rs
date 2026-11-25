@@ -156,7 +156,7 @@ pub(super) struct PromptView {
     /// The platform's file panel answering an Insert command's
     /// [`Prompt::ContainerFile`] (`file_panel`), in place of the in-app
     /// dialog.
-    panel: Option<crate::file_panel::OpenPanel>,
+    panel: Option<crate::file_panel::FilePanel>,
     /// When the prompt was shown: a custom dialog's "Close after" counts
     /// from it.
     opened: std::time::Instant,
@@ -1881,11 +1881,12 @@ impl OpenMakerApp {
                 };
                 // An Insert command's file comes from the platform's panel
                 // where the app has a native window to show one beside.
-                let panel = match &prompt {
-                    Prompt::ContainerFile(dialog) if !dialog.export && self.native_window => {
+                let panel = match (&prompt, self.panel_parent) {
+                    (Prompt::ContainerFile(dialog), Some(parent)) if !dialog.export => {
                         let ctx = ctx.clone();
                         let message = format!("Into field {}", dialog.field);
-                        crate::file_panel::OpenPanel::open(&dialog.title, &message, move || {
+                        let request = crate::file_panel::Request::open(&dialog.title, &message);
+                        crate::file_panel::FilePanel::show(&request, parent, move || {
                             ctx.request_repaint()
                         })
                     }
@@ -2739,13 +2740,22 @@ impl OpenMakerApp {
             answer = dialog.show_browse(ctx).map(Answer::Sort);
         }
         if let (Some(panel), Prompt::ContainerFile(dialog)) = (&view.panel, &view.prompt) {
-            answer = panel.answer().map(|chosen| {
-                Answer::ContainerFile(chosen.map(|path| crate::scripting::ContainerFileDialog {
-                    path: path.display().to_string(),
-                    chosen: Some(path),
-                    ..dialog.clone()
-                }))
-            });
+            use crate::file_panel::Answer as Panel;
+            match panel.answer() {
+                Some(Panel::Chosen { path, .. }) => {
+                    answer = Some(Answer::ContainerFile(Some(
+                        crate::scripting::ContainerFileDialog {
+                            path: path.display().to_string(),
+                            chosen: Some(path),
+                            ..dialog.clone()
+                        },
+                    )));
+                }
+                Some(Panel::Canceled) => answer = Some(Answer::ContainerFile(None)),
+                // No panel after all (no portal): the dialog asks.
+                Some(Panel::Unavailable) => view.panel = None,
+                None => {}
+            }
         }
         if let Some(answer) = answer {
             let id = view.id;

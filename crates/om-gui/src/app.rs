@@ -859,7 +859,12 @@ impl Launcher {
 /// menu's file commands. Each waits for the open file to close first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Launch {
-    OpenFile,
+    /// File > Open; `asking` when Shift or Option was held as it was
+    /// chosen, which asks for an account however the file opens: through a
+    /// panel or OpenMaker's own chooser, and after the front file closes.
+    OpenFile {
+        asking: bool,
+    },
     CreateNew,
     Home(crate::file_history::Tab),
     Hosts,
@@ -873,6 +878,9 @@ enum Launch {
 struct Opening {
     target: Target,
     destination: crate::file_history::SavedFile,
+    /// Open Network File's Add to Hosts: saved once the file opens, so a
+    /// failed open and a failed save never share the one alert.
+    save_host: Option<crate::file_history::SavedHost>,
 }
 
 impl Opening {
@@ -888,6 +896,7 @@ impl Opening {
                 file,
                 local: Some(path),
             },
+            save_host: None,
         }
     }
 }
@@ -938,6 +947,11 @@ pub struct OpenMakerApp {
     file_history: crate::file_history::History,
     /// Why Recent and Favorites could not be read or saved, shown on Home.
     history_error: Option<String>,
+    /// Alerts that wait for the one up: each shows once no other is up, and
+    /// stays until its own alert is dismissed, so an error that replaces it
+    /// meanwhile does not lose it. A host Add to Hosts could not save as
+    /// its file opened, when the file's own errors may follow at once.
+    waiting_alerts: std::collections::VecDeque<String>,
     status: ConnectStatus,
     /// The file being opened while `status` is `Connecting`.
     opening: Option<Opening>,
@@ -1023,9 +1037,16 @@ pub struct OpenMakerApp {
     /// The macOS menu bar, while the app runs in a window of its own.
     #[cfg(target_os = "macos")]
     system_menu: Option<crate::system_menu::SystemMenuBar>,
-    /// The app runs in a native window of the platform's (not a test
-    /// harness's): the Insert commands use the platform's file panel.
-    native_window: bool,
+    /// The platform's native window, when the app runs in one (not in a
+    /// test harness): file panels show beside it (`file_panel`).
+    panel_parent: Option<crate::file_panel::Parent>,
+    /// The platform's open or save panel of File > Open or Create New, in
+    /// place of `open_file` or `create_new`'s own chooser; with whether
+    /// Shift or Option (Alt) was held as the command was chosen.
+    file_panel: Option<(Launch, bool, crate::file_panel::FilePanel)>,
+    /// File > Open's own chooser asks for an account for the file chosen
+    /// in it: Shift or Option was held as File > Open was chosen.
+    open_file_asking: bool,
     viewport_windows: crate::web_viewer::ViewportWindows,
     /// Open the form's file when the app first draws (`open_on_launch`).
     open_on_launch: bool,
@@ -1093,6 +1114,7 @@ impl OpenMakerApp {
             home: Default::default(),
             file_history: Default::default(),
             history_error: None,
+            waiting_alerts: Default::default(),
             status: ConnectStatus::Idle,
             opening: None,
             listing: connect::Listing::None,
@@ -1142,7 +1164,9 @@ impl OpenMakerApp {
             native_parent: Err(crate::web_viewer::Unavailable::Window),
             #[cfg(target_os = "macos")]
             system_menu: None,
-            native_window: false,
+            panel_parent: None,
+            file_panel: None,
+            open_file_asking: false,
             viewport_windows: Default::default(),
             open_on_launch: false,
             reconnect: None,
@@ -2337,6 +2361,7 @@ impl OpenMakerApp {
                 // the window, until another dialog takes its place.
                 let other = self.open_file.is_some()
                     || self.create_new.is_some()
+                    || self.file_panel.is_some()
                     || self.local_login.is_some()
                     || self.change_password.is_some();
                 // Not while a local file opens: its sign-in may follow. A
@@ -2892,7 +2917,7 @@ impl OpenMakerApp {
             }
         }
         self.reconnect_dialog(&ctx);
-        self.local_dialogs(&ctx, actions);
+        self.local_dialogs(&ctx);
         self.change_password_dialog(&ctx);
         self.own_password_dialog(&ctx);
         self.related_sign_in(&ctx);
@@ -2906,41 +2931,157 @@ impl OpenMakerApp {
                 self.forced_alert = Some((file, text));
             }
         }
+        if self.forced_alert.is_none() && self.error.is_none() && self.script.prompt.is_none() {
+            self.error = self.waiting_alerts.front().cloned();
+        }
         self.alert(&ctx, actions);
         self.host_message(&ctx, actions);
         self.prompt(&ctx);
     }
 
+    /// Show the platform's file panel for File > Open or Create New
+    /// (`launch`), beside the window. `false` where there is none to show:
+    /// the caller shows its own chooser.
+    fn show_file_panel(
+        &mut self,
+        ctx: &egui::Context,
+        launch: Launch,
+        request: &crate::file_panel::Request,
+    ) -> bool {
+        let Some(parent) = self.panel_parent else {
+            return false;
+        };
+        // Shift or Option held as Open is chosen asks for an account too:
+        // the window sees these keys on every platform, where the panel's
+        // own may not be seen (a Wayland session). They were read as the
+        // command was chosen, before any close of the front file.
+        let asking = matches!(launch, Launch::OpenFile { asking: true })
+            || ctx.input(|i| i.modifiers.shift || i.modifiers.alt);
+        let wake = ctx.clone();
+        let shown =
+            crate::file_panel::FilePanel::show(request, parent, move || wake.request_repaint());
+        match shown {
+            Some(panel) => {
+                self.file_panel = Some((launch, asking, panel));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The answer of File > Open's or Create New's panel: the file chosen
+    /// opens, or is made, as from OpenMaker's own chooser; where no panel
+    /// could be shown, that chooser asks. A panel is modeless: when a file
+    /// opened, or began to, while it was up, its answer is dropped.
+    fn file_panel_answered(&mut self, ctx: &egui::Context) {
+        use crate::file_panel::Answer;
+        let Some(answer) = self
+            .file_panel
+            .as_ref()
+            .and_then(|(_, _, panel)| panel.answer())
+        else {
+            return;
+        };
+        let Some((launch, held, _)) = self.file_panel.take() else {
+            return;
+        };
+        if self.status != ConnectStatus::Idle || self.w.session.is_some() {
+            return;
+        }
+        match (launch, answer) {
+            (Launch::OpenFile { .. }, Answer::Chosen { path, asking }) => {
+                self.open_chosen(ctx, path, held || asking);
+            }
+            (Launch::OpenFile { .. }, Answer::Unavailable) => {
+                self.open_file = Some(crate::open_file::OpenFileDialog::new());
+                self.open_file_asking = held;
+            }
+            (Launch::CreateNew, Answer::Chosen { path, .. }) => self.create_file(ctx, &path),
+            (Launch::CreateNew, Answer::Unavailable) => {
+                self.create_new = Some(crate::create_new::CreateNewDialog::saving());
+            }
+            _ => {}
+        }
+    }
+
+    /// Open the local file chosen at `path` when no file is open or
+    /// opening. Shift (or Option/Alt) held, here or in the panel that chose
+    /// it (`asking`), asks for an account even when File Options sign in
+    /// without asking, as FileMaker Pro does (local-files.md 3.1).
+    fn open_chosen(&mut self, ctx: &egui::Context, path: std::path::PathBuf, asking: bool) {
+        self.open_file = None;
+        if self.status == ConnectStatus::Idle && self.w.session.is_none() {
+            let ask = asking || ctx.input(|i| i.modifiers.shift || i.modifiers.alt);
+            self.open_local_with(
+                ctx,
+                om_data::LocalFile {
+                    path,
+                    credentials: None,
+                },
+                ask,
+            );
+        }
+    }
+
+    /// The create_file operation at `path`, then the new file opens as its
+    /// Admin with no password, as FileMaker Pro opens it. A refusal shows
+    /// in Create New's own dialog when it is up, otherwise in an alert.
+    fn create_file(&mut self, ctx: &egui::Context, path: &std::path::Path) {
+        match om_data::new_file::create(path) {
+            Ok(created) => {
+                self.create_new = None;
+                self.database_after_open = Some(created.path.clone());
+                let file = om_data::LocalFile {
+                    path: created.path,
+                    credentials: Some((
+                        created.account.to_owned(),
+                        zeroize::Zeroizing::new(String::new()),
+                    )),
+                };
+                self.open_local(ctx, file);
+            }
+            Err(e) => match &mut self.create_new {
+                Some(dialog) => dialog.error = Some(e.to_string()),
+                None => self.error = Some(e.to_string()),
+            },
+        }
+    }
+
     /// File > Open's chooser and a local file's account dialog.
-    fn local_dialogs(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    fn local_dialogs(&mut self, ctx: &egui::Context) {
         use crate::open_file::{ChooserAction, LoginAction};
+        self.file_panel_answered(ctx);
+        let mut chosen = None;
         if let Some(dialog) = &mut self.open_file {
             match dialog.show(ctx) {
-                Some(ChooserAction::Open(path)) => actions.push(Action::OpenLocal(path)),
-                Some(ChooserAction::Cancel) => self.open_file = None,
+                Some(ChooserAction::Open(path)) => chosen = Some(path),
+                Some(ChooserAction::Cancel) => {
+                    self.open_file = None;
+                    self.open_file_asking = false;
+                }
                 None => {}
             }
+        }
+        // The keys held as File > Open was chosen go with the file chosen.
+        if let Some(path) = chosen {
+            let asking = std::mem::take(&mut self.open_file_asking);
+            self.open_chosen(ctx, path, asking);
         }
         if let Some(dialog) = &mut self.create_new {
             use crate::create_new::CreateAction;
             match dialog.show(ctx) {
-                // The create_file operation, then the new file opens as
-                // its Admin with no password, as FileMaker Pro opens it.
-                Some(CreateAction::Create(path)) => match om_data::new_file::create(&path) {
-                    Ok(created) => {
+                // Create in the Create an App sheet: the system's save
+                // panel names the file where there is one, else the
+                // dialog's own.
+                Some(CreateAction::ChooseLocation) => {
+                    let request = crate::create_new::CreateNewDialog::panel_request();
+                    if self.show_file_panel(ctx, Launch::CreateNew, &request) {
                         self.create_new = None;
-                        self.database_after_open = Some(created.path.clone());
-                        let file = om_data::LocalFile {
-                            path: created.path,
-                            credentials: Some((
-                                created.account.to_owned(),
-                                zeroize::Zeroizing::new(String::new()),
-                            )),
-                        };
-                        self.open_local(ctx, file);
+                    } else if let Some(dialog) = &mut self.create_new {
+                        dialog.choose_location();
                     }
-                    Err(e) => dialog.error = Some(e.to_string()),
-                },
+                }
+                Some(CreateAction::Create(path)) => self.create_file(ctx, &path),
                 Some(CreateAction::Cancel) => self.create_new = None,
                 None => {}
             }
@@ -3204,10 +3345,10 @@ impl OpenMakerApp {
                 self.form.password.zeroize();
                 self.form = ConnectForm::from(connection);
                 self.apply(ctx, Action::Connect);
-                // After Connect, which clears the alert: a host that could
-                // not be saved says so.
-                if let Some(host) = save_host {
-                    self.edit_file_history(crate::file_history::Change::AddHost(host));
+                // Saved once the file opens (`file_opened`); a failed open
+                // drops it, and the dialog, still ticked, asks again.
+                if let Some(opening) = &mut self.opening {
+                    opening.save_host = save_host;
                 }
             }
             connect::NetworkAction::Cancel => {
@@ -3232,6 +3373,7 @@ impl OpenMakerApp {
 
     fn can_launch(&self) -> bool {
         self.status == ConnectStatus::Idle
+            && self.file_panel.is_none()
             && self.local_login.is_none()
             && self.change_password.is_none()
             && self.closing.is_none()
@@ -3333,8 +3475,12 @@ impl OpenMakerApp {
     fn edit_file_history(&mut self, change: crate::file_history::Change) {
         let path = self.history_path().map(std::path::Path::to_path_buf);
         let requested = change.requested();
+        // Saved as its file opens, a host's failure waits for any alert
+        // the opening file raises, and is not lost to it.
+        let waits = matches!(change, crate::file_history::Change::AddHost(_));
         match self.file_history.change(path.as_deref(), change) {
             Ok(()) => self.history_error = None,
+            Err(error) if waits => self.waiting_alerts.push_back(error.message),
             Err(error) if requested => self.error = Some(error.message),
             Err(error) => self.history_error = Some(error.message),
         }
@@ -3400,8 +3546,12 @@ impl OpenMakerApp {
                 self.open_file = None;
                 self.create_new = Some(crate::create_new::CreateNewDialog::new());
             }
-            Launch::OpenFile => {
-                self.open_file = Some(crate::open_file::OpenFileDialog::new());
+            Launch::OpenFile { asking } => {
+                let request = crate::open_file::OpenFileDialog::panel_request();
+                if !self.show_file_panel(ctx, Launch::OpenFile { asking }, &request) {
+                    self.open_file = Some(crate::open_file::OpenFileDialog::new());
+                    self.open_file_asking = asking;
+                }
             }
             Launch::Home(tab) => {
                 self.home.show_files();
@@ -3463,7 +3613,8 @@ impl OpenMakerApp {
     /// A dialog of the app's other than its error alert (a failure, such as
     /// a save the host refused) is open.
     fn dialog_open_besides_error(&self) -> bool {
-        self.manage_layouts.is_some()
+        self.file_panel.is_some()
+            || self.manage_layouts.is_some()
             || self.layout_setup.is_some()
             || self.part_setup.is_some()
             || self.w.layout_workspace.setting_up_button()
@@ -4782,6 +4933,7 @@ impl OpenMakerApp {
                                 port: connection.port,
                                 file: connection.file.clone(),
                             },
+                            save_host: None,
                         });
                         self.request(
                             ctx,
@@ -4813,7 +4965,12 @@ impl OpenMakerApp {
             Action::RecreateRecord => self.recreate(ctx, true),
             Action::DiscardNewRecord => self.recreate(ctx, false),
             Action::ShowCreateNew => self.launch(ctx, Launch::CreateNew),
-            Action::ShowOpenFile => self.launch(ctx, Launch::OpenFile),
+            Action::ShowOpenFile => {
+                // Read now: a close of the front file comes first, and the
+                // keys may be let go meanwhile.
+                let asking = ctx.input(|i| i.modifiers.shift || i.modifiers.alt);
+                self.launch(ctx, Launch::OpenFile { asking });
+            }
             Action::ShowHome(tab) => self.launch(ctx, Launch::Home(tab)),
             Action::ShowHosts => self.launch(ctx, Launch::Hosts),
             Action::OpenNetworkFile(path) => self.launch(ctx, Launch::NetworkFile(path)),
@@ -4827,23 +4984,7 @@ impl OpenMakerApp {
             }
             Action::OpenSaved(file) => self.launch(ctx, Launch::Saved(file)),
             Action::EditHistory(change) => self.edit_file_history(change),
-            Action::OpenLocal(path) => {
-                self.open_file = None;
-                if self.status == ConnectStatus::Idle && self.w.session.is_none() {
-                    // Shift (or Option/Alt) held: ask for an account even
-                    // when File Options sign in without asking, as
-                    // FileMaker Pro does (local-files.md 3.1).
-                    let ask = ctx.input(|i| i.modifiers.shift || i.modifiers.alt);
-                    self.open_local_with(
-                        ctx,
-                        om_data::LocalFile {
-                            path,
-                            credentials: None,
-                        },
-                        ask,
-                    );
-                }
-            }
+            Action::OpenLocal(path) => self.open_chosen(ctx, path, false),
             Action::CloseWindow => {
                 if self.w.session.is_none() {
                     self.closing = None;
@@ -5199,6 +5340,9 @@ impl OpenMakerApp {
                 }
             }
             Action::DismissAlert => {
+                if self.waiting_alerts.front() == self.error.as_ref() {
+                    self.waiting_alerts.pop_front();
+                }
                 self.error = None;
                 self.w.document.release_focus();
             }
@@ -5532,9 +5676,13 @@ impl OpenMakerApp {
         let Opening {
             target,
             destination,
+            save_host,
         } = opening;
         if !self.sample_data {
             self.edit_file_history(crate::file_history::Change::Opened(destination.clone()));
+        }
+        if let Some(host) = save_host {
+            self.edit_file_history(crate::file_history::Change::AddHost(host));
         }
         self.home.reset();
         self.closed_windows.clear();
@@ -7472,13 +7620,7 @@ impl OpenMakerApp {
 impl eframe::App for OpenMakerApp {
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         self.native_parent = crate::web_viewer::NativeParent::of(frame);
-        self.native_window = {
-            use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            matches!(
-                frame.window_handle().map(|h| h.as_raw()),
-                Ok(RawWindowHandle::AppKit(_))
-            )
-        };
+        self.panel_parent = crate::file_panel::Parent::of(frame);
         #[cfg(target_os = "macos")]
         {
             if self.system_menu.is_none() {
@@ -8338,6 +8480,94 @@ mod tests {
     /// Home's and the File menu's file commands close the front file first,
     /// and nothing while another file is open or a layout has unsaved
     /// changes.
+    /// File > Open's and Create New's system panels: a chosen file opens,
+    /// or is made and opens, as from OpenMaker's own choosers; with no
+    /// panel after all (no portal on the session bus) those choosers ask;
+    /// a name already taken replaces nothing and says so in an alert.
+    #[test]
+    fn a_file_panels_answer_opens_creates_or_asks_in_the_apps_chooser() {
+        use crate::file_panel::{Answer, FilePanel};
+        let ctx = egui::Context::default();
+        let mut app = OpenMakerApp::with_license_store(
+            Box::new(om_data::mock::MockProvider::new()),
+            Box::new(NoLicense),
+        );
+        let answer = |app: &mut OpenMakerApp, launch: Launch, answer: Answer| {
+            app.file_panel = Some((launch, false, FilePanel::answered(answer)));
+            app.file_panel_answered(&ctx);
+            assert!(app.file_panel.is_none());
+        };
+        let chosen = |path: std::path::PathBuf| Answer::Chosen {
+            path,
+            asking: false,
+        };
+        let tasks = std::path::PathBuf::from("/nowhere/Tasks.fmp12");
+        answer(
+            &mut app,
+            Launch::OpenFile { asking: false },
+            chosen(tasks.clone()),
+        );
+        assert_eq!(app.status, ConnectStatus::Connecting);
+        let opening = app.opening.as_ref().and_then(|o| o.target.local.as_ref());
+        assert_eq!(opening, Some(&tasks));
+
+        // The panel is modeless: an answer that comes once a file is opening
+        // makes no file.
+        let folder = tempfile::tempdir().unwrap();
+        answer(
+            &mut app,
+            Launch::CreateNew,
+            chosen(folder.path().join("Late")),
+        );
+        assert!(!folder.path().join("Late.fmp12").exists());
+        app.status = ConnectStatus::Idle;
+        app.opening = None;
+
+        answer(
+            &mut app,
+            Launch::OpenFile { asking: false },
+            Answer::Canceled,
+        );
+        assert!(app.opening.is_none() && app.open_file.is_none() && app.create_new.is_none());
+        answer(
+            &mut app,
+            Launch::OpenFile { asking: false },
+            Answer::Unavailable,
+        );
+        assert!(app.open_file.take().is_some());
+        // Shift held as File > Open was chosen goes on to OpenMaker's own
+        // chooser when no panel can be shown.
+        app.file_panel = Some((
+            Launch::OpenFile { asking: true },
+            true,
+            FilePanel::answered(Answer::Unavailable),
+        ));
+        app.file_panel_answered(&ctx);
+        assert!(app.open_file.take().is_some() && std::mem::take(&mut app.open_file_asking));
+        answer(&mut app, Launch::CreateNew, Answer::Unavailable);
+        assert!(app.create_new.take().is_some());
+
+        // Named without its extension, the file is made with it.
+        answer(
+            &mut app,
+            Launch::CreateNew,
+            chosen(folder.path().join("New")),
+        );
+        let made = folder.path().join("New.fmp12");
+        assert!(made.is_file());
+        assert_eq!(app.database_after_open.as_deref(), Some(made.as_path()));
+        assert!(app.error.is_none());
+        let bytes = std::fs::read(&made).unwrap();
+        app.status = ConnectStatus::Idle;
+        app.opening = None;
+        answer(&mut app, Launch::CreateNew, chosen(made.clone()));
+        assert!(app
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("already exists")));
+        assert_eq!(std::fs::read(&made).unwrap(), bytes);
+    }
+
     #[test]
     fn a_launch_command_closes_the_front_file_only_when_nothing_else_is_lost() {
         let ctx = egui::Context::default();

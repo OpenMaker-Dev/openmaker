@@ -792,7 +792,11 @@ impl NetworkDialog {
         }
         let mut save_host = false;
         if let Some(host) = &unsaved {
-            save_host = self.save_host.as_ref() == Some(&host.server());
+            // The host as saved hosts know it: its address in any case.
+            save_host = self
+                .save_host
+                .as_ref()
+                .is_some_and(|(address, port)| host.is(address, *port));
             indented(ui, |ui| {
                 ui.add_enabled(
                     idle,
