@@ -151,11 +151,8 @@ impl Server {
         let engine = match settings {
             EngineSettings::File => Engine::default(),
             EngineSettings::Store { dir, cache_bytes } => {
-                let folder = crate::engine::StoreFolder::open(
-                    &om_store::os::OsFs::new(dir.clone()),
-                    *cache_bytes,
-                )
-                .map_err(StartError::Store)?;
+                let folder = crate::engine::StoreFolder::open_dir(dir, *cache_bytes)
+                    .map_err(StartError::Store)?;
                 info!("the store engine hosts the files, from {}", dir.display());
                 Engine::Store(crate::engine::StoreEngine::new(Arc::new(folder)))
             }

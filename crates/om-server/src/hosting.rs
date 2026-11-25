@@ -1731,23 +1731,31 @@ pub(crate) fn read_accounts(view: &dyn View) -> Result<Vec<FileAccount>, ReadErr
     let sets = view.subtree(&PRIVILEGE_SETS_PATH, NO_LIMIT)?;
     let sets = sets.as_deref().map(crate::store::view);
     let mut accounts = Vec::new();
-    for account in view.subtrees(
-        &ACCOUNTS_PATH,
-        Bound::Unbounded,
-        Direction::Forward,
-        NO_LIMIT,
-    ) {
-        // A copy the view made of the record, its password verifier with
-        // it, is wiped once decoded (the test view's; the file engine's
-        // view lends its tree).
-        let account = crate::engine::Wiped(account?);
-        let account = &account.0;
+    // One account's record whole at a time, never a page of them: what a
+    // view's limit caps (the store engine's, `HOSTING_LIMIT`) is all that is
+    // held at once.
+    for child in view.children(&ACCOUNTS_PATH, Bound::Unbounded, Direction::Forward) {
+        let segment = child?.segment;
         // A Login reply names the account by its record key as a key path
         // with one-byte lengths (`[len][key]`, network-protocol.md 5.6.5):
         // an account whose key is too long for that is not admitted.
-        if account.segment.len() >= usize::from(u8::MAX) {
+        if segment.len() >= usize::from(u8::MAX) {
             continue;
         }
+        let path = [
+            ACCOUNTS_PATH[0],
+            ACCOUNTS_PATH[1],
+            ACCOUNTS_PATH[2],
+            &segment,
+        ];
+        let Some(account) = view.subtree(&path, NO_LIMIT)? else {
+            continue;
+        };
+        // A copy the view made of the record, its password verifier with
+        // it, is wiped once decoded (the test view's; the file engine's
+        // view lends its tree).
+        let account = crate::engine::Wiped(account);
+        let account = &account.0;
         let account = crate::store::view(account);
         let decoded = (|| {
             let name = account.child(ACCOUNT_NAME)?.text()?.ok()?;

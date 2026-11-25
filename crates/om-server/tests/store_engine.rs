@@ -60,13 +60,24 @@ fn a_file_hosted_from_the_store_reads_as_from_the_file_engine() {
     assert_eq!(stored, loaded);
     assert_eq!(std::fs::read(&file.0).unwrap(), before);
     // The file engine's server also answered each read through a store
-    // copy (`engine::copies`): this test claims that comparison, so it
-    // fails when nothing was compared or the copy could not be made.
+    // copy (`engine::copies`): this test claims that comparison for every
+    // read it counts (each call through the test switch), so it fails when
+    // nothing was compared, the copy could not be made, or a read was of
+    // any other kind (a later version, told to fail, run once).
     #[cfg(debug_assertions)]
     {
         let compared = handle.store_comparisons().expect("a server checking reads");
         assert!(compared.compared > 0, "{compared:?}");
-        assert_eq!((compared.no_copy, compared.changed), (0, 0), "{compared:?}");
+        assert_eq!(
+            (
+                compared.no_copy,
+                compared.changed,
+                compared.failing,
+                compared.single_run
+            ),
+            (0, 0, 0, 0),
+            "{compared:?}"
+        );
     }
 }
 

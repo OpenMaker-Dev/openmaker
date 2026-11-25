@@ -524,8 +524,9 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 /// The engine `args` choose (`--engine`, `--store-dir`, `--store-cache-mib`;
 /// docs/server-storage.md 11): the store engine's folder by default in the
 /// state folder, made for the server's user only. A folder that overlaps a
-/// database folder, or that exists and other users can reach, is refused
-/// (`om_server::check_store_folder`).
+/// database folder is refused (`om_server::check_store_folder`), and one
+/// other users can reach is refused by the engine when it opens it. The
+/// folder is used by its absolute path, the one checked.
 fn engine_settings(args: &Args) -> Result<EngineSettings, String> {
     if !args.store_engine {
         return Ok(EngineSettings::File);
@@ -541,6 +542,8 @@ fn engine_settings(args: &Args) -> Result<EngineSettings, String> {
             .map(|state| state.join("Store"))
             .ok_or("--engine store: no --store-dir and no state folder to put the store in")?,
     };
+    let dir =
+        std::path::absolute(&dir).map_err(|e| format!("--store-dir {}: {e}", dir.display()))?;
     // The folders `hosted_paths` searches.
     let database_folders = match args.database_folders.is_empty() {
         true => state.iter().map(|state| state.join("Databases")).collect(),
