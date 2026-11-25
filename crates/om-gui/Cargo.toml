@@ -77,7 +77,7 @@ wry = { version = "0.57", default-features = false, features = ["os-webview"], o
 # in, the open and save panels (`file_panel`), and the Edit menu's text
 # pasteboard.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "objc2-uniform-type-identifiers", "NSApplication", "NSOpenPanel", "NSPanel", "NSPasteboard", "NSResponder", "NSSavePanel", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "objc2-uniform-type-identifiers", "NSApplication", "NSEvent", "NSOpenPanel", "NSPanel", "NSPasteboard", "NSResponder", "NSSavePanel", "NSView", "NSWindow"] }
 # The panels' file type, by extension (`file_panel`; the objc2 version
 # objc2-app-kit 0.3 uses; MIT OR Zlib OR Apache-2.0).
 objc2-uniform-type-identifiers = { version = "0.3", default-features = false, features = ["std", "UTType"] }

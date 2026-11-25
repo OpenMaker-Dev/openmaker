@@ -128,7 +128,14 @@ impl Parent {
 /// A panel's answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Answer {
-    Chosen(PathBuf),
+    Chosen {
+        path: PathBuf,
+        /// Shift or Option (Alt) was held as the panel answered:
+        /// FileMaker's gesture for choosing the account a file opens with
+        /// (docs/re/local-files.md 3.1). The panel has the keyboard, so the
+        /// window's own input cannot see it.
+        asking: bool,
+    },
     Canceled,
     /// No panel could be shown: the caller asks in its own dialog.
     Unavailable,
@@ -199,7 +206,9 @@ fn platform_show(
 ) -> Option<Shown> {
     use objc2::rc::{Retained, Weak};
     use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSModalResponse, NSModalResponseOK, NSOpenPanel, NSSavePanel};
+    use objc2_app_kit::{
+        NSEvent, NSEventModifierFlags, NSModalResponse, NSModalResponseOK, NSOpenPanel, NSSavePanel,
+    };
     use objc2_foundation::{NSArray, NSString, NSURL};
     use objc2_uniform_type_identifiers::UTType;
     if parent != Parent::AppKit {
@@ -253,7 +262,15 @@ fn platform_show(
             })
             .and_then(|url| url.path())
             .map(|path| PathBuf::from(path.to_string()));
-        let _ = send.send(chosen.map_or(Answer::Canceled, Answer::Chosen));
+        let answer = match chosen {
+            Some(path) => Answer::Chosen {
+                path,
+                asking: NSEvent::modifierFlags_class()
+                    .intersects(NSEventModifierFlags::Shift | NSEventModifierFlags::Option),
+            },
+            None => Answer::Canceled,
+        };
+        let _ = send.send(answer);
         wake();
     });
     panel.beginWithCompletionHandler(&done);
@@ -355,6 +372,15 @@ mod portal {
         let _ = connection.close();
     }
 
+    /// Closes the connection when dropped, ending every wait on it.
+    struct Closing(Connection);
+
+    impl Drop for Closing {
+        fn drop(&mut self) {
+            let _ = self.0.clone().close();
+        }
+    }
+
     /// Ask the portal for `request`'s file, and wait for the answer.
     pub(super) fn ask(request: &Request, parent: &str, shown: &Arc<Mutex<Shown>>) -> Answer {
         match try_ask(request, parent, shown) {
@@ -385,6 +411,16 @@ mod portal {
             .member("Response")?
             .build();
         let mut responses = MessageIterator::for_match_rule(rule, &connection, Some(16))?;
+        // And for the portal leaving the bus: a request whose portal went
+        // never answers.
+        let rule = zbus::MatchRule::builder()
+            .msg_type(zbus::message::Type::Signal)
+            .sender("org.freedesktop.DBus")?
+            .interface("org.freedesktop.DBus")?
+            .member("NameOwnerChanged")?
+            .arg(0, DESKTOP)?
+            .build();
+        let owners = MessageIterator::for_match_rule(rule, &connection, Some(16))?;
         let token = format!(
             "openmaker{}_{}",
             std::process::id(),
@@ -396,10 +432,7 @@ mod portal {
         if let Some(extension) = request.extension {
             let filter = (
                 format!("FileMaker Pro files (.{extension})"),
-                vec![
-                    (0u32, format!("*.{extension}")),
-                    (0u32, format!("*.{}", extension.to_uppercase())),
-                ],
+                vec![(0u32, any_case_glob(extension))],
             );
             options.insert("filters", Value::new(vec![filter.clone()]));
             options.insert("current_filter", Value::new(filter));
@@ -428,6 +461,10 @@ mod portal {
             &(parent, request.title.as_str(), options),
         )?;
         let handle: OwnedObjectPath = reply.body().deserialize()?;
+        // The portal's own name: only its Response is the user's answer.
+        let Some(portal) = reply.header().sender().map(|name| name.to_owned()) else {
+            return Ok(Answer::Unavailable);
+        };
         {
             let Ok(mut shown) = shown.lock() else {
                 return Ok(Answer::Canceled);
@@ -438,9 +475,36 @@ mod portal {
             }
             *shown = Shown::Open(connection.clone(), handle.clone());
         }
+        // Whichever way this ends, the connection closes, which ends the
+        // watch below; the portal leaving closes it too, which ends the wait
+        // for its answer.
+        let _closing = Closing(connection.clone());
+        let watched = connection.clone();
+        let left = portal.clone();
+        std::thread::Builder::new()
+            .name("file panel watch".into())
+            .spawn(move || {
+                for message in owners {
+                    let Ok(message) = message else {
+                        return;
+                    };
+                    let gone = message
+                        .body()
+                        .deserialize::<(String, String, String)>()
+                        .is_ok_and(|(_, old, _)| old == left.as_str());
+                    if gone {
+                        let _ = watched.close();
+                        return;
+                    }
+                }
+            })
+            .map_err(|err| zbus::Error::Failure(err.to_string()))?;
         for message in responses.by_ref() {
             let message = message?;
-            if message.header().path().map(|p| p.as_str()) != Some(handle.as_str()) {
+            let header = message.header();
+            if header.path().map(|p| p.as_str()) != Some(handle.as_str())
+                || header.sender() != Some(&portal)
+            {
                 continue;
             }
             let (response, results): (u32, HashMap<String, OwnedValue>) =
@@ -451,13 +515,52 @@ mod portal {
                     .and_then(|uris| Vec::<String>::try_from(uris.clone()).ok())
                     .and_then(|uris| uris.into_iter().next())
                     .and_then(|uri| file_uri_path(&uri))
-                    .map_or(Answer::Unavailable, Answer::Chosen),
+                    .map_or(Answer::Unavailable, |path| Answer::Chosen {
+                        path,
+                        asking: parent.starts_with("x11:") && x11_asking(),
+                    }),
                 1 => Answer::Canceled,
                 // Ended some other way: the backend could not show one.
                 _ => Answer::Unavailable,
             });
         }
+        // The portal left, or the bus closed.
         Ok(Answer::Unavailable)
+    }
+
+    /// Shift or Alt is held now, as the X server sees it: the window's own
+    /// input saw nothing while the chooser had the keyboard.
+    fn x11_asking() -> bool {
+        use x11rb::connection::Connection as _;
+        use x11rb::protocol::xproto::{ConnectionExt, KeyButMask};
+        let Ok((conn, screen)) = x11rb::connect(None) else {
+            return false;
+        };
+        let Some(root) = conn.setup().roots.get(screen).map(|s| s.root) else {
+            return false;
+        };
+        let held = u16::from(KeyButMask::SHIFT) | u16::from(KeyButMask::MOD1);
+        conn.query_pointer(root)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .is_some_and(|reply| u16::from(reply.mask) & held != 0)
+    }
+
+    /// A glob of `extension` in any case: `*.[fF][mM][pP]12`, as
+    /// OpenMaker's own chooser matches it.
+    fn any_case_glob(extension: &str) -> String {
+        let mut glob = String::from("*.");
+        for c in extension.chars() {
+            if c.is_ascii_alphabetic() {
+                glob.push('[');
+                glob.push(c.to_ascii_lowercase());
+                glob.push(c.to_ascii_uppercase());
+                glob.push(']');
+            } else {
+                glob.push(c);
+            }
+        }
+        glob
     }
 
     /// A path as the portal's `ay` options take it: its bytes and a NUL.

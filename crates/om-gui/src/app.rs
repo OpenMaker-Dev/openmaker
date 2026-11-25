@@ -2326,6 +2326,7 @@ impl OpenMakerApp {
             None if self.launcher.showing_hosts()
                 && (self.open_file.is_some()
                     || self.create_new.is_some()
+                    || self.file_panel.is_some()
                     || self.local_login.is_some()) =>
             {
                 egui::CentralPanel::default()
@@ -2907,8 +2908,9 @@ impl OpenMakerApp {
 
     /// The answer of File > Open's or Create New's panel: the file chosen
     /// opens, or is made, as from OpenMaker's own chooser; where no panel
-    /// could be shown, that chooser asks.
-    fn file_panel_answered(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    /// could be shown, that chooser asks. A panel is modeless: when a file
+    /// opened, or began to, while it was up, its answer is dropped.
+    fn file_panel_answered(&mut self, ctx: &egui::Context) {
         use crate::file_panel::Answer;
         let Some(answer) = self
             .file_panel
@@ -2920,16 +2922,40 @@ impl OpenMakerApp {
         let Some((launch, _)) = self.file_panel.take() else {
             return;
         };
+        if self.status != ConnectStatus::Idle || self.w.session.is_some() {
+            return;
+        }
         match (launch, answer) {
-            (Launch::OpenFile, Answer::Chosen(path)) => actions.push(Action::OpenLocal(path)),
+            (Launch::OpenFile, Answer::Chosen { path, asking }) => {
+                self.open_chosen(ctx, path, asking);
+            }
             (Launch::OpenFile, Answer::Unavailable) => {
                 self.open_file = Some(crate::open_file::OpenFileDialog::new());
             }
-            (Launch::CreateNew, Answer::Chosen(path)) => self.create_file(ctx, &path),
+            (Launch::CreateNew, Answer::Chosen { path, .. }) => self.create_file(ctx, &path),
             (Launch::CreateNew, Answer::Unavailable) => {
                 self.create_new = Some(crate::create_new::CreateNewDialog::saving());
             }
             _ => {}
+        }
+    }
+
+    /// Open the local file chosen at `path` when no file is open or
+    /// opening. Shift (or Option/Alt) held, here or in the panel that chose
+    /// it (`asking`), asks for an account even when File Options sign in
+    /// without asking, as FileMaker Pro does (local-files.md 3.1).
+    fn open_chosen(&mut self, ctx: &egui::Context, path: std::path::PathBuf, asking: bool) {
+        self.open_file = None;
+        if self.status == ConnectStatus::Idle && self.w.session.is_none() {
+            let ask = asking || ctx.input(|i| i.modifiers.shift || i.modifiers.alt);
+            self.open_local_with(
+                ctx,
+                om_data::LocalFile {
+                    path,
+                    credentials: None,
+                },
+                ask,
+            );
         }
     }
 
@@ -2960,7 +2986,7 @@ impl OpenMakerApp {
     /// File > Open's chooser and a local file's account dialog.
     fn local_dialogs(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         use crate::open_file::{ChooserAction, LoginAction};
-        self.file_panel_answered(ctx, actions);
+        self.file_panel_answered(ctx);
         if let Some(dialog) = &mut self.open_file {
             match dialog.show(ctx) {
                 Some(ChooserAction::Open(path)) => actions.push(Action::OpenLocal(path)),
@@ -4804,23 +4830,7 @@ impl OpenMakerApp {
             Action::ShowHosts => self.launch(ctx, Launch::Hosts),
             Action::OpenSaved(file) => self.launch(ctx, Launch::Saved(file)),
             Action::EditHistory(change) => self.edit_file_history(change),
-            Action::OpenLocal(path) => {
-                self.open_file = None;
-                if self.status == ConnectStatus::Idle && self.w.session.is_none() {
-                    // Shift (or Option/Alt) held: ask for an account even
-                    // when File Options sign in without asking, as
-                    // FileMaker Pro does (local-files.md 3.1).
-                    let ask = ctx.input(|i| i.modifiers.shift || i.modifiers.alt);
-                    self.open_local_with(
-                        ctx,
-                        om_data::LocalFile {
-                            path,
-                            credentials: None,
-                        },
-                        ask,
-                    );
-                }
-            }
+            Action::OpenLocal(path) => self.open_chosen(ctx, path, false),
             Action::CloseWindow => {
                 if self.w.session.is_none() {
                     self.closing = None;
@@ -8337,34 +8347,52 @@ mod tests {
         );
         let answer = |app: &mut OpenMakerApp, launch: Launch, answer: Answer| {
             app.file_panel = Some((launch, FilePanel::answered(answer)));
-            let mut actions = Vec::new();
-            app.file_panel_answered(&ctx, &mut actions);
+            app.file_panel_answered(&ctx);
             assert!(app.file_panel.is_none());
-            actions
         };
-        let chosen = std::path::PathBuf::from("/nowhere/Tasks.fmp12");
-        let actions = answer(&mut app, Launch::OpenFile, Answer::Chosen(chosen.clone()));
-        assert_eq!(actions, [Action::OpenLocal(chosen)]);
-        assert!(answer(&mut app, Launch::OpenFile, Answer::Canceled).is_empty());
-        assert!(app.open_file.is_none() && app.create_new.is_none());
+        let chosen = |path: std::path::PathBuf| Answer::Chosen {
+            path,
+            asking: false,
+        };
+        let tasks = std::path::PathBuf::from("/nowhere/Tasks.fmp12");
+        answer(&mut app, Launch::OpenFile, chosen(tasks.clone()));
+        assert_eq!(app.status, ConnectStatus::Connecting);
+        let opening = app.opening.as_ref().and_then(|o| o.target.local.as_ref());
+        assert_eq!(opening, Some(&tasks));
+
+        // The panel is modeless: an answer that comes once a file is opening
+        // makes no file.
+        let folder = tempfile::tempdir().unwrap();
+        answer(
+            &mut app,
+            Launch::CreateNew,
+            chosen(folder.path().join("Late")),
+        );
+        assert!(!folder.path().join("Late.fmp12").exists());
+        app.status = ConnectStatus::Idle;
+        app.opening = None;
+
+        answer(&mut app, Launch::OpenFile, Answer::Canceled);
+        assert!(app.opening.is_none() && app.open_file.is_none() && app.create_new.is_none());
         answer(&mut app, Launch::OpenFile, Answer::Unavailable);
         assert!(app.open_file.take().is_some());
         answer(&mut app, Launch::CreateNew, Answer::Unavailable);
         assert!(app.create_new.take().is_some());
 
         // Named without its extension, the file is made with it.
-        let folder = tempfile::tempdir().unwrap();
         answer(
             &mut app,
             Launch::CreateNew,
-            Answer::Chosen(folder.path().join("New")),
+            chosen(folder.path().join("New")),
         );
         let made = folder.path().join("New.fmp12");
         assert!(made.is_file());
         assert_eq!(app.database_after_open.as_deref(), Some(made.as_path()));
         assert!(app.error.is_none());
         let bytes = std::fs::read(&made).unwrap();
-        answer(&mut app, Launch::CreateNew, Answer::Chosen(made.clone()));
+        app.status = ConnectStatus::Idle;
+        app.opening = None;
+        answer(&mut app, Launch::CreateNew, chosen(made.clone()));
         assert!(app
             .error
             .as_deref()

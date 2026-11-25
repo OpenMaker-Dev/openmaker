@@ -64,26 +64,34 @@ itself stays. File > Favorites > Show Favorites and File > Recent > Show
 Recent show the lists, and both submenus list their files. Home opens on
 the list it showed last.
 
-Home's Open and File > Open... show the system's open panel, which lists
-only FileMaker files (`.fmp12`); Home's Create and File > Create New...
-show the system's save panel after the Create an App sheet
-([new-files.md](new-files.md)). The panels are `file_panel`'s: on macOS
-`NSOpenPanel` and `NSSavePanel`, beside the window; on Linux the desktop's
-own file chooser (GTK's, GNOME's or KDE's), asked through the
+Home's Open and File > Open... show the system's open panel, asking it to
+list only FileMaker files (`.fmp12`, in any case); Home's Create and
+File > Create New... show the system's save panel after the Create an App
+sheet ([new-files.md](new-files.md)). The panels are `file_panel`'s: on
+macOS `NSOpenPanel` and `NSSavePanel`, beside the window; on Linux the
+desktop's own file chooser (GTK's, GNOME's or KDE's), asked through the
 xdg-desktop-portal FileChooser interface on the session bus, parented to
 the window on X11 and unparented on Wayland. Windows shows none yet
-([#826](https://github.com/OpenMaker-Dev/openmaker/issues/826)).
-Where no panel can be shown (Windows, no portal on the session bus or one
-without a file chooser, or no native window, as in the GUI tests)
-OpenMaker's own chooser asks instead: a folder's subfolders and FileMaker
-files, and a path that can be typed. What follows a choice is the same
-either way. While a panel is up, Open, Create and the other commands that
-start from no file do nothing, and Home takes no keys. Both panels start
-in the user's Documents folder (or home without one), as OpenMaker's own
-chooser does, so macOS's open panel does not return to the folder last
-used. GTK's chooser also offers "Open files read-only", which OpenMaker
-does not read: the file opens as it would from OpenMaker's chooser.
-Which files FileMaker Pro's open panel lists, and where it starts, are
+([#826](https://github.com/OpenMaker-Dev/openmaker/issues/826)). Where no
+panel can be shown (Windows, no portal on the session bus or one without a
+file chooser, or no native window, as in the GUI tests) OpenMaker's own
+chooser asks instead: a folder's subfolders and FileMaker files, and a
+path that can be typed. A portal that does not answer within 30 seconds,
+or leaves the bus before the user answers, counts as none.
+
+What follows a choice is the same either way. Shift or Option (Alt) held
+as the panel's Open is chosen asks for an account
+([local-files](re/local-files.md) 3.1): OpenMaker reads the keys as the
+panel answers, on Linux from the X server, so on a Wayland session it does
+not see them. While a panel is up, Open, Create and the other commands
+that start from no file do nothing, Home takes no keys and the Hosts
+dialog steps aside, as for OpenMaker's own choosers; an answer that comes
+once a file is opening anyway is dropped. Both panels start in the user's
+Documents folder (or home without one), as OpenMaker's own chooser does,
+so macOS's open panel does not return to the folder last used. GTK's
+chooser also offers "Open files read-only", which an unsandboxed app is
+not told of: the file opens as it would from OpenMaker's chooser. Which
+files FileMaker Pro's open panel lists, and where it starts, are
 unmeasured.
 
 A file on this computer opens at once. A hosted file fills in the Hosts

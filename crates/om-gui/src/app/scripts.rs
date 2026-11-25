@@ -2742,7 +2742,7 @@ impl OpenMakerApp {
         if let (Some(panel), Prompt::ContainerFile(dialog)) = (&view.panel, &view.prompt) {
             use crate::file_panel::Answer as Panel;
             match panel.answer() {
-                Some(Panel::Chosen(path)) => {
+                Some(Panel::Chosen { path, .. }) => {
                     answer = Some(Answer::ContainerFile(Some(
                         crate::scripting::ContainerFileDialog {
                             path: path.display().to_string(),
