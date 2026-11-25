@@ -175,6 +175,11 @@ enum Op {
     Recreate,
     /// The tree takes another name.
     Rename(TreeName),
+    /// A tree is made whose root is an overflow page (what a checkpoint
+    /// must refuse to name), in a unit of its own.
+    BadRoot,
+    /// The tree is dropped.
+    Drop,
 }
 
 #[derive(Clone, Debug)]
@@ -198,8 +203,9 @@ fn bound(store: &impl PageStore, model: &Model, ops: &[(TreeName, Op)]) -> Resul
                 entry_bound(edits, height)
             }
             // A root page, and room for the name in the tables.
-            Op::Create | Op::Recreate => 1 + TABLE_ROOM,
+            Op::Create | Op::Recreate | Op::BadRoot => 1 + TABLE_ROOM,
             Op::Rename(_) => TABLE_ROOM,
+            Op::Drop => 0,
         };
     }
     Ok(total)
@@ -239,10 +245,35 @@ fn apply_logged(res: &Reservation<'_>, model: &mut Model, logged: &Logged) -> Re
                 let tree = model.trees.remove(name).ok_or("no such tree")?;
                 model.trees.insert(to.clone(), tree);
             }
+            Op::BadRoot => {
+                let mut unit = res.begin().map_err(|e| e.to_string())?;
+                let n = unit.allocate().map_err(|e| e.to_string())?;
+                let mut builder = page::Builder::new(PageKind::Overflow, 0, index);
+                builder.data(b"not a tree");
+                let page = builder.finish(n).map_err(|e| e.to_string())?;
+                let root = Root {
+                    page: n,
+                    hash: page.hash(),
+                };
+                unit.write(Arc::new(page)).map_err(|e| e.to_string())?;
+                unit.add_tree(name);
+                unit.commit().map_err(|e| e.to_string())?;
+                model.trees.insert(name.clone(), (root, Content::new()));
+            }
+            Op::Drop => {
+                let (root, _) = model.trees.get(name).ok_or("no such tree")?;
+                res.drop_tree(name, *root).map_err(|e| e.to_string())?;
+                model.trees.remove(name);
+            }
         }
     }
     model.entry = logged.entry;
     Ok(())
+}
+
+/// Whether `op` changes the set of trees.
+fn names_trees(op: &Op) -> bool {
+    !matches!(op, Op::Edits(_))
 }
 
 enum Disk {
@@ -277,26 +308,44 @@ impl Disk {
     }
 }
 
-/// A running process: its page file and the store folder's lock.
+/// A running process: its page file and the store folder's lock; on the
+/// simulator, its file system can stop a checkpoint after its first
+/// superblock slot.
 struct Process {
     pf: PageFile,
     _lock: FolderLock,
     _fs: Box<dyn Fs>,
+    trip: Option<Arc<Mutex<Trip>>>,
+}
+
+impl Disk {
+    /// A process's file system: on the simulator, one that can trip.
+    fn proc_fs(&self) -> (Box<dyn Fs>, Option<Arc<Mutex<Trip>>>) {
+        match self {
+            Disk::Sim(sim) => {
+                let fs = Gated::new(sim.fs());
+                let trip = fs.trip.clone();
+                (Box::new(fs), Some(trip))
+            }
+            Disk::Real(folder) => (Box::new(folder.fs()), None),
+        }
+    }
 }
 
 fn create_proc(disk: &Disk, config: Config) -> Process {
-    let fs = disk.fs();
+    let (fs, trip) = disk.proc_fs();
     let lock = fs.lock().unwrap();
     let pf = PageFile::create(&*fs, &lock, config).unwrap();
     Process {
         pf,
         _lock: lock,
         _fs: fs,
+        trip,
     }
 }
 
 fn open_proc(disk: &Disk, config: Config) -> Result<(Process, Opened), OpenError> {
-    let fs = disk.fs();
+    let (fs, trip) = disk.proc_fs();
     let lock = fs.lock().map_err(OpenError::Disk)?;
     let (pf, opened) = PageFile::open(&*fs, &lock, config)?;
     Ok((
@@ -304,6 +353,7 @@ fn open_proc(disk: &Disk, config: Config) -> Result<(Process, Opened), OpenError
             pf,
             _lock: lock,
             _fs: fs,
+            trip,
         },
         opened,
     ))
@@ -344,6 +394,24 @@ struct Reached {
     recreated: u64,
     renamed: u64,
     same_entry: u64,
+    /// Entries whose units changed the set of trees more than once.
+    name_units: u64,
+    /// Units refused because another unit changed a tree they named.
+    stale_names: u64,
+    /// Second reservations of an entry, refused.
+    second_reservations: u64,
+    /// Units of another entry while one was open, refused.
+    other_entry_units: u64,
+    /// A checkpoint and a reservation of its entry raced; of those, how
+    /// many the reservation won (and the checkpoint was refused).
+    races: u64,
+    races_to_the_reservation: u64,
+    /// Keeps stopped just after their first superblock slot; of those, how
+    /// many raised the floor (the point crossed a page of the stream).
+    keeps_stopped: u64,
+    keeps_stopped_raising_the_floor: u64,
+    /// Trees with an overflow page for a root, refused by a checkpoint.
+    bad_roots: u64,
     leak_checks: u64,
     /// Dying pages found held for a map on disk at a leak check.
     held: u64,
@@ -352,6 +420,22 @@ struct Reached {
 }
 
 impl Reached {
+    /// The schedules reached every refusal of the contract (review of #719,
+    /// third round). Which of a raced checkpoint and reservation wins, and
+    /// whether a stopped keep raised the floor, are reported, not required.
+    fn assert_contract(&self) {
+        let reached = [
+            self.name_units,
+            self.stale_names,
+            self.second_reservations,
+            self.other_entry_units,
+            self.races,
+            self.keeps_stopped,
+            self.bad_roots,
+        ];
+        assert!(reached.iter().all(|&n| n > 0), "{self:?}");
+    }
+
     fn assert_fired(&self, rates: &Rates) {
         if std::env::var("OM_STORE_SEED").is_ok() {
             // One seed replayed need not reach every fault.
@@ -426,6 +510,8 @@ struct Run<'r> {
     open_read_failed: bool,
     reached: &'r mut Reached,
     trace: Vec<String>,
+    /// The faults the schedule draws.
+    rates: Rates,
 }
 
 impl Drop for Run<'_> {
@@ -486,6 +572,7 @@ impl<'r> Run<'r> {
             open_read_failed: false,
             reached,
             trace: Vec::new(),
+            rates: Rates::default(),
         };
         let first = Logged {
             entry: entry_id(1),
@@ -501,6 +588,7 @@ impl<'r> Run<'r> {
     }
 
     fn go(mut self, steps: usize, rates: Rates) -> Option<Vec<Vec<u8>>> {
+        self.rates = rates;
         if let Some(sim) = self.disk.sim() {
             sim.set_rates(rates);
         }
@@ -525,8 +613,8 @@ impl<'r> Run<'r> {
                 62..=66 => self.pin(),
                 67..=70 => self.unpin(),
                 71..=72 => self.drop_restore_point(),
-                73 => self.same_entry(),
-                74..=81 => self.reclaim(),
+                73..=74 => self.contract(),
+                75..=81 => self.reclaim(),
                 82..=86 => self.check(step % 3 == 0),
                 87..=92 => self.stop(false),
                 _ => self.stop(true),
@@ -619,8 +707,36 @@ impl<'r> Run<'r> {
                 if logged.ops.iter().any(|(_, op)| matches!(op, Op::Rename(_))) {
                     self.reached.renamed += 1;
                 }
+                let units: usize = logged
+                    .ops
+                    .iter()
+                    .map(|(_, op)| match op {
+                        Op::Recreate => 2,
+                        op => usize::from(names_trees(op)),
+                    })
+                    .sum();
+                if units >= 2 {
+                    self.reached.name_units += 1;
+                }
+                // A unit staged against a tree the entry renames or drops is
+                // refused once the entry's own unit has changed that tree.
+                let probe = logged
+                    .ops
+                    .iter()
+                    .find_map(|(name, op)| {
+                        matches!(op, Op::Rename(_) | Op::Recreate | Op::Drop).then_some(name)
+                    })
+                    .and_then(|name| {
+                        let mut unit = res.begin().ok()?;
+                        unit.rename_tree(name, &TreeName::new(b"probe".to_vec()).unwrap());
+                        Some(unit)
+                    });
                 match apply_logged(&res, &mut self.newest, &logged) {
                     Ok(()) => {
+                        if let Some(unit) = probe {
+                            assert!(unit.commit().is_err(), "a stale change to the trees");
+                            self.reached.stale_names += 1;
+                        }
                         if let Some(last) = self.log.last_mut() {
                             last.taken = Some(res.taken());
                         }
@@ -695,6 +811,198 @@ impl<'r> Run<'r> {
             ops,
             taken: None,
         });
+    }
+
+    /// One of the contract's refusals (review of #719, third round).
+    fn contract(&mut self) {
+        match self.plan.below(5) {
+            0 => self.same_entry(),
+            1 => self.one_at_a_time(),
+            2 => self.race(),
+            3 => self.bad_root(),
+            _ => self.keep_stopped(),
+        }
+    }
+
+    /// A second reservation of an entry is refused while the first is
+    /// open, and a unit of another entry while one of the first is open.
+    fn one_at_a_time(&mut self) {
+        let Some(proc) = self.proc.as_ref() else {
+            return;
+        };
+        let pf = &proc.pf;
+        let next = self.next_index();
+        let Ok(first) = pf.reserve(next, 1, Purpose::Entry) else {
+            return;
+        };
+        assert!(matches!(
+            pf.reserve(next, 1, Purpose::Entry),
+            Err(SpaceError::Refused(_))
+        ));
+        self.reached.second_reservations += 1;
+        if let (Ok(later), Ok(unit)) = (pf.reserve(next + 1, 1, Purpose::Entry), first.begin()) {
+            assert!(
+                later.begin().is_err(),
+                "a unit of {} while one of {next} is open",
+                next + 1
+            );
+            self.reached.other_entry_units += 1;
+            drop(unit);
+        }
+        self.trace
+            .push(format!("one reservation and one entry's units at {next}"));
+    }
+
+    /// A checkpoint of the newest version and a reservation of its entry,
+    /// asked for at once on two threads: one of them is refused. Either
+    /// way a checkpoint of the newest version is taken (the refused one is
+    /// asked for again), so the run does not depend on which won.
+    fn race(&mut self) {
+        let Some(proc) = self.proc.as_ref() else {
+            return;
+        };
+        let pf = &proc.pf;
+        let space = pf.space();
+        // Only where the reservation needs no reclaim (which reads) and no
+        // growth: the other thread then does no I/O.
+        if space.free.saturating_sub(space.promised) < space.floor + 2
+            || space.dirty + 2 >= self.config.dirty_budget
+        {
+            return;
+        }
+        let at = self.newest.entry;
+        let number = pf.next_checkpoint();
+        self.checkpoints.insert(number, self.newest.clone());
+        self.pred.insert(number, Some(self.confirmed));
+        let roots = self.newest.roots();
+        let start = std::sync::Barrier::new(2);
+        let start = &start;
+        let (reserved, result) = std::thread::scope(|scope| {
+            let (done, wait) = std::sync::mpsc::channel::<()>();
+            let racer = scope.spawn(move || {
+                start.wait();
+                let res = pf.reserve(at.index, 1, Purpose::Entry);
+                let reserved = res.is_ok();
+                // Held until the checkpoint has returned.
+                let _ = wait.recv();
+                drop(res);
+                reserved
+            });
+            start.wait();
+            let result = pf.checkpoint(at, &roots, None);
+            done.send(()).unwrap();
+            (racer.join().unwrap(), result)
+        });
+        self.reached.races += 1;
+        self.trace.push(format!(
+            "race at {}: reserved {reserved}, checkpoint {result:?}",
+            at.index
+        ));
+        if reserved {
+            assert!(
+                matches!(result, Err(CheckpointError::Refused(_))),
+                "a checkpoint and a reservation of its entry both succeeded: {result:?}"
+            );
+            self.reached.races_to_the_reservation += 1;
+            self.checkpoint_as(None);
+        } else {
+            self.record_checkpoint(number, None, result);
+        }
+    }
+
+    /// An entry makes a tree whose root is an overflow page; a checkpoint
+    /// naming it is refused, writing nothing; the next entry drops it.
+    /// Faults are not drawn meanwhile, so that no stop leaves the tree for
+    /// the other steps.
+    fn bad_root(&mut self) {
+        let Some(proc) = self.proc.as_ref() else {
+            return;
+        };
+        let space = proc.pf.space();
+        if space.free.saturating_sub(space.promised) < space.floor + 16
+            || space.dirty + 4 >= self.config.dirty_budget
+        {
+            return;
+        }
+        if let Some(sim) = self.disk.sim() {
+            sim.set_rates(Rates::default());
+        }
+        let index = self.next_index();
+        let name = TreeName::new(format!("bad{index}")).unwrap();
+        self.append(Logged {
+            entry: entry_id(index),
+            ops: vec![(name.clone(), Op::BadRoot)],
+            taken: None,
+        });
+        if self.newest.trees.contains_key(&name) {
+            let pf = self.pf();
+            let next = pf.next_checkpoint();
+            let refused = pf.checkpoint(self.newest.entry, &self.newest.roots(), None);
+            assert!(
+                matches!(refused, Err(CheckpointError::Refused(_))),
+                "a checkpoint naming an overflow root: {refused:?}"
+            );
+            assert_eq!(
+                pf.next_checkpoint(),
+                next,
+                "the refused checkpoint wrote nothing"
+            );
+            self.reached.bad_roots += 1;
+            self.append(Logged {
+                entry: entry_id(index + 1),
+                ops: vec![(name.clone(), Op::Drop)],
+                taken: None,
+            });
+            assert!(
+                !self.newest.trees.contains_key(&name),
+                "the bad tree was dropped"
+            );
+        }
+        if let Some(sim) = self.disk.sim() {
+            sim.set_rates(self.rates);
+        }
+    }
+
+    /// A checkpoint that keeps a restore point, of a name of a drawn length,
+    /// stops just after its first superblock slot; the store opens on it.
+    fn keep_stopped(&mut self) {
+        let Some(proc) = self.proc.as_ref() else {
+            return;
+        };
+        let Some(trip) = proc.trip.clone() else {
+            return;
+        };
+        let floor = proc.pf.space().floor;
+        self.names += 1;
+        // A name of a drawn length (padded), unique in the run.
+        let len = 1 + self.plan.below(MAX_RESTORE_NAME as u64) as usize;
+        let mut name = format!("k{}", self.names);
+        while name.len() < len {
+            name.push('x');
+        }
+        {
+            let mut t = trip.lock().unwrap();
+            t.stop_after_slot = true;
+            t.slot_written = false;
+        }
+        self.checkpoint_as(Some(name));
+        let stopped = trip.lock().unwrap().stopped;
+        if let Some(proc) = self.proc.as_ref() {
+            // Refused or failed before its first slot, in a process that
+            // goes on: the trip is put away.
+            assert!(!stopped);
+            *proc.trip.as_ref().unwrap().lock().unwrap() = Trip::default();
+            return;
+        }
+        if stopped {
+            self.reached.keeps_stopped += 1;
+            self.reopen();
+            if let Some(proc) = self.proc.as_ref() {
+                if proc.pf.space().floor > floor {
+                    self.reached.keeps_stopped_raising_the_floor += 1;
+                }
+            }
+        }
     }
 
     /// A checkpoint is of one exact version (review of #719, second round):
@@ -821,6 +1129,17 @@ impl<'r> Run<'r> {
         self.checkpoints.insert(number, self.newest.clone());
         self.pred.insert(number, Some(self.confirmed));
         let result = pf.checkpoint(self.newest.entry, &self.newest.roots(), name.as_deref());
+        self.record_checkpoint(number, name, result);
+    }
+
+    /// What checkpoint `number` of the newest version, kept as `name` when
+    /// given, gave.
+    fn record_checkpoint(
+        &mut self,
+        number: u64,
+        name: Option<String>,
+        result: Result<Checkpointed, CheckpointError>,
+    ) {
         self.trace.push(format!(
             "checkpoint {number} at {} (keep {name:?}): {result:?}",
             self.newest.entry.index
@@ -1354,6 +1673,7 @@ fn seeded_schedules_on_an_honest_disk() {
             "{reached:?}"
         );
         assert!(reached.renamed > 0 && reached.same_entry > 0, "{reached:?}");
+        reached.assert_contract();
     }
 }
 
@@ -1376,6 +1696,7 @@ fn seeded_schedules_on_a_lying_disk() {
     reached.assert_fired(&lying());
     if std::env::var("OM_STORE_SEED").is_err() {
         assert!(reached.renamed > 0 && reached.same_entry > 0, "{reached:?}");
+        reached.assert_contract();
     }
 }
 
@@ -2397,28 +2718,90 @@ fn the_map_does_not_depend_on_the_cache() {
 /// The gate's state (armed, paused, released) and its signal.
 type Gate = Arc<(Mutex<(bool, bool, bool)>, std::sync::Condvar)>;
 
+/// What a `Gated` file does besides passing calls through.
+#[derive(Default)]
+struct Trip {
+    /// The gate pauses at the next read instead of the next flush.
+    on_read: bool,
+    /// Superblock copies are watched: once one is written (and so
+    /// flushed before the next write), every later write fails as if the
+    /// process had stopped there.
+    stop_after_slot: bool,
+    slot_written: bool,
+    stopped: bool,
+    /// The next write panics, as a `File` implementation might.
+    panic_write: bool,
+}
+
 /// An `Fs` over the simulator whose `pages` file, once armed, stops at its
-/// next flush until released: it holds a checkpoint between its plan and
-/// its install.
+/// next flush (or read) until released: it holds a checkpoint between its
+/// plan and its install (or between its first check and its plan). It can
+/// also stop a checkpoint after its first superblock slot, or panic.
 #[derive(Clone)]
 struct Gated {
     inner: crate::sim::SimFs,
     gate: Gate,
+    trip: Arc<Mutex<Trip>>,
+}
+
+impl Gated {
+    fn new(inner: crate::sim::SimFs) -> Self {
+        Gated {
+            inner,
+            gate: Arc::default(),
+            trip: Arc::default(),
+        }
+    }
+
+    fn wrap(&self, inner: Box<dyn File>) -> Box<dyn File> {
+        Box::new(GatedFile {
+            inner,
+            gate: self.gate.clone(),
+            trip: self.trip.clone(),
+        })
+    }
+
+    /// Arms the gate; with `on_read`, at the next read.
+    fn arm(&self, on_read: bool) {
+        self.trip.lock().unwrap().on_read = on_read;
+        let (state, _) = &*self.gate;
+        *state.lock().unwrap() = (true, false, false);
+    }
+
+    /// Waits until a call has stopped at the gate.
+    fn paused(&self) {
+        let (state, cv) = &*self.gate;
+        let mut s = state.lock().unwrap();
+        while !s.1 {
+            s = cv.wait(s).unwrap();
+        }
+    }
+
+    fn release(&self) {
+        let (state, cv) = &*self.gate;
+        state.lock().unwrap().2 = true;
+        cv.notify_all();
+    }
+}
+
+/// Releases the gate when dropped, so that a test that fails while a call
+/// waits at the gate ends instead of waiting for it.
+struct Opens<'a>(&'a Gated);
+
+impl Drop for Opens<'_> {
+    fn drop(&mut self) {
+        self.0.release();
+    }
 }
 
 struct GatedFile {
     inner: Box<dyn File>,
     gate: Gate,
+    trip: Arc<Mutex<Trip>>,
 }
 
-impl File for GatedFile {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> sys::Result<usize> {
-        self.inner.read_at(offset, buf)
-    }
-    fn write_at(&self, offset: u64, data: &[u8]) -> sys::Result<()> {
-        self.inner.write_at(offset, data)
-    }
-    fn flush(&self) -> sys::Result<()> {
+impl GatedFile {
+    fn wait(&self) {
         let (state, cv) = &*self.gate;
         let mut s = state.lock().unwrap();
         // (armed, paused, released)
@@ -2429,7 +2812,38 @@ impl File for GatedFile {
                 s = cv.wait(s).unwrap();
             }
         }
-        drop(s);
+    }
+}
+
+impl File for GatedFile {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> sys::Result<usize> {
+        if self.trip.lock().unwrap().on_read {
+            self.wait();
+        }
+        self.inner.read_at(offset, buf)
+    }
+    fn write_at(&self, offset: u64, data: &[u8]) -> sys::Result<()> {
+        let mut t = self.trip.lock().unwrap();
+        if t.panic_write {
+            t.panic_write = false;
+            drop(t);
+            panic!("a write that panics");
+        }
+        let slot = offset < (SLOTS * SLOT) as u64;
+        if t.stopped || (t.stop_after_slot && slot && t.slot_written) {
+            t.stopped = true;
+            return Err(sys::Error::new(ErrorKind::Halted, sys::Op::Write, "pages"));
+        }
+        if t.stop_after_slot && slot {
+            t.slot_written = true;
+        }
+        drop(t);
+        self.inner.write_at(offset, data)
+    }
+    fn flush(&self) -> sys::Result<()> {
+        if !self.trip.lock().unwrap().on_read {
+            self.wait();
+        }
         self.inner.flush()
     }
     fn allocate(&self, size: u64) -> sys::Result<()> {
@@ -2451,14 +2865,10 @@ impl Fs for Gated {
         self.inner.owns(lock)
     }
     fn create(&self, path: &str, options: FileOptions) -> sys::Result<Box<dyn File>> {
-        self.inner.create(path, options)
+        Ok(self.wrap(self.inner.create(path, options)?))
     }
     fn open(&self, path: &str, options: FileOptions) -> sys::Result<Box<dyn File>> {
-        let inner = self.inner.open(path, options)?;
-        Ok(Box::new(GatedFile {
-            inner,
-            gate: self.gate.clone(),
-        }))
+        Ok(self.wrap(self.inner.open(path, options)?))
     }
     fn create_folder(&self, path: &str) -> sys::Result<()> {
         self.inner.create_folder(path)
@@ -2483,10 +2893,7 @@ impl Fs for Gated {
 #[test]
 fn a_restore_point_dropped_during_a_checkpoint_stays_dropped() {
     let sim = Sim::new(42);
-    let fs = Gated {
-        inner: sim.fs(),
-        gate: Arc::default(),
-    };
+    let fs = Gated::new(sim.fs());
     let lock = fs.lock().unwrap();
     let pf = PageFile::create(&fs, &lock, config()).unwrap();
     let name = tree_name(0);
@@ -2682,10 +3089,7 @@ fn a_held_page_passes_its_hold_to_what_it_refers_to() {
 #[test]
 fn a_checkpoint_being_written_takes_no_unit_of_its_entry() {
     let sim = Sim::new(46);
-    let fs = Gated {
-        inner: sim.fs(),
-        gate: Arc::default(),
-    };
+    let fs = Gated::new(sim.fs());
     let lock = fs.lock().unwrap();
     let pf = PageFile::create(&fs, &lock, config()).unwrap();
     let name = tree_name(0);
@@ -2975,4 +3379,435 @@ fn a_read_error_during_reclaim_does_not_depend_on_the_cache() {
     let done = run.pf().reclaim(1 << 20);
     assert!(done.faults.is_empty(), "{done:?}");
     run.check(true);
+}
+
+/// A page file on a `Gated` file system over `sim`, with the given trees
+/// made at entry 1 and checkpointed there.
+fn gated(
+    sim: &Sim,
+    config: Config,
+    names: &[TreeName],
+) -> (Gated, PageFile, Vec<(TreeName, Root)>) {
+    let fs = Gated::new(sim.fs());
+    let lock = fs.lock().unwrap();
+    let pf = PageFile::create(&fs, &lock, config).unwrap();
+    let res = pf
+        .reserve(1, 5 * names.len() as u64, Purpose::Entry)
+        .unwrap();
+    let trees: Vec<(TreeName, Root)> = names
+        .iter()
+        .map(|n| (n.clone(), res.create_tree(n).unwrap()))
+        .collect();
+    drop(res);
+    pf.checkpoint(entry_id(1), &trees, None).unwrap();
+    drop(lock);
+    (fs, pf, trees)
+}
+
+/// Review of #719 (third round, contract rules 1 and 2): an entry has one
+/// open reservation at a time, and the units of one entry at a time are
+/// open.
+#[test]
+fn one_reservation_an_entry_and_units_of_one_entry_at_a_time() {
+    let sim = Sim::new(55);
+    let (_fs, pf, _) = gated(&sim, config(), &[tree_name(0)]);
+    let first = pf.reserve(2, 4, Purpose::Entry).unwrap();
+    assert!(matches!(
+        pf.reserve(2, 4, Purpose::Entry),
+        Err(SpaceError::Refused(_))
+    ));
+    let next = pf.reserve(3, 4, Purpose::Entry).unwrap();
+    let unit = first.begin().unwrap();
+    assert!(
+        next.begin().is_err(),
+        "a unit of entry 3 while one of 2 is open"
+    );
+    let second = first.begin().unwrap();
+    drop((unit, second));
+    // Once entry 2's units are done, entry 3's may begin; entry 2's may not
+    // after one of 3 committed.
+    let renamed = TreeName::new(b"renamed".to_vec()).unwrap();
+    next.rename_tree(&tree_name(0), &renamed).unwrap();
+    assert!(first.begin().is_err());
+    drop((first, next));
+    // A reservation dropped, the entry may be reserved again.
+    let again = pf.reserve(4, 4, Purpose::Entry).unwrap();
+    drop(again);
+    pf.reserve(4, 4, Purpose::Entry).unwrap();
+}
+
+/// Review of #719 (third round, P0 1 and P1 3): a checkpoint fixes its
+/// entry at its first check, in the hold of the lock that checks it, and a
+/// reservation is checked, promised and opened in one hold. Paused between
+/// its first check and its plan (reading a root from the file), the
+/// checkpoint of entry 2 leaves no way to open a reservation of entry 2,
+/// so no unit can swap two trees' names under the roots its caller gave.
+/// (The window of finding 3, between a reservation's promise and its
+/// opening, is gone: both are one hold.)
+#[test]
+fn a_checkpoint_fixes_its_entry_at_its_first_check() {
+    let sim = Sim::new(52);
+    let (a, b) = (tree_name(0), tree_name(1));
+    let (_, pf, trees) = gated(&sim, config(), &[a.clone(), b.clone()]);
+    drop(pf);
+    sim.restart();
+    // Opened again, nothing is cached: the checkpoint reads B's root from
+    // the file.
+    let fs = Gated::new(sim.fs());
+    let lock = fs.lock().unwrap();
+    let (pf, _) = PageFile::open(&fs, &lock, config()).unwrap();
+    let res = pf.reserve(2, 64, Purpose::Entry).unwrap();
+    let edits = [Edit::leaf(vec![b"k".to_vec()], vec![2; 10])];
+    let a2 = tree::apply(&res, trees[0].1, 2, &edits).unwrap();
+    drop(res);
+    let given = vec![(a.clone(), a2), (b.clone(), trees[1].1)];
+    fs.arm(true);
+    std::thread::scope(|scope| {
+        let writing = scope.spawn(|| pf.checkpoint(entry_id(2), &given, None));
+        fs.paused();
+        let gate = Opens(&fs);
+        let refused = pf.reserve(2, 3 * TABLE_ROOM, Purpose::Entry);
+        let swapped = refused.is_ok();
+        if let Ok(res) = refused {
+            // What the page file must not allow: A and B swap names.
+            let tmp = TreeName::new(b"tmp".to_vec()).unwrap();
+            let mut unit = res.begin().unwrap();
+            unit.rename_tree(&a, &tmp);
+            unit.rename_tree(&b, &a);
+            unit.rename_tree(&tmp, &b);
+            let _ = unit.commit();
+        }
+        drop(gate);
+        let written = writing.join().unwrap();
+        assert!(!swapped, "a reservation of the entry being checkpointed");
+        written.unwrap();
+    });
+    drop(pf);
+    drop(lock);
+    sim.restart();
+    let (pf, opened) = PageFile::open(&sim.fs(), &sim.fs().lock().unwrap(), config()).unwrap();
+    assert_eq!(opened.entry, entry_id(2));
+    assert_eq!(pf.checkpoint_trees(), given);
+}
+
+/// Review of #719 (third round, P0 2): a unit's change to the trees acts on
+/// the trees it named when it staged it. A drop of A staged, then A renamed
+/// to B and a new A made by other units of the entry, the drop is refused
+/// whole: the new A keeps its name, and B's root is not released.
+#[test]
+fn a_stale_drop_is_refused_whole() {
+    let sim = Sim::new(53);
+    let fs = Gated::new(sim.fs());
+    let lock = fs.lock().unwrap();
+    let pf = PageFile::create(&fs, &lock, config()).unwrap();
+    let (a, b) = (tree_name(0), tree_name(1));
+    let res = pf.reserve(1, 5, Purpose::Entry).unwrap();
+    let root = res.create_tree(&a).unwrap();
+    drop(res);
+    let res = pf.reserve(2, 32, Purpose::Entry).unwrap();
+    let mut stale = res.begin().unwrap();
+    stale
+        .release(root.page, &root.hash, Release::Dropped)
+        .unwrap();
+    stale.remove_tree(&a);
+    res.rename_tree(&a, &b).unwrap();
+    let new = res.create_tree(&a).unwrap();
+    assert!(stale.commit().is_err(), "the stale drop committed");
+    assert_eq!(pf.tree_names(), vec![a.clone(), b.clone()]);
+    assert!(!pf.is_free(root.page) && !pf.dying_pages().contains(&root.page));
+    drop(res);
+    let trees = vec![(a, new), (b, root)];
+    pf.checkpoint(entry_id(2), &trees, None).unwrap();
+    drop(pf);
+    drop(lock);
+    sim.restart();
+    let (pf, _) = PageFile::open(&sim.fs(), &sim.fs().lock().unwrap(), config()).unwrap();
+    assert_eq!(pf.checkpoint_trees(), trees);
+}
+
+/// Review of #719 (third round, P1 4): a checkpoint left by a panic (a
+/// `File` that panics while it writes) latches the page file's failure:
+/// what its plan changed in memory is not used again; reservations and
+/// checkpoints are refused until the page file is opened again, which
+/// finds the checkpoint before it.
+#[test]
+fn a_checkpoint_left_by_a_panic_latches_the_failure() {
+    let sim = Sim::new(56);
+    let (fs, pf, trees) = gated(&sim, config(), &[tree_name(0)]);
+    let res = pf.reserve(2, 64, Purpose::Entry).unwrap();
+    let edits = [Edit::leaf(vec![b"k".to_vec()], vec![2; 10])];
+    let root = tree::apply(&res, trees[0].1, 2, &edits).unwrap();
+    drop(res);
+    let given = vec![(tree_name(0), root)];
+    fs.trip.lock().unwrap().panic_write = true;
+    let left = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pf.checkpoint(entry_id(2), &given, None)
+    }));
+    assert!(left.is_err(), "the write panicked");
+    assert!(pf.failed(), "a checkpoint left by a panic latches");
+    assert!(matches!(
+        pf.reserve(3, 1, Purpose::Entry),
+        Err(SpaceError::Failed)
+    ));
+    assert!(matches!(
+        pf.checkpoint(entry_id(2), &given, None),
+        Err(CheckpointError::Failed)
+    ));
+    drop(pf);
+    sim.restart();
+    let (_, opened) = PageFile::open(&sim.fs(), &sim.fs().lock().unwrap(), config()).unwrap();
+    assert_eq!(opened.entry, entry_id(1));
+}
+
+/// The floor with one more restore point listed, of name `name`.
+fn floor_with_one_more(pf: &PageFile, name: &str) -> u64 {
+    let mut inner = pf.lock();
+    inner.listed.push(RestorePoint {
+        name: name.to_owned(),
+        checkpoint: u64::MAX,
+        entry: EntryId::default(),
+        version: Version {
+            entry: u64::MAX,
+            step: u64::MAX,
+        },
+        meta: (0, Hash::default()),
+    });
+    let floor = inner.floor(Purpose::Entry, &pf.config);
+    inner.listed.pop();
+    floor
+}
+
+/// Applies, through `res`, trees made (5 pages each) and renamed (4 each)
+/// that take exactly `pages`, starting the renames from `from`.
+fn take_exactly(res: &Reservation<'_>, pages: u64, from: &TreeName) {
+    let made = pages % 4;
+    let renames = (pages - 5 * made) / 4;
+    for i in 0..made {
+        res.create_tree(&TreeName::new(format!("n{i}")).unwrap())
+            .unwrap();
+    }
+    let mut current = from.clone();
+    for i in 0..renames {
+        let to = TreeName::new(format!("m{i}")).unwrap();
+        res.rename_tree(&current, &to).unwrap();
+        current = to;
+    }
+}
+
+/// Review of #719 (third round, P1 5): the room kept for meta streams
+/// counts the restore point a checkpoint keeps from its first check. An
+/// entry that takes exactly what may be taken while that checkpoint is
+/// written fits again after a stop just after the checkpoint's first
+/// superblock slot, when the reopened page file lists the point and keeps
+/// a spare of its own; and a keep is refused while a reservation is open,
+/// since that reservation was judged without the point.
+#[test]
+fn a_keep_stopped_after_its_first_slot_leaves_room_to_replay() {
+    let sim = Sim::new(54);
+    let config = Config {
+        reserve: 0,
+        ..config()
+    };
+    let name = tree_name(0);
+    let (fs, pf, trees) = gated(&sim, config, std::slice::from_ref(&name));
+    // Room to take: the file grows by a reservation given back; then the
+    // disk holds the file as it is, and no more.
+    drop(pf.reserve(2, 256, Purpose::Entry).unwrap());
+    sim.set_capacity(pf.space().end * PAGE);
+    // Points of the longest names, until one more raises the floor.
+    let long = |i: usize| format!("{i:064}");
+    let mut i = 0;
+    while floor_with_one_more(&pf, &long(i)) == pf.space().floor {
+        pf.checkpoint(entry_id(1), &trees, Some(&long(i))).unwrap();
+        i += 1;
+        assert!(i < MAX_RESTORE_POINTS, "no keep raised the floor");
+    }
+    for _ in 0..20 {
+        if pf.reclaim(1 << 20).drained {
+            break;
+        }
+    }
+    let end = pf.space().end;
+    let ahead = pf.reserve(2, 1, Purpose::Entry).unwrap();
+    assert!(matches!(
+        pf.checkpoint(entry_id(1), &trees, Some(&long(i))),
+        Err(CheckpointError::Refused(_))
+    ));
+    drop(ahead);
+    let number = pf.next_checkpoint();
+    fs.arm(false);
+    let taken = std::thread::scope(|scope| {
+        let keeping = scope.spawn(|| pf.checkpoint(entry_id(1), &trees, Some(&long(i))));
+        fs.paused();
+        let gate = Opens(&fs);
+        // Planned and its pages written: entry 2 takes all there is.
+        let space = pf.space();
+        let avail = space.free - space.promised - space.floor;
+        assert!(avail >= 15, "{space:?}");
+        let res = pf.reserve(2, avail, Purpose::Entry).unwrap();
+        take_exactly(&res, avail, &name);
+        let taken = res.taken();
+        drop(res);
+        fs.trip.lock().unwrap().stop_after_slot = true;
+        drop(gate);
+        let stopped = keeping.join().unwrap();
+        assert!(
+            matches!(stopped, Err(CheckpointError::Disk(_))),
+            "{stopped:?}"
+        );
+        assert_eq!(taken, avail);
+        taken
+    });
+    drop(pf);
+    sim.restart();
+    let (pf, opened) = PageFile::open(&sim.fs(), &sim.fs().lock().unwrap(), config).unwrap();
+    assert_eq!(
+        opened.checkpoint, number,
+        "the keep's first copy was on disk"
+    );
+    assert_eq!(pf.space().end, end, "the file did not grow");
+    let res = pf
+        .reserve(2, taken, Purpose::Recovery)
+        .expect("entry 2 fits again");
+    take_exactly(&res, taken, &name);
+    assert_eq!(res.taken(), taken);
+}
+
+/// Review of #719 (third round, P1 6): a root still in memory is checked as
+/// one on disk is, as the reader checks it: an overflow page named as a
+/// tree's root refuses the checkpoint, which writes nothing.
+#[test]
+fn a_root_in_memory_is_checked_as_the_reader_checks_it() {
+    let sim = Sim::new(57);
+    let (_fs, pf, trees) = gated(&sim, config(), &[tree_name(0)]);
+    let bad = TreeName::new(b"bad".to_vec()).unwrap();
+    let res = pf.reserve(2, 5, Purpose::Entry).unwrap();
+    let mut unit = res.begin().unwrap();
+    let n = unit.allocate().unwrap();
+    let mut builder = page::Builder::new(PageKind::Overflow, 0, 2);
+    builder.data(b"not a tree");
+    let page = builder.finish(n).unwrap();
+    let root = Root {
+        page: n,
+        hash: page.hash(),
+    };
+    unit.write(Arc::new(page)).unwrap();
+    unit.add_tree(&bad);
+    unit.commit().unwrap();
+    drop(res);
+    let mut given = trees.clone();
+    given.push((bad.clone(), root));
+    let next = pf.next_checkpoint();
+    assert!(matches!(
+        pf.checkpoint(entry_id(2), &given, None),
+        Err(CheckpointError::Refused(_))
+    ));
+    assert!(!pf.failed());
+    assert_eq!(pf.next_checkpoint(), next, "nothing was written");
+    let res = pf.reserve(3, 1, Purpose::Entry).unwrap();
+    res.drop_tree(&bad, root).unwrap();
+    drop(res);
+    pf.checkpoint(entry_id(3), &trees, None).unwrap();
+}
+
+/// One unit shared by every tree of an entry, as the apply layer uses it:
+/// each tree's own commit does nothing, and the unit commits once.
+struct Whole<'u> {
+    pf: &'u PageFile,
+    unit: std::cell::RefCell<Unit<'u>>,
+}
+
+struct WholePart<'a, 'u> {
+    whole: &'a Whole<'u>,
+}
+
+impl<'u> PageStore for Whole<'u> {
+    type Entry<'a>
+        = WholePart<'a, 'u>
+    where
+        Self: 'a;
+
+    fn read(&self, number: PageNo, hash: &Hash) -> Result<Arc<Page>, Fault> {
+        self.pf.read_page(number, hash)
+    }
+
+    fn begin(&self) -> Result<WholePart<'_, 'u>, StoreError> {
+        Ok(WholePart { whole: self })
+    }
+}
+
+impl EntryPages for WholePart<'_, '_> {
+    fn allocate(&mut self) -> Result<PageNo, StoreError> {
+        self.whole.unit.borrow_mut().allocate()
+    }
+    fn write(&mut self, page: Arc<Page>) -> Result<(), StoreError> {
+        self.whole.unit.borrow_mut().write(page)
+    }
+    fn release(&mut self, number: PageNo, hash: &Hash, how: Release) -> Result<(), StoreError> {
+        self.whole.unit.borrow_mut().release(number, hash, how)
+    }
+    fn commit(self) -> Result<(), StoreError> {
+        Ok(())
+    }
+}
+
+/// One unit can carry a whole entry: it makes a tree, changes another,
+/// drops a third and renames a fourth, and commits once; the checkpoint of
+/// that entry, opened again, has exactly those trees.
+#[test]
+fn one_unit_carries_a_whole_entry() {
+    let sim = Sim::new(58);
+    let names: Vec<TreeName> = (0..4).map(tree_name).collect();
+    let (_fs, pf, trees) = gated(&sim, config(), &names);
+    let made = TreeName::new(b"made".to_vec()).unwrap();
+    let renamed = TreeName::new(b"renamed".to_vec()).unwrap();
+    let res = pf.reserve(2, 128, Purpose::Entry).unwrap();
+    let (new_root, changed) = {
+        let whole = Whole {
+            pf: &pf,
+            unit: std::cell::RefCell::new(res.begin().unwrap()),
+        };
+        // A tree made: its empty root written in the unit.
+        let new_root = {
+            let mut unit = whole.unit.borrow_mut();
+            let n = unit.allocate().unwrap();
+            let page = page::Builder::new(PageKind::Leaf, 0, 2).finish(n).unwrap();
+            let root = Root {
+                page: n,
+                hash: page.hash(),
+            };
+            unit.write(Arc::new(page)).unwrap();
+            unit.add_tree(&made);
+            root
+        };
+        // A tree changed through the unit.
+        let edits = [Edit::leaf(vec![b"k".to_vec()], vec![7; 10])];
+        let changed = tree::apply(&whole, trees[0].1, 2, &edits).unwrap();
+        // A tree dropped, and one renamed.
+        {
+            let mut unit = whole.unit.borrow_mut();
+            unit.release(trees[2].1.page, &trees[2].1.hash, Release::Dropped)
+                .unwrap();
+            unit.remove_tree(&names[2]);
+            unit.rename_tree(&names[3], &renamed);
+        }
+        assert_eq!(pf.tree_names(), names, "nothing applied before the commit");
+        whole.unit.into_inner().commit().unwrap();
+        (new_root, changed)
+    };
+    drop(res);
+    let mut expected = vec![
+        (names[0].clone(), changed),
+        (names[1].clone(), trees[1].1),
+        (made, new_root),
+        (renamed, trees[3].1),
+    ];
+    expected.sort_by(|a, b| a.0.cmp(&b.0));
+    pf.checkpoint(entry_id(2), &expected, None).unwrap();
+    drop(pf);
+    sim.restart();
+    let (pf, _) = PageFile::open(&sim.fs(), &sim.fs().lock().unwrap(), config()).unwrap();
+    assert_eq!(pf.checkpoint_trees(), expected);
+    let read = Tree::open(&pf, changed).unwrap().get(&[b"k"]).unwrap();
+    assert_eq!(read, Some(Node::Value(vec![7; 10])));
 }
