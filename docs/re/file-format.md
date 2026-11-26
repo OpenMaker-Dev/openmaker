@@ -382,9 +382,11 @@ with `16` have none.
 **Unknowns.** Which UI operations write the script compatibility word and
 which nonzero values they write, the menu flag bit assignments, the
 remaining font code-set values, and the guide record's orientation, flag
-and coordinate semantics. The custom menu's item list and the separate
-parameter data still need a file with a known action as evidence for a
-decoder that can identify references and credentials.
+and coordinate semantics. A native Perform Script item with a script
+chosen by key confirms the item list and its separate install
+calculation (calc-encoding.md 8.1). Actions with parameters, submenus,
+calculated item names and steps that carry credentials still need
+native examples.
 
 Three index keys have the same form and value as keys a spec names, and
 take their rule by that inference: `[6, 1, 20]` (`01` in the 11 Contacts

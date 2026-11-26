@@ -719,7 +719,7 @@ All locations share this codec. Owner keys are `Draco::K*` constants
 | object script trigger parameter | `4/5/<L>/5/<O>/48/...` | `KScriptTriggers` 0x30, `KParameter` 0x31 | 3 |
 | layout script trigger parameter | `4/5/<L>/48/5/<trigger>/49` | same | 7 |
 | custom function | `16/5/<id>/35`, no context; `16` name, `32` = `02` + u16 BE parameter count (checked on 218 functions with 0-21 parameters), `33` parameter names joined by `;`, `36` = `01`; 26.1.1's descriptions in `3` (calc-functions.md 6.0) | `KGlobalFunctions` 0x10, `KFunction` 0x23, `KArity` 0x20, `KParamList` 0x21 | 224 |
-| custom menu install-when; menu items | `65/5/<M>/37`; `65/5/<M>/5/<item>/16` name and `65/5/<M>/5/<item>/37` install-when (see below) | `KCustomMenus` 0x41, `KFilter` 0x25 | 4,970 |
+| custom menu install-when; menu items | decimal paths: `65/5/<M>/37`; `65/5/<M>/5/<item>/16` name and `65/5/<M>/5/<item>/37` install-when (see below) | `KCustomMenus` 0x41, `KFilter` 0x25 | 4,970 |
 | privilege set record access calculation, per table; only k = 9 seen, with formulas guarding deletion ("need to be able to delete own record") [I: 9 = delete] | `23/2/5/<P>/5/<T>/<k>` | | 3 |
 | other `K*Calc` constants (not seen in the corpus) | `KTempTextLayoutCalc` 0x8f, `KLayoutCalcs` 0x90, `KImportODBCAuthCalc` 0x91, `KFieldEntryCalc` 0x92, `KUserNameCalc` 0x73, `KPasswordCalc` 0x74, `KItemsCalc` 5 (value lists) | | 0 |
 
@@ -783,9 +783,10 @@ its `07` holds a 39-byte stream:
 Opcode 1 is Perform Script. Step flag `0x40` is `kScriptKey`; the nested
 reference names `[11, 5, 07]`, whose stored name is Sort by Name. The
 data key names `[41, 5, 19, 05, 01]`, whose install calculation is at
-child `25`. The item store's `00` is `01 01` in this sample. There was
-no script parameter. The menu was saved without installing it or
-running the action.
+child `25`. The item store's `[41, 5, 19, 05, 00]` is `01 01` in
+this sample [O], and its meaning is unmeasured [U]. There was no script
+parameter. The menu was saved without installing it or running the
+action.
 
 The shipped starters have no item stream. This save confirms the listed
 script action and install calculation. Parameter-bearing actions,
