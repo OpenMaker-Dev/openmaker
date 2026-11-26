@@ -1080,10 +1080,13 @@ same way is inferred, not measured.
 
 **Related records of another file.** A portal row or related field of a
 table a related file owns, on a layout of the opened file's own table,
-is written by that file (`related_owner.rs`, #1000). So is a script's write
-to such a record from a layout of another file's table, whichever related
-file owns the record ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43));
-Browse there does not edit them yet:
+is written by that file (`related_owner.rs`, #1000). So is one on a layout
+of another file's table, whichever related file owns the record
+([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)): Browse
+offers that layout's portals and related fields as on a layout of the
+opened file's table (a table of the opened file by its own rules, another
+file's by its owner's), and their edits and a script's writes go to the
+file that owns each record:
 - **The owner writes.** The opened file's Browse edits, a script's Set
   Field into it (one through a relationship that allows creation creates
   the record, its match fields taking the current record's values) and
