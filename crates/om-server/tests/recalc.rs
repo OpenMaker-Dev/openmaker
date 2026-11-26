@@ -1255,14 +1255,14 @@ fn write_rows(root: &OwnedNode) -> Vec<Row> {
             }),
             engine: true,
         },
-        // Refused with 3 at the step, also when the file becomes read-only
-        // after the script checked it (the engine refuses it first then):
-        // never 800 from a save tried and failed.
+        // Refused with 6, "File is read-only", at the step, also when the
+        // file becomes read-only after the script checked it (the engine
+        // refuses it first then): never 800 from a save tried and failed.
         Row {
             what: "op30 a server script's Set Next Serial Value",
             prepare: none(),
             send: Box::new(|session, _| run_script(session, 11)),
-            refused: |answer| step_failed_with(answer, "3"),
+            refused: |answer| step_failed_with(answer, "6"),
             made: Box::new(|session, answer, _| {
                 !script_failed(answer) && next_serial(session).as_deref() == Some("40")
             }),
