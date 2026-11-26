@@ -137,12 +137,16 @@ pub enum Refusal {
     /// The request is not one this module makes, or the catalog lacks
     /// what the layout must be added to.
     Unsupported(String),
+    /// A value out of range, such as a negative page margin.
+    Invalid(String),
 }
 
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Refusal::Name(reason) | Refusal::Unsupported(reason) => f.write_str(reason),
+            Refusal::Name(reason) | Refusal::Unsupported(reason) | Refusal::Invalid(reason) => {
+                f.write_str(reason)
+            }
         }
     }
 }
@@ -1067,6 +1071,8 @@ pub mod printing {
     /// the index entry's flags, #609].
     pub const FIXED_PAGE_MARGINS: u64 = om_layout::paper::FIXED_PAGE_MARGINS;
     pub const ALL: u64 = FIXED_PAGE_MARGINS;
+    /// "Print in N columns", which OpenMaker's Layout Setup does not set.
+    pub const COLUMNS: u64 = 0x400;
 }
 
 /// Layout Setup's name and view flags for layout `layout`, set on the
@@ -1085,6 +1091,45 @@ pub struct LayoutSetupChange {
     /// before the flags, as their own edit
     /// (`layout_placement::plan_margins`).
     pub margins: Option<om_layout::Rect>,
+}
+
+/// [`plan_setup`], and with `margins` the layout's fixed page margins
+/// (`LayoutDef.customMargins`) in the same member, as
+/// `layout_placement::plan_margins` sets them: one commit, so a refused
+/// setup changes no margins. A layout printing in columns
+/// ([`printing::COLUMNS`]) keeps its margins: FileMaker Pro recomputes the
+/// columns' width from them when it saves Layout Setup (layout-model.md
+/// 4.2), which OpenMaker does not.
+pub fn plan_setup_with_margins(
+    catalog: &OwnedNode,
+    layout: u64,
+    (name, flags, hidden): (&str, u64, bool),
+    margins: Option<&om_layout::Rect>,
+) -> Result<SetUp, Refusal> {
+    let mut set = plan_setup(catalog, layout, name, flags, hidden)?;
+    let Some(margins) = margins else {
+        return Ok(set);
+    };
+    if crate::layout_placement::already_margins(&set.member, margins) {
+        return Ok(set);
+    }
+    if flags & printing::COLUMNS != 0 {
+        return Err(Refusal::Unsupported(
+            "This layout prints in columns, whose width FileMaker Pro works out from the page \
+             margins; OpenMaker keeps its margins as they are."
+                .into(),
+        ));
+    }
+    let planned = crate::layout_placement::plan_margins(&set.member, margins).map_err(
+        |refusal| match refusal {
+            crate::layout_placement::Refusal::Invalid(why) => Refusal::Invalid(why),
+            crate::layout_placement::Refusal::Unsupported(why) => Refusal::Unsupported(why),
+        },
+    )?;
+    set.member = planned.member;
+    set.changes.extend(planned.changes);
+    set.changed = true;
+    Ok(set)
 }
 
 /// A layout's member and index after Layout Setup ([`plan_setup`]).
@@ -1487,6 +1532,50 @@ mod tests {
         alone.put(&[&[INDEX]], index.clone());
         alone.remove(&[&[MEMBERS], &[2]]);
         assert!(plan_delete(&alone, 3).is_err());
+    }
+
+    /// Layout Setup with fixed page margins (operation 23) plans both in one
+    /// member: a refused setup (an empty name) changes no margins, margins
+    /// held already change nothing, and a layout printing in columns keeps
+    /// its margins.
+    #[test]
+    fn layout_setup_plans_its_margins_with_the_setup() {
+        let flags_at = |flags: u64| {
+            let mut catalog = contacts();
+            catalog.put(
+                &[&[MEMBERS], &[3], &[VIEW_FLAGS]],
+                OwnedNode::leaf(Vec::new(), flags.to_be_bytes().to_vec()),
+            );
+            catalog
+        };
+        let catalog = flags_at(0x10f3_080d);
+        let margins = om_layout::Rect {
+            top: 50.0,
+            left: 70.0,
+            bottom: 60.0,
+            right: 80.0,
+            ..Default::default()
+        };
+        let fixed = 0x10f3_084d;
+        let plan = |catalog: &OwnedNode, name: &str, flags: u64| {
+            plan_setup_with_margins(catalog, 3, (name, flags, false), Some(&margins))
+        };
+        let set = plan(&catalog, "Contact Details", fixed).unwrap();
+        assert!(set.changed);
+        assert!(crate::layout_placement::already_margins(
+            &set.member,
+            &margins
+        ));
+        assert!(plan(&catalog, "", fixed).is_err());
+        let mut stored = catalog.clone();
+        stored.put(&[&[MEMBERS], &[3]], set.member.clone());
+        stored.put(&[&[INDEX]], set.index.clone());
+        assert!(!plan(&stored, "Contact Details", fixed).unwrap().changed);
+        let columns = 0x10f3_0c4d;
+        assert!(matches!(
+            plan(&flags_at(columns), "Contact Details", columns),
+            Err(Refusal::Unsupported(_))
+        ));
     }
 
     /// Layout Setup renames Contact Details in its member, entry and name

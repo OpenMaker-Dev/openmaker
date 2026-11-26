@@ -4874,40 +4874,20 @@ impl DataProvider for NativeProvider {
         change: om_data::layout_catalog::LayoutSetupChange,
     ) -> Result<om_data::layout_objects::FramedObjects, DataError> {
         self.require_writable()?;
-        // The Printing tab's margins are their own edit, made first: alone,
-        // they change nothing the layout prints until "Use fixed page
-        // margins" is on, which the setup's flags then set.
-        let margins = match change.margins {
-            Some(m) => self
-                .layout_margins_on_host(om_protocol::authoring::LayoutMargins {
-                    expected: change.expected,
-                    layout: u64::from(change.layout),
-                    margins: [m.top, m.left, m.bottom, m.right],
-                })
-                .map(Some)
-                .map_err(|error| object_edit_error(error, "Layout Setup's page margins were")),
-            None => Ok(None),
-        };
-        // The setup follows at the revision the margins' edit left, only if
-        // it made one: margins already there answer the member's current
-        // revision, which must not stand in for a stale `expected`.
-        let set = margins.and_then(|margins| {
-            self.layout_setup_on_host(om_protocol::authoring::LayoutSetup {
-                expected: margins
-                    .as_ref()
-                    .filter(|m| m.changed)
-                    .map_or(change.expected, |m| m.revision),
+        let set = self
+            .layout_setup_on_host(om_protocol::authoring::LayoutSetup {
+                expected: change.expected,
                 layout: u64::from(change.layout),
                 name: change.name,
                 flags: change.flags,
                 hidden: change.hidden,
+                margins: change.margins.map(|m| [m.top, m.left, m.bottom, m.right]),
             })
             .map(|framed| om_data::layout_objects::FramedObjects {
-                changed: framed.changed || margins.is_some_and(|m| m.changed),
+                changed: framed.changed,
                 revision: framed.revision,
             })
-            .map_err(|error| object_edit_error(error, "Layout Setup was"))
-        });
+            .map_err(|error| object_edit_error(error, "Layout Setup was"));
         // The name is in the layout list: it is read again whatever the
         // answer.
         let refreshed = self.refresh_layouts();

@@ -5,7 +5,8 @@
 //! sets what the shared operation sets (`DataProvider::set_layout_setup`,
 //! authoring operation 16): the Layout Name, "Include in layout menus", the
 //! General tab's five options, the views available and the default view,
-//! and the Printing tab's fixed page margins (operation 23, made first).
+//! and the Printing tab's fixed page margins (with them, operation 23: one
+//! commit).
 //! The General tab's pop-ups and Reset Quick Find show the layout's values,
 //! not offered, and so do the Printing tab's columns and Facing Pages; the
 //! Script Triggers tab is not offered yet.
@@ -59,9 +60,6 @@ pub(crate) struct LayoutSetup {
 }
 
 const VIEW_OFF: [u64; 3] = [views::FORM_OFF, views::LIST_OFF, views::TABLE_OFF];
-/// "Print in N columns" (layout-model.md 4.2, bit `0x400`), shown, not
-/// offered.
-const COLUMNS: u64 = 0x400;
 const VIEW_NAMES: [&str; 3] = ["Form View", "List View", "Table View"];
 /// Why an option is shown but not offered.
 const NOT_YET: &str = "OpenMaker does not change this option yet.";
@@ -111,7 +109,10 @@ impl LayoutSetup {
             fixed: flags & printing::FIXED_PAGE_MARGINS != 0,
             margins: stored_margins.unwrap_or([36.0; 4]),
             stored_margins,
-            columns: (flags & COLUMNS != 0, def.print_column_count.max(1)),
+            columns: (
+                flags & printing::COLUMNS != 0,
+                def.print_column_count.max(1),
+            ),
             tab: 0,
             named: false,
         }
@@ -339,13 +340,16 @@ impl LayoutSetup {
 }
 
 impl LayoutSetup {
-    /// The fixed page margins to set: the ones shown, when they differ
-    /// from the stored ones, or when none are stored and the layout is to
-    /// print within them; `None` leaves the layout's as they are.
+    /// The fixed page margins to set with the setup: the ones shown, when
+    /// they or "Use fixed page margins" changed, or when none are stored
+    /// and the layout is to print within them; `None` leaves the layout's
+    /// as they are (operation 16, which a host without operation 23 still
+    /// takes).
     fn changed_margins(&self) -> Option<om_layout::Rect> {
         let [top, bottom, left, right] = self.margins;
+        let box_changed = self.fixed != (self.stored & printing::FIXED_PAGE_MARGINS != 0);
         let changed = match self.stored_margins {
-            Some(stored) => stored != self.margins,
+            Some(stored) => stored != self.margins || box_changed,
             None => self.fixed,
         };
         changed.then_some(om_layout::Rect {
@@ -361,7 +365,9 @@ impl LayoutSetup {
     /// 26.1.1's `IDD_LAYOUT_SETUP.nib`, its tab view 339 points high). The
     /// margins are edited in points; with "Use fixed page margins" off they
     /// are not offered and show the printer's, as FileMaker Pro's fields do
-    /// [O: layout-model.md 4.2], and the stored ones are kept.
+    /// [O: layout-model.md 4.2], and the stored ones are kept. On a layout
+    /// printing in columns they are shown, not offered
+    /// (`layout_catalog::plan_setup_with_margins`).
     fn printing(&mut self, ui: &mut egui::Ui, content: &dyn Fn(f32, f32, f32, f32) -> Rect) {
         let place = |ui: &mut egui::Ui, rect: Rect, add: &mut dyn FnMut(&mut egui::Ui)| {
             ui.scope_builder(UiBuilder::new().max_rect(rect), add);
@@ -413,16 +419,24 @@ impl LayoutSetup {
             // Leaving a field reparses the two decimals it shows (28.35
             // for a centimeter's 28.3465), which is no edit.
             let displayed: f64 = format!("{value:.2}").parse().unwrap_or(value);
+            let editable = self.fixed && !self.columns.0;
             place(ui, content(field_x, top - 3.0, 60.0, 22.0), &mut |ui| {
                 let field = ui.add_enabled(
-                    self.fixed,
+                    editable,
                     egui::DragValue::new(&mut value)
                         .speed(1.0)
                         .range(0.0..=om_data::layout_placement::MAX_MARGIN)
                         .max_decimals(2),
                 );
                 widgets::accessible_label(ui, field.id, label.trim_end_matches(':'));
-                if self.fixed && field.changed() && value != displayed && value != shown[side] {
+                let field = if self.fixed && self.columns.0 {
+                    field.on_disabled_hover_text(
+                        "OpenMaker keeps the margins of a layout that prints in columns.",
+                    )
+                } else {
+                    field
+                };
+                if editable && field.changed() && value != displayed && value != shown[side] {
                     self.margins[side] = value;
                 }
             });

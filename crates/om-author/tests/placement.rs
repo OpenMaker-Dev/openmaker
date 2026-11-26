@@ -400,11 +400,11 @@ fn a_deleted_layout_is_gone_and_stays_gone_after_a_restart() {
 }
 
 /// layout_setup renames a layout, sets its views and default view, leaves
-/// it out of the layout menus and prints it within fixed page margins
-/// (operation 23, then 16), at the revision get_layout gave; repeated, it
+/// it out of the layout menus and prints it within fixed page margins (in
+/// one commit, operation 23), at the revision get_layout gave; repeated, it
 /// reports already_applied; at a stale revision with other values it is
-/// refused, though its margins are already there; and the layout is so
-/// after the server restarts.
+/// refused, though its margins are already there; a refused setup changes
+/// no margins; and the layout is so after the server restarts.
 #[test]
 fn a_set_up_layout_keeps_its_name_views_and_menus_after_a_restart() {
     let mut tree = form_tree();
@@ -474,6 +474,17 @@ fn a_set_up_layout_keeps_its_name_views_and_menus_after_a_restart() {
     assert_eq!(again["status"], "already_applied", "{again:#}");
     let stale = error(service.handle(&setup(&base, "Other notes")));
     assert_eq!(stale["kind"], "conflict", "{stale:#}");
+    // Other margins with a name Layout Setup refuses: nothing is written.
+    let Command::LayoutSetup(mut unnamed) = setup(text(&set["revision"]), "") else {
+        unreachable!()
+    };
+    unnamed.page_margins = Some(PageMargins {
+        top: 90.0,
+        bottom: 90.0,
+        left: 90.0,
+        right: 90.0,
+    });
+    error(service.handle(&Command::LayoutSetup(unnamed)));
     host.stop();
 
     let reopened = common::host(&file, "OpenMaker Server test restart");

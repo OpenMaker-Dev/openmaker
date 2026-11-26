@@ -720,7 +720,6 @@ pub enum DesignEdit {
     PartOptions(design::PartOptions),
     ChangeParts(design::ChangeParts),
     LayoutWidth(design::LayoutWidth),
-    LayoutMargins(design::LayoutMargins),
     LayoutSetup(design::LayoutSetup),
     CreateLayout(design::CreateLayout),
     DuplicateLayout(design::DuplicateLayout),

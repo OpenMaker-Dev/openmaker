@@ -961,20 +961,22 @@ an old revision is a `conflict`. Pro also writes the layout's object store
 again and raises the stamp counts of the library items it shows; OpenMaker
 keeps both as stored (re/layout-model.md 10.11).
 
-The fixed page margins themselves (`page_margins`) are `LayoutDef.customMargins`,
-set by their own operation (23) before the setup, as an object edit is
-saved: planned with `om_data::layout_placement::plan_margins`, the
-stored `Rect`'s four doubles rewritten in place (top, left, bottom,
-right), as FileMaker Pro rewrites them (re/layout-model.md 4.2), every
-other byte of the definition kept, the member stamped. Each margin is 0
-to 14,400 points (the largest paper's side; OpenMaker's bound, FileMaker
-Pro's is unmeasured); whether they leave room on the paper is checked when
-the layout prints. The setup then follows at the revision the margins'
-edit left, or at `expected_revision` when the layout held them already.
-FileMaker Pro also recomputes `printColumnWidth` from the paper and the
-margins on its Layout Setup save; OpenMaker keeps it as stored, as the
-starter layouts keep 0 beside their margins. `get_layout` reports a
-layout's `fixed_page_margins` and `page_margins`.
+With `page_margins`, the request is operation 23, operation 16's and the
+fixed page margins, planned together
+(`om_data::layout_catalog::plan_setup_with_margins`) and written in the
+same commit, so a refused setup changes no margins. The margins are
+`LayoutDef.customMargins`: the stored `Rect`'s four doubles rewritten in
+place (top, left, bottom, right), as FileMaker Pro rewrites them
+(re/layout-model.md 4.2), every other byte of the definition kept
+(`om_data::layout_placement::plan_margins`). Each margin is 0 to 14,400
+points (the largest paper's side; OpenMaker's bound, FileMaker Pro's is
+unmeasured); whether they leave room on the paper is checked when the
+layout prints. Margins the layout holds already change nothing. FileMaker
+Pro also recomputes `printColumnWidth` from the paper and the margins on
+its Layout Setup save; OpenMaker keeps it as stored, as the starter
+layouts keep 0 beside their margins, and so refuses to change the margins
+of a layout printing in columns (`0x400`). `get_layout` reports a layout's
+`fixed_page_margins` and `page_margins`.
 
 ### Buttons on layouts
 
@@ -1866,7 +1868,7 @@ operation's fields.
 
 | operation | fields (pop order) | OK reply fields (pop order) |
 |-----------|--------------------|-----------------------------|
-| 1 Describe | none | `u32` operations (bit 2: replace steps, bit 3: create field, bit 4: place field, bit 5: describe security, bit 6: create layout, bit 7: place button, bit 8: place button step, bit 9: save, bit 11: set object frames, bit 12: delete objects, bit 13: duplicate layout, bit 14: delete layout, bit 15: place text, bit 16: Layout Setup, bit 17: layout width, bit 18: field control, bit 19: part options, bit 20: set text, bit 21: place portal, bit 22: change parts, bit 23: layout margins), `u8` may author, `u32` largest definition |
+| 1 Describe | none | `u32` operations (bit 2: replace steps, bit 3: create field, bit 4: place field, bit 5: describe security, bit 6: create layout, bit 7: place button, bit 8: place button step, bit 9: save, bit 11: set object frames, bit 12: delete objects, bit 13: duplicate layout, bit 14: delete layout, bit 15: place text, bit 16: Layout Setup, bit 17: layout width, bit 18: field control, bit 19: part options, bit 20: set text, bit 21: place portal, bit 22: change parts, bit 23: Layout Setup with margins), `u8` may author, `u32` largest definition |
 | 2 Replace script steps | `u32` length, the new definition as a wire slot list (one child of a root), 32-byte expected revision, `u64` script id | `u8` changed, 32-byte stored revision |
 | 3 Create field | `u64` table id (its key read big-endian), 32-byte expected fields revision, `u8` data type (1 text, 2 number, 3 date, 4 time, 5 timestamp), name, comment (empty for none), strings in the trailing-`u32` SCSU form | `u8` changed, `u64` field id (its key read big-endian), 32-byte stored fields revision |
 | 4 Place field | `u64` layout id, 32-byte expected layout revision, `u64` expected base-table id, `u64` occurrence id, `u64` field id (keys read big-endian), the frame as four `u64` IEEE-754 bit patterns (top, left, bottom, right, points), `u8` label (0 none, 1), and with one the label's text and its frame | `u8` changed, `u64` field object key, `u64` label object key (0 for none), 32-byte stored layout revision |
@@ -1882,7 +1884,7 @@ operation's fields.
 | 15 Place text | `u64` layout id, 32-byte expected layout revision, the frame as four `u64` IEEE-754 bit patterns (top, left, bottom, right, points), the text | as 4 Place field: `u8` changed, `u64` the text object's key, `u64` 0, 32-byte stored layout revision |
 | 16 Layout Setup | `u64` layout id, 32-byte expected layout revision, `u64` view flags `f1`, the name, `u8` hidden from the layout menus | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |
 | 17 Layout width | `u64` layout id, 32-byte expected layout revision, `u64` the width's IEEE-754 bit pattern (points) | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |
-| 23 Layout margins | `u64` layout id, 32-byte expected layout revision, the fixed page margins as four `u64` IEEE-754 bit patterns (top, left, bottom, right, points) | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |
+| 23 Layout Setup with margins | as 16, then the fixed page margins as four `u64` IEEE-754 bit patterns (top, left, bottom, right, points), in one commit | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |
 | 18 Field control | `u64` layout id, 32-byte expected layout revision, `u64` object key, `u32` display type, `u64` value list key, `u8` whether the value list is given (0: keep the object's) | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |
 | 19 Part options | `u64` layout id, 32-byte expected layout revision, `u64` part key, `u64` `PartDef.flags`, `u32` page break after every N (0: none), `u64` break field's occurrence id (the layout's own), `u64` that occurrence's base table id, `u64` the field id, `u8` whether the break field is given (0: keep the part's) | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |
 | 20 Set text | `u64` layout id, 32-byte expected layout revision, `u64` object key, the new words (string) | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |

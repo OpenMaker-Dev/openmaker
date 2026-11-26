@@ -1254,6 +1254,7 @@ fn a_recorded_sequence_of_design_and_container_operations_replays_to_the_same_re
         name: "Task entry".into(),
         flags: views,
         hidden: false,
+        margins: None,
     };
     let index_count = count(&layouts_index);
     let reply = answer(submit(edit(DesignEdit::LayoutSetup(setup))));

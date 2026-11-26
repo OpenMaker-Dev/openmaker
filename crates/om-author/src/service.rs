@@ -3546,45 +3546,16 @@ impl Service {
         };
         let mut opened = layout.opened;
         Self::require_grant(&mut opened, &catalog::LAYOUT_SETUP)?;
-        // The margins are their own edit, made first; the setup follows at
-        // the revision it leaves (`om_provider`'s `set_layout_setup` does
-        // the same for the window).
-        let margins_set = margins.as_ref().map(|m| {
-            opened.layout_margins_on_host(wire::LayoutMargins {
-                expected,
-                layout: layout.id,
-                margins: [m.top, m.left, m.bottom, m.right],
-            })
+        // With margins, operation 23: the setup and the margins in one
+        // commit.
+        let set = opened.layout_setup_on_host(wire::LayoutSetup {
+            expected,
+            layout: layout.id,
+            name: name.clone(),
+            flags,
+            hidden,
+            margins: margins.as_ref().map(|m| [m.top, m.left, m.bottom, m.right]),
         });
-        let set = match margins_set {
-            Some(Err(e)) => Err(e),
-            // At the revision the margins' edit left, only if it made one:
-            // margins already there answer the current revision, which must
-            // not stand in for a stale expected_revision.
-            Some(Ok(framed)) => opened
-                .layout_setup_on_host(wire::LayoutSetup {
-                    expected: if framed.changed {
-                        framed.revision
-                    } else {
-                        expected
-                    },
-                    layout: layout.id,
-                    name: name.clone(),
-                    flags,
-                    hidden,
-                })
-                .map(|set| wire::Framed {
-                    changed: set.changed || framed.changed,
-                    revision: set.revision,
-                }),
-            None => opened.layout_setup_on_host(wire::LayoutSetup {
-                expected,
-                layout: layout.id,
-                name: name.clone(),
-                flags,
-                hidden,
-            }),
-        };
         drop(opened);
         let label = layout_ref.clone();
         let set = set.map_err(|e| {
