@@ -161,12 +161,16 @@ impl Layout {
         // Modern files keep the effective view flags in the layout's catalog
         // member key 0xf1, not in `LayoutDef.flags` (layout-model.md 4.1,
         // 4.2); the protobuf's usual zero would lose the default and allowed
-        // views.
-        if let Some(flags) = node
-            .get(0xf1)
-            .and_then(|n| n.assembled())
-            .filter(|bytes| bytes.len() == 8)
-            .and_then(|bytes| om_hbam::slot::be_uint(&bytes))
+        // views. FileMaker keeps a copy in the catalog index's entry
+        // `[4, 1, 7, L]`, read when the member has none, as the host's Layout
+        // Setup reads it (`om_data::layout_catalog::layout_word`): a dialog
+        // started from 0 would drop what only the entry holds (#977).
+        let flags = |node: Option<&om_hbam::Node<'_>>| {
+            node.and_then(|n| n.assembled())
+                .filter(|bytes| bytes.len() == 8)
+                .and_then(|bytes| om_hbam::slot::be_uint(&bytes))
+        };
+        if let Some(flags) = flags(node.get(0xf1)).or_else(|| flags(tree.at(&[4, 1, 7, id, 0xf1])))
         {
             if let Some(def) = &mut layout.def {
                 def.flags = flags;
@@ -716,6 +720,23 @@ mod tests {
             let layout = Layout::decode_from_tree(&tree, 2).unwrap().unwrap();
             assert_eq!(layout.def.unwrap().flags & 0x200, expected);
         }
+        // A member without flags takes its index entry's `[4, 1, 7, L, f1]`,
+        // as the host's Layout Setup reads them: a dialog started from the
+        // protobuf's 0 would clear "Use fixed page margins" (`0x40`) on a
+        // rename (#977).
+        let mut tree = KeyTree::default();
+        let definition = [0x10, 0x82, 0x81, 0x41];
+        let entry = 0x10f3_084d_u64.to_be_bytes();
+        for (path, value) in [
+            (vec![&[4u8][..], &[5], &[2], &[2]], &definition[..]),
+            (vec![&[4], &[1], &[7], &[2], &[0xf1]], &entry[..]),
+        ] {
+            let path: Vec<KeySegment<'_>> = path.into_iter().map(KeySegment).collect();
+            tree.insert(&path, om_hbam::slot::ChunkKind::Leaf, Some(value))
+                .unwrap();
+        }
+        let layout = Layout::decode_from_tree(&tree, 2).unwrap().unwrap();
+        assert_eq!(layout.def.unwrap().flags, 0x10f3_084d);
     }
     #[test]
     fn standalone_protobuf_flags_remain_available_without_member_metadata() {

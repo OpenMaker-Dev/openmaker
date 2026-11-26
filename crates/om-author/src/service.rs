@@ -3461,18 +3461,19 @@ impl Service {
     /// (`om_data::layout_catalog::plan_setup`) through the host's authoring
     /// extension, then read the layout back over a new connection.
     fn layout_setup(&mut self, params: &LayoutSetupParams) -> Result<Value, AuthorError> {
-        use layout_catalog::{general, printing, views, MENU_HIDDEN};
+        use layout_catalog::{general, printing, views, LayoutWord, MENU_HIDDEN};
         let expected = parse_revision(&params.expected_revision)?;
-        let layout = self.load_layout(&LayoutParams {
+        let mut layout = self.load_layout(&LayoutParams {
             layout: params.layout.clone(),
             layout_name: params.layout_name.clone(),
         })?;
         let layout_ref = self.layout_ref(layout.id);
-        let word = |member: &OwnedNode, key: u8| {
-            member
-                .child(&[key])
-                .and_then(|n| n.value.as_deref())
-                .and_then(om_hbam::slot::be_uint)
+        // The flags as the host's Layout Setup reads them: the member's, else
+        // the index entry's, so a request keeps what only the entry holds
+        // (#977).
+        let index = layout.opened.layout_index().map_err(Self::read_error)?;
+        let stored = |word| {
+            layout_catalog::layout_word(Some(&layout.member), index.as_ref(), layout.id, word)
                 .unwrap_or(0)
         };
         let invalid = |message: String| AuthorError::new(ErrorKind::InvalidRequest, message);
@@ -3484,7 +3485,7 @@ impl Service {
                 "{other:?} is not a view: form, list or table."
             ))),
         };
-        let mut flags = word(&layout.member, 0xf1);
+        let mut flags = stored(LayoutWord::ViewFlags);
         if let Some(available) = &params.views {
             flags |= views::FORM_OFF | views::LIST_OFF | views::TABLE_OFF;
             for name in available {
@@ -3540,11 +3541,10 @@ impl Service {
                 right,
                 ..Default::default()
             });
-        let hidden = params
-            .include_in_layout_menus
-            .map_or(word(&layout.member, 0xf0) & MENU_HIDDEN != 0, |include| {
-                !include
-            });
+        let hidden = params.include_in_layout_menus.map_or(
+            stored(LayoutWord::MemberFlags) & MENU_HIDDEN != 0,
+            |include| !include,
+        );
         let name = match &params.name {
             Some(name) => name.clone(),
             None => layout_catalog::member_name(&layout.member).ok_or_else(|| {
@@ -3588,11 +3588,17 @@ impl Service {
             layout: Some(layout_ref.clone()),
             layout_name: None,
         }) {
-            Ok(fresh) => {
+            Ok(mut fresh) => {
+                // As the request read them: the member's, else the entry's.
+                let index = fresh.opened.layout_index().map_err(Self::read_error)?;
+                let read_word = |word| {
+                    layout_catalog::layout_word(Some(&fresh.member), index.as_ref(), fresh.id, word)
+                        .unwrap_or(0)
+                };
                 let read = (
                     layout_catalog::member_name(&fresh.member),
-                    word(&fresh.member, 0xf1),
-                    word(&fresh.member, 0xf0) & MENU_HIDDEN != 0,
+                    read_word(LayoutWord::ViewFlags),
+                    read_word(LayoutWord::MemberFlags) & MENU_HIDDEN != 0,
                 );
                 let margins_read = margins
                     .as_ref()
@@ -4024,6 +4030,16 @@ impl Service {
             )
         })?;
         let def = decoded.def.clone().unwrap_or_default();
+        // The flags as Layout Setup reads them: the member's, else the
+        // index entry's (#977), else the definition's.
+        let index = layout.opened.layout_index().map_err(Self::read_error)?;
+        let view_flags = layout_catalog::layout_word(
+            Some(&layout.member),
+            index.as_ref(),
+            layout.id,
+            layout_catalog::LayoutWord::ViewFlags,
+        )
+        .unwrap_or(def.flags);
         let parts: Vec<Value> = decoded
             .parts
             .iter()
@@ -4058,7 +4074,7 @@ impl Service {
             "responsive": def.layout_client_type == 2,
             // Layout Setup > Printing: the layout prints within its page
             // margins only with fixed_page_margins.
-            "fixed_page_margins": def.flags & layout_catalog::printing::FIXED_PAGE_MARGINS != 0,
+            "fixed_page_margins": view_flags & layout_catalog::printing::FIXED_PAGE_MARGINS != 0,
             "page_margins": def.custom_margins.as_ref().map(|m| json!({
                 "top": m.top, "bottom": m.bottom, "left": m.left, "right": m.right,
             })),

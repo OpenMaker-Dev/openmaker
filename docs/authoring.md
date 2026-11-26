@@ -956,6 +956,11 @@ and the layout's exclusive locks:
 
 Other bits of `f1` are refused, as are a set of views with none available
 or without the default one, folders and separators, and an unusable name.
+`f1` and `f0` are read as the host reads them, the member's, else the
+entry's (`om_data::layout_catalog::layout_word`): FileMaker keeps both, but
+a layout whose words are only in its entry keeps them through a rename, in
+`layout_setup` and in the desktop's dialog alike
+([#977](https://github.com/OpenMaker-Dev/openmaker/issues/977)).
 A request the layout already holds reports `already_applied`; any other at
 an old revision is a `conflict`. Pro also writes the layout's object store
 again and raises the stamp counts of the library items it shows; OpenMaker
