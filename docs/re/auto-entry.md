@@ -464,11 +464,17 @@ and returns that value when present. It does not read `Note`, so the
 unchanged date after editing `Note` does not establish re-evaluation.
 Closed copies store option words `0x00000009` (keep an existing value)
 and `0x00000089` (replace), both with Creation Date selector `0x00`
-and a saved calculation member. Re-evaluation when a referenced field
-changes or the date is cleared after creation, the internal evaluation
-order, Prohibit modification and hosted behavior were unmeasured.
+and a saved calculation member. In a subsequent local run, changing a
+referenced `Start` date after reopening immediately replaced the creation
+date with `Start + 30` when replacement was enabled. With replacement off,
+clearing the target left it empty until a later `Start` edit calculated a
+new date. The latter formula did not read the target itself. The timing
+of a dependency edit before the first commit, the internal evaluation
+order at creation, the always-evaluate option, Prohibit modification and
+hosted behavior remain unmeasured.
 [Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7184309937).
 [Closed-file readback](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7185113183).
+[Post-creation measurements](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7185359635).
 
 ## A new record's own self-join
 

@@ -1855,6 +1855,7 @@ impl RecordPlan {
                 && field.data_type == DataType::Date
                 && options.max_repetitions == 1
                 && options.options & AUTO_ENTRY_MODES == 0x9
+                && options.options & ALWAYS_EVALUATE == 0
                 && !options.auto_entry_editing_prohibited()
                 && options.auto_entry_variable() == Some(EntryVariable::CreationDate);
             let looked_up = options.options & LOOKUP != 0;
@@ -4229,6 +4230,7 @@ impl RecordPlan {
         let mut deferred = BTreeSet::new();
         let mut evaluated = BTreeSet::new();
         let mut probed = BTreeSet::new();
+        let mut supplied_dependencies = None;
         let (mut row, mut dirty) = self.written(existing, changes, entry)?;
         // A write that changes nothing changes nothing, unless it sets a
         // lookup's match field: FileMaker performs the lookup then, also on
@@ -4385,10 +4387,10 @@ impl RecordPlan {
             let Some(expression) = &field.expression else {
                 continue;
             };
-            if field.creation_date_with_calculation && mode == WriteMode::Create {
-                continue;
-            }
-            if !field.stored_calculation() && (entry.skip_auto_enter || entry.keeps(changes, *id)) {
+            let combined_create = field.creation_date_with_calculation && mode == WriteMode::Create;
+            if !field.stored_calculation()
+                && (entry.skip_auto_enter || (entry.keeps(changes, *id) && !combined_create))
+            {
                 continue;
             }
             let depends_on_deferred = expression
@@ -4404,6 +4406,28 @@ impl RecordPlan {
             if !should_evaluate || !can_replace {
                 continue;
             }
+            if combined_create {
+                // New Record alone uses the creation date. A held create
+                // can also carry later edits before the first commit. Only
+                // those supplied inputs, not creation defaults, make this
+                // an unmeasured re-evaluation.
+                let affected = supplied_dependencies.get_or_insert_with(|| {
+                    self.computed_from(
+                        changes
+                            .keys()
+                            .filter_map(|cell| self.cell_field(*cell))
+                            .map(|(field, _)| field)
+                            .collect(),
+                    )
+                });
+                if !expression
+                    .dependencies
+                    .iter()
+                    .any(|dep| dep != id && affected.contains(dep))
+                {
+                    continue;
+                }
+            }
             if depends_on_deferred {
                 deferred.insert(*id);
                 continue;
@@ -4416,7 +4440,7 @@ impl RecordPlan {
                 return Err(DataError::with_code(
                     error::UNAVAILABLE,
                     format!(
-                        "Field {}: calculated auto-entry combined with Creation Date is unsupported on this update. No values were changed.",
+                        "Field {}: recalculating the auto-entry combined with Creation Date is unsupported for this write. No values were changed.",
                         field.name
                     ),
                 ));
@@ -7451,13 +7475,62 @@ mod tests {
                 .unwrap();
             assert_eq!(decoded(&saved, 20).as_deref(), Some(explicit));
 
-            *table.fields.last_mut().unwrap() =
-                field(20, FieldKind::Normal, DataType::Date, 0, options | 0x100, 0);
-            assert!(plan_of(&table, &formulas, &[])
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("multiple auto-entry modes"));
+            for extra in [ALWAYS_EVALUATE, 0x100] {
+                *table.fields.last_mut().unwrap() =
+                    field(20, FieldKind::Normal, DataType::Date, 0, options | extra, 0);
+                assert!(plan_of(&table, &formulas, &[])
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("multiple auto-entry modes"));
+            }
+        }
+    }
+
+    #[test]
+    fn combined_creation_date_refuses_inputs_set_before_first_commit() {
+        let mut table = table();
+        table.fields.retain(|field| field.id <= 2);
+        table.fields.extend([
+            field(20, FieldKind::Normal, DataType::Date, 0, 0x0000_0089, 0),
+            field(21, FieldKind::Calculation, DataType::Number, 0, 0, 0),
+        ]);
+        let environment = environment();
+        let entry = Entry {
+            keep_written: true,
+            ..Entry::script(false, false)
+        };
+        for expression in [
+            "Date ( 1 ; 15 ; 2030 ) + Length ( Field1 )",
+            "Date ( 1 ; 15 ; 2030 ) + Field21",
+        ] {
+            let formulas = [(20, 5, expression), (21, 5, "Length ( Field1 )")];
+            let plan = plan_of(&table, &formulas, &[]).unwrap();
+            let created = plan
+                .prepare_entry(
+                    WriteMode::Create,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &environment,
+                    entry,
+                )
+                .unwrap();
+            assert_eq!(
+                decoded(&created, 20).as_deref(),
+                Some(environment.date.as_str())
+            );
+
+            let result = plan.prepare_entry(
+                WriteMode::Create,
+                &BTreeMap::new(),
+                &BTreeMap::from([(1, Some("abc".into()))]),
+                &environment,
+                entry,
+            );
+            assert_eq!(
+                result.err().and_then(|error| error.code),
+                Some(error::UNAVAILABLE)
+            );
         }
     }
 

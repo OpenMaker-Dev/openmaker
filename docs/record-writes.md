@@ -820,12 +820,14 @@ the commit.
 
 A single-repetition Date field with both Creation Date and a calculated
 auto-entry value uses the creation-date rule on creation. An explicit
-assignment during scripted creation keeps the assigned date. An update
-that would run the calculation under ordinary auto-entry rules returns
-error 3 because the result of combining both rules is unmeasured. The
-combined options with Prohibit modification also stay unsupported.
-FileMaker Pro measured creation in a local file. Applying the same rule
-on a host is inferred.
+assignment during scripted creation keeps the assigned date. A held create
+that also sets another input to the calculation returns error 3 when the
+calculation could replace the date. Updates that would run the calculation
+also return 3. FileMaker Pro measured re-evaluation after commit, and the
+desktop has yet to implement that path. The combined options with Prohibit
+modification or with evaluation enabled for all-empty inputs are
+unsupported. FileMaker Pro measured creation in a local file. Applying
+the same creation rule on a host is inferred.
 [Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7184309937).
 
 **A custom message** is shown for any rule of its field that a write
