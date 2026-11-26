@@ -2430,7 +2430,10 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
     - **Keymap.** Keys go as Linux key codes with the modifier keys held.
       On a Wayland session the page's keymap is the session's: a connection
       of the app's own reads the compositor's keyboard keymap
-      (`wayland/keymap.rs`). Elsewhere it is xkb's default.
+      (`wayland/keymap.rs`). Elsewhere it is xkb's default. Only the
+      keymap's first layout is used: the connection has no window, so the
+      compositor never tells it which layout is active, and switching
+      layouts (US to Russian, say) is not followed.
     - **Edit keys.** egui's Copy, Cut and Paste reach the page as Ctrl+C,
       X and V, in the page's own clipboard for now.
     - **Input methods.** The input method's text goes to the page through

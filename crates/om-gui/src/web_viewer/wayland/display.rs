@@ -441,12 +441,19 @@ impl State {
         if before == surface {
             return;
         }
-        // The keys it held go up with the focus (smithay sends them).
-        self.held.clear();
+        // The modifier keys it held go up before the focus moves, so that
+        // the keyboard's state never keeps one down.
+        for modifier in std::mem::take(&mut self.held) {
+            self.send_key(modifier, false);
+        }
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, surface.clone(), SERIAL_COUNTER.next_serial());
         }
-        for input in &self.text_inputs {
+        for input in &mut self.text_inputs {
+            // Left, a text input is inactive until its client enables it
+            // again for the new window.
+            input.enabled = false;
+            input.pending_enable = None;
             if let Some(before) = &before {
                 input.resource.leave(before);
             }

@@ -196,6 +196,8 @@ pub(crate) struct PageTexture {
     /// Where the page's text caret is, in the page's points, when it has
     /// told: the input method's window goes beside it.
     pub caret: Option<egui::Rect>,
+    /// It has the keyboard ([`WebViewers::take_keys`]).
+    pub keyboard: bool,
 }
 
 /// Whether pages are textures Browse paints (the Wayland backend) rather
@@ -1023,6 +1025,7 @@ impl WebViewers {
                     object: v.key.object,
                     record: v.key.record,
                     texture: self.textures.get(&v.id)?.id(),
+                    keyboard: self.keyboard.is_some_and(|(_, view)| view == v.id),
                     caret: self
                         .backend
                         .as_ref()

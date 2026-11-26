@@ -114,9 +114,10 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Follow {
         if std::fs::File::from(fd).read_exact_at(&mut text, 0).is_err() {
             return;
         }
-        // The text ends with a NUL.
-        while text.last() == Some(&0) {
-            text.pop();
+        // The text ends with a NUL; nothing after a NUL is taken (xkb reads
+        // a C string, and one inside it would not be one).
+        if let Some(end) = text.iter().position(|byte| *byte == 0) {
+            text.truncate(end);
         }
         if let Ok(text) = String::from_utf8(text) {
             let _ = state.display.send(Request::Keymap(text));

@@ -8401,10 +8401,10 @@ fn paint_page(
     if !crate::web_viewer::composited() {
         return (Vec::new(), false);
     }
-    if let Some(page) = pages
+    let page = pages
         .iter()
-        .find(|p| p.object == object && p.record == record)
-    {
+        .find(|p| p.object == object && p.record == record);
+    if let Some(page) = page {
         let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         ui.painter().image(page.texture, rect, uv, Color32::WHITE);
     }
@@ -8421,6 +8421,28 @@ fn paint_page(
     let window = to_window(ui, rect);
     let at = |p: egui::Pos2| (p.x - window.min.x, p.y - window.min.y);
     let on = response.hovered() || response.dragged();
+    // A page with the keyboard holds egui's focus, with Tab, the arrows and
+    // Escape its own, so that no widget of the window takes the focus while
+    // the page takes the keys.
+    if !page.is_some_and(|p| p.keyboard) {
+        // It lost the keyboard to a press elsewhere: egui's focus goes too.
+        if response.has_focus() {
+            response.surrender_focus();
+        }
+    } else {
+        response.request_focus();
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                response.id,
+                egui::EventFilter {
+                    tab: true,
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    escape: true,
+                },
+            );
+        });
+    }
     // A press the page took: its release goes to the page wherever the
     // pointer is, in whichever frame it comes.
     let held_id = response.id.with("pressed");
