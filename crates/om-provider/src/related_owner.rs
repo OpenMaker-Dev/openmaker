@@ -334,6 +334,24 @@ impl NativeProvider {
                     .into_iter()
                     .collect(),
             };
+            // The fields its account's set gives view-only access.
+            let view_only: BTreeSet<String> = table
+                .fields
+                .iter()
+                .filter(|field| {
+                    owner
+                        .account_info
+                        .set_access
+                        .as_ref()
+                        .is_some_and(|access| {
+                            !access.modifies(
+                                &om_hbam::slot::uint_segment(wire),
+                                &om_hbam::slot::uint_segment(field.id),
+                            )
+                        })
+                })
+                .map(|field| field.name.clone())
+                .collect();
             // A refused plan's globals count only while it waits (below).
             let mut globals = crate::typed_globals(
                 &file,
@@ -342,30 +360,23 @@ impl NativeProvider {
                 planned.as_ref().ok(),
                 planned.is_err(),
             );
-            globals.retain(|name| {
-                table.field_by_name(name).is_some_and(|field| {
-                    owner.account_info.set_access.as_ref().is_none_or(|access| {
-                        access.modifies(
-                            &om_hbam::slot::uint_segment(wire),
-                            &om_hbam::slot::uint_segment(field.id),
-                        )
-                    })
-                })
-            });
+            globals.retain(|name| !view_only.contains(name));
             Ok(Some((
                 planned.ok().map(|plan| plan.editable_fields()),
                 globals,
+                view_only,
                 reads,
                 table,
             )))
         })?;
-        let Some((planned, globals, reads, table)) = answer else {
+        let Some((planned, globals, view_only, reads, table)) = answer else {
             return Ok(RoutedEdits::ReadOnly);
         };
         if let Some(fields) = planned {
             return Ok(RoutedEdits::Offered {
                 fields,
                 globals,
+                view_only,
                 table,
             });
         }
@@ -387,6 +398,7 @@ impl NativeProvider {
         Ok(RoutedEdits::Offered {
             fields,
             globals,
+            view_only,
             table,
         })
     }
@@ -1957,6 +1969,8 @@ pub(crate) enum RoutedEdits {
         /// The globals Browse takes typing into (`typed_globals`) that the
         /// owner's account may modify.
         globals: BTreeSet<String>,
+        /// The fields the owner's account set gives view-only access.
+        view_only: BTreeSet<String>,
         table: om_hbam::Table,
     },
     Refused,

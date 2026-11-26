@@ -726,6 +726,8 @@ fn an_imported_layout_edits_commits_corrects_and_reverts_on_the_peer() {
         0x19,
         "Length ( Self ) <= 20",
     );
+    // Its Count repeats twice (#43).
+    fixture::set_field_repetitions(&mut child, TABLE, fixture::COUNT, 2);
     let host = related::Host::new(
         "gui-imported-layout",
         vec![("Root.fmp12", root), ("Related.fmp12", child)],
@@ -837,6 +839,13 @@ fn an_imported_layout_edits_commits_corrects_and_reverts_on_the_peer() {
         a.state().error().is_some() || (a.state().is_settled() && !common::editing(a))
     });
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    // A repeating field of the peer's table is edited there too (#43).
+    replace(&mut app, "Count", "12");
+    common::save_record(&mut app);
+    common::wait_until(&mut app, "repeating peer field saved", |a| {
+        a.state().error().is_some() || (a.state().is_settled() && !common::editing(a))
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
     common::open_menu(&mut app, "Scripts");
     common::click(&mut app, "Edit peer");
     common::wait_until(&mut app, "root caller script saved peer", |a| {
@@ -913,6 +922,8 @@ fn an_imported_layout_edits_commits_corrects_and_reverts_on_the_peer() {
         .collect();
     assert_eq!(stored.len(), 3, "{stored:?}");
     assert_eq!(stored[2], (3, Some("Short new".to_owned())));
+    let count = page.fields.iter().position(|f| f.name == "Count").unwrap();
+    assert_eq!(page.records[0].values[count].as_deref(), Some("12"));
 }
 
 #[test]
