@@ -1409,8 +1409,10 @@ owns is that file's session value, whichever occurrence names it
   it (an auto-entry of a record it writes for this file), and in the
   opened file's session values, which its calculations read through the
   occurrence. The shared desktop values (desktop.rs) carry it to that
-  file's own window in this session. Nothing is sent to either host: a new
-  session reads the stored value.
+  file's own window in this session. They are kept by file as external.rs
+  tells files apart (host, port and name, or path), so a file of the same
+  name on another host keeps its own. Nothing is sent to either host: a
+  new session reads the stored value.
 - **Evidence.** That FileMaker Pro keeps a related file's global as that
   file's session value, so that its own layouts, calculations and scripts
   read it, is inferred from Claris "Global fields" (a client's global

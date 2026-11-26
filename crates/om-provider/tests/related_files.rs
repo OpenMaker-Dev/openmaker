@@ -1903,17 +1903,20 @@ fn a_related_files_globals_are_its_session_values() {
         shown(provider.records(layout, 0, 1).unwrap(), "Setting"),
         "scripted"
     );
+    assert_eq!(effects(), [0, 0, 0]);
+    // The related file's rules read it there.
+    let created = provider.create_record(layout, Default::default()).unwrap();
+    assert_eq!(value(&created, "Entered"), "scripted|Related");
 
     // Typed in Browse on the layout of Remote Tasks: no change of its record.
     let capabilities = provider.record_capabilities(layout).unwrap();
     assert!(capabilities.editable_fields.unwrap().contains("Setting"));
+    let before = effects();
     let typed = provider
         .update_record(layout, 1, [("Setting".into(), Some("typed".into()))].into())
         .unwrap();
     assert_eq!((typed.id, value(&typed, "Setting")), (1, "typed".into()));
-    assert_eq!(effects(), [0, 0, 0]);
-
-    // The related file's rules read it there.
+    assert_eq!(effects(), before);
     let created = provider.create_record(layout, Default::default()).unwrap();
     assert_eq!(value(&created, "Entered"), "typed|Related");
     // So does its own window; Root's global of the same ids is its own.
@@ -6391,6 +6394,27 @@ fn related_writes_reach_the_file_on_the_host_its_occurrence_names() {
     assert_eq!(
         (commits_to(&other, RELATED), commits_to(&host, RELATED)),
         (1, 0)
+    );
+    // So is a global set through it (#43): the same-named file's has none.
+    let local = schema.table_of(LOCAL).unwrap().id;
+    provider.set_global(there, SETTING, 1, "There").unwrap();
+    let globals = provider
+        .calc_data(&[
+            CalcNeed::Globals { table: there },
+            CalcNeed::Globals { table: local },
+        ])
+        .unwrap()
+        .globals;
+    let locale = om_data::calc::Locale::en_us();
+    let cx = om_data::calc::Ctx::new(&locale, Date::from_ymd(2026, 1, 1).unwrap());
+    let setting = |table| {
+        globals[&table]
+            .get(SETTING, 1)
+            .map(|value| value.to_text(&cx).as_str().to_owned())
+    };
+    assert_eq!(
+        (setting(there), setting(local)),
+        (Some("There".to_owned()), None)
     );
 
     // The window's save of a Root record with the other host's related
