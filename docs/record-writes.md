@@ -780,16 +780,23 @@ written. Globals and repeating fields may be present too; Browse edits
 them as described below (globals as session values, later repetitions in
 their own cells). An unstored calculation's option bits are not checked
 but for a lookup's, which would write into it: a stray `0x80`
-(auto-entry.md) leaves the table writable. A stored calculation's unknown
-bits keep it read-only.
+(auto-entry.md) leaves the table writable. In a local file a stored
+Number calculation with one repetition, no validation, and option word
+`0x80000080` also follows the ordinary stored calculation rules. Its
+definition retains the replacement bit. Other unknown stored-calculation
+options keep the table read-only.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204266349)
 
 An ordinary local Number auto-entry calculation can use `Self` as its
 only field input. It reads the proposed value at ordinary New Record in
 an unsorted or sorted local desktop window with a known insertion
-position, or on an explicit write, including an empty value on a clear. A nonempty explicit
-assignment keeps its value when replacement is disabled. This covers
-stored results and new-record previews. Script calculations read the
-auto-entered result of a pending Set Field before Commit. During typing
+position, or on an explicit write, including an empty value on a clear.
+The sorted trial used "Keep records in sorted order" on. OpenMaker
+currently uses the same creation rule for both settings. A nonempty
+explicit assignment keeps its value when replacement is disabled.
+This covers stored results and new-record previews. For supported
+Number `Self` auto-entry, script calculations read the auto-entered
+result of a pending Set Field before Commit. During typing
 in an existing record, calculations keep reading the entered value
 until save. Other creation paths with auto-entry active and unmeasured
 Self formulas refuse an evaluation with error 3. Unrelated edits are

@@ -2178,6 +2178,18 @@ impl RecordPlan {
                 // `0x80` (auto-entry.md, Index bits), cannot change a
                 // write and are not. A stored calculation's all are.
                 FieldKind::Calculation if options.options & UNSTORED != 0 => !LOOKUP,
+                // Converting a replacing Number auto-entry to a stored,
+                // indexed calculation left the replacement bit set (#1133).
+                // Both definitions used the ordinary stored calculation.
+                FieldKind::Calculation
+                    if local
+                        && field.data_type == DataType::Number
+                        && options.options == 0x8000_0080
+                        && options.validation_options == 0
+                        && options.max_repetitions == 1 =>
+                {
+                    options.options
+                }
                 FieldKind::Calculation => {
                     INDEX_OPTIONS | BOOKKEEPING_OPTIONS | ALWAYS_EVALUATE | UNSTORED
                 }
@@ -12356,6 +12368,50 @@ mod tests {
                 "{refused}"
             );
         }
+    }
+
+    #[test]
+    fn a_local_stored_number_accepts_the_retained_replacement_bit() {
+        let mut table = Table {
+            id: 0x8002,
+            name: "Items".into(),
+            fields: vec![
+                field(1, FieldKind::Normal, DataType::Date, 0, 0, 0),
+                field(2, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(
+                    3,
+                    FieldKind::Calculation,
+                    DataType::Number,
+                    0,
+                    0x8000_0080,
+                    0,
+                ),
+            ],
+        };
+        let formulas = [(3, 5, "Year ( Field1 )")];
+        let plan = plan_of(&table, &formulas, &[]).unwrap();
+        assert_eq!(decoded(&create(&plan, &[]).unwrap(), 3), None);
+        let made = create(&plan, &[(1, "12/25/2024"), (2, "Test")]).unwrap();
+        assert_eq!(decoded(&made, 3).as_deref(), Some("2024"));
+        assert!(!plan.editable_fields().contains("Field3"));
+
+        let existing = BTreeMap::from([
+            (1, "12/25/2024".into()),
+            (2, "Test".into()),
+            (3, "2024".into()),
+        ]);
+        let changed = plan
+            .prepare(
+                WriteMode::Update,
+                &existing,
+                &BTreeMap::from([(1, Some("1/1/2025".into()))]),
+                &environment(),
+            )
+            .unwrap();
+        assert_eq!(decoded(&changed, 3).as_deref(), Some("2025"));
+        assert!(plan_with(&table, &formulas, &[], Vec::new(), false).is_err());
+        table.fields[2].options[8..12].copy_from_slice(&0x8000_00a0u32.to_be_bytes());
+        assert!(plan_of(&table, &formulas, &[]).is_err());
     }
 
     #[test]
