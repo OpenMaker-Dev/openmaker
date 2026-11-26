@@ -251,6 +251,9 @@ pub struct PendingValues {
     /// such value, and every field computed from one. Such a field reads as
     /// nothing known, never as its value in `values` or as empty.
     pub unknown: std::collections::BTreeSet<u64>,
+    /// Pending results that must fail with error 3 when the preview cannot
+    /// evaluate them. Reading a prior stored value would affect the script.
+    pub unavailable: std::collections::BTreeSet<u64>,
 }
 
 /// Record operations supported for one layout's underlying table.

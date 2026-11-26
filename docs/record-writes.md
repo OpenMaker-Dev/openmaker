@@ -2099,14 +2099,18 @@ application creation plan.
     This join also supports the replacing Number formula
     `If ( Peer::Primary = 1 ; 0 ; 1 )` with a replacing UUID row key on
     the same table. Ordinary New Record in an unsorted local found set
-    shows `1` before the group is assigned. A new record stores the
-    result for its final group and row key at commit. A single
+    shows `1` before the group is assigned. After Set Field assigns the
+    group, a script calculation reads the recomputed result before
+    commit. Commit stores the result for the final group and row key. A single
     field-setting step can assign an existing record's nonempty group
     again or move it to another group. An unrelated field edit keeps the
-    stored result. OpenMaker evaluates the existing row at commit.
+    stored result. OpenMaker computes the exact single-field assignment
+    for script reads before commit and evaluates it again at commit.
+    Where the pending assignment falls outside that supported sequence,
+    the affected result returns calculation error 3 instead of a stale value.
     Explicit edits of the result or the stored row key and clearing the
-    group are refused. Hosted, routed, and
-    other creation paths are outside this support.
+    group are refused. Hosted, routed, and other creation paths are
+    refused before record creation or serial reservation.
     [Replacing native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7191674029).
   - **What is unmeasured:** sorted and other non-equality joins with
     matches, stored and validation formulas, and portal rows made in one

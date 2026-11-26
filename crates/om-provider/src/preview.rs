@@ -201,6 +201,7 @@ struct Operation {
     layout: Option<u32>,
     set: CurrentSet,
     record_number: Option<RecordNumber>,
+    single_field_step: bool,
 }
 
 /// The fields of the window's unsaved records whose values may not be what
@@ -309,6 +310,7 @@ impl NativeProvider {
                         layout: Some(write.layout),
                         set: CurrentSet::Step(write.privilege_set.clone()),
                         record_number: None,
+                        single_field_step: false,
                     };
                     // Held records of the opened file's tables the owner
                     // reads are read too.
@@ -367,6 +369,7 @@ impl NativeProvider {
                             layout: None,
                             set: CurrentSet::Account,
                             record_number: None,
+                            single_field_step: false,
                         };
                         let none = BTreeSet::new();
                         owner.pending_overlay((Some(wire), &none), &rows, operation, unknown)?
@@ -409,6 +412,7 @@ impl NativeProvider {
                     layout: Some(write.layout),
                     set: CurrentSet::Step(write.privilege_set.clone()),
                     record_number: None,
+                    single_field_step: false,
                 };
                 let (none, unknown) = (BTreeSet::new(), Unknown::new());
                 self.pending_overlay((Some(table), &none), &all, operation, unknown)?
@@ -489,8 +493,14 @@ impl NativeProvider {
         let mut any = overlay != HeldRecords::default();
         let mut named = None;
         for (at, record) in ordered {
-            let Some((id, row, fields)) =
-                self.pending_one(record, at, (&overlay, &unknown), &operation)?
+            let single_field_step = Some(at) == own && operation.single_field_step;
+            let Some((id, row, fields)) = self.pending_one(
+                record,
+                at,
+                (&overlay, &unknown),
+                &operation,
+                single_field_step,
+            )?
             else {
                 return Ok(None);
             };
@@ -589,6 +599,7 @@ impl NativeProvider {
             layout: None,
             set: CurrentSet::Account,
             record_number: None,
+            single_field_step: false,
         };
         let computed = self.pending_overlay((None, &reading), &[], operation, elsewhere)?;
         let owner_of = |root: u64| {
@@ -638,13 +649,31 @@ impl NativeProvider {
             Some(table) => table,
             None => self.read_table_for_layout(&layout)?.id,
         };
+        if self.external.route(table).is_some() {
+            return Ok(None);
+        }
+        let affected: BTreeSet<_> = if write.cells.is_empty() {
+            BTreeSet::new()
+        } else {
+            self.table_plan(table)?
+                .1
+                .replacing_groups_assigned(&write.cells)
+                .collect()
+        };
+        let unavailable = || {
+            (!affected.is_empty()).then(|| om_data::PendingValues {
+                unknown: affected.clone(),
+                unavailable: affected.clone(),
+                ..Default::default()
+            })
+        };
         let usable = others.iter().all(|p| {
             self.external.route(p.table).is_none() && (p.record.is_some() || p.table == table)
         });
         // A write naming a preview takes that preview's context, which this
         // does not compute with.
-        if self.external.route(table).is_some() || !usable || write.prepared.is_some() {
-            return Ok(None);
+        if !usable || write.prepared.is_some() {
+            return Ok(unavailable());
         }
         let own = PendingRecord {
             table,
@@ -662,17 +691,21 @@ impl NativeProvider {
             layout: Some(write.layout),
             set: CurrentSet::Step(write.privilege_set.clone()),
             record_number: write.record_number,
+            single_field_step: write.single_field_step && write.table.is_none(),
         };
         let at = all.len() - 1;
-        let Some((_, Some((row, unknown)))) = self.pending_computed(
+        let computed = self.pending_computed(
             (Some(table), &BTreeSet::new()),
             &all,
             operation,
             Unknown::new(),
             Some(at),
-        )?
-        else {
-            return Ok(None);
+        );
+        let (row, unknown) = match computed {
+            Ok(Some((_, Some(values)))) => values,
+            Ok(_) => return Ok(unavailable()),
+            Err(_) if !affected.is_empty() => return Ok(unavailable()),
+            Err(error) => return Err(error),
         };
         let mut values: BTreeMap<u64, Option<String>> = row
             .into_iter()
@@ -683,7 +716,12 @@ impl NativeProvider {
                 values.entry(*cell).or_insert(None);
             }
         }
-        Ok(Some(om_data::PendingValues { values, unknown }))
+        let unavailable = affected.intersection(&unknown).copied().collect();
+        Ok(Some(om_data::PendingValues {
+            values,
+            unknown,
+            unavailable,
+        }))
     }
 
     /// Pending record `record` (the `at`th given) computed as its commit
@@ -697,6 +735,7 @@ impl NativeProvider {
         at: usize,
         (overlay, unknown): (&HeldRecords, &Unknown),
         operation: &Operation,
+        single_field_step: bool,
     ) -> Result<Option<(u64, BTreeMap<u64, String>, BTreeSet<u64>)>, DataError> {
         use crate::transaction::HeldBasis;
         use om_data::rules::Written;
@@ -717,7 +756,7 @@ impl NativeProvider {
                 record_number: operation.record_number,
                 prepared: None,
                 creation: om_data::RecordCreation::Other,
-                single_field_step: false,
+                single_field_step,
             };
             provider.origin_context(&plan, origin)
         };

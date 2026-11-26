@@ -3972,14 +3972,29 @@ impl RecordPlan {
             })
     }
 
-    /// Reject stored calculations or Self evaluation outside their measured
-    /// creation contexts before a create or preview reserves IDs or serials.
+    /// Reject record rules outside their measured creation contexts
+    /// before a create or preview reserves record IDs or serials.
     pub fn check_creation_context(
         &self,
         context: &WriteContext,
         entry: Entry,
     ) -> Result<(), DataError> {
         let unsorted = matches!(context.record_number, Some(RecordNumber::LocalNewRecord(_)));
+        if !entry.skip_auto_enter && (!unsorted || context.sequence == WriteSequence::Unmeasured) {
+            if let Some((result, _, _, _)) = self
+                .grouped_self_joins
+                .iter()
+                .find(|(_, _, _, entry)| *entry == GroupedAutoEntry::Replace)
+            {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: replacing grouped auto-entry requires ordinary New Record in an unsorted local window.",
+                        self.fields[result].name
+                    ),
+                ));
+            }
+        }
         if let Some(field) = self.fields.values().find(|field| {
             (!entry.skip_auto_enter || field.stored_calculation())
                 && match field.auto_enter_self {
@@ -4908,7 +4923,7 @@ impl RecordPlan {
 
     /// Replacing grouped auto-entry follows an explicit group assignment,
     /// even when the stored group value is the same (auto-entry.md).
-    fn replacing_groups_assigned<'a>(
+    pub fn replacing_groups_assigned<'a>(
         &'a self,
         changes: &'a BTreeMap<u64, Option<String>>,
     ) -> impl Iterator<Item = u64> + 'a {
@@ -4957,10 +4972,7 @@ impl RecordPlan {
                     WriteMode::Create => {
                         // The earlier values in the recorded sequence are all
                         // replaced by the evaluation with the final match keys.
-                        matches!(
-                            environment.context.record_number,
-                            Some(RecordNumber::LocalNewRecord(_))
-                        ) && (!group_assigned || group_nonempty)
+                        (!group_assigned || group_nonempty)
                             && (!key_assigned
                                 || row.get(&key).is_some_and(|value| !value.is_empty()))
                     }

@@ -347,6 +347,7 @@ fn replacing_group_flag_uses_the_first_peer_and_leaves_other_rows_unchanged() {
     const KEY: u64 = 31;
     const FLAG: u64 = 32;
     const NOTE: u64 = 33;
+    const SERIAL: u64 = 34;
     const OTHER: u64 = 0xd0_0009;
     let folder = Folder::new("replacing-grouped-flag");
     let path = folder.file("Items.fmp12", PASSWORD, |root| {
@@ -361,10 +362,22 @@ fn replacing_group_flag_uses_the_first_peer_and_leaves_other_rows_unchanged() {
             (KEY, "ItemKey", 1, 0x8000_0088),
             (FLAG, "Primary", 2, 0xa8),
             (NOTE, "Note", 1, 0),
+            (SERIAL, "Serial", 1, 0x2),
         ] {
             names.add_field(TABLE, id, name);
             fixture::add_field(root, TABLE, id, name, 1, kind, 0, options, 0);
         }
+        fixture::set_field_serial_increment(root, TABLE, SERIAL, 1);
+        root.put(
+            &[
+                &table,
+                &[3],
+                &[5],
+                &om_hbam::slot::uint_segment(SERIAL),
+                &[0x0c],
+            ],
+            om_scripts::text_node(&[], "1"),
+        );
         add_grouped_self_join(root, OCCURRENCE, OTHER, GROUP, KEY);
         for (field, text) in [
             (KEY, "Get ( UUID )"),
@@ -379,6 +392,39 @@ fn replacing_group_flag_uses_the_first_peer_and_leaves_other_rows_unchanged() {
         layout: LAYOUT as u32,
         ..Default::default()
     };
+    let refused = ScriptWrite {
+        record_number: Some(RecordNumber::Window(1)),
+        ..draft.clone()
+    };
+    assert_eq!(
+        provider.preview_new_record(&refused).unwrap_err().code,
+        Some(3)
+    );
+    assert_eq!(provider.write_record(&refused).unwrap_err().code, Some(3));
+    assert_eq!(
+        provider
+            .import_record(draft.layout, None, &BTreeMap::new(), true)
+            .unwrap_err()
+            .code,
+        Some(3)
+    );
+    provider.begin_record_commit().unwrap();
+    assert_eq!(provider.write_record(&refused).unwrap_err().code, Some(3));
+    provider.revert_transaction().unwrap();
+    provider.close();
+    let file = om_hbam::HbamFile::open(&path).unwrap();
+    let tree = file.key_tree().unwrap();
+    let next = tree
+        .at(&[TABLE, 3, 5, SERIAL, 0x0c])
+        .unwrap()
+        .text()
+        .unwrap()
+        .unwrap();
+    assert_eq!(next, "1", "a refused creation leaves the serial untouched");
+    drop(tree);
+    drop(file);
+
+    let mut provider = opened(&path);
     let read = |provider: &mut NativeProvider, record: i64| {
         let record = u64::try_from(record).unwrap();
         let need = CalcNeed::Record {
@@ -418,7 +464,16 @@ fn replacing_group_flag_uses_the_first_peer_and_leaves_other_rows_unchanged() {
             Some(1),
             "New Record: {created:?}"
         );
-        provider.write_record(&set(record, GROUP, group)).unwrap();
+        let mut assignment = set(record, GROUP, group);
+        assignment.record_number = start.record_number;
+        assignment.single_field_step = false;
+        let pending = provider.compute_pending(&assignment, &[]).unwrap().unwrap();
+        assert_eq!(
+            pending.values[&FLAG].as_deref(),
+            Some(want.to_string().as_str())
+        );
+        assert!(!pending.unknown.contains(&FLAG), "{pending:?}");
+        provider.write_record(&assignment).unwrap();
         provider.commit_transaction(true).unwrap();
         assert_eq!(read(&mut provider, record), Some(want), "after Commit");
         ids.push(record);
@@ -430,11 +485,23 @@ fn replacing_group_flag_uses_the_first_peer_and_leaves_other_rows_unchanged() {
     provider.write_record(&set(ids[0], GROUP, "B")).unwrap();
     provider.commit_transaction(true).unwrap();
     assert_eq!(read(&mut provider, ids[0]), Some(0));
+    let mut outside = set(ids[1], GROUP, "A");
+    outside.cells.insert(NOTE, Some("Another change".into()));
+    outside.single_field_step = false;
+    let pending = provider.compute_pending(&outside, &[]).unwrap().unwrap();
+    assert!(pending.unavailable.contains(&FLAG), "{pending:?}");
     // A2's first peer is now A3, whose flag is zero. An unrelated
     // edit preserves the old value, and reassigning A computes one.
     for (field, value, want) in [(NOTE, "Edited", 0), (GROUP, "A", 1)] {
         provider.begin_record_commit().unwrap();
-        provider.write_record(&set(ids[1], field, value)).unwrap();
+        let assignment = set(ids[1], field, value);
+        let pending = provider.compute_pending(&assignment, &[]).unwrap().unwrap();
+        assert_eq!(
+            pending.values[&FLAG].as_deref(),
+            Some(want.to_string().as_str())
+        );
+        assert!(!pending.unknown.contains(&FLAG), "{pending:?}");
+        provider.write_record(&assignment).unwrap();
         provider.commit_transaction(true).unwrap();
         assert_eq!(read(&mut provider, ids[1]), Some(want));
     }
