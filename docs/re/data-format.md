@@ -111,6 +111,23 @@ including symbols embedded in text. The `hhmm` time preset stored
 survived reopen. The long-date output in other system locales is
 unmeasured. [Native results](https://github.com/OpenMaker-Dev/openmaker/issues/1029)
 
+The fixed named date choices store the same selector at KFormat byte 60
+for a Date field and a Date Symbol. FileMaker Pro 26.1.1 preserved each
+choice through reopen. The file and system both used English (United
+States).
+
+| Selector | Browse display |
+| --- | --- |
+| `03` | Dec 25, 2024 |
+| `04` | December 25, 2024 |
+| `05` | Wed, Dec 25, 2024 |
+| `06` | Wednesday, December 25, 2024 |
+
+Short System Date uses selector `08` and showed `12/25/24` in the same
+run. Which locale supplies names for the fixed formats when file and
+system locales differ is unmeasured.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1029#issuecomment-7191150217)
+
 Date element codes follow `file-metadata.md` §2.3. `GetElement`
 (`0x2b5d80`) formats numeric month/day with their own padding styles.
 `AddLeadingChar` (`0x2b48d0`) proves style 0 means no padding, 1 zero

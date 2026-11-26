@@ -65,8 +65,9 @@ pub struct DateFormat {
 }
 
 impl DateFormat {
-    /// 0 as entered, 1 custom, 2 numeric short year, 7 numeric full year,
-    /// 9 Long System Date.
+    /// 0 as entered, 1 custom, 2 numeric short year, 3 and 4 named month,
+    /// 5 and 6 named weekday and month, 7 numeric full year, 8 Short System
+    /// Date, 9 Long System Date.
     pub fn format(&self) -> u8 {
         (self.flags >> 24) as u8
     }
