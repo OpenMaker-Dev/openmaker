@@ -1146,7 +1146,10 @@ OpenMaker Server answers `0x4fb5` for unhosted names and for a hosted
 file that is closed, as FileMaker Server does, and 4 for one that is
 closing or opening, its earlier choice, kept while FileMaker Server's
 answer for these is unmeasured ([#992](https://github.com/OpenMaker-Dev/openmaker/issues/992)). A paused file's Open is held
-unanswered until it resumes (admin-console.md, "Pausing a file").
+unanswered until it resumes, within the connection's limits on held
+requests (64 requests of 8 MiB in all), past which it is refused at once
+with the CORBA system exception `IMP_LIMIT` (OpenMaker's choice;
+admin-console.md, "Pausing a file").
 
 Record/data transactions reuse the LIFO body with the HBAM slot codec:
 `RCUploadDownload::Call` (0x1d27a1c) frames `PushPtr`/`PushLen` + a packed slot
@@ -2641,7 +2644,9 @@ connection, as for record notifications (write-path.md 6.4, "Call"):
   bytes>` (7 of 7 calls).
 
 OpenMaker Server sends these messages this way, and holds a paused file's
-requests while it answers everything else
+requests while it answers everything else, within the connection's limits
+on held requests (64 requests of 8 MiB in all), past which one is refused
+at once with the CORBA system exception `IMP_LIMIT`
 ([../admin-console.md](../admin-console.md), "Administration in
 om-server").
 
