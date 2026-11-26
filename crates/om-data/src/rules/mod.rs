@@ -395,6 +395,9 @@ pub enum RecordNumber {
     /// Ordinary local New Record in a sorted found set. The held row
     /// follows the current row before any later re-sort.
     LocalSortedNewRecord { position: u64, after: u64 },
+    /// Local Set Field created the first match of a direct unsorted
+    /// relationship from a global Text key.
+    LocalFirstRelated,
 }
 
 impl RecordNumber {
@@ -402,6 +405,7 @@ impl RecordNumber {
         match self {
             Self::Window(number) | Self::LocalNewRecord(number) => number,
             Self::LocalSortedNewRecord { position, .. } => position,
+            Self::LocalFirstRelated => 1,
         }
     }
 }
@@ -1913,7 +1917,7 @@ fn repeating_container_filename(
 ) -> bool {
     if target.kind != FieldKind::Normal
         || target.data_type != DataType::Text
-        || options.max_repetitions != 24
+        || !matches!(options.max_repetitions, 4 | 24 | 25)
         || options.options & !(INDEX_OPTIONS | BOOKKEEPING_OPTIONS) != 0x88
         || options.validation_options != 0
     {
@@ -1949,7 +1953,9 @@ fn repeating_container_filename(
             && field.kind == FieldKind::Normal
             && field.data_type == DataType::Container
             && field.decoded_options().is_some_and(|source| {
-                source.max_repetitions == 24
+                source.max_repetitions == options.max_repetitions
+                    // The added embedded variants were measured without validation.
+                    && (source.max_repetitions == 24 || source.validation_options == 0)
                     && (source.options == 0 || source.pending_embedded_container_transfer())
             })
     })
@@ -2176,6 +2182,18 @@ impl RecordPlan {
                 // `0x80` (auto-entry.md, Index bits), cannot change a
                 // write and are not. A stored calculation's all are.
                 FieldKind::Calculation if options.options & UNSTORED != 0 => !LOOKUP,
+                // Converting a replacing Number auto-entry to a stored,
+                // indexed calculation left the replacement bit set (#1133).
+                // Both definitions used the ordinary stored calculation.
+                FieldKind::Calculation
+                    if local
+                        && field.data_type == DataType::Number
+                        && options.options == 0x8000_0080
+                        && options.validation_options == 0
+                        && options.max_repetitions == 1 =>
+                {
+                    options.options
+                }
                 FieldKind::Calculation => {
                     INDEX_OPTIONS | BOOKKEEPING_OPTIONS | ALWAYS_EVALUATE | UNSTORED
                 }
@@ -2398,7 +2416,7 @@ impl RecordPlan {
                     let measured = local
                         && kind == FieldKind::Normal
                         && field.data_type == DataType::Number
-                        && matches!(options, 0x08 | 0x88)
+                        && matches!(options, 0x08 | 0x88 | 0xa8)
                         && formula.dependencies.is_empty()
                         && formula.related.is_empty()
                         && !other_inputs;
@@ -4048,6 +4066,32 @@ impl RecordPlan {
         entry: Entry,
     ) -> Result<(), DataError> {
         let unsorted = matches!(context.record_number, Some(RecordNumber::LocalNewRecord(_)));
+        let sorted = matches!(
+            context.record_number,
+            Some(RecordNumber::LocalSortedNewRecord { .. })
+        );
+        let first_related = context.record_number == Some(RecordNumber::LocalFirstRelated)
+            && context.sequence == WriteSequence::Local;
+        if first_related {
+            for field in self.fields.values() {
+                let reads_position = |expression: &Expression| {
+                    context_selectors(&self.schema, &expression.formula.polish)
+                        .contains(&selector::RECORD_NUMBER)
+                };
+                if field.formulas().any(reads_position)
+                    && (!field.stored_calculation()
+                        || field.validation.as_ref().is_some_and(reads_position))
+                {
+                    return Err(DataError::with_code(
+                        error::UNAVAILABLE,
+                        format!(
+                            "Field {}: a first related position is supported only in a stored Number calculation.",
+                            field.name
+                        ),
+                    ));
+                }
+            }
+        }
         if !entry.skip_auto_enter && (!unsorted || context.sequence == WriteSequence::Unmeasured) {
             if let Some((result, _, _, _)) = self
                 .grouped_self_joins
@@ -4067,14 +4111,18 @@ impl RecordPlan {
             (!entry.skip_auto_enter || field.stored_calculation())
                 && match field.auto_enter_self {
                     AutoEntrySelf::Unused => false,
-                    AutoEntrySelf::ProposedNumber => !unsorted,
+                    AutoEntrySelf::ProposedNumber => {
+                        // The replacing option with the empty-input guard
+                        // off was measured in unsorted New Record only.
+                        !unsorted && (!sorted || field.options.options & ALWAYS_EVALUATE != 0)
+                    }
                     AutoEntrySelf::Unsupported => true,
                 }
         }) {
             return Err(DataError::with_code(
                 error::UNAVAILABLE,
                 format!(
-                    "Field {}: Self requires a supported formula and unsorted local New Record.",
+                    "Field {}: Self requires a supported formula and local New Record context.",
                     field.name
                 ),
             ));
@@ -4082,10 +4130,6 @@ impl RecordPlan {
         if unsorted {
             return Ok(());
         }
-        let local_position = matches!(
-            context.record_number,
-            Some(RecordNumber::LocalSortedNewRecord { .. })
-        );
         for (field, expression) in self.fields.values().filter_map(|field| {
             field
                 .expression
@@ -4093,12 +4137,15 @@ impl RecordPlan {
                 .filter(|_| field.stored_calculation())
                 .map(|expression| (field, expression))
         }) {
-            let reason = if !local_position
+            let reason = if !sorted
+                && !(first_related
+                    && field.options.options == 0x0008_0000
+                    && field.options.validation_options == 0)
                 && matches!(
                     expression.formula.polish,
                     Expr::Get(selector::RECORD_NUMBER)
                 ) {
-                "a stored record number requires ordinary New Record in a local window with a known insertion position."
+                "a stored record number requires a supported local creation with a known position."
             } else if expression.stored_evaluate.is_some() {
                 "a stored Evaluate requires ordinary New Record in an unsorted local window."
             } else {
@@ -8774,77 +8821,93 @@ mod tests {
             }
         }
 
-        let mut table = table();
-        table.fields.retain(|field| field.id <= 2);
-        let mut attachment = field(3, FieldKind::Normal, DataType::Container, 0, 0, 0);
-        attachment.options[24..26].copy_from_slice(&24u16.to_be_bytes());
-        let mut filename = field(4, FieldKind::Normal, DataType::Text, 0, 0x2000_0088, 0);
-        filename.options[24..26].copy_from_slice(&24u16.to_be_bytes());
-        table.fields.extend([attachment, filename]);
-        let formulas = [(4, 5, "GetContainerAttribute ( Field3 ; \"Filename\" )")];
-        let plan = plan_of(&table, &formulas, &[]).unwrap();
-        assert!(plan_with(&table, &formulas, &[], Vec::new(), false).is_err());
-        assert!(plan_of(
-            &table,
-            &[(4, 5, "GetContainerAttribute ( Field3 ; \"Width\" )")],
-            &[]
-        )
-        .is_err());
-        let mut env = environment();
-        env.containers = Some(Arc::new(FileNames));
-        let prepare = |mode, row: &BTreeMap<_, _>, changes: &BTreeMap<_, _>| {
-            plan.prepare(mode, row, changes, &env).unwrap()
-        };
-        let title = BTreeMap::from([(1, Some("One".into()))]);
-        let new = prepare(WriteMode::Create, &BTreeMap::new(), &title);
-        assert_eq!(new.changed_fields, [1]);
+        for repetitions in [4u16, 24, 25] {
+            let mut table = table();
+            table.fields.retain(|field| field.id <= 2);
+            let mut attachment = field(3, FieldKind::Normal, DataType::Container, 0, 0, 0);
+            attachment.options[24..26].copy_from_slice(&repetitions.to_be_bytes());
+            let options = if repetitions == 24 { 0x2000_0088 } else { 0x88 };
+            let mut filename = field(4, FieldKind::Normal, DataType::Text, 0, options, 0);
+            filename.options[24..26].copy_from_slice(&repetitions.to_be_bytes());
+            table.fields.extend([attachment, filename]);
+            let formulas = [(4, 5, "GetContainerAttribute ( Field3 ; \"Filename\" )")];
+            let plan = plan_of(&table, &formulas, &[]).unwrap();
+            assert!(plan_with(&table, &formulas, &[], Vec::new(), false).is_err());
+            assert!(plan_of(
+                &table,
+                &[(4, 5, "GetContainerAttribute ( Field3 ; \"Width\" )")],
+                &[]
+            )
+            .is_err());
+            let mut env = environment();
+            env.containers = Some(Arc::new(FileNames));
+            let prepare = |mode, row: &BTreeMap<_, _>, changes: &BTreeMap<_, _>| {
+                plan.prepare(mode, row, changes, &env).unwrap()
+            };
+            let title = BTreeMap::from([(1, Some("One".into()))]);
+            let new = prepare(WriteMode::Create, &BTreeMap::new(), &title);
+            assert_eq!(new.changed_fields, [1]);
 
-        let second_attachment = cell_of(3, 2).unwrap();
-        let second_filename = cell_of(4, 2).unwrap();
-        let populated = BTreeMap::from([(3, Some("red.png".into()))]);
-        let refused = plan.prepare(WriteMode::Create, &BTreeMap::new(), &populated, &env);
-        assert_eq!(refused.err().and_then(|e| e.code), Some(error::UNAVAILABLE));
-        let unrelated = BTreeMap::from([(3, "red.png".into()), (4, "red.png".into())]);
-        let inserted = prepare(
-            WriteMode::Update,
-            &unrelated,
-            &BTreeMap::from([(second_attachment, Some("green.png".into()))]),
-        );
-        assert_eq!(
-            inserted.changed_fields,
-            [second_attachment, second_filename]
-        );
-        assert_eq!(
-            decoded(&inserted, second_filename).as_deref(),
-            Some("green.png")
-        );
+            let last_attachment = cell_of(3, u32::from(repetitions)).unwrap();
+            let last_filename = cell_of(4, u32::from(repetitions)).unwrap();
+            let populated = BTreeMap::from([(3, Some("red.png".into()))]);
+            let refused = plan.prepare(WriteMode::Create, &BTreeMap::new(), &populated, &env);
+            assert_eq!(refused.err().and_then(|e| e.code), Some(error::UNAVAILABLE));
+            let unrelated = BTreeMap::from([
+                (3, "red.png".into()),
+                (4, "red.png".into()),
+                (
+                    cell_of(3, u32::from(repetitions - 1)).unwrap(),
+                    "middle.png".into(),
+                ),
+                (
+                    cell_of(4, u32::from(repetitions - 1)).unwrap(),
+                    "middle.png".into(),
+                ),
+            ]);
+            let inserted = prepare(
+                WriteMode::Update,
+                &unrelated,
+                &BTreeMap::from([(last_attachment, Some("green.png".into()))]),
+            );
+            assert_eq!(inserted.changed_fields, [last_attachment, last_filename]);
+            assert_eq!(
+                decoded(&inserted, last_filename).as_deref(),
+                Some("green.png")
+            );
 
-        let mut two = unrelated;
-        two.extend([
-            (second_attachment, "green.png".into()),
-            (second_filename, "green.png".into()),
-        ]);
-        let replaced = prepare(
-            WriteMode::Update,
-            &two,
-            &BTreeMap::from([(second_attachment, Some("blue.png".into()))]),
-        );
-        assert_eq!(
-            replaced.changed_fields,
-            [second_attachment, second_filename]
-        );
-        assert_eq!(
-            decoded(&replaced, second_filename).as_deref(),
-            Some("blue.png")
-        );
-        let cleared = prepare(
-            WriteMode::Update,
-            &two,
-            &BTreeMap::from([(second_attachment, None)]),
-        );
-        assert_eq!(cleared.changed_fields, [second_attachment, second_filename]);
-        assert_eq!(cleared.values.get(&second_filename), Some(&None));
-        assert_eq!(prepare(WriteMode::Update, &two, &title).changed_fields, [1]);
+            let mut attached = unrelated;
+            attached.extend([
+                (last_attachment, "green.png".into()),
+                (last_filename, "green.png".into()),
+            ]);
+            let replaced = prepare(
+                WriteMode::Update,
+                &attached,
+                &BTreeMap::from([(last_attachment, Some("blue.png".into()))]),
+            );
+            assert_eq!(replaced.changed_fields, [last_attachment, last_filename]);
+            assert_eq!(
+                decoded(&replaced, last_filename).as_deref(),
+                Some("blue.png")
+            );
+            let cleared = prepare(
+                WriteMode::Update,
+                &attached,
+                &BTreeMap::from([(last_attachment, None)]),
+            );
+            assert_eq!(cleared.changed_fields, [last_attachment, last_filename]);
+            assert_eq!(cleared.values.get(&last_filename), Some(&None));
+            assert_eq!(
+                prepare(WriteMode::Update, &attached, &title).changed_fields,
+                [1]
+            );
+            if repetitions == 4 {
+                let mut mismatched = table;
+                mismatched.fields[2].options[24..26].copy_from_slice(&25u16.to_be_bytes());
+                assert!(plan_of(&mismatched, &formulas, &[]).is_err());
+            }
+        }
     }
 
     #[test]
@@ -9167,7 +9230,18 @@ mod tests {
             .prepare(WriteMode::Create, &BTreeMap::new(), &changes, &at_creation)
             .unwrap();
         assert_eq!(decoded(&created, 23).as_deref(), Some("3"));
-        for number in [None, Some(RecordNumber::Window(3))] {
+        at_creation.context.record_number = Some(RecordNumber::LocalFirstRelated);
+        at_creation.context.sequence = WriteSequence::Local;
+        let related = plan
+            .prepare(WriteMode::Create, &BTreeMap::new(), &changes, &at_creation)
+            .unwrap();
+        assert_eq!(decoded(&related, 23).as_deref(), Some("1"));
+        at_creation.context.sequence = WriteSequence::Unmeasured;
+        for number in [
+            None,
+            Some(RecordNumber::Window(3)),
+            Some(RecordNumber::LocalFirstRelated),
+        ] {
             at_creation.context.record_number = number;
             let error = plan
                 .prepare(WriteMode::Create, &BTreeMap::new(), &changes, &at_creation)
@@ -9420,10 +9494,15 @@ mod tests {
                 field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
                 field(20, FieldKind::Normal, DataType::Number, 0, 0x88, 0),
                 field(21, FieldKind::Normal, DataType::Number, 0, 0x08, 0),
+                field(22, FieldKind::Normal, DataType::Number, 0, 0xa8, 0),
             ],
         };
         let formula = "If ( IsEmpty ( Self ) ; 0 ; Self + 1 )";
-        let formulas = [(20, 5, formula), (21, 5, formula)];
+        let formulas = [
+            (20, 5, formula),
+            (21, 5, formula),
+            (22, 5, "If ( IsEmpty ( Self ) ; 0 ; Self )"),
+        ];
         let hosted = plan_with(&table, &formulas, &[], Vec::new(), false).unwrap();
         let plan = plan_of(&table, &formulas, &[]).unwrap();
         let entry = Entry::script(false, false);
@@ -9450,17 +9529,29 @@ mod tests {
             .unwrap();
         assert_eq!(
             create,
-            BTreeMap::from([(20, Some("0".into())), (21, Some("0".into()))])
+            BTreeMap::from([
+                (20, Some("0".into())),
+                (21, Some("0".into())),
+                (22, Some("0".into())),
+            ])
         );
-        let propose = BTreeMap::from([(20, Some("25".into())), (21, Some("25".into()))]);
+        let propose = BTreeMap::from([
+            (20, Some("25".into())),
+            (21, Some("25".into())),
+            (22, Some("25".into())),
+        ]);
         let values = plan
             .compute(WriteMode::Create, &empty, &propose, &env, held_create)
             .unwrap();
         assert_eq!(
             values,
-            BTreeMap::from([(20, Some("26".into())), (21, Some("25".into()))])
+            BTreeMap::from([
+                (20, Some("26".into())),
+                (21, Some("25".into())),
+                (22, Some("25".into())),
+            ])
         );
-        let row = BTreeMap::from([(20, "7".into()), (21, "8".into())]);
+        let row = BTreeMap::from([(20, "7".into()), (21, "8".into()), (22, "9".into())]);
         let updated = plan
             .compute(WriteMode::Update, &row, &propose, &env, entry)
             .unwrap();
@@ -9469,7 +9560,7 @@ mod tests {
             .compute(
                 WriteMode::Update,
                 &row,
-                &BTreeMap::from([(20, None), (21, None)]),
+                &BTreeMap::from([(20, None), (21, None), (22, None)]),
                 &env,
                 entry,
             )
@@ -9488,6 +9579,19 @@ mod tests {
             },
             ..environment()
         };
+        let sorted = WriteContext {
+            record_number: Some(RecordNumber::LocalSortedNewRecord {
+                position: 2,
+                after: 1,
+            }),
+            ..WriteContext::default()
+        };
+        assert_eq!(
+            plan.check_creation_context(&sorted, held_create)
+                .unwrap_err()
+                .code,
+            Some(error::UNAVAILABLE)
+        );
         for (plan, env, entry) in [
             (&plan, &unmeasured, held_create),
             (&hosted, &env, held_create),
@@ -12304,6 +12408,50 @@ mod tests {
                 "{refused}"
             );
         }
+    }
+
+    #[test]
+    fn a_local_stored_number_accepts_the_retained_replacement_bit() {
+        let mut table = Table {
+            id: 0x8002,
+            name: "Items".into(),
+            fields: vec![
+                field(1, FieldKind::Normal, DataType::Date, 0, 0, 0),
+                field(2, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(
+                    3,
+                    FieldKind::Calculation,
+                    DataType::Number,
+                    0,
+                    0x8000_0080,
+                    0,
+                ),
+            ],
+        };
+        let formulas = [(3, 5, "Year ( Field1 )")];
+        let plan = plan_of(&table, &formulas, &[]).unwrap();
+        assert_eq!(decoded(&create(&plan, &[]).unwrap(), 3), None);
+        let made = create(&plan, &[(1, "12/25/2024"), (2, "Test")]).unwrap();
+        assert_eq!(decoded(&made, 3).as_deref(), Some("2024"));
+        assert!(!plan.editable_fields().contains("Field3"));
+
+        let existing = BTreeMap::from([
+            (1, "12/25/2024".into()),
+            (2, "Test".into()),
+            (3, "2024".into()),
+        ]);
+        let changed = plan
+            .prepare(
+                WriteMode::Update,
+                &existing,
+                &BTreeMap::from([(1, Some("1/1/2025".into()))]),
+                &environment(),
+            )
+            .unwrap();
+        assert_eq!(decoded(&changed, 3).as_deref(), Some("2025"));
+        assert!(plan_with(&table, &formulas, &[], Vec::new(), false).is_err());
+        table.fields[2].options[8..12].copy_from_slice(&0x8000_00a0u32.to_be_bytes());
+        assert!(plan_of(&table, &formulas, &[]).is_err());
     }
 
     #[test]

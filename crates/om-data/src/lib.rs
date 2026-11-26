@@ -33,6 +33,7 @@ pub mod layout_catalog;
 pub mod layout_move;
 pub mod layout_objects;
 pub mod layout_placement;
+pub mod layout_selection;
 pub mod library_uses;
 pub mod meta;
 pub mod new_file;
@@ -255,6 +256,10 @@ pub struct PendingValues {
     /// Pending results that must fail with error 3 when the preview cannot
     /// evaluate them. Reading a prior stored value would affect the script.
     pub unavailable: std::collections::BTreeSet<u64>,
+    /// Script-assigned Number cells whose supported auto-entry uses the
+    /// proposed value as Self. A script reads the computed value in
+    /// `values` for these cells while the raw assignment is still pending.
+    pub proposed_self: std::collections::BTreeSet<u64>,
 }
 
 /// Record operations supported for one layout's underlying table.
@@ -480,6 +485,12 @@ pub struct ObjectGeom {
     /// The object's key in the layout's object store (0 when it is not a
     /// stored object).
     pub key: u64,
+    /// How this object participates in the Select All command.
+    pub selection: layout_selection::Target,
+    /// The object's role in a marquee over the layout.
+    pub marquee: layout_selection::MarqueeRole,
+    /// Whether FileMaker stores this object as locked in Layout mode.
+    pub locked: bool,
     /// Whether Layout mode can move and resize it
     /// ([`layout_objects::movable`]): a top-level object without contents.
     pub movable: bool,

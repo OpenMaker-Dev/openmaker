@@ -620,6 +620,11 @@ fn layout(ui: &mut Ui, bar: Rect, context: &ToolbarContext<'_>, actions: &mut Ve
         let rect = Rect::from_min_size(pos2(x, bar.top()), vec2(width + gap, bar.height()));
         x += width + gap;
         let response = tool_button(ui, rect, tool, context.tool == tool);
+        // The Part tool's button is also dragged onto the layout, which
+        // adds a part (`layout_canvas::PartToolDrag`).
+        if tool == LayoutTool::Part {
+            response.dnd_set_drag_payload(crate::layout_canvas::PartToolDrag);
+        }
         if tool == LayoutTool::Field && response.double_clicked() {
             actions.push(Action::LockFieldTool);
         } else if response.clicked() {
@@ -663,7 +668,12 @@ fn layout(ui: &mut Ui, bar: Rect, context: &ToolbarContext<'_>, actions: &mut Ve
 /// A layout tool: like a toolbar button, but the active tool sits in a blue
 /// rounded box with a white glyph.
 fn tool_button(ui: &mut Ui, rect: Rect, tool: LayoutTool, selected: bool) -> Response {
-    let response = ui.allocate_rect(rect, Sense::click());
+    let sense = if tool == LayoutTool::Part {
+        Sense::click_and_drag()
+    } else {
+        Sense::click()
+    };
+    let response = ui.allocate_rect(rect, sense);
     let icon_center = pos2(rect.center().x, rect.top() + TOOLBAR_ICON_Y);
     let split = tool.has_options();
     let glyph_center = if split {

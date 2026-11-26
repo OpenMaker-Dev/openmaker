@@ -23,6 +23,10 @@ use crate::document::{zoom, DocumentState};
 use crate::session::{Geometry, Session};
 use crate::theme;
 
+use om_data::layout_selection::{
+    self, Coverage, MarqueeFrame, SelectAll, Target as SelectionTarget,
+};
+
 mod history;
 pub(crate) use history::DraftEdit;
 
@@ -287,7 +291,13 @@ struct Drag {
 }
 
 #[derive(Default)]
-struct Selection(BTreeSet<usize>, Option<&'static str>);
+struct Selection(BTreeSet<usize>, Option<&'static str>, SelectionOverlay);
+
+#[derive(Default)]
+struct SelectionOverlay {
+    aggregate: bool,
+    tab_controls: BTreeMap<u64, usize>,
+}
 
 impl Selection {
     fn single(&self) -> Option<usize> {
@@ -304,8 +314,18 @@ impl Selection {
 
     fn replace(&mut self, indices: impl IntoIterator<Item = usize>) {
         self.1 = None;
+        self.2 = SelectionOverlay::default();
         self.0.clear();
         self.0.extend(indices);
+    }
+
+    fn replace_with_overlay(
+        &mut self,
+        indices: impl IntoIterator<Item = usize>,
+        overlay: SelectionOverlay,
+    ) {
+        self.replace(indices);
+        self.2 = overlay;
     }
 
     fn start_drag(&mut self, index: usize, shift: bool) {
@@ -313,6 +333,7 @@ impl Selection {
             if shift {
                 self.0.insert(index);
                 self.1 = None;
+                self.2 = SelectionOverlay::default();
             } else {
                 self.set(Some(index));
             }
@@ -321,6 +342,7 @@ impl Selection {
 
     fn click(&mut self, index: Option<usize>, shift: bool) {
         self.1 = None;
+        self.2 = SelectionOverlay::default();
         if let Some(index) = index.filter(|_| shift) {
             if !self.0.remove(&index) {
                 self.0.insert(index);
@@ -328,27 +350,6 @@ impl Selection {
         } else {
             self.set(index);
         }
-    }
-}
-
-/// An unmodified arrow key moves the draft selection by one layout point.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NudgeDirection {
-    Left,
-    Right,
-    Up,
-    Down,
-}
-
-impl NudgeDirection {
-    fn delta(self) -> layout_move::Delta {
-        let (dx, dy) = match self {
-            Self::Left => (-1.0, 0.0),
-            Self::Right => (1.0, 0.0),
-            Self::Up => (0.0, -1.0),
-            Self::Down => (0.0, 1.0),
-        };
-        layout_move::Delta { dx, dy }
     }
 }
 
@@ -412,6 +413,15 @@ pub(crate) struct CanvasState {
     /// height dragged to, for the window to send.
     part_drag: Option<PartDrag>,
     part_resize: Option<PartResize>,
+    /// The Part tool was used on the layout: Part Definition opens.
+    part_tool: bool,
+    /// A layout read again no longer has objects that unsaved control or
+    /// text changes were made to; the changes are kept.
+    orphaned_drafts: bool,
+    /// The objects of the layout as last read (kept while it is read
+    /// again): an object is deleted when a read lacks one of them, not when
+    /// a read is older than an object just placed.
+    known_keys: BTreeSet<u64>,
 }
 
 /// The stored part whose boundary began the drag, and the current height.
@@ -432,17 +442,36 @@ pub(crate) struct PartResize {
     pub revision: Option<om_data::layout_placement::Revision>,
 }
 
-/// Whether part boundaries may be dragged, and the active and finished drag.
+/// Whether part boundaries may be dragged, and the active and finished
+/// drag; and whether the Part tool was used.
 struct PartEdges<'a> {
     enabled: bool,
     drag: &'a mut Option<PartDrag>,
     resize: &'a mut Option<PartResize>,
+    tool: &'a mut bool,
 }
+
+/// The Part tool's button dragged from the status toolbar: dropped on the
+/// layout, it adds a part as a click with the tool does.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PartToolDrag;
 
 impl CanvasState {
     /// A part's height dragged to, since the last call.
     pub(crate) fn take_part_resize(&mut self) -> Option<PartResize> {
         self.part_resize.take()
+    }
+
+    /// Whether a read found unsaved changes to objects the layout no longer
+    /// has since the last call (another client deleted the objects).
+    pub(crate) fn take_orphaned_drafts(&mut self) -> bool {
+        std::mem::take(&mut self.orphaned_drafts)
+    }
+
+    /// Whether the Part tool was used on the layout since the last call:
+    /// a click with it, or its button dropped there.
+    pub(crate) fn take_part_tool(&mut self) -> bool {
+        std::mem::take(&mut self.part_tool)
     }
 
     /// Whether the layout holds changes not saved yet: a part boundary is
@@ -778,30 +807,36 @@ impl CanvasState {
         self.drag = None;
     }
 
-    /// Edit > Select All replaces the window's selection with the canvas's
-    /// selectable objects, including field drafts and excluding deletions.
-    pub(crate) fn select_all(&mut self, session: &Session) {
+    /// Replace the window's selection using the active tool's selection rule.
+    pub(crate) fn select_all(&mut self, session: &Session, filter: SelectAll) {
         self.synchronize(session);
         let Some(geometry) = &self.geometry else {
             return;
         };
         let shown = |object: &ObjectGeom| {
-            if session
-                .panel_contents()
-                .is_some_and(|contents| !contents.visible(object.key, &self.front_panels))
-            {
-                return None;
-            }
-            shown_frame(object, &self.moved, &self.deleted)
+            filter
+                .includes(object.selection)
+                .then(|| shown_frame(object, &self.moved, &self.deleted))
+                .flatten()
         };
-        self.selected
-            .replace(selectable_frames(geometry, &self.new_fields, shown).map(|(index, _)| index));
+        let fields = if filter.includes(SelectionTarget::Object(om_layout::ObjectKind::Field)) {
+            self.new_fields.as_slice()
+        } else {
+            &[]
+        };
+        self.selected.replace_with_overlay(
+            selectable_frames(geometry, fields, shown).map(|(index, _)| index),
+            SelectionOverlay {
+                aggregate: true,
+                ..Default::default()
+            },
+        );
         self.scroll_to_selected = false;
     }
 
     /// Stage one arrow-key move on the current layout. Like a drag, this
     /// refuses the whole selection if any member cannot be moved.
-    pub(crate) fn nudge_selection(&mut self, session: &Session, direction: NudgeDirection) -> bool {
+    pub(crate) fn nudge_selection(&mut self, session: &Session, delta: layout_move::Delta) -> bool {
         if self.selection_count(session) == 0
             || self.drag.is_some()
             || self.selection_drag.is_some()
@@ -820,8 +855,7 @@ impl CanvasState {
             self.selected.1 = Some(CANNOT_MOVE_SELECTION);
             return false;
         };
-        let Ok(plan) = layout_move::plan(frames.iter().map(|(_, frame)| *frame), direction.delta())
-        else {
+        let Ok(plan) = layout_move::plan(frames.iter().map(|(_, frame)| *frame), delta) else {
             self.selected.1 = Some(CANNOT_MOVE_SELECTION);
             return false;
         };
@@ -1036,6 +1070,7 @@ impl CanvasState {
                 self.drop_controls();
                 self.drop_words();
                 self.drop_width();
+                self.known_keys.clear();
             }
             self.identity = Some((
                 session.target.host.clone(),
@@ -1043,34 +1078,22 @@ impl CanvasState {
                 session.layout,
             ));
             self.geometry = geometry.cloned();
-            // A control change for an object the layout no longer has (another
-            // window deleted it) could never be saved: it goes.
+            // Changes to objects the layout no longer has (another window
+            // or client deleted them) cannot be saved, but they are the
+            // user's: they stay, so Save Layout reports them, Revert Layout
+            // discards them, and closing or quitting waits for one or the
+            // other. A text being typed in such an object is kept as its
+            // change if the words changed, and its editor closes. The window
+            // is told (`take_orphaned_drafts`).
             if let Some(geometry) = &self.geometry {
-                let gone = |key: &u64| !geometry.objects.iter().any(|o| o.key == *key);
-                let controls: Vec<u64> = self
-                    .controls
-                    .objects
-                    .keys()
-                    .filter(|k| gone(k))
-                    .copied()
-                    .collect();
-                let words: Vec<u64> = self
-                    .words
-                    .objects
-                    .keys()
-                    .filter(|k| gone(k))
-                    .copied()
-                    .collect();
-                let retyped = self.retyping.as_ref().is_some_and(|r| gone(&r.key));
-                for key in controls {
-                    self.control_sent(key);
+                let present: BTreeSet<u64> = geometry.objects.iter().map(|o| o.key).collect();
+                let known = std::mem::replace(&mut self.known_keys, present);
+                let gone = |key: &u64| known.contains(key) && !self.known_keys.contains(key);
+                if let Some(done) = self.retyping.take_if(|r| gone(&r.key)) {
+                    keep_words(&mut self.words, done);
                 }
-                for key in words {
-                    self.words_sent(key);
-                }
-                if retyped {
-                    self.retyping = None;
-                }
+                self.orphaned_drafts |=
+                    self.controls.objects.keys().any(gone) || self.words.objects.keys().any(gone);
             }
         }
         if moved || geometry_changed || revisited {
@@ -1160,6 +1183,7 @@ pub(crate) fn show(
                         enabled: !unsaved && geometry.revision.is_some(),
                         drag: &mut state.part_drag,
                         resize: &mut state.part_resize,
+                        tool: &mut state.part_tool,
                     },
                     // Frozen, the canvas still paints but takes no drag or click.
                     !frozen,
@@ -1214,6 +1238,7 @@ pub(crate) fn show(
                     enabled: false,
                     drag: &mut None,
                     resize: &mut None,
+                    tool: &mut false,
                 },
                 false,
                 &|_| true,
@@ -1406,6 +1431,18 @@ fn draw(
                         }
                     }
                 }
+            }
+            // The Part tool's button dropped on the layout, as Claris
+            // documents it ("drag the Part tool ... to the layout"), or a
+            // click on the layout with the tool chosen (OpenMaker's): Part
+            // Definition opens. The point does not matter, as the parts it
+            // adds go at their kind's place in the order of parts. Also on
+            // a frozen canvas, where the window refuses it with the reason.
+            let on_layout = pointer
+                .is_some_and(|point| surface.contains(point) && ui.clip_rect().contains(point));
+            let dropped_tool = background.dnd_release_payload::<PartToolDrag>().is_some();
+            if on_layout && (dropped_tool || (tool == LayoutTool::Part && background.clicked())) {
+                *edges.tool = true;
             }
             let painter = ui.painter().clone();
             painter.rect_filled(
@@ -1693,11 +1730,12 @@ fn draw(
                     *selection_drag = None;
                 }
             }
+            let present = |object: &ObjectGeom| shown_frame(object, moved, deleted);
             let shown = |object: &ObjectGeom| {
                 if !visible(object.key) {
                     return None;
                 }
-                shown_frame(object, moved, deleted)
+                present(object)
             };
             let mut marquee = None;
             if let Some(response) = &box_response {
@@ -1734,11 +1772,24 @@ fn draw(
                                     })
                                     .unwrap_or(input.modifiers.command)
                             });
-                            select_in_box(
-                                selected,
-                                rect.translate(-origin.to_vec2()),
-                                contained,
-                                selectable_frames(geometry, new.fields, shown),
+                            let bounds = rect.translate(-origin.to_vec2());
+                            let bounds = geometry_frame(bounds);
+                            let coverage = if contained {
+                                Coverage::Contains
+                            } else {
+                                Coverage::Intersects
+                            };
+                            let selected_frames = layout_selection::marquee(
+                                bounds,
+                                coverage,
+                                &marquee_frames(geometry, new.fields, present, visible),
+                            );
+                            selected.replace_with_overlay(
+                                selected_frames.indices,
+                                SelectionOverlay {
+                                    aggregate: selected_frames.aggregate,
+                                    tab_controls: selected_frames.tab_controls,
+                                },
                             );
                             *scroll_to_selected = false;
                         }
@@ -1772,6 +1823,7 @@ fn draw(
                     .max_rect(artwork_bounds),
             );
             artwork.set_clip_rect(ui.clip_rect().intersect(artwork_bounds));
+            let mut tabs = crate::document::design::TabArtwork::default();
             for (index, object) in geometry.objects.iter().enumerate() {
                 let Some(frame) = shown(object) else {
                     continue;
@@ -1794,6 +1846,7 @@ fn draw(
                     .map(|name| name.find("::").map_or(name, |at| &name[at..]))
                     .unwrap_or(&object.kind_name);
                 let draft_words = texts.words.objects.get(&object.key).map(String::as_str);
+                let tab_selected = selected.2.tab_controls.contains_key(&object.key);
                 let painted = artwork_bounds.intersects(rect)
                     && design.is_some_and(|design| {
                         design.paint_object(
@@ -1802,6 +1855,7 @@ fn draw(
                             rect,
                             field_caption,
                             draft_words,
+                            (visible, &mut tabs, tab_selected),
                         )
                     });
                 if !painted || changed || !artwork_bounds.contains_rect(rect) {
@@ -1986,22 +2040,100 @@ fn draw(
                 );
             }
 
-            if selected.0.len() > 1 {
-                for index in &selected.0 {
-                    if let Some(frame) = geometry.objects.get(*index).and_then(shown) {
-                        draw_selection(&painter, object_rect(origin, &frame));
+            let aggregate_selection = selected.2.aggregate;
+            let selection_frame = |object: &ObjectGeom| {
+                if aggregate_selection {
+                    present(object)
+                } else {
+                    shown(object)
+                }
+            };
+            if selected.0.len() > 1 || !selected.2.tab_controls.is_empty() {
+                let mut bounds = Rect::NOTHING;
+                let mut unlocked = false;
+                for &index in selected.2.tab_controls.values() {
+                    let Some((object, frame)) = geometry
+                        .objects
+                        .get(index)
+                        .and_then(|object| Some((object, shown(object)?)))
+                    else {
+                        continue;
+                    };
+                    let rect = object_rect(origin, &frame);
+                    if rect.is_finite() {
+                        draw_selection_outline(&painter, rect, object.locked);
+                        bounds = bounds.union(rect);
+                        unlocked |= !object.locked;
                     }
+                }
+                if !selected.2.tab_controls.is_empty() {
+                    for rect in tabs.selected_labels {
+                        if rect.is_positive() {
+                            painter.rect_stroke(
+                                rect,
+                                CornerRadius::ZERO,
+                                Stroke::new(1.0, theme::TEXT),
+                                StrokeKind::Inside,
+                            );
+                        }
+                    }
+                }
+                for &index in &selected.0 {
+                    let Some(object) = geometry.objects.get(index) else {
+                        if let Some(field) = new
+                            .fields
+                            .get(index - geometry.objects.len())
+                            .filter(|_| aggregate_selection)
+                        {
+                            let rect = object_rect(origin, &geom_rect(field.frame()));
+                            if rect.is_finite() {
+                                bounds = bounds.union(rect);
+                                unlocked = true;
+                            }
+                        }
+                        continue;
+                    };
+                    let Some(frame) = selection_frame(object) else {
+                        continue;
+                    };
+                    let rect = object_rect(origin, &frame);
+                    if !rect.is_finite() {
+                        continue;
+                    }
+                    draw_selection_outline(&painter, rect, object.locked);
+                    if aggregate_selection {
+                        // Inactive children have outlines but do not extend
+                        // the handles around the objects on screen.
+                        if visible(object.key) {
+                            bounds = bounds.union(rect);
+                            unlocked |= !object.locked;
+                        }
+                    } else if !object.locked {
+                        draw_selection_handles(&painter, rect);
+                    }
+                }
+                if unlocked && bounds.is_finite() {
+                    draw_selection_handles(&painter, bounds);
                 }
             }
             if let Some((object, frame)) = selected
                 .single()
+                .filter(|_| selected.2.tab_controls.is_empty())
                 .and_then(|index| geometry.objects.get(index))
-                .and_then(|object| Some((object, shown(object)?)))
+                .and_then(|object| Some((object, selection_frame(object)?)))
             {
                 let rect = object_rect(origin, &frame);
-                draw_selection(&painter, rect);
+                draw_selection_outline(&painter, rect, object.locked);
+                if !object.locked && rect.is_finite() {
+                    draw_selection_handles(&painter, rect);
+                }
                 // A movable object's handles resize it.
-                if selection_tool && object.movable && object.key != 0 && rect.is_finite() {
+                if selection_tool
+                    && visible(object.key)
+                    && object.movable
+                    && object.key != 0
+                    && rect.is_finite()
+                {
                     for (name, position, edges) in handles(rect) {
                         let handle = ui.interact(
                             Rect::from_center_size(position, vec2(9.0, 9.0)),
@@ -2109,20 +2241,50 @@ fn selectable_frames<'a>(
         .filter(|(_, frame)| frame.is_finite())
 }
 
-fn select_in_box(
-    selected: &mut Selection,
-    bounds: Rect,
-    contained: bool,
-    frames: impl Iterator<Item = (usize, Rect)>,
-) {
-    selected.replace(frames.filter_map(|(index, frame)| {
-        let hit = if contained {
-            bounds.contains_rect(frame)
-        } else {
-            bounds.intersects(frame)
-        };
-        hit.then_some(index)
-    }));
+fn marquee_frames<'a>(
+    geometry: &'a LayoutGeometry,
+    fields: &[NewField],
+    present: impl Fn(&ObjectGeom) -> Option<GeomRect>,
+    visible: impl Fn(u64) -> bool,
+) -> Vec<MarqueeFrame<'a>> {
+    geometry
+        .objects
+        .iter()
+        .enumerate()
+        .filter_map(|(index, object)| {
+            Some(MarqueeFrame {
+                index,
+                object: Some(object),
+                rect: present(object)?,
+                visible: visible(object.key),
+            })
+        })
+        .chain(
+            fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| MarqueeFrame {
+                    index: geometry.objects.len() + index,
+                    object: None,
+                    rect: geom_rect(field.frame()),
+                    visible: true,
+                }),
+        )
+        .filter_map(|mut entry| {
+            let shown = object_rect(Pos2::ZERO, &entry.rect);
+            entry.rect = geometry_frame(shown);
+            shown.is_finite().then_some(entry)
+        })
+        .collect()
+}
+
+fn geometry_frame(rect: Rect) -> GeomRect {
+    GeomRect {
+        left: f64::from(rect.left()),
+        top: f64::from(rect.top()),
+        right: f64::from(rect.right()),
+        bottom: f64::from(rect.bottom()),
+    }
 }
 
 fn begin_selection_drag(
@@ -2697,16 +2859,26 @@ fn object_label(index: usize, object: &ObjectGeom) -> String {
     }
 }
 
-fn draw_selection(painter: &egui::Painter, rect: Rect) {
+fn draw_selection_outline(painter: &egui::Painter, rect: Rect, locked: bool) {
     if !rect.is_finite() {
         return;
     }
     painter.rect_stroke(
         rect,
         CornerRadius::ZERO,
-        Stroke::new(1.0, theme::SELECTED),
+        Stroke::new(
+            1.0,
+            if locked {
+                theme::SELECTED.gamma_multiply(0.5)
+            } else {
+                theme::SELECTED
+            },
+        ),
         StrokeKind::Middle,
     );
+}
+
+fn draw_selection_handles(painter: &egui::Painter, rect: Rect) {
     for position in [
         rect.left_top(),
         rect.center_top(),
@@ -2922,6 +3094,73 @@ mod tests {
         assert_eq!(state.new_field().unwrap().revision, Some(saved));
     }
 
+    /// Unsaved text and control changes to an object another client
+    /// deleted are kept when the layout is read again without it, so
+    /// closing waits for Save or Revert Layout, and the window is told; an
+    /// editor opened on such an object and left unchanged is no change
+    /// (#1048's re-checks).
+    #[test]
+    fn changes_to_objects_deleted_elsewhere_are_kept_and_reported() {
+        let mut session = Session::new(
+            Target {
+                host: "test".into(),
+                file: "test.fmp12".into(),
+                local: None,
+            },
+            25,
+        );
+        session.layout = Some(1);
+        let with = |keys: &[u64]| {
+            Geometry::Loaded(LayoutGeometry {
+                objects: keys
+                    .iter()
+                    .map(|&key| ObjectGeom {
+                        key,
+                        ..object([0.0, 0.0, 10.0, 10.0])
+                    })
+                    .collect(),
+                ..LayoutGeometry::default()
+            })
+        };
+        session.geometry = with(&[7, 8, 9]);
+        let mut state = CanvasState::default();
+        state.synchronize(&session);
+        state.words.objects.insert(7, "Retyped".into());
+        state.controls.objects.insert(8, (2, None));
+        // An editor open on object 9 with its words untouched.
+        state.retyping = Some(Retyping {
+            key: 9,
+            text: "Name".into(),
+            stored: "Name".into(),
+            revision: None,
+            focus: false,
+        });
+        session.geometry = with(&[9]);
+        state.synchronize(&session);
+        assert_eq!(
+            state.words().objects.get(&7).map(String::as_str),
+            Some("Retyped")
+        );
+        assert!(state.controls().objects.contains_key(&8));
+        assert!(state.take_orphaned_drafts());
+        assert!(!state.take_orphaned_drafts());
+        // The untouched editor's object goes: no change, nothing reported.
+        let mut untouched = CanvasState::default();
+        session.geometry = with(&[9]);
+        untouched.synchronize(&session);
+        untouched.retyping = Some(Retyping {
+            key: 9,
+            text: "Name".into(),
+            stored: "Name".into(),
+            revision: None,
+            focus: false,
+        });
+        session.geometry = with(&[]);
+        untouched.synchronize(&session);
+        assert!(untouched.retyping.is_none() && untouched.words().objects.is_empty());
+        assert!(!untouched.take_orphaned_drafts());
+    }
+
     #[test]
     fn overlapping_objects_select_the_topmost_and_lines_have_a_hit_target() {
         let geometry = LayoutGeometry {
@@ -2965,8 +3204,8 @@ mod tests {
             ..Default::default()
         });
         let mut state = CanvasState::default();
-        state.select_all(&session);
-        state.nudge_selection(&session, NudgeDirection::Left);
+        state.select_all(&session, SelectAll::Layout);
+        state.nudge_selection(&session, layout_move::Delta { dx: -1.0, dy: 0.0 });
         assert!(state.moved().frames.is_empty());
     }
 
@@ -2993,7 +3232,9 @@ mod tests {
                 },
                 ObjectGeom {
                     key: 2,
-                    ..object([70.0, 25.0, 90.0, 45.0])
+                    // Stored endpoints can be reversed. Marquee uses the
+                    // frame the canvas draws, including for containment.
+                    ..object([90.0, 25.0, 70.0, 45.0])
                 },
                 ObjectGeom {
                     key: 3,
@@ -3330,8 +3571,9 @@ mod tests {
         app.run_steps(2);
         assert!(app.query_by_label(&first).is_none());
         assert!(app.query_by_label(&second).is_some());
-        app.state_mut().0.select_all(&session);
-        assert_eq!(app.state().0.selected_index(), Some(1));
+        app.state_mut().0.select_all(&session, SelectAll::Layout);
+        assert_eq!(app.state().0.selected.0, BTreeSet::from([0, 1]));
+        assert_eq!(app.state().0.front_panels.get(&1), Some(&4));
         assert!(!app.state().0.unsaved());
 
         // Changing layouts in Browse does not run the Layout canvas between
@@ -3352,8 +3594,9 @@ mod tests {
         assert!(state.selected_object(&session).is_none());
         state.synchronize(&session);
         assert!(state.selected_index().is_none());
-        state.select_all(&session);
-        assert_eq!(state.selected_index(), Some(0));
+        state.select_all(&session, SelectAll::Layout);
+        assert_eq!(state.selected.0, BTreeSet::from([0, 1]));
+        assert!(state.front_panels.is_empty());
     }
 
     #[test]
@@ -3410,7 +3653,7 @@ mod tests {
             Pos2::ZERO
         )
         .is_none());
-        state.nudge_selection(&session, NudgeDirection::Right);
+        state.nudge_selection(&session, layout_move::Delta { dx: 1.0, dy: 0.0 });
         assert_eq!(state.selection_notice(), Some(CANNOT_MOVE_SELECTION));
         assert!(state.moved().frames.is_empty());
         assert_eq!(state.fields()[0].left, 20.0);

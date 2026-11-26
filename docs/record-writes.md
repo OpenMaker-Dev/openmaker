@@ -780,17 +780,30 @@ written. Globals and repeating fields may be present too; Browse edits
 them as described below (globals as session values, later repetitions in
 their own cells). An unstored calculation's option bits are not checked
 but for a lookup's, which would write into it: a stray `0x80`
-(auto-entry.md) leaves the table writable. A stored calculation's unknown
-bits keep it read-only.
+(auto-entry.md) leaves the table writable. In a local file a stored
+Number calculation with one repetition, no validation, and option word
+`0x80000080` also follows the ordinary stored calculation rules. Its
+definition retains the replacement bit. Other unknown stored-calculation
+options keep the table read-only.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204266349)
 
 An ordinary local Number auto-entry calculation can use `Self` as its
-only field input. It reads the proposed value at unsorted New Record or on an
-explicit write, including an empty value on a clear. A nonempty explicit
-assignment keeps its value when replacement is disabled. This covers
-stored results and new-record previews. During a held edit of an existing
-record, calculations read the entered value until save. Other creation
-paths with auto-entry active and unmeasured Self formulas refuse an
-evaluation with error 3. Unrelated existing-record edits are available.
+only field input. It reads the proposed value at ordinary New Record in
+an unsorted or sorted local desktop window with a known insertion
+position, or on an explicit write, including an empty value on a clear.
+The sorted trial used "Keep records in sorted order" on. OpenMaker
+currently uses the same creation rule for both settings. A nonempty
+explicit assignment keeps its value when replacement is disabled.
+This covers stored results and new-record previews. For supported
+Number `Self` auto-entry, script calculations read the auto-entered
+result of a pending Set Field before Commit. During typing
+in an existing record, calculations keep reading the entered value
+until save. Other creation paths with auto-entry active and unmeasured
+Self formulas refuse an evaluation with error 3. Unrelated edits are
+available.
+In an unsorted local window, replacing Number auto-entry also accepts
+the option word `0xa8`, with "Do not evaluate if all referenced fields
+are empty" off. That option still refuses sorted creation.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1059)
 
 A local table accepts ordinary record writes to its other fields when a
@@ -803,14 +816,16 @@ and hosted use remain outside this support.
 [Open storage comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1060)
 [Secure storage comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1083)
 
-In a local file, a replacing 24-repetition Text auto-enter calculation
-can read the filename of the same occurrence's 24-repetition Container.
-With the measured formula and option word, a new empty record has no
-filename cells, and editing an existing source changes only its matching
-repetition. OpenMaker refuses direct writes into the calculated Text and
-creation with a nonempty source. The deferred-transfer refusal still
-applies to source containers awaiting a transfer.
-[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39)
+In a local file, a replacing Text auto-enter calculation can read the
+filename of the same occurrence's Container when the fields both have
+4, 24 or 25 repetitions. The 4- and 25-repetition cases use an embedded
+source with no validation flags. A new empty record has no filename
+cells, and editing an existing source changes only its matching
+repetition. Direct writes into the calculated Text and creation with
+a nonempty source still refuse. The 24-repetition deferred-transfer
+form permits writes to other fields and refuses writes to the container.
+[24 repetitions](https://github.com/OpenMaker-Dev/openmaker/issues/39)
+[4 and 25 repetitions](https://github.com/OpenMaker-Dev/openmaker/issues/1134#issuecomment-7204266608)
 
 In a local file, ordinary New Record applies a constant, a calculation
 that reads no fields, or a creation serial to a supported
@@ -1152,9 +1167,15 @@ record's place in what the rules read:
   set inserts it immediately after the current row when that row is known.
   Unrelated edits and later re-sorting leave its stored value alone.
   Automatic re-sorting after commit is a separate difference.
+  An unindexed stored Number calculation also gets position 1 when local
+  Set Field creates the first match of a direct, unsorted equality
+  relationship from a plain global Text key to a plain stored Text key.
+  The script can read that value and count the new match before Commit.
+  The parent's record is already stored and otherwise unedited. The
+  matching key and position are checked again at save.
   The same field definition refuses writes
   on hosted files and routed tables. Duplicate Record, portal creation
-  and other creates without the local New Record position refuse with 3
+  and other creates without a supported position refuse with 3
   ([#1011](https://github.com/OpenMaker-Dev/openmaker/issues/1011)).
 - The number is unavailable for a portal that sorts or filters, a sorted
   desktop window without a known insertion position, and edits of stored records.

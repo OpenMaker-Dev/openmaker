@@ -72,6 +72,24 @@ keeps the value. The result is visible immediately and survives commit.
 Inferred: `Self` reads the proposed field value. Hosted files and other
 field types were not measured.
 
+In a [sorted local desktop trial](https://github.com/OpenMaker-Dev/openmaker/issues/1059#issuecomment-7203492423)
+with "Keep records in sorted order" on, New Record inserted at position 2
+after the selected first record in the two-row found set. The field read
+0 at creation, 26 immediately after Set Field to 25 with replacing
+`Self + 1`, and 26 after Commit and reopen. The found set remained
+sorted. The replacing identity and nonreplacing identity both kept 25
+after the write, as did the replacing identity in a new window that
+inherited the sorted found set. Every script step returned 0.
+
+The [unsorted option trial](https://github.com/OpenMaker-Dev/openmaker/issues/1059#issuecomment-7203492423)
+toggled "Do not evaluate if all referenced fields are empty" for the
+replacing Number formula `If ( IsEmpty ( Self ) ; 0 ; Self )`. The two
+closed baselines and written copies stored option words `0x88` (on)
+and `0xa8` (off). Both cases showed 0 at New Record, 25 after an explicit
+assignment, and 0 immediately on clear, with the last value stored.
+Writing an unrelated field left Amount alone. Every step returned 0.
+The off option was unmeasured in a sorted window.
+
 ## Fixed field definition
 
 The definition is at `<base-table>/3/5/<field>/2`. The decoder accepts exactly
@@ -144,13 +162,21 @@ Contacts::Initial has kind 2 and option word 0, so its result is stored.
 
 `0x80` (`kOverwriteExisting`, the auto-entry "replace existing value" bit)
 is set on an unstored Date calculation (`0x00060080`) in a solution FileMaker
-Server hosts, in production use [O, PM relay, sanitized]. No other
-calculation field carries it: none of the 110 in the 66 `.fmp12` files
+Server hosts, in production use [O, PM relay, sanitized]. The earlier
+survey found no other instances: none of the 110 in the 66 `.fmp12` files
 FileMaker Pro 26 for macOS ships, nor the 402 in the maintainer's other test
 files [O]. It has no
 auto-entry for it to qualify; that it is left over from an earlier
 definition of the field, and changes nothing, is [I]. What FileMaker Pro's
 dialogs show for it is unmeasured.
+
+FileMaker Pro 26.1.1 converted a replacing Number auto-enter calculation
+`Year ( Issued )` (`0x00000088`) to a stored indexed Number calculation.
+The converted field kept the replacement bit (`0x80000080`), while the
+fresh stored calculation had `0x80000000`. Both had one repetition and
+no validation flags. Both accepted New Record, an unrelated Text
+assignment, and Date assignments with the calculated years 2024 and
+2025 visible before commit and retained on reopen. [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204266349)
 
 ## Built-in variables and Get() expressions
 
@@ -246,6 +272,14 @@ second Text cell and kept the first. A separate Text edit left both
 repetitions as they were. Each write returned 0 with no alert, and
 closed copies confirmed the stored cells.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39)
+
+FileMaker Pro 26.1.1 also accepted 4 and 25 repetitions on both fields
+in local files. The embedded Container had option word zero and the
+Text field had `0x88`, both with no validation flags. Empty creation and
+an unrelated Label edit left all filename cells absent. Inserting,
+replacing or clearing the last attachment affected only its matching
+filename cell. Earlier filenames remained stored after reopen. Every
+step returned 0. [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1134#issuecomment-7204266608)
 
 Entering a value directly in the result field, preparing a new record
 with a nonempty source, other formulas and hosted writes are unmeasured.
@@ -828,6 +862,19 @@ Unmeasured [U]:
   commit (an earlier record omitted in a transaction);
 - New Record from FileMaker Pro's menu or toolbar (inferred above, not
   run).
+
+**Stored Number calculation on a related create** [O: FileMaker Pro
+26.1.1, local macOS file,
+[#1011](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7204449570)].
+Parent's global Text key matched Child's stored Text key in one unsorted
+equality relationship with creation enabled. The key had no matches.
+Set Field on a non-key Child field made one related row and exposed its
+stored `Get ( RecordNumber )` value, 1, immediately. Commit and reopen
+kept 1, including with the parent at position 2 and the child table
+already containing two unrelated records. A separate sorted Child window
+did not change the answer. The calculation was unindexed (option word
+`0x00080000`). Each step returned 0 without an alert. Other relationship
+shapes, portal creation and hosted writes were not measured here.
 
 ## Serial numbers
 

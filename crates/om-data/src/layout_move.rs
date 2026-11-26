@@ -14,6 +14,38 @@ pub struct Delta {
     pub dy: f64,
 }
 
+/// The distance requested by one Layout mode arrow-key press.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NudgeStep {
+    OnePoint,
+    TenPoints,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NudgeDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl NudgeDirection {
+    /// Translate a direction and step into a delta for the shared move planner.
+    pub fn delta(self, step: NudgeStep) -> Delta {
+        let points = match step {
+            NudgeStep::OnePoint => 1.0,
+            NudgeStep::TenPoints => 10.0,
+        };
+        let (dx, dy) = match self {
+            Self::Left => (-points, 0.0),
+            Self::Right => (points, 0.0),
+            Self::Up => (0.0, -points),
+            Self::Down => (0.0, points),
+        };
+        Delta { dx, dy }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct MovePlan {
     /// The rounded translation, clamped for the entire selection.
