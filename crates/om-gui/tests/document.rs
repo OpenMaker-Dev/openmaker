@@ -2021,5 +2021,9 @@ fn web_viewer_note_over_a_picture_at_rest_and_while_editing() {
         common::click(&mut app, "View");
         common::click(&mut app, "Zoom In");
     }
-    shot(&mut app, "web-viewer-note-zoom-200", "a taller window at 200%");
+    shot(
+        &mut app,
+        "web-viewer-note-zoom-200",
+        "a taller window at 200%",
+    );
 }
