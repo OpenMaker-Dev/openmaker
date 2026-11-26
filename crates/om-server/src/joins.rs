@@ -38,8 +38,10 @@ pub(crate) const READS: [u8; 2] = [Opcode::DownloadWithLock as u8, Opcode::Downl
 /// network-protocol.md 2), one of them the session's own.
 pub(crate) const MAX_JOINED: usize = 9;
 
-/// How often a refused join is logged; the others are counted into the
-/// next line, so that a guesser cannot fill the disk.
+/// Refused joins are logged one line each, up to [`REFUSAL_LOG_BURST`] at
+/// once and then one every [`REFUSAL_LOG_INTERVAL`]; those left out are
+/// counted into the next line, so that a guesser cannot fill the disk.
+const REFUSAL_LOG_BURST: u32 = 64;
 const REFUSAL_LOG_INTERVAL: Duration = Duration::from_secs(10);
 
 /// A SHA-256 of the DER of a client certificate.
@@ -171,9 +173,17 @@ impl Drop for Seat {
 #[derive(Default)]
 pub(crate) struct Joins {
     grants: Mutex<HashMap<u32, Arc<Grant>>>,
-    /// When a refused join was last logged, and the refusals of each kind
-    /// left out since.
-    refusals: Mutex<(Option<Instant>, BTreeMap<&'static str, u64>)>,
+    refusals: Mutex<RefusalLog>,
+}
+
+/// What the log of refused joins has left ([`Joins::refused`]).
+#[derive(Default)]
+struct RefusalLog {
+    /// Lines it may write now, and when it last earned one.
+    lines: u32,
+    earned: Option<Instant>,
+    /// The refusals of each kind not logged since the last line.
+    left_out: BTreeMap<&'static str, u64>,
 }
 
 impl Joins {
@@ -235,20 +245,37 @@ impl Joins {
         }
     }
 
-    /// Log one refused join: at most one line every
-    /// [`REFUSAL_LOG_INTERVAL`] whatever the refusal, with how many of each
-    /// kind were left out since. One interval for every kind, so that the
-    /// time a refusal takes, logged or not, tells nothing of which
-    /// condition failed, and so of whether a session has the id.
+    /// Log one refused join, with the transport, the operation, the id it
+    /// named and the condition that failed: each one while the server has
+    /// lines left ([`REFUSAL_LOG_BURST`], one more earned every
+    /// [`REFUSAL_LOG_INTERVAL`]), the others counted by condition into the
+    /// next line. One allowance for every kind, so that the time a refusal
+    /// takes, logged or not, tells nothing of which condition failed, and
+    /// so of whether a session has the id.
     pub fn refused(&self, peer: &str, id: u32, opcode: u8, refusal: Refusal) {
         let mut log = self.refusals.lock().unwrap_or_else(PoisonError::into_inner);
-        let (last, left_out) = &mut *log;
-        if last.is_some_and(|last| last.elapsed() < REFUSAL_LOG_INTERVAL) {
-            *left_out.entry(refusal.kind()).or_default() += 1;
+        let now = Instant::now();
+        match log.earned {
+            None => {
+                log.lines = REFUSAL_LOG_BURST;
+                log.earned = Some(now);
+            }
+            Some(earned) => {
+                let intervals =
+                    now.duration_since(earned).as_secs() / REFUSAL_LOG_INTERVAL.as_secs();
+                if intervals > 0 {
+                    let earned_now = u32::try_from(intervals).unwrap_or(u32::MAX);
+                    log.lines = log.lines.saturating_add(earned_now).min(REFUSAL_LOG_BURST);
+                    log.earned = Some(now);
+                }
+            }
+        }
+        if log.lines == 0 {
+            *log.left_out.entry(refusal.kind()).or_default() += 1;
             return;
         }
-        *last = Some(Instant::now());
-        let left_out = std::mem::take(left_out);
+        log.lines -= 1;
+        let left_out = std::mem::take(&mut log.left_out);
         drop(log);
         let more = if left_out.is_empty() {
             String::new()

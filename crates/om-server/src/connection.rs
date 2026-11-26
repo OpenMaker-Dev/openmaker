@@ -1677,8 +1677,9 @@ impl Connection {
             joined.transfers.drop_file(header.file_id);
         }
         *joined.served.entry(header.opcode).or_default() += 1;
-        debug!(
-            "{peer}: op{} {} file {} for session 0x{session_id:08x} ({} bytes, maxreturn {})",
+        info!(
+            "{peer}: serving op{} {} of file {} for session 0x{session_id:08x} \
+             ({} bytes, maxreturn {})",
             header.opcode,
             Opcode::name(header.opcode).unwrap_or("(unknown)"),
             header.file_id,

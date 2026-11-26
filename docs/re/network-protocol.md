@@ -261,13 +261,16 @@ Server does, its own choices throughout (`om-server`'s `joins`):
   server (section 2); a tenth is refused until one of them ends. Each is
   counted at its accept under the server's caps on connections in all and
   from one address, and none is a client in the administrator's list.
-- The server's log gives, for each connection, its TLS version, whether the
-  handshake was full or resumed a session, and its client certificate's
-  SHA-256; each join, with the session's id and the connection that owns
-  it; each refusal with the condition that failed, at most one line
-  every 10 s, which counts the others by condition; and, when a joined
-  connection ends, how many reads of each kind it served. The client's
-  answer is the same for each condition.
+- The server's log gives, for each connection, its address, its TLS
+  version, whether the handshake was full or resumed a session, and its
+  client certificate's SHA-256; each join, with the session's id and the
+  connection that owns it; each read served on a joined connection, with
+  its operation, file and session; each refusal on a connection without
+  a session, with the operation, the id it named and the condition that
+  failed (64 lines at most at once, then one every 10 s, the others
+  counted by condition into the next); and, when a joined connection
+  ends, how many reads of each kind it served. The client's answer is the
+  same for each condition.
 
 Limits. Only the two operations FileMaker Pro was seen sending there are
 served. If, as section 2 suggests, any of its calls can travel on any of
