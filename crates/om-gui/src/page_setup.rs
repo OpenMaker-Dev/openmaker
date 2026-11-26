@@ -282,6 +282,35 @@ pub(crate) mod tests {
             (612.0, 792.0, Orientation::Landscape)
         );
         assert_eq!(landscape(STORED_LETTER), STORED_LETTER_LANDSCAPE);
+        // What OpenMaker saves in a file (#112) is FileMaker Pro's own
+        // `Comm` for US Letter in either orientation, and any setup it
+        // saves reads back as itself.
+        let letter = PaperSettings::default();
+        assert_eq!(letter.common_format(), STORED_LETTER);
+        let turned = PaperSettings {
+            orientation: Orientation::Landscape,
+            ..letter
+        };
+        assert_eq!(turned.common_format(), STORED_LETTER_LANDSCAPE);
+        // At 50%, the `Comm` FileMaker Pro read whole in #876's run W2:
+        // the sheet as stored, the printable size 1468 x 1152.
+        let half = PaperSettings {
+            scale: 0.5,
+            ..turned
+        };
+        assert_eq!(
+            half.common_format(),
+            *b"Comm\x00\x00\x00\x1d\x02\x3f\x00\x00\x00\xc1\x90\x00\x00\xc1\x90\x00\x00\x44\x14\x80\x00\x44\x41\x80\x00\x44\xb7\x80\x00\x44\x90\x00\x00"
+        );
+        let a4 = PaperSettings {
+            width: 595.2756,
+            height: 841.8898,
+            orientation: Orientation::Landscape,
+            scale: 0.5,
+        };
+        let back = Settings::restored(&a4.common_format()).unwrap().paper;
+        assert_eq!((back.orientation, back.scale), (a4.orientation, a4.scale));
+        assert!((back.width - a4.width).abs() < 0.001 && (back.height - a4.height).abs() < 0.001);
         // The same at 60% and 40%: FileMaker Pro stores the printable size
         // divided by the scale, 1223.33 x 960 and 1835 x 1440 (#817).
         for (scale, printable) in [(0.6, (1223.33, 960.0)), (0.4, (1835.0, 1440.0))] {
