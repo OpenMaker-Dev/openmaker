@@ -424,11 +424,10 @@ pub(crate) struct CanvasState {
     part_resize: Option<PartResize>,
 }
 
-/// A part boundary being dragged: the part's place in the layout's parts
-/// and the height the pointer is at.
+/// The stored part whose boundary began the drag, and the current height.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PartDrag {
-    index: usize,
+    part: om_data::PartIdentity,
     height: f64,
 }
 
@@ -1165,7 +1164,7 @@ pub(crate) fn show(
                     },
                     &mut state.width,
                     PartEdges {
-                        enabled: !unsaved,
+                        enabled: !unsaved && geometry.revision.is_some(),
                         drag: &mut state.part_drag,
                         resize: &mut state.part_resize,
                     },
@@ -1441,7 +1440,7 @@ fn draw(
             // part's height, in whole points, down to the lowest object in
             // it; the window sends it when the drag ends.
             if selection_tool && edges.enabled {
-                for (index, part) in geometry.parts.iter().enumerate() {
+                for part in &geometry.parts {
                     let Some(identity) = part.identity else {
                         continue;
                     };
@@ -1453,7 +1452,9 @@ fn draw(
                     if !band.is_finite() {
                         continue;
                     }
-                    let id = ui.scope_id().with(("part_edge", index));
+                    let id = ui
+                        .scope_id()
+                        .with(("part_edge", identity.key, identity.part_type));
                     let response = ui
                         .interact(band, id, Sense::drag())
                         .on_hover_cursor(egui::CursorIcon::ResizeVertical);
@@ -1473,17 +1474,26 @@ fn draw(
                     // The parts together stay within the coordinate range.
                     let others = geometry.parts.iter().map(|p| p.height).sum::<f64>() - part.height;
                     let max = (om_data::layout_placement::MAX_COORDINATE - others).max(min);
-                    if let Some(pointer) = response
-                        .interact_pointer_pos()
-                        .filter(|_| response.dragged())
-                    {
-                        let height = (f64::from(pointer.y - origin.y) - part.top)
+                    // A geometry refresh clears the gesture. Egui can keep
+                    // reporting a held drag, so only its start may bind a part.
+                    if response.drag_started() {
+                        *edges.drag = Some(PartDrag {
+                            part: identity,
+                            height: part.height,
+                        });
+                    }
+                    let active = edges.drag.as_mut().filter(|drag| drag.part == identity);
+                    if let Some((drag, pointer)) = active.zip(
+                        response
+                            .interact_pointer_pos()
+                            .filter(|_| response.dragged()),
+                    ) {
+                        drag.height = (f64::from(pointer.y - origin.y) - part.top)
                             .round()
                             .clamp(min, max);
-                        *edges.drag = Some(PartDrag { index, height });
                     }
                     if response.drag_stopped() {
-                        let dragged = edges.drag.take().filter(|d| d.index == index);
+                        let dragged = edges.drag.take().filter(|d| d.part == identity);
                         if let Some(drag) = dragged.filter(|d| d.height != part.height) {
                             *edges.resize = Some(PartResize {
                                 part: identity.key,
@@ -1493,7 +1503,7 @@ fn draw(
                             });
                         }
                     }
-                    if let Some(drag) = edges.drag.filter(|d| d.index == index) {
+                    if let Some(drag) = edges.drag.filter(|d| d.part == identity) {
                         let y = origin.y + (part.top + drag.height) as f32;
                         part_guide = Some((y, part.kind_name.as_str(), drag.height));
                     }
@@ -3167,10 +3177,11 @@ mod tests {
             .with_size(vec2(350.0, 200.0))
             .with_context_setup(crate::theme::install)
             .build_ui_state(
-                |ui, (state, document)| {
+                |ui, (state, document, session)| {
+                    state.synchronize(session);
                     show(
                         ui,
-                        &session,
+                        session,
                         LayoutTool::Selection,
                         &[],
                         state,
@@ -3178,7 +3189,7 @@ mod tests {
                         document,
                     );
                 },
-                (CanvasState::default(), DocumentState::default()),
+                (CanvasState::default(), DocumentState::default(), session),
             );
         let start = app.get_by_label("Header boundary").rect().center();
         let end = start + vec2(0.0, 15.0);
@@ -3204,6 +3215,27 @@ mod tests {
                 revision: Some(revision),
             }),
         );
+
+        // A second gesture starts on the same Header. The host refreshes
+        // the geometry while the pointer is held, and egui keeps its grab.
+        app.event(egui::Event::PointerMoved(start));
+        app.event(press(start, true));
+        app.step();
+        app.event(egui::Event::PointerMoved(end));
+        app.step();
+        assert!(app.state().0.part_drag.is_some());
+        let Geometry::Loaded(geometry) = &mut app.state_mut().2.geometry else {
+            unreachable!();
+        };
+        geometry.parts.reverse();
+        geometry.revision = Some([5; 32]);
+        app.step();
+        let after_refresh = end + vec2(0.0, 10.0);
+        app.event(egui::Event::PointerMoved(after_refresh));
+        app.step();
+        app.event(press(after_refresh, false));
+        app.step();
+        assert_eq!(app.state_mut().0.take_part_resize(), None);
     }
 
     #[test]
