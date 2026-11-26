@@ -2254,9 +2254,12 @@ editor keeps its own keyboard undo and redo. On leaving the editor, the
 completed edit becomes part of the draft history. A new draft edit drops
 the redo branch. OpenMaker keeps up to 32 steps and clears history if the
 draft exceeds its snapshot budget. Applying a step clears selection.
-Save Layout, Revert Layout, a changed layout revision and leaving the
-layout or mode end the history. Part boundaries, Part Setup and Layout
-Setup are immediate writes outside the draft. FileMaker Pro's precise
+Undo and Redo remain available for a local draft after disconnect.
+History ends when Save Layout queues a write, when the user reverts the
+layout, when the layout revision changes, or when the user leaves the
+layout or mode. A Save Layout refusal before queuing a write keeps the
+history. Part boundaries, Part Setup and Layout Setup are immediate
+writes outside the draft. FileMaker Pro's precise
 menu labels, supported operations and history across Save are unmeasured
 ([#902](https://github.com/OpenMaker-Dev/openmaker/issues/902)).
 
