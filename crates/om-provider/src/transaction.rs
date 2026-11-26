@@ -1044,6 +1044,9 @@ impl NativeProvider {
                         other_globals: created
                             .and_then(|held| held.context.other_globals.clone())
                             .or(context.other_globals),
+                        creation_utc_clock: created
+                            .and_then(|held| held.context.creation_utc_clock.clone())
+                            .or(context.creation_utc_clock),
                         ..context
                     }
                 }

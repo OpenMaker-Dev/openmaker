@@ -876,6 +876,9 @@ impl NativeProvider {
             }),
             ..Default::default()
         };
+        if self.local.is_some() && reads.contains(&selector::CURRENT_TIME_UTC_MILLISECONDS) {
+            context.creation_utc_clock = Some(Default::default());
+        }
         if layout.is_some() && self.local.is_some() {
             context.sequence = WriteSequence::Local;
         }
