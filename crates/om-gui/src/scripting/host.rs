@@ -2497,6 +2497,7 @@ impl<'a> WorkerHost<'a> {
             privilege_set: self.privilege_set_name(),
             record_number: None,
             prepared: None,
+            single_field_step: false,
         };
         let others: Vec<om_data::PendingRecord> = open
             .related

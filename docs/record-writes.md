@@ -1973,9 +1973,23 @@ application creation plan.
     the self-join, and the commit refuses that read with 3. An empty
     match key is still answered as above.
     [#297](https://github.com/OpenMaker-Dev/openmaker/issues/297)
-  - **What is unmeasured:** sorted or non-equality joins with matches,
-    stored and validation formulas, portal rows made in one commit, and
-    the original solution's context.
+  - **An unsorted group join with unequal row keys** supports direct
+    first-related field reads in do-not-replace auto-entry at commit. The
+    predicates compare two Text fields with themselves across occurrences
+    of the same table, one with equality and the other with inequality.
+    On a local file, creation may leave the group key empty. An
+    existing record may join a group when one field-setting step assigns
+    its previously empty group key and the written and stored row keys
+    are single-line. Both versions of the row must be excluded by the
+    relationship's comparison. FileMaker enters the result at Set Field.
+    OpenMaker stores it at commit for this sequence. A later input edit
+    or clearing the key before commit could otherwise store a different
+    value, so those sequences return error 3. Hosted and routed writes
+    using the grouped self-join return 3.
+    [Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7184309703).
+  - **What is unmeasured:** sorted and other non-equality joins with
+    matches, stored and validation formulas, and portal rows made in one
+    commit.
   - **Its stored row is never read as a related record.** Every write names
     its record (`rules::Written`): new, as reserved by New Record, or
     stored. The stored row holds the values the write replaces.
