@@ -249,6 +249,19 @@ impl<'e> EngineRef<'e> {
         }
     }
 
+    /// Whether the engine saves a hosted file by writing the file it was
+    /// loaded from: the file engine does, a new copy renamed over it; the
+    /// store engine never writes its source (docs/server-storage.md 11).
+    /// Where it does not, a source the server's user may not write is no
+    /// reason to hold the file read-only, and nothing at the save's copy
+    /// name is in its way (`hosting::load_file`).
+    pub fn saves_to_source(self) -> bool {
+        match self {
+            EngineRef::File(engine) => engine.saves_to_source(),
+            EngineRef::Store(engine) => engine.saves_to_source(),
+        }
+    }
+
     /// Hold `file` read-only for `cause` from now on; on the store engine,
     /// which takes no changes, every file is already.
     pub(crate) fn hold_read_only(self, file: &Hosted, cause: ReadOnlyCause) {

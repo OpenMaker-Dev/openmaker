@@ -1121,6 +1121,24 @@ fn related_file_layouts_browse_and_expose_only_supported_edit_capabilities() {
         &[&[4], &[5], &uint_segment(fixture::NOTES_LAYOUT), &[2]],
         OwnedNode::leaf(Vec::new(), layout_def(REMOTE)),
     );
+    // Due repeats twice, and its second repetition's cell is the id of
+    // another field, as a malformed file can make it (#43).
+    fixture::set_field_repetitions(&mut files[1].1, TABLE, DUE, 2);
+    fixture::add_field(
+        &mut files[1].1,
+        TABLE,
+        DUE * 256 + 2,
+        "Collides",
+        1,
+        1,
+        0,
+        0,
+        0,
+    );
+    // Two of its fields share a name, as a malformed file can have it.
+    for id in [22, 23] {
+        fixture::add_field(&mut files[1].1, TABLE, id, "Twin", 1, 1, 0, 0, 0);
+    }
     let host = Host::new("writes", files);
     let mut provider = host.open(ROOT);
     provider.calc_schema().unwrap();
@@ -1131,10 +1149,12 @@ fn related_file_layouts_browse_and_expose_only_supported_edit_capabilities() {
     assert!(capabilities.create && capabilities.delete);
     // Its text global is typed as the related file's session value (#43).
     let editable = capabilities.editable_fields.as_ref().unwrap();
-    assert!(["Name", "Code", "Setting"]
+    assert!(["Name", "Code", "Setting", "Collides"]
         .iter()
         .all(|name| editable.contains(*name)));
-    assert!(!editable.contains("File Info"));
+    assert!(["File Info", "Due", "Twin"]
+        .iter()
+        .all(|name| !editable.contains(*name)));
     assert_eq!(capabilities.globals, ["Setting".to_string()].into());
     let page = provider.records(layout, 0, 1).unwrap();
     let value = |page: &om_data::RecordPage, name: &str| {
@@ -1189,19 +1209,6 @@ fn related_file_layouts_browse_and_expose_only_supported_edit_capabilities() {
     };
     let values = om_data::FieldChanges::from([("Name".to_string(), Some("Changed".to_string()))]);
     assert!(provider.supports_record_import());
-    // Import (new or existing rows) stays refused; New Record is owned.
-    for record in [None, Some(1)] {
-        refused(
-            provider
-                .import_record(
-                    layout,
-                    record,
-                    &[(NAME, Some("Changed".into()))].into(),
-                    true,
-                )
-                .map(drop),
-        );
-    }
     provider.begin_transaction(Default::default()).unwrap();
     assert_eq!(
         provider
@@ -1494,6 +1501,24 @@ fn imported_layout_edits_commit_on_the_owner_and_return_fresh_calculations() {
             ..write.clone()
         })
         .unwrap();
+    // Browse offers the repeating field there, its later repetitions by the
+    // layout's occurrence (#43), and the window's commit of the user's
+    // typing into the second is the owner's to check and write.
+    let capabilities = provider.record_capabilities(layout).unwrap();
+    assert!(capabilities.editable_fields.unwrap().contains("Count"));
+    assert!(capabilities.related[&REMOTE].contains(&COUNT));
+    let second = COUNT * 256 + 2;
+    let typed = om_data::ScriptWrite {
+        cells: [(second, Some("8".into()))].into(),
+        typed: [second].into(),
+        ..write.clone()
+    };
+    // Inside a script's transaction the user's typing into it is refused, as
+    // the user's other saves on such a layout are (#411).
+    provider.begin_transaction(Default::default()).unwrap();
+    assert_eq!(provider.write_record(&typed).unwrap_err().code, Some(3));
+    provider.revert_transaction().unwrap();
+    provider.write_record(&typed).unwrap();
     let read = provider
         .calc_data(&[CalcNeed::Record {
             table: imported,
@@ -1507,7 +1532,7 @@ fn imported_layout_edits_commit_on_the_owner_and_return_fresh_calculations() {
             .map(|v| v.to_text(&cx).into_string())
             .unwrap_or_default()
     };
-    assert_eq!((count(1), count(2)), ("41".to_owned(), "7".to_owned()));
+    assert_eq!((count(1), count(2)), ("41".to_owned(), "8".to_owned()));
 }
 
 /// Deletion needs no field-entry plan. The complete owner engine must retain
@@ -1926,10 +1951,9 @@ fn a_related_files_globals_are_its_session_values() {
     // Its second repetition is entered by the layout's occurrence and id.
     let capabilities = provider.record_capabilities(layout).unwrap();
     assert!(capabilities.editable_fields.unwrap().contains("Setting"));
-    assert_eq!(
-        capabilities.related,
-        [(REMOTE, [SETTING, DEFAULTS].into())].into()
-    );
+    assert!([SETTING, DEFAULTS]
+        .iter()
+        .all(|field| capabilities.related[&REMOTE].contains(field)));
     let before = effects();
     provider
         .set_typed_globals(imported, &[((DEFAULTS, 2), "second".into())].into())
@@ -1961,6 +1985,89 @@ fn a_related_files_globals_are_its_session_values() {
         shown(host.open(RELATED).records(own, 0, 1).unwrap(), "Setting"),
         "child-global"
     );
+}
+
+/// Import Records on a layout of another file's table imports into that
+/// table (#43): the owning file creates a new row's record, with its own
+/// auto-entry, and updates an existing one, and the window's found set takes
+/// the new record. Inside a script's transaction it is refused (3) before
+/// anything is sent. Root's table of the same ids is untouched.
+#[test]
+fn imported_layout_import_records_go_to_the_owning_file() {
+    let mut files = files();
+    files[0].1.put(
+        &[&[4], &[5], &[2], &[2]],
+        OwnedNode::leaf([], layout_def(REMOTE)),
+    );
+    let host = Host::new("layout-import", files);
+    let mut provider = host.open(ROOT);
+    let layout = fixture::NOTES_LAYOUT as u32;
+    let rows = |file: &str| -> Vec<(i64, String, String)> {
+        let mut file = host.open(file);
+        let page = file.records(fixture::LAYOUT as u32, 0, 10).unwrap();
+        let at = |name: &str| page.fields.iter().position(|f| f.name == name).unwrap();
+        page.records
+            .iter()
+            .map(|r| {
+                let text = |name| r.values[at(name)].clone().unwrap_or_default();
+                (r.id, text("Name"), text("Creator"))
+            })
+            .collect()
+    };
+    let ids = |provider: &mut NativeProvider| {
+        provider
+            .records(layout, 0, 10)
+            .unwrap()
+            .records
+            .iter()
+            .map(|r| r.id)
+            .collect::<Vec<_>>()
+    };
+    let row = |id, name: &str, creator: &str| (id, name.to_owned(), creator.to_owned());
+    let root = rows(ROOT);
+    provider
+        .change_found_set(layout, om_data::found::FoundSetChange::Records(vec![2]))
+        .unwrap();
+
+    // A new row, and an update of record 1.
+    let new = provider
+        .import_record(
+            layout,
+            None,
+            &[(NAME, Some("Imported".into()))].into(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(new, 3);
+    assert_eq!(
+        provider
+            .import_record(
+                layout,
+                Some(1),
+                &[(NAME, Some("Updated".into()))].into(),
+                true
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(ids(&mut provider), [2, 3]);
+    let stored = rows(RELATED);
+    assert_eq!(stored[0].1, "Updated");
+    assert_eq!(stored[2], row(3, "Imported", ACCOUNT));
+
+    // Refused inside a script's transaction, before any request.
+    provider.begin_transaction(Default::default()).unwrap();
+    let before = host.captures.transactions().len();
+    for record in [None, Some(1)] {
+        let error = provider
+            .import_record(layout, record, &[(NAME, Some("Held".into()))].into(), true)
+            .unwrap_err();
+        assert_eq!(error.code, Some(3), "{error}");
+    }
+    assert_eq!(host.captures.transactions().len(), before);
+    provider.revert_transaction().unwrap();
+    assert_eq!(rows(RELATED).len(), 3);
+    assert_eq!(rows(ROOT), root);
 }
 
 /// Root's Tasks::Code is validated Always by value list 5, the values of

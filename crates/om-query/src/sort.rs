@@ -131,12 +131,14 @@ fn sort_keys(
         // until every record has one.
         let mut keys: HashMap<u64, Vec<u8>> = HashMap::new();
         let wanted = records.len();
-        for at in 0..index.len() {
-            if keys.len() == wanted {
+        let mut entries = index.entries(work);
+        while keys.len() < wanted {
+            let Some(entry) = entries.next() else {
                 break;
-            }
-            for id in index.records(at, work)?.and(records).iter() {
-                keys.entry(id).or_insert_with(|| index.key(at).to_vec());
+            };
+            let entry = entry?;
+            for id in entry.records(work)?.and(records).iter() {
+                keys.entry(id).or_insert_with(|| entry.key().to_vec());
             }
         }
         (keys, text)

@@ -16,6 +16,13 @@
 //! failed read gives. Its derived state is computed through it, as another
 //! engine would compute its own, and checked against the file engine's.
 //!
+//! For a find (`Reading::serve_find`: op86's program, a server script's
+//! find) it also refuses to give an index whole: a subtree at or above a
+//! field's index `[T, 01, F, kind]` is a failed read, so a find that still
+//! read an index whole would answer otherwise than the file engine, and the
+//! test that made it fails. A find reads an index through listings, an
+//! entry at a time (docs/server-storage.md 5, "Views").
+//!
 //! The store engine's view is checked the same way ([`StoreCopy`]): at a
 //! file's first read the switch takes a copy of the file engine's tree,
 //! written as an `.fmp12` and imported into a store in memory, as the
@@ -52,7 +59,7 @@ use om_hbam::OwnedNode;
 
 use super::paged::{Batch, PagedView};
 use super::reading::{Read, Reading};
-use super::view::{Child, Direction, Head, ReadError, Step, Version, View, NO_LIMIT};
+use super::view::{owned_path, Child, Direction, Head, ReadError, Step, Version, View, NO_LIMIT};
 use crate::derived::{self, Derived};
 
 /// The most children or nodes of a walk one call gives.
@@ -63,11 +70,60 @@ const PAGE: usize = 3;
 pub(crate) struct Copies<'v> {
     inner: &'v dyn View,
     failing: &'v [Vec<Vec<u8>>],
+    /// Whether a subtree at or above a field's index is refused: the view
+    /// serves a find (module doc).
+    whole_indexes_refused: bool,
 }
 
 impl<'v> Copies<'v> {
     pub(crate) fn new(inner: &'v dyn View, failing: &'v [Vec<Vec<u8>>]) -> Self {
-        Copies { inner, failing }
+        Copies {
+            inner,
+            failing,
+            whole_indexes_refused: false,
+        }
+    }
+
+    /// The view for a find: it also refuses to give an index whole.
+    pub(crate) fn for_finds(self) -> Self {
+        Copies {
+            whole_indexes_refused: true,
+            ..self
+        }
+    }
+
+    /// Refuse a subtree that holds a field's index whole, for a find: at a
+    /// table's value or word index `[T, 01, F, 00]` or `[T, 01, F, 01]`, or
+    /// above it (`[T, 01, F]`, `[T, 01]`, `[T]`, the root). An index's
+    /// counts (`10`, `11`) are no index.
+    fn check_whole_index(&self, path: &[&[u8]]) -> Result<(), ReadError> {
+        // The value and word indexes `00` and `01`, not their counts.
+        let holds_one = match path {
+            [] => true,
+            [t] | [t, [1]] | [t, [1], _] | [t, [1], _, [0 | 1]] => is_table(t),
+            _ => false,
+        };
+        if self.whole_indexes_refused && holds_one {
+            return Err(ReadError::Unreadable {
+                path: owned_path(path),
+                why: "the test view refuses a find an index read whole".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Refuse a page of a field index's entries each with its records, for
+    /// a find: a find lists an index's keys ([`View::children_page`]) and
+    /// reads an entry's records by its key only for an entry it takes.
+    fn check_listed_index(&self, path: &[&[u8]]) -> Result<(), ReadError> {
+        if self.whole_indexes_refused && matches!(path, [t, [1], _, [0 | 1]] if is_table(t)) {
+            return Err(ReadError::Unreadable {
+                path: owned_path(path),
+                why: "the test view refuses a find an index's entries listed with their records"
+                    .into(),
+            });
+        }
+        Ok(())
     }
 
     /// The failing path at or above `path`, if any.
@@ -100,6 +156,12 @@ impl<'v> Copies<'v> {
     }
 }
 
+/// Whether `key` is a table's key: a serial key from `80 01` (129) on,
+/// below the table occurrences' ids (schema-path.md 5.2, 5.3).
+fn is_table(key: &[u8]) -> bool {
+    om_hbam::serial::decode(key).is_some_and(|id| (0x80..0x10_4080).contains(&id))
+}
+
 fn unreadable(path: &[Vec<u8>]) -> ReadError {
     ReadError::Unreadable {
         path: path.to_vec(),
@@ -128,10 +190,28 @@ impl View for Copies<'_> {
         path: &[&[u8]],
         limit: usize,
     ) -> Result<Option<Cow<'_, OwnedNode>>, ReadError> {
+        self.check_whole_index(path)?;
         self.check_subtree(path)?;
         Ok(self
             .inner
             .subtree(path, limit)?
+            .map(|node| Cow::Owned(node.into_owned())))
+    }
+
+    /// The inner view's, copied: the file engine lends the subtree
+    /// unchecked and its reader refuses it by counting, the store engine
+    /// refuses it as it builds, and either way the reader's answer is the
+    /// same (`om_query::Listing::entry`).
+    fn subtree_within(
+        &self,
+        path: &[&[u8]],
+        work: om_query::program::Size,
+    ) -> Result<Option<Cow<'_, OwnedNode>>, ReadError> {
+        self.check_whole_index(path)?;
+        self.check_subtree(path)?;
+        Ok(self
+            .inner
+            .subtree_within(path, work)?
             .map(|node| Cow::Owned(node.into_owned())))
     }
 
@@ -174,12 +254,17 @@ impl View for Copies<'_> {
         out: &mut Vec<Cow<'a, OwnedNode>>,
     ) -> Result<bool, ReadError> {
         self.check(path)?;
+        self.check_listed_index(path)?;
         let mut page = Vec::new();
         let more =
             self.inner
                 .subtrees_page(path, from, direction, max.min(PAGE), limit, &mut page)?;
         for (given, child) in page.into_iter().enumerate() {
-            if let Err(error) = self.check_subtree(&child_path(path, &child.segment)) {
+            let at = child_path(path, &child.segment);
+            if let Err(error) = self
+                .check_whole_index(&at)
+                .and_then(|()| self.check_subtree(&at))
+            {
                 return if given > 0 { Ok(true) } else { Err(error) };
             }
             out.push(Cow::Owned(child.into_owned()));
@@ -446,7 +531,7 @@ impl Switch {
     pub(crate) fn serve<T: PartialEq + std::fmt::Debug>(
         &self,
         reading: &Reading<'_>,
-        accounts: bool,
+        (accounts, finds): (bool, bool),
         mut read: impl FnMut(Read<'_>) -> T,
     ) -> T {
         let failing = self.failing();
@@ -458,6 +543,10 @@ impl Switch {
         let file_read = reading.read();
         let copies = Copies::new(reading.engine_view(), &paths);
         let derived = self.derived_of(reading, &copies, failing.is_none(), accounts);
+        let copies = match finds {
+            true => copies.for_finds(),
+            false => copies,
+        };
         let copied = Read {
             view: &copies,
             derived: &derived,
@@ -613,6 +702,7 @@ impl Switch {
     pub(crate) fn serve_once<T>(
         &self,
         reading: &Reading<'_>,
+        finds: bool,
         read: impl FnOnce(Read<'_>) -> T,
     ) -> T {
         let failing = self.failing();
@@ -623,6 +713,10 @@ impl Switch {
             .unwrap_or_default();
         let copies = Copies::new(reading.engine_view(), &paths);
         let derived = self.derived_of(reading, &copies, failing.is_none(), false);
+        let copies = match finds {
+            true => copies.for_finds(),
+            false => copies,
+        };
         self.count(|c| &mut c.single_run, "single-run");
         read(Read {
             view: &copies,
@@ -782,6 +876,74 @@ mod tests {
     /// The test view reads what the tree view reads, copied and in pages of
     /// three, and fails what is at or below a failing path, and a subtree
     /// or walk that holds one.
+    #[test]
+    fn the_test_view_refuses_a_find_an_index_read_whole() {
+        let mut root = OwnedNode::default();
+        let index: [&[u8]; 4] = [&[0x80, 0x01], &[1], &[1], &[0]];
+        for key in [[1u8], [2], [3]] {
+            let entry: Vec<&[u8]> = index.iter().copied().chain([&key[..]]).collect();
+            root.put(&entry, OwnedNode::leaf(vec![0], vec![0, 0, 0, 2]));
+        }
+        let counts: [&[u8]; 4] = [&[0x80, 0x01], &[1], &[1], &[0x10]];
+        root.put(&counts, OwnedNode::leaf(Vec::new(), vec![0; 16]));
+        let tree = TreeView::new(&root, 1);
+        let plain = Copies::new(&tree, &[]);
+        let finds = Copies::new(&tree, &[]).for_finds();
+        // An index's counts are no index.
+        assert!(finds.subtree(&counts, NO_LIMIT).unwrap().is_some());
+        // A find reads an entry, and lists the index's keys a page at a
+        // time, but not its entries with their records.
+        let entry: Vec<&[u8]> = index.iter().copied().chain([&[2u8][..]]).collect();
+        assert!(finds.subtree(&entry, NO_LIMIT).unwrap().is_some());
+        let mut keys = Vec::new();
+        finds
+            .children_page(&index, Bound::Unbounded, Direction::Forward, 10, &mut keys)
+            .unwrap();
+        assert_eq!(keys.len(), 3);
+        let mut page = Vec::new();
+        let listed = finds.subtrees_page(
+            &index,
+            Bound::Unbounded,
+            Direction::Forward,
+            10,
+            NO_LIMIT,
+            &mut page,
+        );
+        assert!(listed.is_err());
+        assert!(plain
+            .subtrees_page(
+                &index,
+                Bound::Unbounded,
+                Direction::Forward,
+                10,
+                NO_LIMIT,
+                &mut page
+            )
+            .is_ok());
+        // The index whole, or anything above it, is refused; other readers
+        // read it as before.
+        for depth in 0..=4 {
+            let path = &index[..depth];
+            assert!(finds.subtree(path, NO_LIMIT).is_err(), "{path:02x?}");
+            assert!(
+                plain.subtree(path, NO_LIMIT).unwrap().is_some(),
+                "{path:02x?}"
+            );
+        }
+        let mut page = Vec::new();
+        let above = &index[..3];
+        assert!(finds
+            .subtrees_page(
+                above,
+                Bound::Unbounded,
+                Direction::Forward,
+                10,
+                NO_LIMIT,
+                &mut page
+            )
+            .is_err());
+    }
+
     #[test]
     fn the_test_view_copies_pages_and_fails_as_told() {
         let mut root = OwnedNode::default();

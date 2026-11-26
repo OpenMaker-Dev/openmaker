@@ -666,6 +666,9 @@ fn database_list(ctx: &Ctx, state: &ViewState) -> Markup {
                         (icons::database_status(database.status))
                         (icons::encryption(database.encrypted))
                         span.db-name title=(database.name) { (display_name(&database.name)) }
+                        @if let Some(why) = &database.read_only {
+                            span.db-read-only title={ "Served read-only: " (why) } { "Read-only" }
+                        }
                     }
                     span.db-clients {
                         (database.clients) @if database.clients == 1 { " Client" } @else { " Clients" }
