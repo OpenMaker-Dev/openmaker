@@ -1,7 +1,7 @@
 //! Images embedded in the file's library, rather than application resources.
 use std::collections::{BTreeMap, BTreeSet};
 
-use om_hbam::KeyTree;
+use om_hbam::{serial, KeyTree};
 
 use crate::ObjectStore;
 
@@ -53,6 +53,9 @@ pub(crate) fn decode_images(
     tree: &KeyTree<'_>,
     objects: &ObjectStore,
 ) -> BTreeMap<u64, LibraryImage> {
+    let Some(library) = tree.at(&[31, 5]) else {
+        return BTreeMap::new();
+    };
     let keys: BTreeSet<_> = objects
         .objects
         .iter()
@@ -68,7 +71,7 @@ pub(crate) fn decode_images(
         .collect();
     keys.into_iter()
         .filter_map(|key| {
-            let member = tree.at(&[31, 5, key])?;
+            let member = library.child(&serial::encode(key))?;
             // DBLibraryMember stores each binary stream directly under its member
             // using the four-byte QuadChar as the key. Chunked HBAM values are
             // assembled here before passing their exact image bytes to the view.
@@ -173,23 +176,33 @@ mod tests {
                                 )],
                             ),
                             node(&[2], None, vec![node(b"SVG ", Some(b"<svg/>"), vec![])]),
+                            node(
+                                &[0x80, 0x48],
+                                None,
+                                vec![node(b"SVG ", Some(b"<svg/>"), vec![])],
+                            ),
                         ],
                     )],
                 )],
             ),
         };
         let objects = ObjectStore {
-            objects: vec![LayoutObject {
-                button: Some(ButtonObject {
-                    library_key: 1,
+            objects: [1, 200]
+                .into_iter()
+                .map(|library_key| LayoutObject {
+                    button: Some(ButtonObject {
+                        library_key,
+                        ..Default::default()
+                    }),
                     ..Default::default()
-                }),
-                ..Default::default()
-            }],
+                })
+                .collect(),
             ..Default::default()
         };
         let images = decode_images(&tree, &objects);
-        assert_eq!(images.len(), 1);
+        assert_eq!(images.len(), 2);
+        assert_eq!(images[&200].format, LibraryImageFormat::Svg);
+        assert_eq!(images[&200].data, b"<svg/>");
         assert_eq!(images[&1].format, LibraryImageFormat::Svg);
         assert_eq!(images[&1].data, svg);
     }

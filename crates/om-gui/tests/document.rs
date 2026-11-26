@@ -33,6 +33,8 @@ struct DocumentProvider {
     /// Given's "Go to next object using" includes Return and the Enter
     /// key, as 123 of the starter solutions' 179 field objects do.
     given_next_keys: bool,
+    show_field_alerts: bool,
+    grouped_given: bool,
     replacement: Option<Arc<AtomicBool>>,
     list: bool,
     /// The card is [`web_viewer_card`].
@@ -57,6 +59,8 @@ impl DocumentProvider {
             conditional_color: false,
             duplicate_field: false,
             given_next_keys: false,
+            show_field_alerts: false,
+            grouped_given: false,
             replacement: None,
             list: false,
             web_viewer: false,
@@ -249,6 +253,49 @@ impl DataProvider for DocumentProvider {
             return Ok(None);
         }
         let mut document = document();
+        if self.show_field_alerts {
+            document.layout.def.as_mut().unwrap().flags |=
+                om_data::layout_catalog::general::SHOW_FIELD_ALERTS;
+        }
+        if self.grouped_given {
+            let given = document
+                .layout
+                .objects
+                .objects
+                .iter_mut()
+                .find(|o| o.id == 3)
+                .unwrap();
+            given.parent = Some(80);
+            given.bounds = Some(Rect {
+                right: 140.0,
+                bottom: 25.0,
+                ..Default::default()
+            });
+            let mut reserved = vec![2, 1, 8, 0x6f];
+            reserved.resize(14, 0);
+            let group = LayoutObject {
+                children: vec![3],
+                group: Some(om_layout::GroupObject {
+                    script_step: Some(om_layout::ScriptStep {
+                        id: 6, // Go to Layout [Other Card].
+                        value: 5,
+                        flags: 8,
+                        reserved,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..object(80, 8, None, 20.0, 85.0, 140.0, 25.0)
+            };
+            document.layout.objects.objects.push(group);
+            document
+                .layout
+                .objects
+                .root
+                .iter_mut()
+                .filter(|id| **id == 3)
+                .for_each(|id| *id = 80);
+        }
         if self.given_next_keys {
             let given = document
                 .layout
@@ -1939,6 +1986,41 @@ fn empty_found_set_keeps_the_static_layout_and_tab_controls() {
     select_tab(&mut app, "Notes");
     app.get_by_label("Notes content");
     assert!(app.query_by_label("Home details").is_none());
+}
+
+#[test]
+fn empty_form_field_click_uses_layout_alert_option() {
+    for enabled in [false, true] {
+        let mut provider = DocumentProvider::new(true);
+        provider.show_field_alerts = enabled;
+        let mut app = open_provider(provider);
+        let field = app.get_by_label("Given name").rect().center();
+        click_at(&mut app, field);
+        assert_eq!(
+            app.state().error(),
+            enabled.then_some(
+                "No records are present. To create a new record choose the New Record menu command.",
+            ),
+        );
+    }
+}
+
+#[test]
+fn an_empty_field_inside_an_actionable_group_keeps_its_button_click() {
+    let mut provider = DocumentProvider::new(true);
+    provider.show_field_alerts = true;
+    provider.grouped_given = true;
+    provider.replacement = Some(Arc::default());
+    let mut app = open_provider(provider);
+    let field = app.get_by_label("Given name").rect().center();
+    click_at(&mut app, field);
+    common::wait_until(&mut app, "the grouped action to open Other Card", |app| {
+        assert!(app.state().error().is_none(), "{:?}", app.state().error());
+        app.get_by_role_and_label(Role::ComboBox, "Layout")
+            .value()
+            .as_deref()
+            == Some("Other Card")
+    });
 }
 
 #[test]

@@ -20,6 +20,12 @@ The numeric root and SVG path are verified against the real local file rather
 than inferred from a symbol name. Other container-library arrangements remain
 outside this decoder.
 
+The protobuf's `libraryKey` is the logical library id. Encode it as an
+`HBSerialKey` ([query-program.md](query-program.md) 2.6) before looking up
+the member: for example, id 200 uses the two-byte segment `80 48`. Ids up
+to 127 use a single byte and need no conversion when read as integers.
+The QuadChar beneath the member stays four bytes as written.
+
 `Layout.library_images` is keyed by the referenced `library_key`. It contains
 only nonzero keys referenced by that layout's decoded button or graphic objects.
 Each `LibraryImage` retains the original encoded bytes and a format with MIME

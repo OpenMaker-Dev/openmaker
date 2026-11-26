@@ -57,10 +57,6 @@ pub const EDIT_BOX_FLAGS: u64 = 0xe0;
 /// (meaning not decoded).
 pub const TEXT_FLAGS: u64 = 2;
 
-/// Style property 613, `-fm-rotation`: FileMaker Pro moves it into the
-/// object on load and writes it back in the local style (layout-model.md 3).
-const ROTATION: u64 = 613;
-
 /// The `self` component and the `normal` state (layout-model.md 6.3, 6.4).
 const SELF: u64 = 1;
 const NORMAL: u64 = 1;
@@ -112,7 +108,7 @@ pub fn rect(bounds: &Rect) -> Vec<u8> {
 /// object type, so the theme's style for that type applies.
 pub fn default_style(object_type: u64) -> Vec<u8> {
     let mut property = Vec::new();
-    uint(1, ROTATION, &mut property);
+    uint(1, crate::style::ROTATION as u64, &mut property);
     uint(3, 0, &mut property);
     let mut properties = Vec::new();
     bytes(1, &property, &mut properties);
