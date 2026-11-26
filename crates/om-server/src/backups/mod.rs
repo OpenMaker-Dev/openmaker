@@ -1145,22 +1145,25 @@ fn in_folder<'s>(
         .collect()
 }
 
-/// The second pass: take the files [`in_folder`] matched. One that was
-/// served then and cannot be taken now was closed while the backup was
-/// choosing its files, and fails the choice (what was taken goes back);
-/// one that was not served then is left out, as a closed file is.
+/// The second pass: take the files [`in_folder`] matched that were served
+/// when the choice began. One that cannot be taken now was closed while
+/// the backup was choosing its files, and fails the choice (what was taken
+/// goes back). One that was not served then is left out, as a closed file
+/// is, also when it was opened again since: it is not taken.
 fn take_matched(matched: &[(&crate::hosting::Slot, bool)]) -> Result<Vec<Arc<Hosted>>, String> {
     let mut taken = Vec::with_capacity(matched.len());
     for &(slot, served) in matched {
+        if !served {
+            continue;
+        }
         match slot.admit(Arc::clone) {
             Ok(file) => taken.push(file),
-            Err(_) if served => {
+            Err(_) => {
                 return Err(format!(
                     "{:?} closed while the backup was choosing its files; nothing was copied",
                     slot.name
                 ))
             }
-            Err(_) => {}
         }
     }
     Ok(taken)
@@ -1917,10 +1920,16 @@ mod tests {
             error.contains("closed while the backup was choosing its files"),
             "{error}"
         );
-        // Closing already when the choice began: left out, as on main.
+        // Closing already when the choice began: left out, as on main;
+        // and so when it is opened again before it would be taken.
         let served = served_now(hosting.slots());
         assert_eq!(served, [false]);
-        let taken = take_matched(&in_folder(hosting.slots(), &served, &folder)).unwrap();
-        assert!(taken.is_empty());
+        let matched = in_folder(hosting.slots(), &served, &folder);
+        assert!(take_matched(&matched).unwrap().is_empty());
+        hosting.slots()[0].cancel_close();
+        assert!(
+            take_matched(&matched).unwrap().is_empty(),
+            "a file opened after the snapshot is not taken"
+        );
     }
 }
