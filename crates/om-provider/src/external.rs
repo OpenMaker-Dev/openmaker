@@ -612,7 +612,7 @@ pub(crate) struct ExternalFiles {
     root_bindings: Vec<Binding>,
     /// Local variable-backed occurrences wait for their first read. Once
     /// a source opens successfully, its binding stays for the session.
-    variable_occurrences: BTreeSet<u64>,
+    variable_occurrences: BTreeMap<u64, String>,
     variable_targets: BTreeMap<u64, Target>,
     file_variables: om_data::calc::eval::Variables,
     /// Each imported occurrence (client-only id): its file's index in
@@ -725,7 +725,7 @@ impl ExternalFiles {
         if self.local.is_some() && self.file_variables.revision() != variables.revision() {
             self.file_variables = variables.clone();
             self.read
-                .retain(|occurrence| !self.variable_occurrences.contains(occurrence));
+                .retain(|occurrence| !self.variable_occurrences.contains_key(occurrence));
         }
     }
 
@@ -735,6 +735,16 @@ impl ExternalFiles {
             return None;
         };
         (!value.as_str().is_empty()).then(|| value.as_str())
+    }
+
+    pub(crate) fn unset_variable_source(&self, occurrence: u64) -> bool {
+        self.variable_occurrences
+            .get(&occurrence)
+            .is_some_and(|name| {
+                self.file_variables
+                    .get(name, 1)
+                    .is_none_or(om_data::calc::Value::is_empty)
+            })
     }
 
     /// Whether a related file named `name` (with or without `.fmp12`, any
@@ -892,7 +902,7 @@ impl ExternalFiles {
         let mut demand = Vec::new();
         let mut truncated = false;
         for occurrence in occurrences {
-            if !self.on_demand && !self.variable_occurrences.contains(&occurrence) {
+            if !self.on_demand && !self.variable_occurrences.contains_key(&occurrence) {
                 continue;
             }
             if !self.recovery_topology_incomplete {
@@ -923,7 +933,7 @@ impl ExternalFiles {
                 more = true;
                 continue;
             }
-            if self.variable_occurrences.contains(&occurrence)
+            if self.variable_occurrences.contains_key(&occurrence)
                 && schema.external_occurrence(occurrence).is_some()
             {
                 more |= self.read.insert(occurrence);
@@ -1591,14 +1601,15 @@ impl ExternalFiles {
                 })
                 .collect();
             for (occurrence, source, table) in occurrences {
-                self.variable_occurrences.insert(occurrence.id);
+                let variable = variables[&source].as_deref().expect("variable source");
+                self.variable_occurrences
+                    .insert(occurrence.id, variable.to_owned());
                 let target = if let Some(target) = self.variable_targets.get(&source) {
                     Some(target)
                 } else if !demanded.contains(&source) {
                     schema.set_pending(occurrence.id);
                     None
                 } else {
-                    let variable = variables[&source].as_deref().expect("variable source");
                     variable_targets
                         .entry(source)
                         .or_insert_with(|| {

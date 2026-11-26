@@ -2009,6 +2009,12 @@ pub trait DataProvider: Send {
         Ok(None)
     }
 
+    /// Layout metadata needed while a script runs. Related objects can
+    /// wait for an actual read when their variable source has no path.
+    fn render_script_layout(&mut self, layout_id: u32) -> Result<Option<RenderLayout>, DataError> {
+        self.render_layout(layout_id)
+    }
+
     /// List hosted files on a server (before opening one). May be empty if the
     /// provider is already scoped to a single file.
     fn list_files(&mut self, host: &str, port: u16) -> Result<Vec<HostedFile>, DataError>;

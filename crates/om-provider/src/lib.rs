@@ -1593,6 +1593,21 @@ impl NativeProvider {
         self.decoded_layout_for_found_set(layout_id)
     }
 
+    fn render_layout_with_demand(
+        &mut self,
+        layout_id: u32,
+        scripted: bool,
+    ) -> Result<Option<RenderLayout>, DataError> {
+        let mut layout = self.decoded_layout(layout_id)?;
+        let field_bindings = self.bindings(&layout)?;
+        let schema = self.calc_schema_for_layout_with_demand(&layout, scripted)?;
+        resolve_merge_bindings(&mut layout, &schema);
+        Ok(Some(RenderLayout {
+            layout,
+            field_bindings,
+        }))
+    }
+
     /// Layout `layout_id`, decoded also when the account's custom set
     /// hides it: only for its table, whose found set a script's New Window
     /// or Go to Related Record may move the window through, as FileMaker
@@ -5619,15 +5634,11 @@ impl DataProvider for NativeProvider {
     }
 
     fn render_layout(&mut self, layout_id: u32) -> Result<Option<RenderLayout>, DataError> {
-        let mut layout = self.decoded_layout(layout_id)?;
-        let field_bindings = self.bindings(&layout)?;
-        // The related files it reads open before it is drawn (#983).
-        let schema = self.calc_schema_for_layout(&layout)?;
-        resolve_merge_bindings(&mut layout, &schema);
-        Ok(Some(RenderLayout {
-            layout,
-            field_bindings,
-        }))
+        self.render_layout_with_demand(layout_id, false)
+    }
+
+    fn render_script_layout(&mut self, layout_id: u32) -> Result<Option<RenderLayout>, DataError> {
+        self.render_layout_with_demand(layout_id, true)
     }
 
     fn layout_geometry(&mut self, layout_id: u32) -> Result<Option<LayoutGeometry>, DataError> {
