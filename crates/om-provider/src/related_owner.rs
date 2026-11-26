@@ -334,6 +334,24 @@ impl NativeProvider {
                     .into_iter()
                     .collect(),
             };
+            // The fields its account's set gives view-only access.
+            let view_only: BTreeSet<String> = table
+                .fields
+                .iter()
+                .filter(|field| {
+                    owner
+                        .account_info
+                        .set_access
+                        .as_ref()
+                        .is_some_and(|access| {
+                            !access.modifies(
+                                &om_hbam::slot::uint_segment(wire),
+                                &om_hbam::slot::uint_segment(field.id),
+                            )
+                        })
+                })
+                .map(|field| field.name.clone())
+                .collect();
             // A refused plan's globals count only while it waits (below).
             let mut globals = crate::typed_globals(
                 &file,
@@ -342,30 +360,23 @@ impl NativeProvider {
                 planned.as_ref().ok(),
                 planned.is_err(),
             );
-            globals.retain(|name| {
-                table.field_by_name(name).is_some_and(|field| {
-                    owner.account_info.set_access.as_ref().is_none_or(|access| {
-                        access.modifies(
-                            &om_hbam::slot::uint_segment(wire),
-                            &om_hbam::slot::uint_segment(field.id),
-                        )
-                    })
-                })
-            });
+            globals.retain(|name| !view_only.contains(name));
             Ok(Some((
                 planned.ok().map(|plan| plan.editable_fields()),
                 globals,
+                view_only,
                 reads,
                 table,
             )))
         })?;
-        let Some((planned, globals, reads, table)) = answer else {
+        let Some((planned, globals, view_only, reads, table)) = answer else {
             return Ok(RoutedEdits::ReadOnly);
         };
         if let Some(fields) = planned {
             return Ok(RoutedEdits::Offered {
                 fields,
                 globals,
+                view_only,
                 table,
             });
         }
@@ -387,6 +398,7 @@ impl NativeProvider {
         Ok(RoutedEdits::Offered {
             fields,
             globals,
+            view_only,
             table,
         })
     }
@@ -434,6 +446,54 @@ impl NativeProvider {
             new,
         });
         Ok(record)
+    }
+
+    /// [`DataProvider::import_record`] of a row into imported table
+    /// `table`, on a layout of it: the owning file imports it as its own
+    /// Import Records would, under its own account's access and rules, and
+    /// the window's found set takes a new record. The layout is none of the
+    /// owner's, so a rule reading its number has it unknown, as for the
+    /// owner's other writes from this file. Inside a transaction it is
+    /// refused (3, `with_new_record_owner`): a row held there would be
+    /// missing from the found set later rows match against, and its rules
+    /// would read this file's records as stored, not as held.
+    pub(crate) fn import_routed(
+        &mut self,
+        table: u64,
+        record: Option<i64>,
+        cells: &BTreeMap<u64, Option<String>>,
+        auto_enter: bool,
+    ) -> Result<u64, DataError> {
+        let import = |owner: &mut NativeProvider, wire| {
+            let action = match record {
+                Some(_) => RecordAction::Edit,
+                None => RecordAction::Create,
+            };
+            owner.require_action(wire, action)?;
+            owner.import_table_record(wire, None, record, cells, auto_enter)
+        };
+        // The owner's record, as `with_new_record_owner` takes one: only its
+        // id is read.
+        let as_record = |id: u64| -> Result<Record, DataError> {
+            Ok(Record {
+                id: i64::try_from(id).map_err(|_| DataError::new("Invalid record ID."))?,
+                values: Vec::new(),
+            })
+        };
+        let id = match record {
+            None => self.with_new_record_owner(table, |owner, wire| {
+                import(owner, wire).and_then(as_record)
+            })?,
+            Some(id) => self.with_existing_record_owner(table, id, |owner, wire| {
+                import(owner, wire).and_then(as_record)
+            })?,
+        }
+        .id;
+        let id = u64::try_from(id).map_err(|_| DataError::new("Invalid record ID."))?;
+        if record.is_some() {
+            self.calc.page.invalidate_record(table, id);
+        }
+        Ok(id)
     }
 
     /// [`DataProvider::delete_related_record`] of a record of imported
@@ -1957,6 +2017,8 @@ pub(crate) enum RoutedEdits {
         /// The globals Browse takes typing into (`typed_globals`) that the
         /// owner's account may modify.
         globals: BTreeSet<String>,
+        /// The fields the owner's account set gives view-only access.
+        view_only: BTreeSet<String>,
         table: om_hbam::Table,
     },
     Refused,

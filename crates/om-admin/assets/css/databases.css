@@ -218,6 +218,19 @@
   white-space: nowrap;
 }
 
+/* A file served read-only: OpenMaker's own mark, its cause as the title. */
+.db-read-only {
+  flex: none;
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--label);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 16px;
+}
+
 .db-clients {
   flex: none;
   margin: 0 7px 0 8px;

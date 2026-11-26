@@ -726,6 +726,8 @@ fn an_imported_layout_edits_commits_corrects_and_reverts_on_the_peer() {
         0x19,
         "Length ( Self ) <= 20",
     );
+    // Its Count repeats twice (#43).
+    fixture::set_field_repetitions(&mut child, TABLE, fixture::COUNT, 2);
     let host = related::Host::new(
         "gui-imported-layout",
         vec![("Root.fmp12", root), ("Related.fmp12", child)],
@@ -837,6 +839,13 @@ fn an_imported_layout_edits_commits_corrects_and_reverts_on_the_peer() {
         a.state().error().is_some() || (a.state().is_settled() && !common::editing(a))
     });
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    // A repeating field of the peer's table is edited there too (#43).
+    replace(&mut app, "Count", "12");
+    common::save_record(&mut app);
+    common::wait_until(&mut app, "repeating peer field saved", |a| {
+        a.state().error().is_some() || (a.state().is_settled() && !common::editing(a))
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
     common::open_menu(&mut app, "Scripts");
     common::click(&mut app, "Edit peer");
     common::wait_until(&mut app, "root caller script saved peer", |a| {
@@ -913,6 +922,8 @@ fn an_imported_layout_edits_commits_corrects_and_reverts_on_the_peer() {
         .collect();
     assert_eq!(stored.len(), 3, "{stored:?}");
     assert_eq!(stored[2], (3, Some("Short new".to_owned())));
+    let count = page.fields.iter().position(|f| f.name == "Count").unwrap();
+    assert_eq!(page.records[0].values[count].as_deref(), Some("12"));
 }
 
 #[test]
@@ -1226,6 +1237,20 @@ fn imported_layout_new_and_duplicate_menus_and_scripts_create_on_the_peer() {
                     report("$e"),
                 ],
             ),
+            fixture::script(
+                5,
+                "Duplicate and commit",
+                vec![
+                    fixture::on(86, true),
+                    fixture::on(223, false),
+                    fixture::go_to_record(1),
+                    ScriptStep::new(205),
+                    ScriptStep::new(8),
+                    fixture::set_variable("$e", "Get ( LastError )"),
+                    ScriptStep::new(206),
+                    report("$e & \"/\" & Get ( LastError )"),
+                ],
+            ),
         ],
         true,
     );
@@ -1485,31 +1510,87 @@ fn imported_layout_new_and_duplicate_menus_and_scripts_create_on_the_peer() {
     assert_eq!(count(om_protocol::Opcode::HostCommit), commits);
     assert_eq!(count(om_protocol::Opcode::HostCreateRecord), reserved + 1);
 
+    // The script's report, whatever record it ends on.
+    let report_of = |app: &mut common::App, script: &str| -> String {
+        common::open_menu(app, "Scripts");
+        common::click(app, script);
+        let by = egui_kittest::kittest::By::new().label_contains("|Root|Notes|");
+        common::wait_until(app, "the script's report", |a| {
+            a.query_all(by.clone()).next().is_some()
+        });
+        let shown = app
+            .query_all(by)
+            .next()
+            .unwrap()
+            .accesskit_node()
+            .value()
+            .unwrap_or_default();
+        common::click(app, "OK");
+        common::wait_until(app, "script ended", |a| {
+            !a.state().script_running() && a.state().is_settled()
+        });
+        shown
+    };
+    // The reference counts sent since the `from`th: file and delta.
+    let deltas = |from: usize| -> Vec<(String, i32)> {
+        host.captures
+            .with_opcode(om_protocol::Opcode::AdjustReferenceCount)
+            .into_iter()
+            .skip(from)
+            .map(|(file, tx)| {
+                let adjust =
+                    om_protocol::container::parse_adjust_reference_count_request(&tx).unwrap();
+                (file, adjust.delta)
+            })
+            .collect()
+    };
+    let to_related = |delta: i32| ("Related.fmp12".to_owned(), delta);
+
     // Inside a script's transaction a copy of the record holding the
-    // container is refused (3) before its reference is counted: the
-    // owner's part of the transaction would hold it, and its cleanup after
-    // a refused copy is not settled.
+    // container is held in the related file's part of it, its reference
+    // counted there (#43). Revert Transaction gives the reference back:
+    // nothing is stored and no commit is sent.
     let adjusted = count(om_protocol::Opcode::AdjustReferenceCount);
-    common::open_menu(&mut app, "Scripts");
-    common::click(&mut app, "Duplicate in transaction");
-    let by = egui_kittest::kittest::By::new().label_contains("|Root|Notes|");
-    common::wait_until(&mut app, "the duplicate's report", |a| {
-        a.query_all(by.clone()).next().is_some()
-    });
-    let shown = app
-        .query_all(by)
-        .next()
-        .unwrap()
-        .accesskit_node()
-        .value()
-        .unwrap_or_default();
-    assert!(shown.starts_with("3|Root|Notes|"), "{shown}");
-    common::click(&mut app, "OK");
-    common::wait_until(&mut app, "script ended", |a| {
-        !a.state().script_running() && a.state().is_settled()
-    });
-    assert_eq!(count(om_protocol::Opcode::AdjustReferenceCount), adjusted);
+    let shown = report_of(&mut app, "Duplicate in transaction");
+    assert!(
+        shown.starts_with("0|Root|Notes|") && shown.ends_with("|7|7"),
+        "{shown}"
+    );
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    assert_eq!(deltas(adjusted), [to_related(1), to_related(-1)]);
     assert_eq!(stored("Related.fmp12"), peer);
+    assert_eq!(count(om_protocol::Opcode::HostCommit), commits);
+
+    // Committed, the copy is stored holding the same library member, and
+    // its reference is kept.
+    let adjusted = count(om_protocol::Opcode::AdjustReferenceCount);
+    let shown = report_of(&mut app, "Duplicate and commit");
+    assert!(
+        shown.starts_with("0/0|Root|Notes|") && shown.ends_with("|8|8"),
+        "{shown}"
+    );
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    assert_eq!(deltas(adjusted), [to_related(1)]);
+    let after = stored("Related.fmp12");
+    assert_eq!(after.len(), peer.len() + 1, "{after:?}");
+    assert_eq!(after[..peer.len()], peer[..]);
+    let copy = after.last().unwrap();
+    // Its auto-entered Entered entered again on the copy (#473).
+    assert_eq!(
+        (copy.1.as_str(), copy.2.as_str()),
+        ("PEER ROW", "PEER ROW|Related")
+    );
+    let page = host.open("Related.fmp12").records(1, 0, 10).unwrap();
+    let photo = page.fields.iter().position(|f| f.name == "Photo").unwrap();
+    let photo_of = |id: i64| {
+        page.records
+            .iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.values[photo].clone())
+            .unwrap_or_default()
+    };
+    assert!(!photo_of(1).is_empty());
+    assert_eq!(photo_of(copy.0), photo_of(1));
 }
 
 #[test]

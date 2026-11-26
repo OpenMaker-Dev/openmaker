@@ -1780,12 +1780,13 @@ impl NativeProvider {
     /// what the earlier one left.
     pub(crate) fn hold_import(
         &mut self,
-        layout_id: u32,
+        table: u64,
+        layout: Option<u32>,
         record: Option<i64>,
         cells: &BTreeMap<u64, Option<String>>,
         auto_enter: bool,
     ) -> Result<u64, DataError> {
-        let (table, plan) = self.record_plan(layout_id)?;
+        let (table, plan) = self.table_plan(table)?;
         let txn = self.transaction_id()?;
         let entry = Entry::import(auto_enter);
         let reserve = record.is_none();
@@ -1795,7 +1796,7 @@ impl NativeProvider {
                 .is_some_and(|id| self.held(table.id, id).is_none())
         });
         // An import may be a script's step: its set is not known.
-        let context = self.write_context(&plan, Some(layout_id), CurrentSet::Step(None))?;
+        let context = self.write_context(&plan, layout, CurrentSet::Step(None))?;
         let reads = plan.related_tables();
         // Its rules run now: a related record the transaction changed is
         // computed only at Commit, so it would be read without its computed

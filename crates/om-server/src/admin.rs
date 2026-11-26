@@ -113,6 +113,9 @@ pub struct FileInfo {
     /// is unknown (docs/server-storage.md 5). Closing it and opening it
     /// again, or a restart, clears that.
     pub error: Option<String>,
+    /// Why it is served read-only (`ReadOnlyCause::why`), while it is
+    /// served: no client's change is stored.
+    pub read_only: Option<&'static str>,
 }
 
 /// Why a [`ServerHandle`] file operation ([`ServerHandle::close_file`],
@@ -850,18 +853,29 @@ impl ServerHandle {
             .iter()
             .map(|slot| {
                 let path = std::path::absolute(&slot.path).unwrap_or_else(|_| slot.path.clone());
+                // The status, the error and the served file from one look,
+                // so that a row agrees with itself while a close finishes.
+                let seen = slot.seen();
                 FileInfo {
                     id: slot.id,
                     name: slot.name.clone(),
                     folder: path.parent().map(Path::to_path_buf).unwrap_or_default(),
                     size: std::fs::metadata(&path).ok().map(|metadata| metadata.len()),
                     path,
-                    status: slot.status(),
+                    status: seen.status,
                     clients: counts.get(&slot.id).copied().unwrap_or(0),
-                    error: slot.error().or_else(|| {
-                        slot.served()
+                    error: seen.error.or_else(|| {
+                        seen.file
+                            .as_ref()
                             .and_then(|file| file.writes_refused().map(str::to_owned))
                     }),
+                    // Without the store's lock, as `error` is read: a
+                    // save holds it through its write and flush.
+                    read_only: seen
+                        .file
+                        .as_ref()
+                        .and_then(|file| file.read_only_cause())
+                        .map(crate::store::ReadOnlyCause::why),
                 }
             })
             .collect()
