@@ -3303,6 +3303,7 @@ fn local_new_record_auto_enters_a_file_variable_at_creation() {
 #[test]
 fn held_new_record_shows_the_proposed_self_result_and_commits_it_once() {
     use fixture::{LAYOUT, OCCURRENCE};
+    use om_data::rules::RecordNumber;
 
     const AMOUNT: u64 = 40;
     let folder = Folder::new("held-proposed-self");
@@ -3323,10 +3324,14 @@ fn held_new_record_shows_the_proposed_self_result_and_commits_it_once() {
     let amount = fields.iter().position(|f| f.name == "Amount").unwrap();
     provider.begin_record_commit().unwrap();
     let created = provider
-        .write_record(&om_data::ScriptWrite {
-            layout,
-            ..Default::default()
-        })
+        .write_record_with_creation(
+            &om_data::ScriptWrite {
+                layout,
+                record_number: Some(RecordNumber::LocalNewRecord(3)),
+                ..Default::default()
+            },
+            om_data::RecordCreation::NewRecord,
+        )
         .unwrap();
     assert_eq!(created.values[amount].as_deref(), Some("0"));
     let held = provider

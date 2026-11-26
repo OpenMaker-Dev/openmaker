@@ -910,7 +910,7 @@ impl NativeProvider {
             single_field_step: false,
         };
         let context = self.origin_context(&plan, origin)?;
-        plan.check_creation_context(&context)?;
+        plan.check_creation_context(&context, entry)?;
         let mut environment = self.rule_environment(table, &plan, context)?;
         let on_creation = plan
             .serials_for(WriteMode::Create, entry)

@@ -1053,6 +1053,13 @@ pub struct RecordPlan {
     schema: Arc<CalcSchema>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AutoEntrySelf {
+    Unused,
+    ProposedNumber,
+    Unsupported,
+}
+
 struct PlannedField {
     name: String,
     options: FieldOptions,
@@ -1060,8 +1067,8 @@ struct PlannedField {
     editable: bool,
     /// A stored calculation or an auto-enter calculation.
     expression: Option<Expression>,
-    /// This local Number auto-entry formula reads the proposed value.
-    auto_enter_self: bool,
+    /// How this formula uses the field's proposed value.
+    auto_enter_self: AutoEntrySelf,
     /// Creation Date supplies the value on create. The calculation's
     /// dependencies identify updates with an unmeasured result.
     creation_date_with_calculation: bool,
@@ -2173,36 +2180,34 @@ impl RecordPlan {
             } else {
                 None
             };
-            let mut auto_enter_self = false;
-            if let Some(formula) = &expression {
+            let mut auto_enter_self = AutoEntrySelf::Unused;
+            if let Some(formula) = expression.as_ref().filter(|_| !global) {
+                let mut uses_self = false;
                 let mut other_inputs = false;
                 walk(&formula.formula.polish, &mut |node| match node {
                     Expr::Call {
                         op: om_formula::Opcode::SELF,
                         ..
-                    } => auto_enter_self = true,
+                    } => uses_self = true,
                     Expr::Get(_) | Expr::Variable(_) | Expr::CustomCall { .. } => {
                         other_inputs = true
                     }
                     _ => {}
                 });
                 let options = options.options & !(INDEX_OPTIONS | BOOKKEEPING_OPTIONS);
-                if auto_enter_self
-                    && (!local
-                        || kind != FieldKind::Normal
-                        || field.data_type != DataType::Number
-                        || !matches!(options, 0x08 | 0x88)
-                        || !formula.dependencies.is_empty()
-                        || !formula.related.is_empty()
-                        || other_inputs)
-                {
-                    return Err(DataError::with_code(
-                        error::UNAVAILABLE,
-                        format!(
-                            "Field {}: Self needs a local Number auto-entry calculation with no other field inputs.",
-                            field.name
-                        ),
-                    ));
+                if uses_self {
+                    let measured = local
+                        && kind == FieldKind::Normal
+                        && field.data_type == DataType::Number
+                        && matches!(options, 0x08 | 0x88)
+                        && formula.dependencies.is_empty()
+                        && formula.related.is_empty()
+                        && !other_inputs;
+                    auto_enter_self = if measured {
+                        AutoEntrySelf::ProposedNumber
+                    } else {
+                        AutoEntrySelf::Unsupported
+                    };
                 }
             }
             let validation = if options.validation_options & VALIDATE_BY_CALCULATION != 0 {
@@ -2849,10 +2854,11 @@ impl RecordPlan {
                 .as_ref()
                 .is_some_and(|lookup| self.fires(*id, lookup, mode, &dirty, changes, entry));
             let expression = field.expression.as_ref().is_some_and(|expression| {
-                let keeps = entry.keeps_calculated(changes, *id, field.auto_enter_self);
+                let uses_self = field.auto_enter_self != AutoEntrySelf::Unused;
+                let keeps = entry.keeps_calculated(changes, *id, uses_self);
                 (field.stored_calculation() || !entry.skip_auto_enter && !keeps)
                     && (mode == WriteMode::Create
-                        || field.auto_enter_self && changes.contains_key(id)
+                        || uses_self && changes.contains_key(id)
                         || expression.dependencies.iter().any(|d| dirty.contains(d)))
                     && (field.stored_calculation()
                         || field.options.calculation_replaces_existing()
@@ -3642,9 +3648,31 @@ impl RecordPlan {
             })
     }
 
-    /// Reject an unsupported stored record position before a create or
-    /// preview reserves an ID or a serial number.
-    pub fn check_creation_context(&self, context: &WriteContext) -> Result<(), DataError> {
+    /// Reject an unsupported stored record position or Self evaluation
+    /// before a create or preview reserves an ID or a serial number.
+    pub fn check_creation_context(
+        &self,
+        context: &WriteContext,
+        entry: Entry,
+    ) -> Result<(), DataError> {
+        if let Some(field) = self.fields.values().find(|field| {
+            (!entry.skip_auto_enter || field.stored_calculation())
+                && match field.auto_enter_self {
+                    AutoEntrySelf::Unused => false,
+                    AutoEntrySelf::ProposedNumber => {
+                        !matches!(context.record_number, Some(RecordNumber::LocalNewRecord(_)))
+                    }
+                    AutoEntrySelf::Unsupported => true,
+                }
+        }) {
+            return Err(DataError::with_code(
+                error::UNAVAILABLE,
+                format!(
+                    "Field {}: Self requires a supported formula and unsorted local New Record.",
+                    field.name
+                ),
+            ));
+        }
         if matches!(
             context.record_number,
             Some(RecordNumber::LocalNewRecord(_) | RecordNumber::LocalSortedNewRecord { .. })
@@ -4571,7 +4599,7 @@ impl RecordPlan {
         preview: Option<&BTreeSet<u64>>,
     ) -> Result<Computed, DataError> {
         if mode == WriteMode::Create {
-            self.check_creation_context(&environment.context)?;
+            self.check_creation_context(&environment.context, entry)?;
         }
         let validate = preview.is_none();
         let mut deferred = BTreeSet::new();
@@ -4741,8 +4769,10 @@ impl RecordPlan {
                 continue;
             };
             let combined_create = field.creation_date_with_calculation && mode == WriteMode::Create;
-            let keeps = entry.keeps_calculated(changes, *id, field.auto_enter_self);
-            if !field.stored_calculation() && (entry.skip_auto_enter || (keeps && !combined_create)) {
+            let uses_self = field.auto_enter_self != AutoEntrySelf::Unused;
+            let keeps = entry.keeps_calculated(changes, *id, uses_self);
+            if !field.stored_calculation() && (entry.skip_auto_enter || (keeps && !combined_create))
+            {
                 continue;
             }
             let depends_on_deferred = expression
@@ -4751,7 +4781,7 @@ impl RecordPlan {
                 .any(|id| deferred.contains(id));
             let should_evaluate = mode == WriteMode::Create
                 || depends_on_deferred
-                || field.auto_enter_self && changes.contains_key(id)
+                || uses_self && changes.contains_key(id)
                 || expression.dependencies.iter().any(|id| dirty.contains(id));
             let can_replace = field.stored_calculation()
                 || field.options.calculation_replaces_existing()
@@ -4784,6 +4814,12 @@ impl RecordPlan {
             if depends_on_deferred {
                 deferred.insert(*id);
                 continue;
+            }
+            if field.auto_enter_self == AutoEntrySelf::Unsupported {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!("Field {}: unsupported auto-entry using Self.", field.name),
+                ));
             }
             if field.creation_date_with_calculation {
                 if !validate {
@@ -5608,7 +5644,9 @@ impl RecordPlan {
 
     /// Whether a new-record preview may replace the supplied value of this cell.
     pub fn auto_enters_proposed_self(&self, cell: u64) -> bool {
-        self.fields.get(&cell).is_some_and(|f| f.auto_enter_self)
+        self.fields
+            .get(&cell)
+            .is_some_and(|field| field.auto_enter_self == AutoEntrySelf::ProposedNumber)
     }
 
     /// Whether repetition `repetition` of field `id` passes its validation
@@ -8415,15 +8453,20 @@ mod tests {
         };
         let formula = "If ( IsEmpty ( Self ) ; 0 ; Self + 1 )";
         let formulas = [(20, 5, formula), (21, 5, formula)];
-        let hosted = plan_with(&table, &formulas, &[], Vec::new(), false);
-        assert_eq!(hosted.err().and_then(|e| e.code), Some(error::UNAVAILABLE));
+        let hosted = plan_with(&table, &formulas, &[], Vec::new(), false).unwrap();
         let plan = plan_of(&table, &formulas, &[]).unwrap();
         let entry = Entry::script(false, false);
         let held_create = Entry {
             keep_written: true,
             ..entry
         };
-        let env = environment();
+        let env = RecordEnvironment {
+            context: WriteContext {
+                record_number: Some(RecordNumber::LocalNewRecord(1)),
+                ..WriteContext::default()
+            },
+            ..environment()
+        };
         let empty = BTreeMap::new();
         let create = plan
             .compute(
@@ -8467,16 +8510,63 @@ mod tests {
                 .unwrap(),
             note
         );
+        let unmeasured = RecordEnvironment {
+            context: WriteContext {
+                record_number: Some(RecordNumber::Window(1)),
+                ..WriteContext::default()
+            },
+            ..environment()
+        };
+        for (plan, env, entry) in [
+            (&plan, &unmeasured, held_create),
+            (&hosted, &env, held_create),
+            (&plan, &unmeasured, Entry::import(true)),
+        ] {
+            assert_eq!(
+                plan.compute(WriteMode::Create, &empty, &propose, env, entry)
+                    .unwrap_err()
+                    .code,
+                Some(error::UNAVAILABLE)
+            );
+        }
         assert_eq!(
             plan.compute(
                 WriteMode::Create,
                 &empty,
                 &propose,
-                &env,
-                Entry::import(true)
+                &unmeasured,
+                Entry::import(false)
             )
             .unwrap(),
             propose
+        );
+
+        let text_table = Table {
+            fields: vec![
+                field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(20, FieldKind::Normal, DataType::Text, 0, 0x88, 0),
+            ],
+            ..table
+        };
+        let unmeasured_self = plan_of(&text_table, &[(20, 5, "Trim ( Self )")], &[]).unwrap();
+        assert_eq!(
+            unmeasured_self
+                .compute(WriteMode::Update, &row, &note, &env, entry)
+                .unwrap(),
+            note
+        );
+        assert_eq!(
+            unmeasured_self
+                .compute(
+                    WriteMode::Update,
+                    &row,
+                    &BTreeMap::from([(20, Some(" proposed ".into()))]),
+                    &env,
+                    entry
+                )
+                .unwrap_err()
+                .code,
+            Some(error::UNAVAILABLE)
         );
     }
 

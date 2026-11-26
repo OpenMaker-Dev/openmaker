@@ -782,11 +782,14 @@ but for a lookup's, which would write into it: a stray `0x80`
 bits keep it read-only.
 
 An ordinary local Number auto-entry calculation can use `Self` as its
-only field input. It reads the proposed value at New Record or on an
+only field input. It reads the proposed value at unsorted New Record or on an
 explicit write, including an empty value on a clear. A nonempty explicit
 assignment keeps its value when replacement is disabled. This covers
-stored results and new-record previews. Existing-record edits can still
-show the entered value until the save. [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1059)
+stored results and new-record previews. During a held edit of an existing
+record, calculations read the entered value until save. Other creation
+paths with auto-entry active and unmeasured Self formulas refuse an
+evaluation with error 3. Unrelated existing-record edits are available.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1059)
 
 In a local file, ordinary New Record applies a constant, a calculation
 that reads no fields, or a creation serial to a supported
