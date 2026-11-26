@@ -160,6 +160,16 @@ name and user name are distinct variables. The table describes the selected
 variable; it does not establish when creation and modification defaults are
 scheduled, including initialization of modification fields on creation.
 
+FileMaker Pro 26.1.1 allows Creation Time on a Text field and retains the
+option when a Time field is converted to Text. Both Text fields use the
+creation selector `01` and option word `0x00000001`. With a local English
+12-hour file and system locale, New Record stored the same time-of-day
+string as a Time field's stored text, including seconds and the AM/PM
+suffix. An unrelated edit, a later commit, reopen and the Time field's
+24-hour layout display kept that Text value. A 24-hour file or system
+locale remains unmeasured.
+[Native results](https://github.com/OpenMaker-Dev/openmaker/issues/1035#issuecomment-7185794163).
+
 In this file, a field calculation subtree is `<base-table>/3/5/<field>/5`.
 Child 4 contains its context, child 5 the formatted stream and child 6 the
 unformatted stream. `DBGetFunction::WriteAsPolish` (`0x16c6930`) writes

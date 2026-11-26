@@ -1814,7 +1814,8 @@ impl RecordPlan {
 
     /// The desktop's provider handles the session-global side of New
     /// Record explicitly; the other planner callers only write rows.
-    /// `local` permits a stored Number to use the local creation position.
+    /// `local` permits a stored Number to use the local creation position
+    /// and a Text creation-time field to use the measured desktop clock format.
     pub fn from_desktop_file_schema(
         table: &Table,
         tree: &KeyTree<'_>,
@@ -2076,9 +2077,25 @@ impl RecordPlan {
                     _ => DataType::Text,
                 };
                 if field.data_type != expected {
-                    return Err(error(
-                        "auto-entry variable storage conversion is unsupported.",
-                    ));
+                    let locale = &schema.locale;
+                    // The local provider's creation clock supplies this exact
+                    // time text. Other formats and conversions are unmeasured.
+                    let text_creation_time = local
+                        && !schema.locale_unreadable
+                        && variable == EntryVariable::CreationTime
+                        && field.data_type == DataType::Text
+                        && options.max_repetitions == 1
+                        && locale.twelve_hour
+                        && !locale.pad_hour
+                        && !locale.am_pm_before
+                        && locale.time_separator == ':'
+                        && locale.am == " AM"
+                        && locale.pm == " PM";
+                    if !text_creation_time {
+                        return Err(error(
+                            "auto-entry variable storage conversion is unsupported.",
+                        ));
+                    }
                 }
             }
             if (options.options & AUTO_ENTRY_MODES).count_ones() > 1 {
@@ -6741,6 +6758,49 @@ mod tests {
         );
         assert_eq!(decoded(&prepared, 13), decoded(&prepared, 12));
         assert_eq!(prepared.changed_fields, vec![1, 2, 8, 9, 10, 11, 12, 13]);
+    }
+
+    #[test]
+    fn creation_time_in_text_keeps_the_local_twelve_hour_clock() {
+        let table = Table {
+            id: 0x8002,
+            name: "Example".into(),
+            fields: vec![
+                field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(2, FieldKind::Normal, DataType::Text, 1, 1, 0),
+            ],
+        };
+        let tree = KeyTree::default();
+        let mut file = CalcSchema::new("Example", Locale::en_us());
+        let plan = RecordPlan::from_desktop_file_schema(&table, &tree, &file, true).unwrap();
+        let mut clock = environment();
+        clock.time = "1:26:37 AM".into();
+        let created = plan
+            .prepare(
+                WriteMode::Create,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &clock,
+            )
+            .unwrap();
+        let created_text = decoded(&created, 2).unwrap();
+        assert_eq!(created_text, "1:26:37 AM");
+
+        clock.time = "1:26:43 AM".into();
+        let updated = plan
+            .prepare(
+                WriteMode::Update,
+                &BTreeMap::from([(2, created_text)]),
+                &BTreeMap::from([(1, Some("Changed".into()))]),
+                &clock,
+            )
+            .unwrap();
+        assert_eq!(updated.changed_fields, [1]);
+
+        assert!(RecordPlan::from_file_schema(&table, &tree, &file).is_err());
+        assert!(RecordPlan::from_desktop_file_schema(&table, &tree, &file, false).is_err());
+        file.locale.twelve_hour = false;
+        assert!(RecordPlan::from_desktop_file_schema(&table, &tree, &file, true).is_err());
     }
 
     /// A record the window holds unsaved (#1063): its values are known only
