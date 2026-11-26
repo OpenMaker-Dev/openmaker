@@ -1066,6 +1066,7 @@ mod tests {
             frame: Some("10,60,120,20".into()),
             rows: Some("3".into()),
             object: Some("layout_object:1.4@F.fmp12".into()),
+            objects: vec!["layout_object:1.4@F.fmp12".into()],
             record: Some("1".into()),
             value: Some("v".into()),
             width: Some("900".into()),
@@ -1077,6 +1078,8 @@ mod tests {
             target_file: Some("B.fmp12".into()),
             value_list: Some("value_list:1@F.fmp12".into()),
             arrangement: Some("align_left_edges".into()),
+            dx: Some(-1.0),
+            dy: Some(2.0),
             ..Args::default()
         };
         // A text to place, where `--text` is not a formula's.
