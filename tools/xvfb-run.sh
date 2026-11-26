@@ -1,7 +1,7 @@
 #!/bin/sh
 # Run a command on a private headless X display, then stop the display.
 #
-#   tools/xvfb-run.sh [-s "<Xvfb arguments>"] <command> [arguments...]
+#   tools/xvfb-run.sh [-s "-screen 0 <W>x<H>x<D>"] <command> [arguments...]
 #
 # For GUI tests and runs, in place of `xvfb-run -a`. That picks the first
 # display number without a lock file in /tmp and only then starts Xvfb, so
@@ -18,10 +18,11 @@
 # that only has one, as XWayland's :0 under Hyprland.
 #
 # The default screen is 1600x1000x24; -s replaces it, as xvfb-run's does,
-# but cannot name the display, nor change its lock or authorization. GTK
-# and winit are kept off a Wayland desktop the command was started from:
-# WAYLAND_DISPLAY and WAYLAND_SOCKET are unset, and GDK_BACKEND is x11 (GTK
-# would otherwise try the wayland-0 socket).
+# but takes only screen settings (-screen and -dpi with their numbers): the
+# display, its lock, its access control (-ac, -auth) and its listeners stay
+# the script's. GTK and winit are kept off a Wayland desktop the command was
+# started from: WAYLAND_DISPLAY and WAYLAND_SOCKET are unset, and
+# GDK_BACKEND is x11 (GTK would otherwise try the wayland-0 socket).
 set -euf
 
 screen='-screen 0 1600x1000x24'
@@ -30,15 +31,16 @@ if [ "${1-}" = -s ]; then
     shift 2
     for argument in $screen; do
         case $argument in
-        :* | -displayfd | -nolock | -auth)
-            echo "$0: -s cannot set $argument: the script chooses the display" >&2
+        -screen | -dpi) ;;
+        '' | x* | *[!0-9x]*)
+            echo "$0: -s takes only -screen and -dpi settings, not $argument" >&2
             exit 2
             ;;
         esac
     done
 fi
 if [ $# -eq 0 ]; then
-    echo "usage: $0 [-s \"<Xvfb arguments>\"] <command> [arguments...]" >&2
+    echo "usage: $0 [-s \"-screen 0 <W>x<H>x<D>\"] <command> [arguments...]" >&2
     exit 2
 fi
 

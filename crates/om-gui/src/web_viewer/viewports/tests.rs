@@ -1,6 +1,7 @@
 //! The other viewports' native windows in eframe's real event loop under an
 //! X server (skipped without one): the assumptions `ViewportWindows` rests
-//! on hold for the eframe and winit versions the app uses.
+//! on hold for the eframe and winit versions the app uses. And the script
+//! these tests run under (`tools/xvfb-run.sh`) keeps its display private.
 
 use std::sync::{Arc, Mutex};
 
@@ -146,4 +147,35 @@ fn immediate_viewports_get_their_own_x11_windows() {
         TITLES.map(|t| Some(t.to_owned())).to_vec(),
         "each window titled as its viewport"
     );
+}
+
+/// `tools/xvfb-run.sh -s` takes screen settings only: an Xvfb option that
+/// opens the private display to clients without its cookie (`-ac`, `+ac`,
+/// another `-auth`), to more listeners, or that moves it off its locked
+/// number is refused before any Xvfb starts.
+#[test]
+fn the_display_script_refuses_options_that_open_its_display() {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/xvfb-run.sh");
+    for screen in [
+        "-screen 0 800x600x24 -ac",
+        "+ac",
+        "-auth /tmp/other",
+        "-listen tcp",
+        "-nolisten local",
+        ":5",
+        "-displayfd 3",
+        "-nolock",
+        "-screen 0 800x600x24 -extension MIT-SHM",
+    ] {
+        let out = std::process::Command::new("sh")
+            .args([script, "-s", screen, "true"])
+            .output()
+            .expect("sh runs the script");
+        assert_eq!(out.status.code(), Some(2), "{screen}: {out:?}");
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            said.contains("-s takes only -screen and -dpi"),
+            "{screen}: {said}"
+        );
+    }
 }

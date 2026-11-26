@@ -670,8 +670,9 @@ also keeps GTK and winit windows on the Xvfb display rather than on a
 Wayland desktop: it unsets `WAYLAND_DISPLAY` and `WAYLAND_SOCKET` and sets
 `GDK_BACKEND=x11`. It does not use Xvfb's `-displayfd`, because in that
 mode Xvfb ignores lock files and can take over a desktop's display, such as
-XWayland's `:0` under Hyprland; its `-s` takes Xvfb's screen arguments but
-not a display, `-displayfd`, `-nolock` or `-auth`.
+XWayland's `:0` under Hyprland. Its `-s` takes only screen settings
+(`-screen`, `-dpi`), so the display, its lock, its access control and its
+listeners stay the script's.
 
 ### Toolchain and dependencies
 
