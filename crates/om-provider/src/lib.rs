@@ -3400,20 +3400,6 @@ impl DataProvider for NativeProvider {
                 let tree = download_tree(&self.schema_downloads)?;
                 self.related_capabilities(&file, &layout, &tree)
             };
-            // Not their containers: Insert into one prepares the window's
-            // own record as this file's (`prepare_attachment_root`), which
-            // it is not here, and would fail with 3 (#957).
-            for (occurrence, fields) in related.iter_mut() {
-                if let Some(shown) = file.table_of(*occurrence) {
-                    fields.retain(|id| {
-                        shown
-                            .fields
-                            .get(id)
-                            .is_none_or(|f| f.value_type != om_data::calc::ValueType::Container)
-                    });
-                }
-            }
-            related.retain(|_, fields| !fields.is_empty());
             // Planned over the owner's routed plan (#187), as its write is,
             // opening nothing; deferred while a file its rules read waits
             // (`routed_edits`, #1160).

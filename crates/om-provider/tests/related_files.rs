@@ -2793,13 +2793,13 @@ fn a_layout_of_another_files_table_offers_its_related_records() {
     let related = &capabilities.related;
     // The layout's own record, as before (its later repetitions).
     assert!(related[&REMOTE].contains(&NAME), "{related:?}");
-    // Related's other table, by Related's rules; not its container, which
-    // Insert cannot fill on such a layout yet (#957).
+    // Related's other table, by Related's rules, its container too (Insert
+    // into it can still fail with 3 on such a layout, #957).
     assert!(
         related[&REMOTE_NOTES].contains(&fixture::BODY),
         "{related:?}"
     );
-    assert!(!related[&REMOTE_NOTES].contains(&PICTURE), "{related:?}");
+    assert!(related[&REMOTE_NOTES].contains(&PICTURE), "{related:?}");
     // A third file's table, by its owner's: not its calculation.
     let other = &related[&OTHER_TASKS];
     assert!(other.contains(&NAME) && other.contains(&COUNT), "{other:?}");

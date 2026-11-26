@@ -348,7 +348,10 @@ host refusing a later file, after an earlier file's commit leaves that earlier
 file committed (record-writes.md, "A script's transaction across files").
 A script's Delete Record inside one is held there too; the user's own edits
 and deletions on such a layout while the script is paused are refused
-([#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)), and so is the
+([#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)), except that
+a save holding a related record's edits, and the Records menu's New Record
+and Duplicate Record, are held in the transaction (record-writes.md, "A
+script's transaction across files"); refused too is the
 user's typing into a later repetition there when its save would enter a
 script's open transaction; the draft is kept.
 The layout's related records in other tables, of this file or of a related
@@ -356,7 +359,8 @@ file, are edited in Browse and written by a script (Set Field into a related
 field, a portal row's creation, Delete Portal Row) as on a layout of this
 file's table: each goes to the file that owns it
 ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). Insert into
-such a related record's container fails with 3 there
+the container of such a related record of another file's table can fail
+with 3 there outside a transaction
 ([#957](https://github.com/OpenMaker-Dev/openmaker/issues/957)).
 Import Records on such a layout imports into its table through the owning
 file, as that file's own Import Records would, and a new row's record joins

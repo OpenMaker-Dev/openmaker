@@ -432,7 +432,11 @@ before the record commit writes it.
   and to the layout the write goes through. So is a new record of a layout
   of another file's table ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)):
   its write naming the preview, outside a transaction or held in one, stores
-  what the preview drew, with no layout of the owning file's. So is a
+  what the preview drew, with no layout of the owning file's (but see
+  [#949](https://github.com/OpenMaker-Dev/openmaker/issues/949): in a
+  script's transaction with Skip auto-enter options, a preview made before
+  that file's first write there enters, and reserves, what the commit then
+  skips). So is a
   related record of another file's table on such a layout.
 - **The desktop window's use.** OnObjectSave when leaving a changed field
   by clicking the layout's background or using keyboard Commit
@@ -1081,9 +1085,10 @@ of another file's table, whichever related file owns the record
 offers that layout's portals and related fields as on a layout of the
 opened file's table (a table of the opened file by its own rules, another
 file's by its owner's), and their edits and a script's writes go to the
-file that owns each record. Their container fields are not offered there:
-Insert into one prepares the window's own record as the opened file's, and
-fails with 3 ([#957](https://github.com/OpenMaker-Dev/openmaker/issues/957)):
+file that owns each record. Insert into a container of such a related
+record of another file's table can fail there with 3: outside a
+transaction, its preparation plans the window's own record as the opened
+file's ([#957](https://github.com/OpenMaker-Dev/openmaker/issues/957)):
 - **The owner writes.** The opened file's Browse edits, a script's Set
   Field into it (one through a relationship that allows creation creates
   the record, its match fields taking the current record's values) and
