@@ -766,12 +766,6 @@ values are computed from the current rules, and single records `[T, 05, R]`.
 
 ## Limits
 
-A Date field with both Creation Date and a calculated auto-entry value
-uses the ordinary creation-date rule. An explicit assignment during the
-scripted creation keeps the assigned date. FileMaker Pro measured this
-combination in a local file. Applying the same rule on a host is inferred.
-[Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7184309937).
-
 A table is writable only when every field rule is understood
 (`om-data/src/rules`, shared with OpenMaker Server's scripts; calculations by `om-calc`):
 auto-enter and stored calculations of text, number, date, time and
@@ -786,6 +780,16 @@ their own cells). An unstored calculation's option bits are not checked
 but for a lookup's, which would write into it: a stray `0x80`
 (auto-entry.md) leaves the table writable. A stored calculation's unknown
 bits keep it read-only.
+
+A single-repetition Date field with both Creation Date and a calculated
+auto-entry value uses the creation-date rule on creation. An explicit
+assignment during scripted creation keeps the assigned date. An update
+that would run the calculation under ordinary auto-entry rules returns
+error 3 because the result of combining both rules is unmeasured. The
+combined options with Prohibit modification also stay unsupported.
+FileMaker Pro measured creation in a local file. Applying the same rule
+on a host is inferred.
+[Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7184309937).
 
 **An auto-entered or validation formula may read an unstored
 calculation** of its own table ([#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); auto-entry.md, "Formulas over

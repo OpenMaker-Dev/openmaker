@@ -459,10 +459,17 @@ sorted found set, and FileMaker Pro's own data entry.
 FileMaker Pro 26.1.1 kept both options on one local Date field after
 reopening, in either authoring order. New Record yielded the creation
 date, including with a calculation that yields a different date and
-with replacement enabled. Editing a different field left the date as
-it was. An explicit assignment to the Date field survived commit and
-reopen. The internal evaluation order and hosted behavior are unmeasured.
+with replacement enabled. An explicit date assigned before the first
+commit survived reopening. The conditional formula reads its own field
+and returns that value when present. It does not read `Note`, so the
+unchanged date after editing `Note` does not establish re-evaluation.
+Closed copies store option words `0x00000009` (keep an existing value)
+and `0x00000089` (replace), both with Creation Date selector `0x00`
+and a saved calculation member. Re-evaluation when a referenced field
+changes or the date is cleared after creation, the internal evaluation
+order, Prohibit modification and hosted behavior were unmeasured.
 [Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7184309937).
+[Closed-file readback](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7185113183).
 
 ## A new record's own self-join
 
