@@ -467,6 +467,10 @@ row, leaving the tab control row and individual group members unhighlighted.
 The front panel stayed active. With the Rectangle tool active, Select All
 selected just the four ungrouped rectangles, including the locked one and
 the one on the back panel, and switched back to the Selection tool.
+Both panel rectangles had outlines. In the Rectangle-tool result, the
+Inspector included the back-panel rectangle in the selection's bounds
+(right 720 pt, bottom 365 pt), while the canvas handles ended at the
+front-panel rectangle (right 590 pt, bottom 310 pt).
 [Claris Help](https://help.claris.com/en/pro-help/content/protecting-objects-from-change.html)
 documents that a lock protects an object from edits, moves and deletion.
 

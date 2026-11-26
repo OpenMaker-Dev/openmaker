@@ -2048,8 +2048,12 @@ fn draw(
                     }
                     draw_selection_outline(&painter, rect, object.locked);
                     if selected.all {
-                        bounds = bounds.union(rect);
-                        unlocked |= !object.locked;
+                        // Inactive children have outlines but do not extend
+                        // the handles around the objects on screen.
+                        if visible(object.key) {
+                            bounds = bounds.union(rect);
+                            unlocked |= !object.locked;
+                        }
                     } else if !object.locked {
                         draw_selection_handles(&painter, rect);
                     }

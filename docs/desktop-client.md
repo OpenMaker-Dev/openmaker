@@ -2248,8 +2248,10 @@ stored tab order.
   each group as one, both tab panels and their contents, and field drafts.
   The front panel stays active. With Shape Tools, Select All selects
   ungrouped rectangles, including those on inactive panels, and returns to
-  the Selection tool. Locked objects can be selected and refuse frame edits
-  and deletion. A box starting on blank layout space replaces the selection
+  the Selection tool. Selected shapes on inactive panels get outlines.
+  The combined handles span the visible selection. Locked objects can be
+  selected and refuse frame edits and deletion. A box starting on blank
+  layout space replaces the selection
   with the objects it crosses. Hold Cmd on macOS or Ctrl elsewhere to
   select only objects entirely inside. The box still uses the visible flat
   object list. Select All treats slide panels like tab panels and a portal
