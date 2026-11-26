@@ -1236,6 +1236,7 @@ fn setup_steps(card: &mut BuildCard, copy: &Path, made: &Made) {
                     name: NAME.into(),
                     flags,
                     hidden,
+                    margins: None,
                 })
                 .map_err(|e| e.message)?;
                 Ok(flags & (views::ALL | general::ALL))
