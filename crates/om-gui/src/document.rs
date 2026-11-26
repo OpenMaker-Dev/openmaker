@@ -4866,9 +4866,18 @@ fn paint_object_repetition(
         } else {
             1
         };
-    let style = state
+    let mut style = state
         .layout_cache
         .formatted_style(layout, object, conditions, 1, style_state);
+    if !finding && object.kind() == ObjectKind::Text {
+        // Browse draws no Text edge without a line style, even when the
+        // definition retained its width and color (layout-model.md 6.2).
+        for (width, line_style) in style.border_width.iter_mut().zip(style.border_style) {
+            if line_style.is_none() {
+                *width = None;
+            }
+        }
+    }
     if object.kind() == ObjectKind::Line {
         line::paint(ui.painter(), rect, object.flags, &style);
     } else {
