@@ -1,10 +1,19 @@
 package dev.openmaker.go
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.net.Uri
 import android.os.StatFs
 import android.provider.OpenableColumns
 import java.io.File
+import dev.openmaker.go.engine.HostChange
+import dev.openmaker.go.engine.ListedHost
+import dev.openmaker.go.engine.Permit
+import dev.openmaker.go.engine.SavedHosts
+import dev.openmaker.go.engine.distinctHosts
+import dev.openmaker.go.engine.formerHosts
+import dev.openmaker.go.engine.hostKey
+import dev.openmaker.go.engine.trustedCertificate
 import org.json.JSONArray
 
 /** A file the Launch Center lists: on this device when [host] is empty. */
@@ -23,9 +32,43 @@ data class Entry(val name: String, val host: String = "", val port: Int = DEFAUL
 }
 
 /**
- * The apps on this device, Favorites, Recent and the hosts' trusted
- * certificate authorities. File references are kept by name: the documents
- * folder's absolute path can change with an update.
+ * A host of the Hosts list: its address and port, and the name it is
+ * listed by, empty for its location. Two hosts are the same host when the
+ * engine says so ([hostKey]: ASCII case and an international name's
+ * punycode form, as DNS compares names).
+ */
+data class SavedHost(val address: String, val port: Int = Entry.DEFAULT_PORT, val name: String = "") {
+    /** The address, with the port when it is not FileMaker's (an IPv6 address then in brackets). */
+    val location
+        get() =
+            when {
+                port == Entry.DEFAULT_PORT -> address
+                ':' in address -> "[$address]:$port"
+                else -> "$address:$port"
+            }
+
+    val label
+        get() = name.ifEmpty { location }
+
+    val key
+        get() = hostKey(address, port.toUShort())
+
+    /** As the engine takes it. */
+    fun listed() = ListedHost(address, port.toUShort(), name)
+
+    fun isHost(address: String, port: Int) = key == hostKey(address, port.toUShort())
+
+    fun isHost(other: SavedHost) = key == other.key
+
+    companion object {
+        fun of(listed: ListedHost) = SavedHost(listed.address, listed.port.toInt(), listed.name)
+    }
+}
+
+/**
+ * The apps on this device, Favorites, Recent, the Hosts list and the hosts'
+ * trusted certificate authorities. File references are kept by name: the
+ * documents folder's absolute path can change with an update.
  */
 class Library(context: Context) {
     private val prefs = context.getSharedPreferences("library", Context.MODE_PRIVATE)
@@ -50,23 +93,147 @@ class Library(context: Context) {
         get() = entries(RECENT)
         set(value) = store(RECENT, value.distinct().take(MAX_RECENT))
 
-    var lastHost: String
-        get() = prefs.getString("lastHost", "").orEmpty()
-        set(value) = prefs.edit().putString("lastHost", value).apply()
+    /**
+     * The Hosts list, each host once ([distinctHosts]). Before it was kept,
+     * the Hosts tab remembered the one host it last browsed and the
+     * certificate authorities it was told to trust: that host is the list's
+     * first, followed by those hosts ([formerHosts]).
+     */
+    val hosts: List<SavedHost>
+        get() {
+            val stored =
+                prefs.getString(HOSTS, null)
+                    ?: return formerHosts(
+                            prefs.getString(LAST_HOST, "").orEmpty(),
+                            prefs.getInt(LAST_PORT, Entry.DEFAULT_PORT).toString(),
+                            certificates(),
+                        )
+                        .map(SavedHost::of)
+            val list = JSONArray(stored)
+            val listed =
+                (0 until list.length()).map {
+                    val item = list.getJSONArray(it)
+                    ListedHost(item.getString(0), item.getInt(1).toUShort(), item.getString(2))
+                }
+            return distinctHosts(listed).map(SavedHost::of)
+        }
 
-    var lastPort: Int
-        get() = prefs.getInt("lastPort", Entry.DEFAULT_PORT)
-        set(value) = prefs.edit().putInt("lastPort", value).apply()
-
-    /** The PEM certificate authority trusted for one host and port only. */
-    fun certificate(host: String, port: Int): String = prefs.getString("ca:$host:$port", "").orEmpty()
-
-    /** Save [pem] as the host's certificate authority; an empty one removes it. */
-    fun trust(host: String, port: Int, pem: String) {
-        val edit = prefs.edit()
-        if (pem.isBlank()) edit.remove("ca:$host:$port") else edit.putString("ca:$host:$port", pem)
+    /**
+     * Save Add Host or Edit Host's [change], by the engine's rules
+     * ([dev.openmaker.go.engine.saveHost]): the saved host, or a
+     * [GoException] saying what to fix, or that the host was changed in
+     * another window since the editor opened. The list and the certificate
+     * authorities change together.
+     */
+    fun saveHost(change: HostChange): SavedHost {
+        val before = certificates()
+        val hostsBefore = hosts
+        val saved = dev.openmaker.go.engine.saveHost(SavedHosts(hostsBefore.map { it.listed() }, before), change)
+        val edit =
+            prefs.edit().putHosts(saved.saved.hosts.map(SavedHost::of)).putCertificates(before, saved.saved.certificates)
+        // A host that left the list (moved, or merged into another) loses the certificate permitted for it.
+        val after = saved.saved.hosts.map { hostKey(it.address, it.port) }
+        for (old in hostsBefore + listOfNotNull(change.replaces?.let(SavedHost::of))) {
+            if (old.key !in after) edit.unpermit(old.address, old.port)
+        }
         edit.apply()
+        return SavedHost.of(saved.host)
     }
+
+    /**
+     * Remove [host] from the list, with the certificate authorities trusted
+     * for it and the certificate permitted for it.
+     */
+    fun removeHost(host: SavedHost) {
+        val before = certificates()
+        val saved = dev.openmaker.go.engine.removeHost(SavedHosts(hosts.map { it.listed() }, before), host.listed())
+        prefs.edit()
+            .putHosts(saved.hosts.map(SavedHost::of))
+            .putCertificates(before, saved.certificates)
+            .unpermit(host.address, host.port)
+            .apply()
+    }
+
+    /**
+     * The SHA-256 fingerprint of the server certificate the user permitted
+     * for one host and port although it cannot be verified (Always
+     * Permit), under any spelling of its address ([hostKey]); empty for
+     * none.
+     */
+    fun permitted(host: String, port: Int): String =
+        prefs.getString(pinKey(host, port), null)
+            ?: pins(host, port).sortedBy { it.key }.firstNotNullOfOrNull { it.value as? String }.orEmpty()
+
+    /** Every certificate permitted with Always Permit, with its host and port. */
+    fun permits(): List<Permit> =
+        prefs.all.entries.mapNotNull { entry ->
+            val stored = entry.key.removePrefix(PIN_PREFIX).takeIf { entry.key.startsWith(PIN_PREFIX) }
+            val colon = stored?.lastIndexOf(':') ?: -1
+            val port = stored?.substring(colon + 1)?.toUShortOrNull()
+            val fingerprint = entry.value as? String
+            if (stored == null || colon <= 0 || port == null || fingerprint == null) null
+            else Permit(stored.substring(0, colon), port, fingerprint)
+        }
+
+    /** Always Permit: connect to the host's certificate with [fingerprint] from now on. */
+    fun permit(host: String, port: Int, fingerprint: String) {
+        prefs.edit().unpermit(host, port).putString(pinKey(host, port), fingerprint).apply()
+    }
+
+    /** Forget the certificate permitted for a host and port. */
+    fun forgetPermitted(host: String, port: Int) {
+        prefs.edit().unpermit(host, port).apply()
+    }
+
+    /**
+     * The PEM certificate authorities Edit Host shows for one host and port
+     * only, under any spelling of its address ([trustedCertificate]).
+     */
+    fun certificate(host: String, port: Int): String = trustedCertificate(certificates(), host, port.toUShort())
+
+    /**
+     * The certificate authorities a connection to one host and port trusts
+     * ([dev.openmaker.go.engine.connectCertificate]): every one saved for
+     * it, or a [GoException] saying why none can be used.
+     */
+    fun connectCertificate(host: String, port: Int): String =
+        dev.openmaker.go.engine.connectCertificate(certificates(), host, port.toUShort())
+
+    /** The saved certificate authorities, by `address:port` as typed. */
+    private fun certificates(): Map<String, String> =
+        prefs.all.entries
+            .filter { it.key.startsWith(CA_PREFIX) }
+            .mapNotNull { entry -> (entry.value as? String)?.let { entry.key.removePrefix(CA_PREFIX) to it } }
+            .toMap()
+
+    private fun pinKey(host: String, port: Int) = "$PIN_PREFIX$host:$port"
+
+    /** The permits saved for [host] and [port] under any spelling of the address. */
+    private fun pins(host: String, port: Int): List<Map.Entry<String, *>> {
+        val key = hostKey(host, port.toUShort())
+        return prefs.all.entries.filter { entry ->
+            val stored = entry.key.removePrefix(PIN_PREFIX).takeIf { entry.key.startsWith(PIN_PREFIX) }
+            val colon = stored?.lastIndexOf(':') ?: -1
+            val storedPort = stored?.substring(colon + 1)?.toUShortOrNull()
+            stored != null && colon > 0 && storedPort != null && hostKey(stored.substring(0, colon), storedPort) == key
+        }
+    }
+
+    private fun SharedPreferences.Editor.unpermit(host: String, port: Int): SharedPreferences.Editor = apply {
+        for (entry in pins(host, port)) remove(entry.key)
+    }
+
+    /** Write the certificate authorities [after] in place of [before]. */
+    private fun SharedPreferences.Editor.putCertificates(before: Map<String, String>, after: Map<String, String>) =
+        apply {
+            for (key in before.keys - after.keys) remove(CA_PREFIX + key)
+            for ((key, pem) in after) if (before[key] != pem) putString(CA_PREFIX + key, pem)
+        }
+
+    private fun SharedPreferences.Editor.putHosts(list: List<SavedHost>) =
+        putString(HOSTS, JSONArray(list.map { JSONArray().put(it.address).put(it.port).put(it.name) }).toString())
+            .remove(LAST_HOST)
+            .remove(LAST_PORT)
 
     /**
      * Copy a picked file into the documents folder under its own name. The
@@ -132,6 +299,11 @@ class Library(context: Context) {
     private companion object {
         const val FAVORITES = "favorites"
         const val RECENT = "recent"
+        const val HOSTS = "hosts"
+        const val LAST_HOST = "lastHost"
+        const val LAST_PORT = "lastPort"
+        const val CA_PREFIX = "ca:"
+        const val PIN_PREFIX = "permitted:"
         const val MAX_RECENT = 30
         // Room an import leaves on the device for the files it opens.
         const val SPARE_BYTES = 256L shl 20

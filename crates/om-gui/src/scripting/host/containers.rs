@@ -474,6 +474,7 @@ impl WorkerHost<'_> {
                 privilege_set: None,
                 record_number: None,
                 prepared: None,
+                single_field_step: false,
             })
             .map_err(|e| self.failed(e))?;
         for (index, draft) in open.related.iter().enumerate() {
@@ -509,6 +510,7 @@ impl WorkerHost<'_> {
                         .as_ref()
                         .filter(|_| reserved.is_none())
                         .map(|p| p.id),
+                    single_field_step: false,
                 })
                 .map_err(|e| self.failed(e))?;
             if record.is_none() {

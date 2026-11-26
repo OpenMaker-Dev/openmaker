@@ -18,6 +18,8 @@ admin-console = ["dep:om-admin"]
 sentry = ["dep:sentry", "dep:ureq"]
 
 [dependencies]
+# The X.509 reading its TLS shares with the client (`om_session::cert`).
+om-session = { path = "../om-session" }
 om-admin = { path = "../om-admin", optional = true }
 om-calc = { path = "../om-calc" }
 om-collate = { path = "../om-collate" }
@@ -64,7 +66,6 @@ rustix = { version = "1.1", features = ["fs", "process", "system"] }
 signal-hook = "0.4"
 
 [dev-dependencies]
-om-session = { path = "../om-session" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # tests/logins.rs connects from other loopback addresses, as other

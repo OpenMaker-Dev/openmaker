@@ -363,9 +363,18 @@ impl NativeProvider {
     /// A record created in the window joins an explicit found set at its
     /// end.
     pub(crate) fn found_add(&mut self, table: u64, record: u64) {
+        self.found_add_after(table, record, None);
+    }
+
+    /// An ordinary local sorted New Record initially follows its
+    /// window's current row. Other writes keep appending.
+    pub(crate) fn found_add_after(&mut self, table: u64, record: u64, after: Option<u64>) {
         if let Some(ids) = self.found.get_mut(&table).and_then(|f| f.ids.as_mut()) {
             if !ids.contains(&record) {
-                ids.push(record);
+                let at = after
+                    .and_then(|after| ids.iter().position(|id| *id == after))
+                    .map_or(ids.len(), |index| index + 1);
+                ids.insert(at, record);
             }
         }
     }

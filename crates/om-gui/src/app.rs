@@ -1019,9 +1019,10 @@ pub struct OpenMakerApp {
     value_list_edit: Option<(u32, crate::document::value_dialogs::EditDialog)>,
     part_setup: Option<PartSetup>,
     error: Option<String>,
-    /// The error code and message of the last failure `fail` reported, for
-    /// OpenMaker Go to tell a refused account from other failures.
-    failure: Option<(Option<i32>, String)>,
+    /// The last failure `fail` reported, for OpenMaker Go to tell a refused
+    /// account, or a host whose certificate could not be verified, from
+    /// other failures.
+    failure: Option<DataError>,
     /// The host administrators' messages still to show, the first shown
     /// now ([`Self::host_message`]; #156), and when it was first shown
     /// (`InputState::time`).
@@ -1854,6 +1855,7 @@ impl OpenMakerApp {
             home: self.launcher.has_home(),
             find: &self.w.find,
             toolbar: self.w.show_toolbar,
+            toolbar_toggle_available: self.toolbar_toggle_available(),
             formatting: self.w.show_formatting,
             inspector: self.w.inspector,
             objects: self.w.objects,
@@ -2329,6 +2331,7 @@ impl OpenMakerApp {
                         self.w.document.zoom.percent(),
                         &self.w.uuid,
                     );
+                    window.toolbar_locked = self.w.toolbar_locked;
                     window.style = self.w.style.number();
                     window
                 });
@@ -4156,7 +4159,8 @@ impl OpenMakerApp {
                     }
                 }
             }
-            if input.consume_shortcut(&shortcuts::STATUS_TOOLBAR) {
+            if input.consume_shortcut(&shortcuts::STATUS_TOOLBAR) && self.toolbar_toggle_available()
+            {
                 actions.push(Action::ToggleToolbar);
             }
             if self.zooms() {
@@ -4595,6 +4599,10 @@ impl OpenMakerApp {
 
     fn full_menus(&self) -> bool {
         self.menu_commands() == om_data::host::privilege_set::MenuCommands::All
+    }
+
+    fn toolbar_toggle_available(&self) -> bool {
+        !self.w.toolbar_locked && !self.is_card(self.w.id)
     }
 
     /// The status toolbar and the layout bar: usable under Editing only
@@ -5601,7 +5609,11 @@ impl OpenMakerApp {
                 }
             }
             Action::DismissValueLists => self.value_lists = None,
-            Action::ToggleToolbar => self.w.show_toolbar = !self.w.show_toolbar,
+            Action::ToggleToolbar => {
+                if self.toolbar_toggle_available() {
+                    self.w.show_toolbar = !self.w.show_toolbar;
+                }
+            }
             Action::ToggleFormattingBar => self.w.show_formatting = !self.w.show_formatting,
             Action::RefuseTyping(refusal) => {
                 self.error = Some(refusal.message().into());
@@ -5919,6 +5931,15 @@ impl OpenMakerApp {
     /// Requests run in order, so the geometry is in by the time the records
     /// are and Form view does not flash the generic field list first.
     fn request_layout(&mut self, ctx: &egui::Context, key: Option<PageKey>) {
+        self.request_layout_with_origin(ctx, key, false);
+    }
+
+    fn request_layout_with_origin(
+        &mut self,
+        ctx: &egui::Context,
+        key: Option<PageKey>,
+        scripted: bool,
+    ) {
         // A layout the account may not see draws `<No Access>` (or the
         // blank opening page) and offers no record commands; it reads its
         // found set's ids and count only, which the toolbar shows, as
@@ -5951,12 +5972,14 @@ impl OpenMakerApp {
                 ctx,
                 Request::RecordCapabilities {
                     layout_id: key.layout_id,
+                    scripted,
                 },
             );
             self.request(
                 ctx,
                 Request::RenderLayout {
                     layout_id: key.layout_id,
+                    scripted,
                 },
             );
             self.request(
@@ -6908,7 +6931,7 @@ impl OpenMakerApp {
             return;
         }
         self.error = Some(err.message.clone());
-        self.failure = Some((err.code, err.message.clone()));
+        self.failure = Some(err.clone());
         self.status = ConnectStatus::Idle;
         self.opening = None;
     }
