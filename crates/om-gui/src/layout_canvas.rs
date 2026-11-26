@@ -424,11 +424,10 @@ pub(crate) struct CanvasState {
     part_resize: Option<PartResize>,
 }
 
-/// A part boundary being dragged: the part's place in the layout's parts
-/// and the height the pointer is at.
+/// The stored part whose boundary began the drag, and the current height.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PartDrag {
-    index: usize,
+    part: om_data::PartIdentity,
     height: f64,
 }
 
@@ -443,10 +442,8 @@ pub(crate) struct PartResize {
     pub revision: Option<om_data::layout_placement::Revision>,
 }
 
-/// What the part boundaries need: each part's key and type, in the order of
-/// the geometry's parts, whether they may be dragged, and the drag.
+/// Whether part boundaries may be dragged, and the active and finished drag.
 struct PartEdges<'a> {
-    keys: &'a [(u64, i32)],
     enabled: bool,
     drag: &'a mut Option<PartDrag>,
     resize: &'a mut Option<PartResize>,
@@ -1167,8 +1164,7 @@ pub(crate) fn show(
                     },
                     &mut state.width,
                     PartEdges {
-                        keys: &part_keys(session),
-                        enabled: !unsaved,
+                        enabled: !unsaved && geometry.revision.is_some(),
                         drag: &mut state.part_drag,
                         resize: &mut state.part_resize,
                     },
@@ -1222,7 +1218,6 @@ pub(crate) fn show(
                 },
                 &mut None,
                 PartEdges {
-                    keys: &[],
                     enabled: false,
                     drag: &mut None,
                     resize: &mut None,
@@ -1234,17 +1229,6 @@ pub(crate) fn show(
             );
         }
     }
-}
-
-/// The layout's parts' keys and types, top to bottom, as the decoded layout
-/// stores them; empty while it is not decoded.
-fn part_keys(session: &Session) -> Vec<(u64, i32)> {
-    let crate::session::RenderState::Loaded(document) = &session.render else {
-        return Vec::new();
-    };
-    let mut parts: Vec<_> = document.layout.parts.iter().collect();
-    parts.sort_by(|a, b| a.top.total_cmp(&b.top));
-    parts.iter().map(|p| (p.id, p.part_type)).collect()
 }
 
 /// The words a stored text object shows, when they are plain words
@@ -1455,14 +1439,14 @@ fn draw(
             // A part's lower boundary: the Selection tool drags it to set the
             // part's height, in whole points, down to the lowest object in
             // it; the window sends it when the drag ends.
-            if selectable
-                && edges.enabled
-                && tool == LayoutTool::Selection
-                && edges.keys.len() == geometry.parts.len()
-            {
-                for (index, (part, &(key, part_type))) in
-                    geometry.parts.iter().zip(edges.keys).enumerate()
-                {
+            if selection_tool && edges.enabled {
+                // A frame can end one drag and begin another. Finish the
+                // former from its own state regardless of part draw order.
+                let previous_drag = *edges.drag;
+                for part in &geometry.parts {
+                    let Some(identity) = part.identity else {
+                        continue;
+                    };
                     let bottom = origin.y + (part.top + part.height) as f32;
                     let band = Rect::from_x_y_ranges(
                         origin.x - PART_STRIP_WIDTH..=origin.x + width,
@@ -1471,7 +1455,9 @@ fn draw(
                     if !band.is_finite() {
                         continue;
                     }
-                    let id = ui.scope_id().with(("part_edge", index));
+                    let id = ui
+                        .scope_id()
+                        .with(("part_edge", identity.key, identity.part_type));
                     let response = ui
                         .interact(band, id, Sense::drag())
                         .on_hover_cursor(egui::CursorIcon::ResizeVertical);
@@ -1491,27 +1477,39 @@ fn draw(
                     // The parts together stay within the coordinate range.
                     let others = geometry.parts.iter().map(|p| p.height).sum::<f64>() - part.height;
                     let max = (om_data::layout_placement::MAX_COORDINATE - others).max(min);
-                    if let Some(pointer) = response
-                        .interact_pointer_pos()
-                        .filter(|_| response.dragged())
-                    {
-                        let height = (f64::from(pointer.y - origin.y) - part.top)
+                    // A geometry refresh clears the gesture. Egui can keep
+                    // reporting a held drag, so only its start may bind a part.
+                    if response.drag_started() {
+                        *edges.drag = Some(PartDrag {
+                            part: identity,
+                            height: part.height,
+                        });
+                    }
+                    let active = edges.drag.as_mut().filter(|drag| drag.part == identity);
+                    if let Some((drag, pointer)) = active.zip(
+                        response
+                            .interact_pointer_pos()
+                            .filter(|_| response.dragged()),
+                    ) {
+                        drag.height = (f64::from(pointer.y - origin.y) - part.top)
                             .round()
                             .clamp(min, max);
-                        *edges.drag = Some(PartDrag { index, height });
                     }
                     if response.drag_stopped() {
-                        let dragged = edges.drag.take().filter(|d| d.index == index);
+                        if edges.drag.is_some_and(|d| d.part == identity) {
+                            *edges.drag = None;
+                        }
+                        let dragged = previous_drag.filter(|d| d.part == identity);
                         if let Some(drag) = dragged.filter(|d| d.height != part.height) {
                             *edges.resize = Some(PartResize {
-                                part: key,
-                                part_type,
+                                part: identity.key,
+                                part_type: identity.part_type,
                                 size: drag.height,
                                 revision: geometry.revision,
                             });
                         }
                     }
-                    if let Some(drag) = edges.drag.filter(|d| d.index == index) {
+                    if let Some(drag) = edges.drag.filter(|d| d.part == identity) {
                         let y = origin.y + (part.top + drag.height) as f32;
                         part_guide = Some((y, part.kind_name.as_str(), drag.height));
                     }
@@ -2784,6 +2782,7 @@ fn fallback_geometry(session: &Session) -> LayoutGeometry {
         width: 560.0,
         height,
         parts: vec![PartGeom {
+            identity: None,
             kind_name: "Body".into(),
             top: 0.0,
             height,
@@ -3124,6 +3123,145 @@ mod tests {
             assert_eq!(app.state().0.moved(), &moves);
         }
         capture_frame(&mut app, "selected.png");
+    }
+
+    #[test]
+    fn dragging_an_out_of_order_part_boundary_targets_the_drawn_part() {
+        use egui_kittest::kittest::Queryable;
+        use om_data::PartIdentity;
+
+        let mut session = Session::new(
+            Target {
+                host: "test".into(),
+                file: "test.fmp12".into(),
+                local: None,
+            },
+            25,
+        );
+        session.layout = Some(1);
+        let revision = [4; 32];
+        // Storage order is Body then Header. The Header ends at y=40.
+        let stored = [(3, 4, "Body", 40.0, 90.0), (9, 1, "Header", 0.0, 40.0)];
+        session.geometry = Geometry::Loaded(LayoutGeometry {
+            width: 250.0,
+            height: 130.0,
+            parts: stored
+                .iter()
+                .map(|&(key, part_type, name, top, height)| PartGeom {
+                    identity: Some(PartIdentity { key, part_type }),
+                    kind_name: name.into(),
+                    top,
+                    height,
+                })
+                .collect(),
+            revision: Some(revision),
+            ..Default::default()
+        });
+        session
+            .accept_render_layout(
+                1,
+                Ok(Some(om_data::RenderLayout {
+                    layout: om_layout::Layout {
+                        id: 1,
+                        parts: stored
+                            .iter()
+                            .map(|&(id, part_type, _, top, height)| om_layout::Part {
+                                id,
+                                part_type,
+                                top,
+                                height,
+                                ..Default::default()
+                            })
+                            .collect(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })),
+            )
+            .unwrap();
+        let mut app = egui_kittest::Harness::builder()
+            .with_size(vec2(350.0, 200.0))
+            .with_context_setup(crate::theme::install)
+            .build_ui_state(
+                |ui, (state, document, session)| {
+                    state.synchronize(session);
+                    show(
+                        ui,
+                        session,
+                        LayoutTool::Selection,
+                        &[],
+                        state,
+                        false,
+                        document,
+                    );
+                },
+                (CanvasState::default(), DocumentState::default(), session),
+            );
+        let start = app.get_by_label("Header boundary").rect().center();
+        let end = start + vec2(0.0, 15.0);
+        let body_start = app.get_by_label("Body boundary").rect().center();
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        app.event(egui::Event::PointerMoved(start));
+        app.event(press(start, true));
+        app.step();
+        app.event(egui::Event::PointerMoved(end));
+        app.step();
+        // Release the Header and grab the Body in one input frame. The
+        // Body draws first and must not replace the completed Header drag.
+        app.event(press(end, false));
+        app.event(egui::Event::PointerMoved(body_start));
+        app.event(press(body_start, true));
+        app.step();
+        assert_eq!(
+            app.state_mut().0.take_part_resize(),
+            Some(PartResize {
+                part: 9,
+                part_type: 1,
+                size: 55.0,
+                revision: Some(revision),
+            }),
+        );
+
+        let body_end = body_start + vec2(0.0, 10.0);
+        app.event(egui::Event::PointerMoved(body_end));
+        app.step();
+        app.event(press(body_end, false));
+        app.step();
+        assert_eq!(
+            app.state_mut().0.take_part_resize(),
+            Some(PartResize {
+                part: 3,
+                part_type: 4,
+                size: 100.0,
+                revision: Some(revision),
+            }),
+        );
+
+        // If the host refreshes geometry while the pointer is held, egui
+        // keeps its grab but releasing it must not submit a new resize.
+        app.event(egui::Event::PointerMoved(start));
+        app.event(press(start, true));
+        app.step();
+        app.event(egui::Event::PointerMoved(end));
+        app.step();
+        assert!(app.state().0.part_drag.is_some());
+        let Geometry::Loaded(geometry) = &mut app.state_mut().2.geometry else {
+            unreachable!();
+        };
+        geometry.parts.reverse();
+        geometry.revision = Some([5; 32]);
+        app.step();
+        let after_refresh = end + vec2(0.0, 10.0);
+        app.event(egui::Event::PointerMoved(after_refresh));
+        app.step();
+        app.event(press(after_refresh, false));
+        app.step();
+        assert_eq!(app.state_mut().0.take_part_resize(), None);
     }
 
     #[test]
