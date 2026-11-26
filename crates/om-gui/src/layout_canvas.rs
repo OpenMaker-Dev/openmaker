@@ -384,6 +384,7 @@ pub(crate) struct CanvasState {
     geometry: Option<LayoutGeometry>,
     history: history::History,
     front_panels: BTreeMap<u64, u64>,
+    panel_generation: u64,
     new_text_editor: Option<egui::Id>,
     selected: Selection,
     scroll_to_selected: bool,
@@ -1015,6 +1016,10 @@ impl CanvasState {
             Geometry::Loading | Geometry::Unavailable => None,
         };
         let moved = !self.matches(session);
+        if moved || self.panel_generation != session.layout_generation {
+            self.front_panels.clear();
+            self.panel_generation = session.layout_generation;
+        }
         if moved || self.geometry.as_ref() != geometry {
             self.clear_history();
             self.drag = None;
@@ -1025,7 +1030,6 @@ impl CanvasState {
             // A new field or button and moved objects belong to their
             // layout; another layout or file drops them.
             if moved {
-                self.front_panels.clear();
                 self.drop_new_object();
                 self.drop_moves();
                 self.drop_deletions();
@@ -3172,6 +3176,24 @@ mod tests {
         app.state_mut().0.select_all(&session);
         assert_eq!(app.state().0.selected_index(), Some(1));
         assert!(!app.state().0.unsaved());
+
+        // Changing layouts in Browse does not run the Layout canvas between
+        // the two selections. The old panel still must not follow us back.
+        let mut state = std::mem::take(&mut app.state_mut().0);
+        drop(app);
+        let Geometry::Loaded(geometry) = &session.geometry else {
+            unreachable!()
+        };
+        let crate::session::RenderState::Loaded(render) = &session.render else {
+            unreachable!()
+        };
+        let (geometry, render) = (geometry.clone(), (**render).clone());
+        session.select_layout(2);
+        session.select_layout(1);
+        session.accept_geometry(1, Ok(Some(geometry))).unwrap();
+        session.accept_render_layout(1, Ok(Some(render))).unwrap();
+        state.select_all(&session);
+        assert_eq!(state.selected_index(), Some(0));
     }
 
     #[test]
