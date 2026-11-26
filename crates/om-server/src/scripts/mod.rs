@@ -742,7 +742,7 @@ pub(crate) mod fixture;
 mod oracle_tests;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::time::{Duration, Instant};
 
     use om_calc::eval::CalcHost;
@@ -764,7 +764,7 @@ mod tests {
 
     const CLIENT: u32 = 0x77;
 
-    pub(super) fn shared(file: &TempFile) -> Arc<Shared> {
+    pub(crate) fn shared(file: &TempFile) -> Arc<Shared> {
         let engine = crate::engine::Engine::default();
         // Every read answered through both views (`engine::copies`) and
         // every write checked (`engine::checking`), in debug builds only.
@@ -846,7 +846,7 @@ mod tests {
         shared
     }
 
-    pub(super) fn hosted(shared: &Shared) -> Arc<Hosted> {
+    pub(crate) fn hosted(shared: &Shared) -> Arc<Hosted> {
         shared.hosting.by_name(fixture::FILE).unwrap().clone()
     }
 

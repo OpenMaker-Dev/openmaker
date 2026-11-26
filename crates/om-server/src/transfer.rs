@@ -592,6 +592,17 @@ impl Transfers {
         cursors.len()
     }
 
+    /// Let go of every transfer and what it holds of the server's budgets:
+    /// the session they read for ended (`crate::joins`). A continuation of
+    /// one is then refused, as one dropped at a limit is.
+    pub fn clear(&mut self) {
+        let cursors: Vec<u64> = self.by_cursor.keys().copied().collect();
+        for cursor in cursors {
+            self.remove(cursor);
+            self.remember(cursor);
+        }
+    }
+
     /// Hold an incomplete upload and answer the block that continues it.
     fn keep_upload(
         &mut self,

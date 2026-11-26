@@ -46,8 +46,10 @@ use std::time::{Duration, Instant};
 use log::info;
 use om_protocol::Opcode;
 
+use crate::admin::Control;
 use crate::config::JoinRefusals;
 use crate::hosting::{FileAccount, Hosted};
+use crate::transfer::Transfers;
 use crate::views::SessionWithheld;
 
 /// The operations a joined transport may send: those FileMaker Pro was
@@ -130,15 +132,25 @@ struct State {
     files: HashMap<u32, FileGrant>,
 }
 
-/// What a session lets joined transports read, kept current by the
-/// transport that owns it.
+/// What a session lets joined transports read. It loses an authority in
+/// the same step in which the session does, never later: a file's account
+/// when the owning transport takes it away (`Grant::revoke`), everything
+/// when the session ends or the administrator disconnects it (`Grant::end`,
+/// or the owner's disconnect flag, which the rule reads). What it gains, a
+/// Login that succeeded, it publishes after the request (`Grant::publish`).
 pub(crate) struct Grant {
     id: u32,
     owner: Peer,
     /// The owning transport's address and port, for the log.
     owner_name: String,
+    /// The owning transport's controls: once the administrator has told it
+    /// to disconnect, the session's reads end, whatever its thread is doing.
+    control: Arc<Control>,
     state: RwLock<State>,
     seats: AtomicUsize,
+    /// What the transports that joined page for the session: let go when
+    /// it loses a file or ends, not at their next request.
+    joined: Mutex<Vec<Arc<Mutex<Transfers>>>>,
 }
 
 impl Grant {
@@ -165,9 +177,11 @@ impl Grant {
         &self.owner_name
     }
 
-    /// The session ended: what a transport holds for it can go.
+    /// The session ended, or the administrator told its transport to
+    /// disconnect: no transport reads through it, and what one holds for it
+    /// can go.
     pub fn ended(&self) -> bool {
-        self.read().ended
+        self.read().ended || self.control.disconnecting()
     }
 
     /// What [`decide`] needs of the session, and the file `file_id` as it
@@ -176,35 +190,92 @@ impl Grant {
         let state = self.read();
         let session = Session {
             owner: self.owner,
-            ended: state.ended,
+            ended: state.ended || self.control.disconnecting(),
         };
         (session, state.files.get(&file_id).cloned())
     }
 
-    /// A place among the session's [`MAX_JOINED`] joined transports, kept
-    /// until the [`Seat`] is dropped; `None` when they are all taken.
-    pub fn take_seat(self: &Arc<Self>) -> Option<Seat> {
+    /// The session's account of file `file_id` is going (Logout, a new
+    /// Login, the file opened again or closed): from now on no transport
+    /// reads the file through the session until a Login publishes one, and
+    /// what joined transports page of it goes. Called before the session
+    /// itself lets go of the account, so that the grant never holds it
+    /// longer (a read already admitted finishes, as one a moment earlier
+    /// would).
+    pub fn revoke(&self, file_id: u32) {
+        if let Some(file) = self.write().files.get_mut(&file_id) {
+            file.account = None;
+        }
+        for transfers in self.joined_transfers() {
+            lock(&transfers).drop_file(file_id);
+        }
+    }
+
+    /// End the grant: no transport reads through it from now on, and what
+    /// joined transports page for it goes. A flag and a release; the
+    /// session's own locks are its transport's to let go
+    /// (`Connection::end_session`).
+    pub fn end(&self) {
+        {
+            let mut state = self.write();
+            state.ended = true;
+            state.files.clear();
+        }
+        for transfers in self.joined_transfers() {
+            lock(&transfers).clear();
+        }
+    }
+
+    /// The transfer tables of the transports that joined, the list's lock
+    /// let go before any of them is taken.
+    fn joined_transfers(&self) -> Vec<Arc<Mutex<Transfers>>> {
+        lock(&self.joined).clone()
+    }
+
+    /// A place among the session's [`MAX_JOINED`] joined transports for a
+    /// transport paging into `transfers`, kept until the [`Seat`] is
+    /// dropped; `None` when they are all taken.
+    pub fn take_seat(self: &Arc<Self>, transfers: Arc<Mutex<Transfers>>) -> Option<Seat> {
         self.seats
             .try_update(Ordering::AcqRel, Ordering::Acquire, |taken| {
                 (taken < MAX_JOINED).then_some(taken + 1)
             })
-            .ok()
-            .map(|_| Seat(Arc::clone(self)))
+            .ok()?;
+        lock(&self.joined).push(Arc::clone(&transfers));
+        Some(Seat {
+            grant: Arc::clone(self),
+            transfers,
+        })
     }
 }
 
-/// A joined transport's place in a session ([`Grant::take_seat`]).
-pub(crate) struct Seat(Arc<Grant>);
+/// `mutex`'s value, also after a thread panicked holding it: each user
+/// replaces or removes whole entries.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A joined transport's place in a session ([`Grant::take_seat`]), and the
+/// table it pages the session's reads into.
+pub(crate) struct Seat {
+    grant: Arc<Grant>,
+    transfers: Arc<Mutex<Transfers>>,
+}
 
 impl Seat {
     pub fn grant(&self) -> &Arc<Grant> {
-        &self.0
+        &self.grant
+    }
+
+    pub fn transfers(&self) -> &Arc<Mutex<Transfers>> {
+        &self.transfers
     }
 }
 
 impl Drop for Seat {
     fn drop(&mut self) {
-        self.0.seats.fetch_sub(1, Ordering::AcqRel);
+        lock(&self.grant.joined).retain(|held| !Arc::ptr_eq(held, &self.transfers));
+        self.grant.seats.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -327,19 +398,28 @@ impl Joins {
         *self.limits.read().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Start the grant of the session `id` whose own transport is `owner`.
-    /// A session whose transport presented no certificate can be joined by
-    /// none: its grant is not listed.
-    pub fn open(&self, id: u32, owner: Peer, owner_name: &str) -> Arc<Grant> {
+    /// Start the grant of the session `id` whose own transport is `owner`,
+    /// told what the administrator asks by `control`. A session whose
+    /// transport presented no certificate can be joined by none: its grant
+    /// is not listed.
+    pub fn open(
+        &self,
+        id: u32,
+        owner: Peer,
+        owner_name: &str,
+        control: Arc<Control>,
+    ) -> Arc<Grant> {
         let grant = Arc::new(Grant {
             id,
             owner,
             owner_name: owner_name.to_owned(),
+            control,
             state: RwLock::new(State {
                 ended: false,
                 files: HashMap::new(),
             }),
             seats: AtomicUsize::new(0),
+            joined: Mutex::new(Vec::new()),
         });
         if let Some(certificate) = owner.certificate {
             self.grants().insert((certificate, id), Arc::clone(&grant));
@@ -351,11 +431,7 @@ impl Joins {
     /// read already under way finishes. Never panics (a session's end runs
     /// while a panic unwinds).
     pub fn close(&self, grant: &Grant) {
-        {
-            let mut state = grant.write();
-            state.ended = true;
-            state.files.clear();
-        }
+        grant.end();
         let Some(certificate) = grant.owner.certificate else {
             return;
         };
@@ -392,41 +468,73 @@ impl Joins {
         }
     }
 
-    /// Whether `address` (`admission::client_key`) may still meet a
-    /// refusal: when not, a join from it is refused unexamined.
-    pub fn may_try(&self, address: IpAddr) -> bool {
-        let limits = self.limits();
-        let mut allowances = self.allowances();
-        match allowances.get_mut(&address) {
-            Some(allowance) => {
-                *allowance = allowance.refilled(limits, Instant::now());
-                allowance.left > 0
-            }
-            None => limits.per_address > 0 && allowances.len() < MAX_ADDRESSES,
-        }
-    }
-
-    /// Count one refusal against `address`.
-    pub fn spend(&self, address: IpAddr) {
+    /// Take one attempt from `address`'s allowance (`admission::client_key`)
+    /// before a request naming a session is looked at; `false`, taking
+    /// nothing, when it has none left, and the request is then refused
+    /// unexamined. Deciding and charging are one step under one lock, so
+    /// that however many connections from the address try at once, they get
+    /// no more looks than the allowance. An address the table has no room
+    /// for is refused only once entries whose allowance has refilled are
+    /// reclaimed.
+    pub fn take_attempt(&self, address: IpAddr) -> bool {
         let limits = self.limits();
         let now = Instant::now();
         let mut allowances = self.allowances();
         if !allowances.contains_key(&address) && allowances.len() >= MAX_ADDRESSES {
             allowances
                 .retain(|_, allowance| allowance.refilled(limits, now).left < limits.per_address);
-        }
-        if !allowances.contains_key(&address) && allowances.len() >= MAX_ADDRESSES {
-            return;
+            if allowances.len() >= MAX_ADDRESSES {
+                return false;
+            }
         }
         let allowance = allowances.entry(address).or_insert(Allowance {
             left: limits.per_address,
             earned: now,
         });
         let refilled = allowance.refilled(limits, now);
+        if refilled.left == 0 {
+            *allowance = refilled;
+            return false;
+        }
         *allowance = Allowance {
-            left: refilled.left.saturating_sub(1),
+            left: refilled.left - 1,
             ..refilled
         };
+        true
+    }
+
+    /// Give back the attempt [`Joins::take_attempt`] took for a request the
+    /// rule admitted: a correct join costs its address nothing.
+    pub fn give_back(&self, address: IpAddr) {
+        let limits = self.limits();
+        if let Some(allowance) = self.allowances().get_mut(&address) {
+            allowance.left = allowance.left.saturating_add(1).min(limits.per_address);
+        }
+    }
+
+    /// End at once the reads of session `id`, whatever its own transport is
+    /// doing: the administrator disconnected it
+    /// (`ServerHandle::disconnect_client`). The session's transport ends it
+    /// and lets go of its locks when it gets there.
+    pub fn end(&self, id: u32) {
+        let grants: Vec<Arc<Grant>> = self
+            .grants()
+            .iter()
+            .filter(|((_, grant_id), _)| *grant_id == id)
+            .map(|(_, grant)| Arc::clone(grant))
+            .collect();
+        for grant in grants {
+            grant.end();
+        }
+    }
+
+    /// End at once the reads of every session: the server closes every
+    /// connection (`ServerHandle::close_connections`).
+    pub fn end_all(&self) {
+        let grants: Vec<Arc<Grant>> = self.grants().values().cloned().collect();
+        for grant in grants {
+            grant.end();
+        }
     }
 
     /// Log one refused join, with the transport, the operation, the id it
@@ -741,36 +849,49 @@ mod tests {
         );
     }
 
+    fn transfers() -> Arc<Mutex<Transfers>> {
+        Arc::new(Mutex::new(Transfers::new(
+            &crate::uploads::UploadMemory::new(usize::MAX),
+            &crate::transfer::DownloadMemory::new(usize::MAX),
+            "192.0.2.7".parse().unwrap(),
+        )))
+    }
+
     /// A session's joined transports are capped, a seat given back is
     /// free again, a grant is found only with its owner's certificate, and
-    /// a closed grant can be joined by no one.
+    /// a closed grant can be joined by no one; the administrator's
+    /// disconnect of the owning transport ends it at once.
     #[test]
     fn seats_are_capped_and_a_closed_grant_is_gone() {
         let joins = Joins::default();
         let owner = peer("192.0.2.7", Some(1));
-        let grant = joins.open(7, owner, "192.0.2.7:5555");
+        let control = Arc::new(Control::default());
+        let grant = joins.open(7, owner, "192.0.2.7:5555", Arc::clone(&control));
         let seats: Vec<Seat> = (0..MAX_JOINED)
-            .map(|_| grant.take_seat().unwrap())
+            .map(|_| grant.take_seat(transfers()).unwrap())
             .collect();
-        assert!(grant.take_seat().is_none());
+        assert!(grant.take_seat(transfers()).is_none());
         drop(seats);
-        assert!(grant.take_seat().is_some());
+        assert!(grant.take_seat(transfers()).is_some());
 
         let lookup = joins.lookup(Some([1; 32]), 7, 3);
         assert!(lookup.grant.is_some() && !lookup.session.unwrap().ended);
         // Another certificate finds nothing, as for an id no session has.
         assert!(joins.lookup(Some([2; 32]), 7, 3).grant.is_none());
         assert!(joins.lookup(None, 7, 3).grant.is_none());
+        control.disconnect_now();
+        assert!(joins.lookup(Some([1; 32]), 7, 3).session.unwrap().ended);
         joins.close(&grant);
         let lookup = joins.lookup(Some([1; 32]), 7, 3);
         assert!(lookup.grant.is_none() && lookup.session.is_none());
         assert!(grant.ended());
     }
 
-    /// An address's refusals are counted: when they are spent it may try
-    /// no more until it earns one back, and another address is not touched.
+    /// An address's attempts are counted: when they are spent it may try
+    /// no more until it earns one back, an admitted join gives its attempt
+    /// back, and another address is not touched.
     #[test]
-    fn an_address_that_spent_its_refusals_waits_for_one_more() {
+    fn an_address_that_spent_its_attempts_waits_for_one_more() {
         let joins = Joins::default();
         joins.set_limits(JoinRefusals {
             per_address: 2,
@@ -779,15 +900,115 @@ mod tests {
         });
         let (here, there): (IpAddr, IpAddr) =
             ("192.0.2.7".parse().unwrap(), "192.0.2.8".parse().unwrap());
-        assert!(joins.may_try(here));
-        joins.spend(here);
-        assert!(joins.may_try(here));
-        joins.spend(here);
-        assert!(!joins.may_try(here));
-        assert!(joins.may_try(there));
+        assert!(joins.take_attempt(here));
+        joins.give_back(here);
+        assert!(joins.take_attempt(here));
+        assert!(joins.take_attempt(here));
+        assert!(!joins.take_attempt(here));
+        assert!(joins.take_attempt(there));
         std::thread::sleep(Duration::from_millis(250));
-        assert!(joins.may_try(here));
-        joins.spend(here);
-        assert!(!joins.may_try(here));
+        assert!(joins.take_attempt(here));
+        assert!(!joins.take_attempt(here));
+    }
+
+    /// What a joined transport pages for a session goes when the session
+    /// loses the file and when it ends, not at the transport's next
+    /// request: the server's download budget gets it back at once.
+    #[test]
+    fn joined_transfers_go_when_the_session_loses_the_file() {
+        let downloads = crate::transfer::DownloadMemory::new(usize::MAX);
+        let table = Arc::new(Mutex::new(Transfers::new(
+            &crate::uploads::UploadMemory::new(usize::MAX),
+            &downloads,
+            "192.0.2.7".parse().unwrap(),
+        )));
+        let joins = Joins::default();
+        let grant = joins.open(
+            7,
+            peer("192.0.2.7", Some(1)),
+            "owner",
+            Arc::new(Control::default()),
+        );
+        let _seat = grant.take_seat(Arc::clone(&table)).unwrap();
+        let stream = om_hbam::OwnedNode::list(
+            [1],
+            (0..100u8)
+                .map(|n| om_hbam::OwnedNode::leaf([n], vec![7; 50]))
+                .collect(),
+        )
+        .to_wire()
+        .unwrap();
+        let mut handles = 0;
+        let mut page = |file_id: u32| {
+            let mut header = om_rctransaction::Header::new(Opcode::DownloadWithLock as u8);
+            header.file_id = file_id;
+            let owner = crate::transfer::Owner::of(&header);
+            let (_, resume) = lock(&table).start(owner, stream.clone(), 512, || {
+                handles += 1;
+                handles
+            });
+            assert!(resume.has_more(), "held for its next page");
+        };
+        page(3);
+        page(4);
+        let one = downloads.in_use() / 2;
+        grant.revoke(3);
+        assert_eq!(
+            downloads.in_use(),
+            one,
+            "file 3's page went, file 4's stayed"
+        );
+        grant.end();
+        assert_eq!(downloads.in_use(), 0);
+    }
+
+    /// The last attempt goes to one request, however many try at once: the
+    /// decision and the charge are one step.
+    #[test]
+    fn the_last_attempt_is_taken_once() {
+        let joins = Arc::new(Joins::default());
+        joins.set_limits(JoinRefusals {
+            per_address: 1,
+            refill: Duration::from_secs(3600),
+            per_connection: 16,
+        });
+        let here: IpAddr = "192.0.2.7".parse().unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let taken: usize = (0..8)
+            .map(|_| {
+                let (joins, barrier) = (Arc::clone(&joins), Arc::clone(&barrier));
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    joins.take_attempt(here)
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|thread| usize::from(thread.join().unwrap()))
+            .sum();
+        assert_eq!(taken, 1);
+        assert!(!joins.take_attempt(here));
+    }
+
+    /// A full table takes a new address once it has reclaimed the entries
+    /// whose allowance refilled.
+    #[test]
+    fn a_full_table_reclaims_refilled_addresses_before_refusing_one() {
+        let joins = Joins::default();
+        let limits = |refill| JoinRefusals {
+            per_address: 1,
+            refill,
+            per_connection: 16,
+        };
+        joins.set_limits(limits(Duration::from_secs(3600)));
+        for n in 0..MAX_ADDRESSES as u32 {
+            assert!(joins.take_attempt(IpAddr::from(n.to_be_bytes())));
+        }
+        let new: IpAddr = "2001:db8::1".parse().unwrap();
+        assert!(!joins.take_attempt(new), "a full table of spent addresses");
+        // Every entry earns its attempt back.
+        joins.set_limits(limits(Duration::from_millis(1)));
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(joins.take_attempt(new), "refilled entries reclaimed first");
     }
 }

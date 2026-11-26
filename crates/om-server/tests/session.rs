@@ -3253,3 +3253,84 @@ fn a_connection_is_closed_at_its_limit_of_refused_reads() {
     );
     assert!(guesser.closed());
 }
+
+/// An administrator's disconnect ends the session's joined reads at once,
+/// while its own connection's thread is still busy (here held in a server
+/// script it was asked to run) and has not ended the session.
+#[cfg(debug_assertions)]
+#[test]
+fn an_administrators_disconnect_ends_joined_reads_at_once() {
+    use om_protocol::{Resume, DEFAULT_MAX_RETURN};
+    let file = fixture::TempFile::new("joined-disconnect", &[fixture::slow(0.1)], true);
+    let mut gate = None;
+    let (port, handle) = server::start_configured_with_handle(&file, |server| {
+        let (server, held) = server.holding_scripts();
+        gate = Some(held);
+        server
+    });
+    let gate = gate.unwrap();
+    let client = Client::new();
+    let (mut owner, file_id) = client.logged_in(port);
+    let id = owner.identity().connection_id;
+    let read = download_records(file_id, Resume::start());
+    let mut joiner = client.transport(port);
+    assert!(joiner.perform(id, &read, DEFAULT_MAX_RETURN).is_ok());
+
+    // The owner's thread waits in its script request.
+    let busy = std::thread::spawn(move || {
+        let _ = owner.perform_script_on_server(3, "", true);
+        owner
+    });
+    assert!(gate.wait_admitted(std::time::Duration::from_secs(10)));
+    assert!(handle.disconnect_client(id));
+    assert_eq!(
+        joiner.raw(2, id, &read, DEFAULT_MAX_RETURN),
+        unknown_connection(),
+        "a joined read after the administrator's disconnect"
+    );
+    gate.open();
+    drop(busy.join().unwrap());
+}
+
+/// However many connections from one address try at once on its last
+/// attempt, one is looked at: the others are refused unexamined and
+/// closed.
+#[test]
+fn the_last_attempt_of_an_address_is_looked_at_once() {
+    use om_protocol::{Resume, DEFAULT_MAX_RETURN};
+    let file = fixture::TempFile::new("joined-last-attempt", &[], true);
+    let port = server::start_configured(&file, |server| {
+        server.with_connection_limits(om_server::ConnectionLimits {
+            join_refusals: om_server::JoinRefusals {
+                per_address: 1,
+                refill: std::time::Duration::from_secs(3600),
+                per_connection: u32::MAX,
+            },
+            ..om_server::ConnectionLimits::DEFAULT
+        })
+    });
+    let (owner, file_id) = Client::new().logged_in(port);
+    let unknown = owner.identity().connection_id.wrapping_add(1);
+    let read = download_records(file_id, Resume::start());
+    let stranger = Client::new();
+    let tries = 8;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(tries));
+    let still_open: usize = (0..tries)
+        .map(|_| {
+            let mut joiner = stranger.transport(port);
+            let (barrier, read) = (std::sync::Arc::clone(&barrier), read.clone());
+            std::thread::spawn(move || {
+                barrier.wait();
+                assert_eq!(
+                    joiner.raw(2, unknown, &read, DEFAULT_MAX_RETURN),
+                    unknown_connection()
+                );
+                usize::from(!joiner.closed())
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .sum();
+    assert_eq!(still_open, 1, "connections looked at, of {tries}");
+}

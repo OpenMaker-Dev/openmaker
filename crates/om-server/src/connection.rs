@@ -480,12 +480,12 @@ impl Session {
 }
 
 /// A session this transport joined ([`crate::joins`]): its place among
-/// the session's joined transports, the downloads it pages for it, and
-/// what it served, for the log.
+/// the session's joined transports, with the downloads it pages for it
+/// (`Seat::transfers`: its own, a download being continued on the transport
+/// that started it, and let go by the session when it loses the file or
+/// ends), and what it served, for the log.
 struct Joined {
     seat: Seat,
-    /// Its own: a download is continued on the transport that started it.
-    transfers: Transfers,
     /// Per file, the Login its transfers were started under.
     logins: HashMap<u32, u64>,
     /// Requests answered, by opcode.
@@ -711,6 +711,9 @@ impl Connection {
                 }
             };
             self.record(true, &msg);
+            // What it holds for sessions that ended goes at any message,
+            // not only at its reads (a client that only tickles too).
+            self.leave_ended();
             match parse_header(&msg).map(|(h, _)| h.msg_type) {
                 Ok(MsgType::Request) => {
                     // Requests held for files resumed since go first.
@@ -1230,9 +1233,12 @@ impl Connection {
                 outcome.notices.deliver(&file, &self.shared.mailboxes);
                 file.registrations().retain(|r| r.connection != connection);
             }
-            // The locks go first and wait for nothing else; then no other
-            // transport reads through the session (a read already under
-            // way finishes, as one that came a moment earlier would).
+            // The locks go first and wait for nothing this adds; then the
+            // grant closes: no other transport reads through the session (a
+            // read already under way finishes, as one a moment earlier
+            // would). An administrator's disconnect ended the grant at once
+            // already, from the administrator's thread (`Joins::end`), a
+            // flag that does not wait for this thread to get here.
             self.shared.joins.close(&session.grant);
             self.shared.mailboxes.close(connection);
             self.shared.clients.ended(connection);
@@ -1360,10 +1366,12 @@ impl Connection {
             callback: Callback::Unlocated,
             file_list: None,
             automatic_logins: Vec::new(),
-            grant: self
-                .shared
-                .joins
-                .open(connection_id, self.transport, &self.peer),
+            grant: self.shared.joins.open(
+                connection_id,
+                self.transport,
+                &self.peer,
+                Arc::clone(&self.control),
+            ),
         });
         self.shared
             .clients
@@ -1673,12 +1681,19 @@ impl Connection {
             debug!("{}: Perform for an unknown connection", self.peer);
             return Some(exception(id, "BAD_PARAM"));
         }
-        self.leave_ended();
-        // An address that used up its refusals is refused unexamined, so
-        // that a guess costs it the same whatever the id.
+        // Each request takes an attempt from its address's allowance before
+        // it is looked at, in one step, and gives it back when admitted: an
+        // address that used up its refusals is refused unexamined, however
+        // many of its connections try at once, so that a guess costs it the
+        // same whatever the id. (A connection's own count needs no such
+        // step: its requests are answered one at a time.)
         let address = crate::admission::client_key(self.address.ip());
-        let joined = if self.shared.joins.may_try(address) {
-            self.join(session_id, header)
+        let joined = if self.shared.joins.take_attempt(address) {
+            let joined = self.join(session_id, header);
+            if joined.is_ok() {
+                self.shared.joins.give_back(address);
+            }
+            joined
         } else {
             Err(Refusal::Allowance)
         };
@@ -1695,10 +1710,16 @@ impl Connection {
         let Some(joined) = self.joined.get_mut(&session_id) else {
             return Some(exception(id, "BAD_PARAM"));
         };
+        let mut transfers = joined
+            .seat
+            .transfers()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         // What it paged of the file under an earlier Login goes, as the
-        // session's own transfers go at Logout (`clear_file_session`).
+        // session's own transfers go at Logout (`clear_file_session`; the
+        // session's revoke of the file already let it go).
         if joined.logins.insert(header.file_id, file.login) != Some(file.login) {
-            joined.transfers.drop_file(header.file_id);
+            transfers.drop_file(header.file_id);
         }
         *joined.served.entry(header.opcode).or_default() += 1;
         shared.joins.served(
@@ -1723,7 +1744,7 @@ impl Connection {
         };
         let reader = Reader {
             file: Some(&open),
-            transfers: &mut joined.transfers,
+            transfers: &mut transfers,
         };
         let (txn, max_return) = (perform.transaction, perform.max_return);
         let result = if header.opcode == Opcode::DownloadWithLock as u8 {
@@ -1746,7 +1767,6 @@ impl Connection {
         *self.refused_joins.entry(opcode).or_default() += 1;
         self.refusals = self.refusals.saturating_add(1);
         let joins = &self.shared.joins;
-        joins.spend(crate::admission::client_key(self.address.ip()));
         if refusal == Refusal::Allowance || self.refusals >= joins.limits().per_connection {
             self.close_after_reply = true;
         }
@@ -1779,23 +1799,22 @@ impl Connection {
             if self.joined.len() >= joins::MAX_SESSIONS_PER_TRANSPORT {
                 return Err(Refusal::TooManySessions);
             }
-            let seat = grant.take_seat().ok_or(Refusal::Full)?;
+            let client = crate::admission::client_key(self.address.ip());
+            let transfers = Arc::new(Mutex::new(Transfers::new(
+                &self.shared.upload_memory,
+                &self.shared.download_memory,
+                client,
+            )));
+            let seat = grant.take_seat(transfers).ok_or(Refusal::Full)?;
             info!(
                 "{}: joined session 0x{session_id:08x} of {} for its reads",
                 self.peer,
                 grant.owner_name()
             );
-            let client = crate::admission::client_key(self.address.ip());
-            let transfers = Transfers::new(
-                &self.shared.upload_memory,
-                &self.shared.download_memory,
-                client,
-            );
             self.joined.insert(
                 session_id,
                 Joined {
                     seat,
-                    transfers,
                     logins: HashMap::new(),
                     served: Default::default(),
                 },
@@ -2223,6 +2242,9 @@ fn close_file(shared: &Shared, peer: &str, session: &mut Session, file_id: u32) 
 
 /// End authority for this file before logout or changing identities.
 fn clear_file_session(shared: &Shared, session: &mut Session, file_id: u32) {
+    // First, before the session lets go of the account: the session's other
+    // transports lose it in the same step, never later (`joins::Grant`).
+    session.grant.revoke(file_id);
     if let Some(file) = session.open.get_mut(&file_id) {
         // What the old account was served withheld is its own.
         withheld(file).records.clear();
@@ -4739,6 +4761,60 @@ fn exception(request_id: u32, name: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file's account leaves the session's read grant in the same step
+    /// as it leaves the session (`clear_file_session`: Logout, a new Login
+    /// before its password is checked, the file opened again or closed),
+    /// not when the request ends: a joined read admitted after it is
+    /// refused. Tested on the grant right after the step, as a Login cannot
+    /// be held open in its password check.
+    #[test]
+    fn a_files_account_leaves_the_grant_with_the_session() {
+        use crate::scripts::fixture;
+        let file = fixture::TempFile::new("grant-revoke", &[], true);
+        let shared = crate::scripts::tests::shared(&file);
+        let hosted = crate::scripts::tests::hosted(&shared);
+        let address: IpAddr = "127.0.0.1".parse().unwrap();
+        let owner = Peer::new(address, Some([1; 32]));
+        let grant = shared
+            .joins
+            .open(7, owner, "owner", Arc::new(Control::default()));
+        let mut session = Session {
+            connection_id: 7,
+            key: [0; 16],
+            name: "owner".into(),
+            open: HashMap::new(),
+            transfers: Transfers::new(&shared.upload_memory, &shared.download_memory, address),
+            temp: HashMap::new(),
+            client: address,
+            version: String::new(),
+            address,
+            access: None,
+            callback: Callback::Unlocated,
+            file_list: None,
+            automatic_logins: Vec::new(),
+            grant,
+        };
+        session.open.insert(
+            hosted.id,
+            OpenFile {
+                hosted: Arc::clone(&hosted),
+                nonce: 0,
+                account: hosted.account(fixture::ACCOUNT),
+                close: CloseStep::None,
+                withheld: Default::default(),
+                login: 1,
+            },
+        );
+        session.publish();
+        let joined_read = || {
+            let lookup = shared.joins.lookup(Some([1; 32]), 7, hosted.id);
+            joins::decide(&lookup.inputs(Opcode::DownloadWithLock as u8, owner))
+        };
+        assert_eq!(joined_read(), Ok(()));
+        clear_file_session(&shared, &mut session, hosted.id);
+        assert_eq!(joined_read(), Err(Refusal::NotLoggedIn));
+    }
 
     /// A query source's head of a node is what its node would give, read
     /// from the view's head and never from a subtree, for every path of a

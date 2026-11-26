@@ -1014,6 +1014,9 @@ impl ServerHandle {
         let Some(address) = self.shared.clients.disconnect(id) else {
             return false;
         };
+        // The session's other transports read nothing more from now on,
+        // whatever its own is doing (`crate::joins`).
+        self.shared.joins.end(id);
         info!("{address}: disconnecting session 0x{id:08x} for the administrator");
         if let Some(client) = label {
             self.shared
