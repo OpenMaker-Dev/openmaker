@@ -414,6 +414,7 @@ impl OpenMakerApp {
             uncommitted,
             title: self.w.title.clone(),
             toolbar: self.w.show_toolbar,
+            toolbar_locked: self.w.toolbar_locked,
             menubar: self.w.menubar,
             zoom: self.w.document.zoom.percent(),
             zoom_locked: self.w.zoom_locked,
@@ -2395,7 +2396,7 @@ impl OpenMakerApp {
             // 26.0.3 does (#696).
             session.blank_start = first && !session.shows_layout(layout);
             session.current = state.index;
-            self.request_layout(ctx, Some(key));
+            self.request_layout_with_origin(ctx, Some(key), true);
         } else if data_changed || refreshed {
             session.current = state.index;
             let key = session.refresh();
@@ -2601,6 +2602,7 @@ impl OpenMakerApp {
         self.w.hidden = state.hidden;
         self.w.title = state.title;
         self.w.show_toolbar = state.toolbar;
+        self.w.toolbar_locked = state.toolbar_locked;
         self.w.menubar = state.menubar;
         self.w.document.zoom.set_percent(state.zoom);
         self.w.zoom_locked = state.zoom_locked;

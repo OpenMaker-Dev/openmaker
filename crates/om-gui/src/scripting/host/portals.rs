@@ -1784,6 +1784,7 @@ impl WorkerHost<'_> {
                 .copied()
                 .map(om_data::rules::RecordNumber::Window),
             prepared: draft.prepared.as_ref().map(|prepared| prepared.id),
+            single_field_step: false,
         };
         let preview_over = |host: &mut Self, write: &om_data::ScriptWrite| match &context {
             Some(pending) => host.p().preview_new_record_over(write, pending),

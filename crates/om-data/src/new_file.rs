@@ -214,6 +214,12 @@ pub fn create(path: &Path) -> Result<Created, CreateError> {
 /// region (`LC_ALL`, else `LC_TIME`, else `LANG`, as `en_US.UTF-8`), or
 /// English (United States) for one OpenMaker has no record of.
 pub fn system_locale() -> Locale {
+    configured_system_locale().unwrap_or_else(Locale::en_us)
+}
+
+/// The configured system locale. An unsupported locale stays unknown.
+/// Without a locale override, OpenMaker uses its English default.
+pub fn configured_system_locale() -> Option<Locale> {
     let tag = ["LC_ALL", "LC_TIME", "LANG"]
         .iter()
         .find_map(|v| std::env::var(v).ok().filter(|t| !t.is_empty()))
@@ -223,7 +229,10 @@ pub fn system_locale() -> Locale {
         .next()
         .unwrap_or_default()
         .replace('_', "-");
-    Locale::for_tag(&tag).unwrap_or_else(Locale::en_us)
+    match tag.as_str() {
+        "" | "C" | "POSIX" => Some(Locale::en_us()),
+        _ => Locale::for_tag(&tag),
+    }
 }
 
 /// `mInternalCreation` for a file made `unix_seconds` after 1970: the

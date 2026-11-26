@@ -1449,7 +1449,13 @@ impl OpenMakerApp {
     /// by a partly applied save edits nothing until it is settled.
     pub(super) fn refresh_capabilities(&mut self, ctx: &egui::Context) {
         if let Some(layout_id) = self.w.session.as_ref().and_then(|s| s.layout) {
-            self.request(ctx, Request::RecordCapabilities { layout_id });
+            self.request(
+                ctx,
+                Request::RecordCapabilities {
+                    layout_id,
+                    scripted: false,
+                },
+            );
         }
     }
 

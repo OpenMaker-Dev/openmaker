@@ -47,6 +47,9 @@ pub enum ListingFailure {
 pub struct ListingError {
     pub failure: ListingFailure,
     pub message: String,
+    /// The host's certificate could not be verified: what to ask the user
+    /// about it ([`UntrustedHost`]).
+    pub untrusted: Option<Box<UntrustedHost>>,
 }
 
 impl ListingError {
@@ -54,7 +57,50 @@ impl ListingError {
         Self {
             failure,
             message: message.into(),
+            untrusted: None,
         }
+    }
+
+    /// The host could not be reached because its certificate could not be
+    /// verified.
+    pub fn untrusted(host: UntrustedHost) -> Self {
+        Self {
+            failure: ListingFailure::Unreachable,
+            message: host.message(),
+            untrusted: Some(Box::new(host)),
+        }
+    }
+}
+
+/// A host whose certificate could not be verified and was not permitted,
+/// as the user is asked whether to connect anyway: why, what the
+/// certificate says, and the SHA-256 fingerprint a permit keeps
+/// (docs/mobile-client.md).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UntrustedHost {
+    pub host: String,
+    pub port: u16,
+    /// Why the certificate could not be verified, as a sentence.
+    pub reason: String,
+    /// The certificate's subject and issuer (`CN=..., O=...`) and its
+    /// validity (`2027-11-25 20:22:31 UTC`); empty when they do not read.
+    pub subject: String,
+    pub issuer: String,
+    pub valid_from: String,
+    pub valid_until: String,
+    pub fingerprint: [u8; 32],
+    /// Another certificate was permitted for this host: this one replaced
+    /// it.
+    pub changed: bool,
+}
+
+impl UntrustedHost {
+    /// What a failure to connect to the host says.
+    pub fn message(&self) -> String {
+        format!(
+            "Could not make a trusted connection to {}:{}. {}",
+            self.host, self.port, self.reason
+        )
     }
 }
 
@@ -76,11 +122,13 @@ impl From<ListingError> for DataError {
     /// FileMaker's error 1 (user canceled) for a canceled listing and 3
     /// (command unavailable) for a host without a readable list.
     fn from(error: ListingError) -> Self {
-        match error.failure {
+        let mut data = match error.failure {
             ListingFailure::Canceled => DataError::with_code(1, error.message),
             ListingFailure::Unsupported => DataError::with_code(3, error.message),
             _ => DataError::new(error.message),
-        }
+        };
+        data.untrusted = error.untrusted;
+        data
     }
 }
 

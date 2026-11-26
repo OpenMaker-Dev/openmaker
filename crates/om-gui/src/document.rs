@@ -1197,6 +1197,7 @@ impl DocumentState {
                 row: portals::enclosing(layout, object.id).zip(row),
                 key: Some((field, object.id)),
                 object: false,
+                departure_only: false,
             });
         }
     }
@@ -1236,6 +1237,7 @@ impl DocumentState {
             object,
             row: None,
             key: None,
+            departure_only: false,
         });
     }
 
@@ -1384,7 +1386,13 @@ impl DocumentState {
         from: Option<egui::Id>,
         find: bool,
     ) -> TabMove {
-        let mut stops: Vec<&TabStop> = self.painted_stops.iter().collect();
+        // A stop Tab only leaves from is not among them: from it, Tab goes
+        // to the first (Shift-Tab: the last).
+        let mut stops: Vec<&TabStop> = self
+            .painted_stops
+            .iter()
+            .filter(|stop| !stop.departure_only)
+            .collect();
         if stops.iter().any(|stop| stop.place > 0) {
             stops.retain(|stop| stop.place > 0);
         }
@@ -3308,15 +3316,7 @@ fn show_document(
     state.resolve_first();
     state.resolve_tab(ui, session, state.find.is_some());
     state.settle_completions(ui);
-    if let Some(error) = state.choice_refusal.take() {
-        actions.push(Action::RefuseChoice(error));
-    }
-    // Edit… saves the record first, as FileMaker Pro 26.0.3 does (#869):
-    // the window commits a changed record before the action goes on.
-    if let Some(list) = state.edit_list.take() {
-        actions.push(Action::EditValueList(list));
-    }
-    show_other_dialog(ui, session, state);
+    take_requests(ui, session, state, actions);
     if view == ViewMode::List {
         // Zoomed as Form view is: its parts and records in the document's
         // zoom layer, in the layout's own coordinates.
@@ -3476,6 +3476,20 @@ fn show_document(
             frame.hold(ui);
         });
     state.scroll.finish(frame, &output);
+}
+
+/// What the layout's fields asked for in the last frame: a refused choice,
+/// Edit… on a value list, and Other…'s dialog, which shows here.
+fn take_requests(ui: &Ui, session: &Session, state: &mut DocumentState, actions: &mut Vec<Action>) {
+    if let Some(error) = state.choice_refusal.take() {
+        actions.push(Action::RefuseChoice(error));
+    }
+    // Edit… saves the record first, as FileMaker Pro 26.0.3 does (#869):
+    // the window commits a changed record before the action goes on.
+    if let Some(list) = state.edit_list.take() {
+        actions.push(Action::EditValueList(list));
+    }
+    show_other_dialog(ui, session, state);
 }
 
 /// An object whose hide condition OpenMaker cannot decide
@@ -3866,6 +3880,96 @@ fn show_list(
         );
     }
     ui.spacing_mut().item_spacing.y = spacing;
+}
+
+/// Browse's Table view of a drawn layout: the found set's `grid` between the
+/// parts the layout's Table View Properties include, the top navigation and
+/// header parts above it and the footer and bottom navigation parts below,
+/// stacked at the window's bottom, as FileMaker Pro 26.1.1 places them
+/// (layout-model.md 4.2). They show the current record, and their web
+/// viewers one page each that follows it, as List view's header and footer
+/// do.
+///
+/// The grid paints first: a field focus asked by name finds its cell
+/// before a part's copy. A part's objects come after it, over it where
+/// they reach past their part (an open popover). Tab goes through the
+/// table's cells, as it does without the parts, and from a part's field
+/// that has the keyboard to the first cell (Shift-Tab: the last); New
+/// Record's focus goes to the table too [I: whether Pro's Tab reaches
+/// the parts' fields is unmeasured].
+pub(crate) fn show_table(
+    ui: &mut Ui,
+    session: &Session,
+    document: &RenderLayout,
+    state: &mut DocumentState,
+    calc: Option<&Evaluator<'_>>,
+    actions: &mut Vec<Action>,
+    grid: impl FnOnce(&mut Ui, &mut DocumentState, &mut Vec<Action>),
+) {
+    use om_layout::PartKind;
+    take_requests(ui, session, state, actions);
+    let layout = &document.layout;
+    let included = |part: &&om_layout::Part| {
+        layout
+            .def
+            .as_ref()
+            .is_some_and(|def| def.table_view_includes(part.kind()))
+    };
+    let parts: Vec<&om_layout::Part> = layout.parts.iter().filter(included).collect();
+    let below = |part: &om_layout::Part| {
+        matches!(part.kind(), PartKind::Footer | PartKind::BottomNavigation)
+    };
+    let area = ui.max_rect();
+    let width = finite_size(layout.width()).max(area.width());
+    let mut placed = Vec::with_capacity(parts.len());
+    let mut top = area.top();
+    for part in parts.iter().filter(|part| !below(part)) {
+        let height = finite_size(part.height);
+        placed.push((
+            *part,
+            Rect::from_min_size(pos2(area.left(), top), vec2(width, height)),
+        ));
+        top += height;
+    }
+    let footer: f32 = parts
+        .iter()
+        .filter(|part| below(part))
+        .map(|part| finite_size(part.height))
+        .sum();
+    // The grid takes what the parts leave, however little.
+    let grid_bottom = (area.bottom() - footer).max(top);
+    let mut bottom = grid_bottom;
+    for part in parts.iter().filter(|part| below(part)) {
+        let height = finite_size(part.height);
+        placed.push((
+            *part,
+            Rect::from_min_size(pos2(area.left(), bottom), vec2(width, height)),
+        ));
+        bottom += height;
+    }
+    let rows = Rect::from_x_y_ranges(area.x_range(), top..=grid_bottom);
+    ui.scope_builder(UiBuilder::new().max_rect(rows), |ui| {
+        grid(ui, state, actions);
+    });
+    let focus_first = std::mem::take(&mut state.focus_first);
+    let stops = state.tab_stops.len();
+    for (part, rect) in placed {
+        paint_part(
+            ui,
+            session,
+            document,
+            state,
+            calc,
+            part,
+            rect,
+            session.current,
+            actions,
+        );
+    }
+    for stop in &mut state.tab_stops[stops..] {
+        stop.departure_only = true;
+    }
+    state.focus_first = focus_first;
 }
 
 /// Why List view shows no sub-summary parts, above its records.
@@ -6202,6 +6306,9 @@ fn paint_object_repetition(
                     Some(NO_ACCESS)
                 } else if state.web_viewers.len() >= MAX_WEB_VIEWERS {
                     Some("Web viewer: this window shows too many web viewers.")
+                } else if !crate::web_viewer::fits(to_window(ui, rect), ui.ctx().pixels_per_point())
+                {
+                    Some("Web viewer: too large to show.")
                 } else {
                     state.web_note
                 };
@@ -7414,6 +7521,9 @@ struct TabStop {
     /// shows, which a Tab aims at (`tab_goal`), as its widget may change
     /// when its portal is read again.
     key: Option<(RelatedField, u64)>,
+    /// A stop Tab leaves from but never goes to: a field of a part around
+    /// Table view's table (`show_table`).
+    departure_only: bool,
 }
 
 /// A checkbox or radio button set as `paint_object` found it.

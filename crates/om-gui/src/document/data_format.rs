@@ -5,9 +5,10 @@
 //! interpret, show the value unchanged.
 
 use std::borrow::Cow;
+use std::sync::LazyLock;
 
-use om_data::calc::locale::DateOrder;
-use om_data::calc::{Ctx, Date, Number, Time, Timestamp, ValueType};
+use om_data::calc::locale::{DateOrder, Language};
+use om_data::calc::{Ctx, Date, Locale, Number, Time, Timestamp, ValueType};
 use om_layout::{DataFormat, DateFormat, NumberFormat, TimeFormat};
 
 /// What a field of type `kind` shows for `value`, the field's text in the
@@ -175,8 +176,24 @@ fn format_date(date: Date, format: &DateFormat, cx: &Ctx<'_>) -> Option<String> 
                 .collect::<Option<Vec<_>>>()?;
             Some(elements.join(&format.separator.to_string()))
         }
+        9 => {
+            static SYSTEM: LazyLock<Option<Locale>> =
+                LazyLock::new(om_data::new_file::configured_system_locale);
+            long_system_date(date, SYSTEM.as_ref()?)
+        }
         _ => None,
     }
+}
+
+/// Long System Date has the system's order and punctuation. The native
+/// comparison measured only month-first English.
+fn long_system_date(date: Date, system: &Locale) -> Option<String> {
+    if system.language != Language::English || system.date_order != DateOrder::MonthDayYear {
+        return None;
+    }
+    let (year, month, day) = date.ymd();
+    let month = &system.month_names[month as usize - 1];
+    Some(format!("{month} {day}, {year:04}"))
 }
 
 /// One `DateElement` (file-metadata.md 2.3) with the style's padding.
@@ -532,6 +549,34 @@ mod tests {
         format.separator = '.';
         assert_eq!(date("11.4.2017", &format, &cx).as_deref(), Some("11.4.17"));
         assert!(date("not a date", &format, &cx).is_none());
+    }
+
+    #[test]
+    fn system_long_date_and_hour_minute_presets_show_measured_forms() {
+        let date = Date::from_ymd(2026, 11, 26).unwrap();
+        assert_eq!(
+            long_system_date(date, &Locale::en_us()).as_deref(),
+            Some("November 26, 2026")
+        );
+        assert!(long_system_date(date, &Locale::de_de()).is_none());
+
+        let locale = Locale::en_us();
+        let style = TimeFormat {
+            flags: 0x0083,
+            separator: ':',
+            minute_second_style: 1,
+            am: " AM".into(),
+            pm: " PM".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            time("4:31:08 AM", &style, &cx(&locale)).as_deref(),
+            Some("4:31 AM")
+        );
+        assert_eq!(
+            time("3:04:05 PM", &style, &cx(&locale)).as_deref(),
+            Some("3:04 PM")
+        );
     }
 
     #[test]
