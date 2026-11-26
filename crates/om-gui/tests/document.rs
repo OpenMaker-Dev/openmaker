@@ -633,8 +633,8 @@ fn document() -> RenderLayout {
 /// The card with only its title and name fields, and on its right a web
 /// viewer over a picture (a globe drawn for this test). The viewer is
 /// anchored left, top and bottom (layout-model.md 5.7): the window's spare
-/// height stretches it, and the record-edits bar takes some of that height
-/// back. The picture keeps its place. Without a live view the viewer shows
+/// height stretches it, and a shorter window takes that height back. The
+/// picture keeps its place. Without a live view the viewer shows
 /// OpenMaker's own note over the picture.
 fn web_viewer_card(layout: &mut Layout) {
     const GLOBE: u64 = 0x51;
@@ -1982,7 +1982,9 @@ fn zoomed_form_keeps_chrome_size_and_edits_the_clicked_field() {
 
 /// A manual capture of the web viewer's own note (#391): one window, at
 /// rest and with its record being edited, which takes no bar (#871), so
-/// the anchored viewer keeps its size over the picture.
+/// the anchored viewer keeps its size over the picture; then a shorter
+/// window, where the viewer is back at its stored height and its middle
+/// is over the picture; then that window taller again at 200%.
 /// `OM_SCREENSHOTS=<folder> cargo test -p om-gui --test document
 /// web_viewer_note -- --ignored`
 #[test]
@@ -2008,4 +2010,16 @@ fn web_viewer_note_over_a_picture_at_rest_and_while_editing() {
         "web-viewer-note-record-edits",
         "the same window with its record being edited",
     );
+    app.set_size(egui::vec2(1060.0, 520.0));
+    shot(
+        &mut app,
+        "web-viewer-note-short-window",
+        "a shorter window: the viewer at its stored height",
+    );
+    app.set_size(egui::vec2(1060.0, 1000.0));
+    for _ in 0..2 {
+        common::click(&mut app, "View");
+        common::click(&mut app, "Zoom In");
+    }
+    shot(&mut app, "web-viewer-note-zoom-200", "a taller window at 200%");
 }
