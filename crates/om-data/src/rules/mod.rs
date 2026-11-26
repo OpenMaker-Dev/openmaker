@@ -3613,10 +3613,13 @@ impl RecordPlan {
     /// Reject a creation path whose stored calculation behavior is unknown
     /// before a create or preview reserves an ID or a serial number.
     pub fn check_creation_context(&self, context: &WriteContext) -> Result<(), DataError> {
-        if matches!(
-            context.record_number,
-            Some(RecordNumber::LocalNewRecord(_) | RecordNumber::LocalSortedNewRecord { .. })
-        ) {
+        let unsorted = matches!(context.record_number, Some(RecordNumber::LocalNewRecord(_)));
+        let local_position = unsorted
+            || matches!(
+                context.record_number,
+                Some(RecordNumber::LocalSortedNewRecord { .. })
+            );
+        if unsorted {
             return Ok(());
         }
         for (field, expression) in self.fields.values().filter_map(|field| {
@@ -3626,13 +3629,14 @@ impl RecordPlan {
                 .filter(|_| field.stored_calculation())
                 .map(|expression| (field, expression))
         }) {
-            let reason = if matches!(
-                expression.formula.polish,
-                Expr::Get(selector::RECORD_NUMBER)
-            ) {
-                "a stored record number requires ordinary New Record in an unsorted local window."
+            let reason = if !local_position
+                && matches!(
+                    expression.formula.polish,
+                    Expr::Get(selector::RECORD_NUMBER)
+                ) {
+                "a stored record number requires ordinary New Record in a local window with a known insertion position."
             } else if expression.evaluate_triggers.is_some() {
-                "a stored Evaluate requires ordinary New Record in a local window."
+                "a stored Evaluate requires ordinary New Record in an unsorted local window."
             } else {
                 continue;
             };
@@ -4781,6 +4785,27 @@ impl RecordPlan {
             let globals = self.session_globals(*id, expression, &session)?;
             let mut remaining = session.calculation_budget();
             let result = (|| {
+                if field.options.options & ALWAYS_EVALUATE == 0
+                    && expression
+                        .evaluate_triggers
+                        .as_ref()
+                        .is_some_and(|triggers| {
+                            let empty = |id| row.get(id).is_none_or(String::is_empty);
+                            triggers.iter().all(empty)
+                                && expression
+                                    .dependencies
+                                    .difference(triggers)
+                                    .any(|id| !empty(id))
+                        })
+                {
+                    return Err(RunError::Unread(DataError::with_code(
+                        error::UNAVAILABLE,
+                        format!(
+                            "Field {}: evaluating with all listed fields empty and an unlisted field filled is unsupported.",
+                            field.name
+                        ),
+                    )));
+                }
                 if field.options.options & ALWAYS_EVALUATE == 0
                     && self.all_inputs_empty(
                         expression,
@@ -9404,6 +9429,16 @@ mod tests {
                 .code,
             Some(error::UNAVAILABLE),
         );
+        environment.context.record_number = Some(RecordNumber::LocalSortedNewRecord {
+            position: 2,
+            after: 1,
+        });
+        assert_eq!(
+            plan.check_creation_context(&environment.context)
+                .unwrap_err()
+                .code,
+            Some(error::UNAVAILABLE),
+        );
         environment.context.record_number = Some(RecordNumber::LocalNewRecord(1));
         let blank = BTreeMap::new();
         let created = plan
@@ -9434,6 +9469,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(decoded(&recomputed, 4).as_deref(), Some("Pat Kim edited"));
+        let cleared = plan
+            .prepare(
+                WriteMode::Update,
+                &existing,
+                &BTreeMap::from([(1, None), (2, None)]),
+                &environment,
+            )
+            .err()
+            .unwrap();
+        assert_eq!(cleared.code, Some(error::UNAVAILABLE));
 
         assert!(RecordPlan::from_file_schema(&table, &tree, &file).is_err());
         let dynamic_code = code_for(Expr::Field(om_formula::Field::new(OCCURRENCE, 3, false)));
