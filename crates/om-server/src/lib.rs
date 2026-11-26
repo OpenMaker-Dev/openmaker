@@ -111,7 +111,6 @@ mod admission;
 mod anchored;
 mod authoring;
 mod backups;
-mod cert;
 pub mod config;
 mod connection;
 #[cfg(feature = "admin-console")]

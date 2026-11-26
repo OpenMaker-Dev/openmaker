@@ -5,9 +5,10 @@
 //! interpret, show the value unchanged.
 
 use std::borrow::Cow;
+use std::sync::LazyLock;
 
-use om_data::calc::locale::DateOrder;
-use om_data::calc::{Ctx, Date, Number, Time, Timestamp, ValueType};
+use om_data::calc::locale::{DateOrder, Language};
+use om_data::calc::{Ctx, Date, Locale, Number, Time, Timestamp, ValueType};
 use om_layout::{DataFormat, DateFormat, NumberFormat, TimeFormat};
 
 /// What a field of type `kind` shows for `value`, the field's text in the
@@ -175,8 +176,37 @@ fn format_date(date: Date, format: &DateFormat, cx: &Ctx<'_>) -> Option<String> 
                 .collect::<Option<Vec<_>>>()?;
             Some(elements.join(&format.separator.to_string()))
         }
+        code @ 3..=6 => english_named_date(date, cx.locale, code),
+        9 => {
+            static SYSTEM: LazyLock<Option<Locale>> =
+                LazyLock::new(om_data::new_file::configured_system_locale);
+            english_named_date(date, SYSTEM.as_ref()?, 4)
+        }
         _ => None,
     }
+}
+
+/// The measured month-first English presets. The caller supplies the
+/// selected locale because fixed and system presets can differ.
+fn english_named_date(date: Date, locale: &Locale, code: u8) -> Option<String> {
+    if locale.language != Language::English || locale.date_order != DateOrder::MonthDayYear {
+        return None;
+    }
+    let (year, month, day) = date.ymd();
+    let months = if matches!(code, 3 | 5) {
+        &locale.month_abbreviations
+    } else {
+        &locale.month_names
+    };
+    let month = &months[month as usize - 1];
+    let date_text = format!("{month} {day}, {year:04}");
+    let weekdays = match code {
+        5 => &locale.day_abbreviations,
+        6 => &locale.day_names,
+        _ => return Some(date_text),
+    };
+    let weekday = &weekdays[date.weekday() as usize - 1];
+    Some(format!("{weekday}, {date_text}"))
 }
 
 /// One `DateElement` (file-metadata.md 2.3) with the style's padding.
@@ -532,6 +562,56 @@ mod tests {
         format.separator = '.';
         assert_eq!(date("11.4.2017", &format, &cx).as_deref(), Some("11.4.17"));
         assert!(date("not a date", &format, &cx).is_none());
+    }
+
+    #[test]
+    fn system_long_date_and_hour_minute_presets_show_measured_forms() {
+        let date = Date::from_ymd(2026, 11, 26).unwrap();
+        assert_eq!(
+            english_named_date(date, &Locale::en_us(), 4).as_deref(),
+            Some("November 26, 2026")
+        );
+        assert!(english_named_date(date, &Locale::de_de(), 4).is_none());
+
+        let locale = Locale::en_us();
+        let style = TimeFormat {
+            flags: 0x0083,
+            separator: ':',
+            minute_second_style: 1,
+            am: " AM".into(),
+            pm: " PM".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            time("4:31:08 AM", &style, &cx(&locale)).as_deref(),
+            Some("4:31 AM")
+        );
+        assert_eq!(
+            time("3:04:05 PM", &style, &cx(&locale)).as_deref(),
+            Some("3:04 PM")
+        );
+    }
+
+    #[test]
+    fn fixed_named_date_presets_use_the_measured_month_and_weekday() {
+        let locale = Locale::en_us();
+        for (code, expected) in [
+            (3, "Dec 25, 2024"),
+            (4, "December 25, 2024"),
+            (5, "Wed, Dec 25, 2024"),
+            (6, "Wednesday, December 25, 2024"),
+        ] {
+            let format = DateFormat {
+                flags: code << 24,
+                ..Default::default()
+            };
+            assert_eq!(
+                date("12/25/2024", &format, &cx(&locale)).as_deref(),
+                Some(expected)
+            );
+            let german = Locale::de_de();
+            assert!(date("25.12.2024", &format, &cx(&german)).is_none());
+        }
     }
 
     #[test]

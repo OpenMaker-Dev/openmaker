@@ -7,7 +7,7 @@
 //! or Edit > Clear deletes it ([`DeletedObjects`]); only Save Layout stores
 //! them.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f32::consts::FRAC_PI_2;
 
 use egui::emath::{GuiRounding as _, TSTransform};
@@ -28,6 +28,8 @@ pub(crate) use history::DraftEdit;
 
 const PART_STRIP_WIDTH: f32 = 22.0;
 const PASTEBOARD_MARGIN: f32 = 48.0;
+// Approximate the contrast of Run C's blue rectangle on the right pasteboard.
+const PASTEBOARD_ARTWORK_OPACITY: f32 = 0.55;
 
 const CANNOT_MOVE_SELECTION: &str = "This selection includes an object OpenMaker cannot move. \
     No objects were moved.";
@@ -383,6 +385,8 @@ pub(crate) struct CanvasState {
     identity: Option<(String, String, Option<u32>)>,
     geometry: Option<LayoutGeometry>,
     history: history::History,
+    front_panels: BTreeMap<u64, u64>,
+    panel_generation: u64,
     new_text_editor: Option<egui::Id>,
     selected: Selection,
     scroll_to_selected: bool,
@@ -770,6 +774,12 @@ impl CanvasState {
             .as_ref()
             .filter(|geometry| index < geometry.objects.len() + self.new_fields.len())
             .map(|_| index);
+        if let Some((contents, object)) = session
+            .panel_contents()
+            .zip(index.and_then(|index| self.geometry.as_ref()?.objects.get(index)))
+        {
+            contents.reveal(object.key, &mut self.front_panels);
+        }
         self.selected.click(index, shift);
         self.scroll_to_selected = !self.selected.0.is_empty();
     }
@@ -788,10 +798,17 @@ impl CanvasState {
         let Some(geometry) = &self.geometry else {
             return;
         };
-        self.selected.replace(
-            selectable_frames(geometry, &self.new_fields, &self.moved, &self.deleted)
-                .map(|(index, _)| index),
-        );
+        let shown = |object: &ObjectGeom| {
+            if session
+                .panel_contents()
+                .is_some_and(|contents| !contents.visible(object.key, &self.front_panels))
+            {
+                return None;
+            }
+            shown_frame(object, &self.moved, &self.deleted)
+        };
+        self.selected
+            .replace(selectable_frames(geometry, &self.new_fields, shown).map(|(index, _)| index));
         self.scroll_to_selected = false;
     }
 
@@ -843,7 +860,7 @@ impl CanvasState {
         let Geometry::Loaded(geometry) = &session.geometry else {
             return 0;
         };
-        if !self.matches(session) || self.geometry.as_ref() != Some(geometry) {
+        if !self.selection_matches(session, geometry) {
             return 0;
         }
         self.selected.0.len()
@@ -981,7 +998,7 @@ impl CanvasState {
         let Geometry::Loaded(geometry) = &session.geometry else {
             return None;
         };
-        if !self.matches(session) || self.geometry.as_ref() != Some(geometry) {
+        if !self.selection_matches(session, geometry) {
             return None;
         }
         geometry.objects.get(self.selected.single()?)
@@ -995,13 +1012,25 @@ impl CanvasState {
         })
     }
 
+    fn selection_matches(&self, session: &Session, geometry: &LayoutGeometry) -> bool {
+        self.matches(session)
+            && self.panel_generation == session.layout_generation
+            && self.geometry.as_ref() == Some(geometry)
+    }
+
     pub(crate) fn synchronize(&mut self, session: &Session) {
         let geometry = match &session.geometry {
             Geometry::Loaded(geometry) => Some(geometry),
             Geometry::Loading | Geometry::Unavailable => None,
         };
         let moved = !self.matches(session);
-        if moved || self.geometry.as_ref() != geometry {
+        let revisited = self.panel_generation != session.layout_generation;
+        let geometry_changed = self.geometry.as_ref() != geometry;
+        if moved || revisited {
+            self.front_panels.clear();
+            self.panel_generation = session.layout_generation;
+        }
+        if moved || geometry_changed {
             self.clear_history();
             self.drag = None;
             self.field_drag = None;
@@ -1053,6 +1082,8 @@ impl CanvasState {
                     self.retyping = None;
                 }
             }
+        }
+        if moved || geometry_changed || revisited {
             self.clear_selection();
             self.scroll_to_selected = false;
         }
@@ -1073,6 +1104,7 @@ pub(crate) fn show(
 ) {
     let incoming = egui::DragAndDrop::payload::<crate::layout_objects::FieldDrag>(ui.ctx())
         .filter(|drag| drag.matches(session, fields));
+    let contents = session.panel_contents();
     ui.painter()
         .rect_filled(ui.max_rect(), CornerRadius::ZERO, theme::PASTEBOARD);
 
@@ -1099,6 +1131,8 @@ pub(crate) fn show(
             let (design, scroll) = document.design_surface(session);
             zoom::show(ui, ui.available_size() / factor, factor, |ui| {
                 let unsaved = state.unsaved();
+                let visible =
+                    |key| contents.is_none_or(|panels| panels.visible(key, &state.front_panels));
                 let dropped = draw(
                     ui,
                     geometry,
@@ -1140,6 +1174,7 @@ pub(crate) fn show(
                     },
                     // Frozen, the canvas still paints but takes no drag or click.
                     !frozen,
+                    &visible,
                     design.as_ref(),
                     scroll,
                 );
@@ -1193,6 +1228,7 @@ pub(crate) fn show(
                     resize: &mut None,
                 },
                 false,
+                &|_| true,
                 None,
                 &mut document.scroll,
             );
@@ -1287,6 +1323,7 @@ fn draw(
     new_width: &mut Option<NewWidth>,
     edges: PartEdges<'_>,
     selectable: bool,
+    visible: &dyn Fn(u64) -> bool,
     design: Option<&crate::document::design::Surface<'_>>,
     scroll_state: &mut crate::document::scroll::Scroll,
 ) -> Option<NewField> {
@@ -1402,15 +1439,7 @@ fn draw(
                     .unwrap_or(theme::CONTENT_BG),
             );
             if let Some(design) = design {
-                for (part, &(key, _)) in geometry.parts.iter().zip(edges.keys) {
-                    let rect = Rect::from_min_size(
-                        origin + vec2(0.0, part.top as f32),
-                        vec2(width, part.height as f32),
-                    );
-                    if rect.is_finite() && rect.is_positive() && ui.clip_rect().intersects(rect) {
-                        design.paint_part(ui, key, rect);
-                    }
-                }
+                design.paint_parts(ui, surface);
             }
             let strip = Rect::from_min_max(area.min, pos2(origin.x, area.bottom()));
             painter.rect_filled(strip, CornerRadius::ZERO, theme::BAR_BG);
@@ -1679,7 +1708,12 @@ fn draw(
                     *selection_drag = None;
                 }
             }
-            let shown = |object: &ObjectGeom| shown_frame(object, moved, deleted);
+            let shown = |object: &ObjectGeom| {
+                if !visible(object.key) {
+                    return None;
+                }
+                shown_frame(object, moved, deleted)
+            };
             let mut marquee = None;
             if let Some(response) = &box_response {
                 let primary = egui::PointerButton::Primary;
@@ -1719,7 +1753,7 @@ fn draw(
                                 selected,
                                 rect.translate(-origin.to_vec2()),
                                 contained,
-                                selectable_frames(geometry, new.fields, moved, deleted),
+                                selectable_frames(geometry, new.fields, shown),
                             );
                             *scroll_to_selected = false;
                         }
@@ -1744,14 +1778,15 @@ fn draw(
                 selected.click(index, ui.input(|i| i.modifiers.shift));
             }
 
+            let right_pasteboard =
+                Rect::from_min_max(surface.right_top(), pos2(area.right(), surface.bottom()));
+            let artwork_bounds = surface.union(right_pasteboard);
             let mut artwork = ui.new_child(
                 egui::UiBuilder::new()
                     .id_salt("design_artwork")
-                    .max_rect(surface),
+                    .max_rect(artwork_bounds),
             );
-            // Keep the current draft frame for layout and hit testing, but
-            // keep the paint inside the part strip and the width divider.
-            artwork.set_clip_rect(ui.clip_rect().intersect(surface));
+            artwork.set_clip_rect(ui.clip_rect().intersect(artwork_bounds));
             for (index, object) in geometry.objects.iter().enumerate() {
                 let Some(frame) = shown(object) else {
                     continue;
@@ -1774,7 +1809,7 @@ fn draw(
                     .map(|name| name.find("::").map_or(name, |at| &name[at..]))
                     .unwrap_or(&object.kind_name);
                 let draft_words = texts.words.objects.get(&object.key).map(String::as_str);
-                let painted = surface.intersects(rect)
+                let painted = artwork_bounds.intersects(rect)
                     && design.is_some_and(|design| {
                         design.paint_object(
                             &mut artwork,
@@ -1784,7 +1819,7 @@ fn draw(
                             draft_words,
                         )
                     });
-                if !painted || changed {
+                if !painted || changed || !artwork_bounds.contains_rect(rect) {
                     if rect.width() < 1.0 || rect.height() < 1.0 {
                         painter.line_segment([rect.min, rect.max], outline);
                     } else {
@@ -1874,6 +1909,15 @@ fn draw(
                         });
                     }
                 }
+            }
+            if design.is_some() && right_pasteboard.is_positive() {
+                // Fade the finished artwork in one pass. Crossing objects
+                // keep one stacking position, text label and hit target.
+                painter.rect_filled(
+                    right_pasteboard,
+                    CornerRadius::ZERO,
+                    theme::PASTEBOARD.gamma_multiply(1.0 - PASTEBOARD_ARTWORK_OPACITY),
+                );
             }
             let retyped = texts.retyping.as_ref().and_then(|r| {
                 let object = geometry.objects.iter().find(|o| o.key == r.key)?;
@@ -2064,17 +2108,14 @@ fn shown_frame(
 fn selectable_frames<'a>(
     geometry: &'a LayoutGeometry,
     fields: &'a [NewField],
-    moved: &'a MovedObjects,
-    deleted: &'a DeletedObjects,
+    shown: impl Fn(&ObjectGeom) -> Option<GeomRect> + 'a,
 ) -> impl Iterator<Item = (usize, Rect)> + 'a {
     let drawn = |frame| object_rect(Pos2::ZERO, &frame);
     geometry
         .objects
         .iter()
         .enumerate()
-        .filter_map(move |(index, object)| {
-            Some((index, drawn(shown_frame(object, moved, deleted)?)))
-        })
+        .filter_map(move |(index, object)| Some((index, drawn(shown(object)?))))
         .chain(fields.iter().enumerate().map(move |(index, field)| {
             (
                 geometry.objects.len() + index,
@@ -3083,6 +3124,140 @@ mod tests {
             assert_eq!(app.state().0.moved(), &moves);
         }
         capture_frame(&mut app, "selected.png");
+    }
+
+    #[test]
+    fn only_the_front_panel_takes_canvas_input_until_objects_reveals_another() {
+        use egui_kittest::kittest::Queryable;
+        use om_layout::{Layout, LayoutObject, ObjectStore, TabObject};
+
+        let node = |id, object_type, parent, children| LayoutObject {
+            id,
+            object_type,
+            parent,
+            children,
+            ..Default::default()
+        };
+        let store = ObjectStore {
+            root: vec![1],
+            objects: vec![
+                LayoutObject {
+                    tab: Some(TabObject {
+                        default_panel_key: 4,
+                        current_panel_key: 2,
+                        ..Default::default()
+                    }),
+                    ..node(1, 11, None, vec![2, 4])
+                },
+                node(2, 12, Some(1), vec![3]),
+                node(3, 1, Some(2), vec![]),
+                // Notes contains a two-panel slide control. Its second
+                // slide holds the other field at the very same canvas point.
+                node(4, 12, Some(1), vec![6]),
+                node(6, 16, Some(4), vec![7, 8]),
+                node(7, 17, Some(6), vec![]),
+                node(8, 17, Some(6), vec![5]),
+                node(5, 1, Some(8), vec![]),
+            ],
+            ..Default::default()
+        };
+        let mut session = Session::new(
+            Target {
+                host: "test".into(),
+                file: "test.fmp12".into(),
+                local: None,
+            },
+            25,
+        );
+        session.layout = Some(1);
+        session.geometry = Geometry::Loaded(LayoutGeometry {
+            width: 250.0,
+            height: 140.0,
+            objects: [(3, "Summary field"), (5, "Notes field")]
+                .into_iter()
+                .map(|(key, caption)| ObjectGeom {
+                    key,
+                    field_name: Some(caption.into()),
+                    ..object([25.0, 40.0, 145.0, 68.0])
+                })
+                .collect(),
+            ..Default::default()
+        });
+        session
+            .accept_render_layout(
+                1,
+                Ok(Some(om_data::RenderLayout {
+                    layout: Layout {
+                        id: 1,
+                        objects: store,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })),
+            )
+            .unwrap();
+
+        let mut app = egui_kittest::Harness::builder()
+            .with_size(vec2(350.0, 200.0))
+            .with_context_setup(crate::theme::install)
+            .build_ui_state(
+                |ui, (state, document)| {
+                    show(
+                        ui,
+                        &session,
+                        LayoutTool::Selection,
+                        &[],
+                        state,
+                        false,
+                        document,
+                    );
+                },
+                (CanvasState::default(), DocumentState::default()),
+            );
+        let label = |index, field: &str| {
+            object_label(
+                index,
+                &ObjectGeom {
+                    field_name: Some(field.into()),
+                    ..object([0.0; 4])
+                },
+            )
+        };
+        let first = label(0, "Summary field");
+        let second = label(1, "Notes field");
+        app.get_by_label(&first).click();
+        app.run_steps(2);
+        assert_eq!(app.state().0.selected_index(), Some(0));
+        assert!(app.query_by_label(&second).is_none());
+
+        app.state_mut().0.select_object(&session, 1, false);
+        app.run_steps(2);
+        assert!(app.query_by_label(&first).is_none());
+        assert!(app.query_by_label(&second).is_some());
+        app.state_mut().0.select_all(&session);
+        assert_eq!(app.state().0.selected_index(), Some(1));
+        assert!(!app.state().0.unsaved());
+
+        // Changing layouts in Browse does not run the Layout canvas between
+        // the two selections. The old panel still must not follow us back.
+        let mut state = std::mem::take(&mut app.state_mut().0);
+        drop(app);
+        let Geometry::Loaded(geometry) = &session.geometry else {
+            unreachable!()
+        };
+        let crate::session::RenderState::Loaded(render) = &session.render else {
+            unreachable!()
+        };
+        let (geometry, render) = (geometry.clone(), (**render).clone());
+        session.select_layout(2);
+        session.select_layout(1);
+        session.accept_geometry(1, Ok(Some(geometry))).unwrap();
+        session.accept_render_layout(1, Ok(Some(render))).unwrap();
+        assert!(state.selected_object(&session).is_none());
+        state.synchronize(&session);
+        assert!(state.selected_index().is_none());
+        state.select_all(&session);
+        assert_eq!(state.selected_index(), Some(0));
     }
 
     #[test]

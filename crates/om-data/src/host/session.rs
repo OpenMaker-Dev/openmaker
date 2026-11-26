@@ -967,6 +967,11 @@ pub fn now(utc_offset: i64) -> Result<Timestamp, CalcError> {
         .ok_or(CalcError::INVALID_DATE)
 }
 
+/// A creation rule samples the same UTC clock a script's Get reads.
+pub(crate) fn utc_milliseconds() -> Result<Value, CalcError> {
+    utc_since_year_one(1_000).ok_or(CalcError::INVALID_DATE)?
+}
+
 /// Microseconds from 1/1/0001 (the timestamp epoch) to now, in `unit`s.
 fn utc_since_year_one(unit: i128) -> Option<Result<Value, CalcError>> {
     let epoch = Date::from_ymd(1970, 1, 1)?.to_timestamp().micros();

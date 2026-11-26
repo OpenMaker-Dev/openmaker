@@ -977,7 +977,7 @@ s33)", says otherwise. Answers that only a hosted file gives are marked
 | 43 | RecordAccess | `2` | `2` [=] | `0` | FileMaker Pro 6.3 (O1); server s31 |
 | 44 | HighContrastState | `0` | `0` [=] | empty | FileMaker Pro 6.3 (O1); server s31 |
 | 45 | SystemAppearance | `Aqua` | empty [=] | empty | FileMaker Pro 6.3 (O1); server s31 |
-| 46 | StatusAreaState | `1` toolbar shown, `0` hidden | `1` [=] | empty | FileMaker Pro 6.3 (O1); server s31 |
+| 46 | StatusAreaState | `1` shown, `0` hidden, `2` shown and locked, `3` hidden and locked | `1` [=] | empty | FileMaker Pro 6.3 (O1) and [26.1.1 toolbar comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1040#issuecomment-7188552787); server s31 |
 | 47 | LayoutViewState | the window's view: `0` form, `1` list, `2` table | `0` / `1` [=] | empty | FileMaker Pro 6.3 (O3); server s31 |
 | 48 | WindowName | the window's name: New Window's or Set Window Title's, else the file's; each window its own | `work` [=] | empty | Claris reference / spec; server s31, s35 (13.25) |
 | 49 | WindowHeight | outer height in points (`900`; `848` after hiding the toolbar) | `480` [=] | empty | FileMaker Pro 6.3 (O1); server s31 |
@@ -1360,6 +1360,17 @@ The last three full runs agreed on everything except:
   System Events placed the window at screen point 166, 150. After 10, 40
   it was at 76, 70.
 - Object bounds use the same origin.
+- [O, FileMaker Pro 26.1.1] With a secondary display above the primary,
+  ScreenWidth and ScreenHeight use the display containing the window.
+  WindowDesktopWidth and WindowDesktopHeight use that display's visible
+  area, excluding its menu bar and Dock where those occupy space.
+  WindowLeft and WindowTop continue to use the primary visible area's
+  upper-left origin. A negative Top moved a window to the upper
+  display and remained negative in the readback. A move back to the
+  primary kept an explicitly requested frame extending beyond its visible
+  edge. The values were read after each step and redraw. Same-step
+  changes and the initial display selection at file open were unmeasured.
+  [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1109#issuecomment-7191868818).
 
 #### O1 Session, window and machine (Contact Details, toolbar shown)
 
@@ -3196,9 +3207,11 @@ Implementation decisions (OpenMaker):
   (script-runtime.md 11).
   `SystemStorageAvailable` is the free space of the volume holding the
   hosted file (`statvfs`).
-- **Desktop window.** The desktop area is the X11 work area
-  (`_NET_WORKAREA` of the current desktop; the whole screen without one),
-  the frame the window system's outer rectangle, and the content area the
+- **Desktop window.** The desktop dimensions are the current display's
+  visible area on macOS, with positions relative to the primary work
+  area. On X11 they use `_NET_WORKAREA` of the current desktop;
+  without a platform work area they use the whole screen. The frame is the
+  window system's outer rectangle and the content area is the
   window's central panel below the status toolbar and layout bar.
   Move/Resize Window moves the frame to the given point of the desktop
   area and makes the outer frame the given size; hiding the toolbar gives
