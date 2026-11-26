@@ -614,7 +614,7 @@ pub(crate) struct ExternalFiles {
     /// a source opens successfully, its binding stays for the session.
     variable_occurrences: BTreeMap<u64, String>,
     variable_targets: BTreeMap<u64, Target>,
-    file_variables: om_data::calc::eval::Variables,
+    file_variables: std::sync::Arc<om_data::calc::eval::Variables>,
     /// Each imported occurrence (client-only id): its file's index in
     /// [`Self::files`] and its id there, as of the last [`Self::hydrate`].
     imported: BTreeMap<u64, (usize, u64)>,
@@ -723,10 +723,14 @@ impl ExternalFiles {
 
     pub(crate) fn set_file_variables(&mut self, variables: &om_data::calc::eval::Variables) {
         if self.local.is_some() && self.file_variables.revision() != variables.revision() {
-            self.file_variables = variables.clone();
+            self.file_variables = std::sync::Arc::new(variables.clone());
             self.read
                 .retain(|occurrence| !self.variable_occurrences.contains_key(occurrence));
         }
+    }
+
+    pub(crate) fn file_variables(&self) -> om_data::rules::WriteFileVariables {
+        om_data::rules::WriteFileVariables::new(std::sync::Arc::clone(&self.file_variables))
     }
 
     pub(crate) fn local_source_variable(&self, name: &str) -> Option<&str> {
@@ -1147,7 +1151,7 @@ impl ExternalFiles {
         self.resolved.clear();
         self.variable_targets.clear();
         self.variable_occurrences.clear();
-        self.file_variables.clear();
+        self.file_variables = Default::default();
         self.failed.clear();
         self.not_hosted.clear();
         self.refused.clear();

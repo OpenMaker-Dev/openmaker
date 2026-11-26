@@ -171,6 +171,7 @@ impl OpenMakerApp {
         embedded: bool,
         parent: NativeParent,
     ) {
+        self.viewport_layer = ui.layer_id();
         let chain = self.card_chain(id);
         let top = *chain.last().expect("one window");
         let dialog = self.blocking_dialog(id);

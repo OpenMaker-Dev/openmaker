@@ -611,10 +611,18 @@ list shows them.
   client disconnected with notice that has closed its files is not listed,
   as FileMaker Server lists it no more.
 
-A snapshot takes only the registry's lock, and sizes come from the file
-system, so it never waits for a file that a request is using. The `appType`
-byte is passed on as it is; the console maps FileMaker's application types
-(re/calc-functions.md 6) to the client families of re 7.
+A snapshot takes the client registry's lock once and each file's slot
+lock briefly, and sizes come from the file system, so it never waits for a
+file that a request is using. A row reads its file's size from the file
+system with nothing of the file held, before it looks at the file's slot,
+and the look keeps nothing of the file, so a size read from a mount that
+does not answer keeps no close from finishing (`CLOSED` waits until
+nothing holds the file, below). A row shows the size only if the slot
+served the same load of the file before and after the read: a file whose
+close finished, or that was opened again, during the read has no size in
+that snapshot. The `appType` byte is passed on as it is; the console maps
+FileMaker's application types (re/calc-functions.md 6) to the client
+families of re 7.
 
 **Disconnect.** `ServerHandle::disconnect_client` marks the connection and
 returns at once. The mark is checked at every read of the client's socket,

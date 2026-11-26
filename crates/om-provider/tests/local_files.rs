@@ -2968,6 +2968,64 @@ fn starter_fields_read_as_the_fields_tab_lists_them() {
 }
 
 #[test]
+fn local_new_record_auto_enters_a_file_variable_at_creation() {
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
+    use om_data::calc::{eval::Variables, Value};
+    use om_data::ScriptWrite;
+
+    const MARKER: u64 = 40;
+    let folder = Folder::new("file-variable-auto-entry");
+    let path = folder.file("Sample.fmp12", PASSWORD, |root| {
+        fixture::add_field(root, TABLE, MARKER, "Marker", 1, 1, 0, 0x8, 0);
+        fixture::add_formula(
+            root,
+            &fixture::names(),
+            (TABLE, OCCURRENCE),
+            MARKER,
+            5,
+            "$$Marker",
+        );
+    });
+    let mut provider = opened(&path);
+    let mut variables = Variables::new();
+    let new_record = ScriptWrite {
+        layout: LAYOUT as u32,
+        ..Default::default()
+    };
+    let mut expected = Vec::new();
+    for (value, text) in [("alpha", Some("alpha")), ("beta", Some("beta")), ("", None)] {
+        variables.set("$$Marker", 1, Value::text(value));
+        provider.set_file_variables(&variables);
+        let preview = provider.preview_new_record(&new_record).unwrap().unwrap();
+        assert_eq!(preview.values.get(&MARKER).and_then(Option::as_deref), text);
+
+        // A preview keeps the file variable it read, as it keeps the
+        // creation clock, when the window later commits the row.
+        variables.set("$$Marker", 1, Value::text("later"));
+        provider.set_file_variables(&variables);
+        let record = provider
+            .write_record(&ScriptWrite {
+                prepared: Some(preview.id),
+                cells: [(NAME, Some("Note".into()))].into(),
+                ..new_record.clone()
+            })
+            .unwrap();
+        expected.push((record.id as u64, text));
+    }
+    provider.close();
+
+    let file = om_hbam::HbamFile::open(&path).unwrap();
+    let rows = file.records(TABLE).unwrap();
+    for (id, value) in expected {
+        let row = rows.iter().find(|row| row.id == id).unwrap();
+        assert_eq!(row.text(MARKER).transpose().unwrap().as_deref(), value);
+        if value.is_none() {
+            assert!(!row.cells.contains_key(&MARKER));
+        }
+    }
+}
+
+#[test]
 fn new_record_auto_enters_the_session_globals() {
     use fixture::{LAYOUT, NAME, OCCURRENCE};
     use om_data::calc::Value;
