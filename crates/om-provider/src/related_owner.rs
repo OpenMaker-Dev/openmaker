@@ -268,7 +268,12 @@ impl NativeProvider {
         let Some(route) = self.external.route(table) else {
             return BTreeSet::new();
         };
-        let Ok(RoutedEdits::Offered(names, table)) = self.routed_edits(route, here) else {
+        let Ok(RoutedEdits::Offered {
+            fields: names,
+            table,
+            ..
+        }) = self.routed_edits(route, here)
+        else {
             return BTreeSet::new();
         };
         self.external
@@ -329,17 +334,40 @@ impl NativeProvider {
                     .into_iter()
                     .collect(),
             };
+            // A refused plan's globals count only while it waits (below).
+            let mut globals = crate::typed_globals(
+                &file,
+                &table,
+                &tree,
+                planned.as_ref().ok(),
+                planned.is_err(),
+            );
+            globals.retain(|name| {
+                table.field_by_name(name).is_some_and(|field| {
+                    owner.account_info.set_access.as_ref().is_none_or(|access| {
+                        access.modifies(
+                            &om_hbam::slot::uint_segment(wire),
+                            &om_hbam::slot::uint_segment(field.id),
+                        )
+                    })
+                })
+            });
             Ok(Some((
                 planned.ok().map(|plan| plan.editable_fields()),
+                globals,
                 reads,
                 table,
             )))
         })?;
-        let Some((planned, reads, table)) = answer else {
+        let Some((planned, globals, reads, table)) = answer else {
             return Ok(RoutedEdits::ReadOnly);
         };
-        if let Some(names) = planned {
-            return Ok(RoutedEdits::Offered(names, table));
+        if let Some(fields) = planned {
+            return Ok(RoutedEdits::Offered {
+                fields,
+                globals,
+                table,
+            });
         }
         let waits = self.external.on_demand()
             && reads.iter().any(|own| {
@@ -350,13 +378,17 @@ impl NativeProvider {
         if !waits {
             return Ok(RoutedEdits::Refused);
         }
-        let names = table
+        let fields = table
             .fields
             .iter()
             .filter(|field| om_data::rules::user_editable(field))
             .map(|field| field.name.clone())
             .collect();
-        Ok(RoutedEdits::Offered(names, table))
+        Ok(RoutedEdits::Offered {
+            fields,
+            globals,
+            table,
+        })
     }
 
     /// [`DataProvider::write_record`] of a related record of imported table
@@ -1919,7 +1951,14 @@ fn routed_write(
 /// the fields offered with the owning table; or its plan is refused.
 pub(crate) enum RoutedEdits {
     ReadOnly,
-    Offered(BTreeSet<String>, om_hbam::Table),
+    Offered {
+        /// The record's fields its plan lets a user edit.
+        fields: BTreeSet<String>,
+        /// The globals Browse takes typing into (`typed_globals`) that the
+        /// owner's account may modify.
+        globals: BTreeSet<String>,
+        table: om_hbam::Table,
+    },
     Refused,
 }
 
