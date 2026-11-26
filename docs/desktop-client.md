@@ -2601,8 +2601,11 @@ rotation. Appearance shows known
 normal-state fill, border and text colors and the base font from Browse's
 style cascade. These properties are read-only. Appearance can show swatches
 for sides that draw no border, and Styles can list names the cascade skips
-([#886](https://github.com/OpenMaker-Dev/openmaker/issues/886)). Autosizing,
-names and tooltips are unavailable. Data Formatting shows OpenMaker's
+([#886](https://github.com/OpenMaker-Dev/openmaker/issues/886)). Position
+shows the stored name of a single decoded object as read-only, or a dash
+when the object has no name. Renaming and object tooltips are unavailable
+([#887](https://github.com/OpenMaker-Dev/openmaker/issues/887)). Autosizing
+information is unavailable. Data Formatting shows OpenMaker's
 read-only summary of the decoded number, date, time or graphic format for
 a stored field whose type is known to the window. Its wording has not been
 compared with FileMaker Pro's Inspector
