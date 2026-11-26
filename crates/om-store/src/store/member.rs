@@ -66,6 +66,8 @@ pub struct Recovered {
     pub committed: u64,
     /// The entry the recovered state is of.
     pub published: u64,
+    /// The log's largest entry after `base`: its index and payload size.
+    pub largest: Option<(u64, u64)>,
 }
 
 impl Store {
@@ -103,10 +105,15 @@ impl Store {
         let values = *self.log.state().values();
         let base = self.log.base();
         let mut terms = Vec::new();
+        let mut largest: Option<(u64, u64)> = None;
         if self.log.durable().index > base.index {
             for e in self.log.read(base.index + 1).map_err(WriteError::Log)? {
                 let e = e.map_err(WriteError::Log)?;
                 terms.push(e.term);
+                let size = e.payload.len() as u64;
+                if largest.is_none_or(|(_, s)| size > s) {
+                    largest = Some((e.index, size));
+                }
             }
         }
         Ok(Recovered {
@@ -121,6 +128,7 @@ impl Store {
             terms,
             committed: self.log.committed(),
             published: self.published.position.index,
+            largest,
         })
     }
 

@@ -181,6 +181,10 @@ pub enum Plant {
     PublishLeaderCommitted,
     /// A leader serves before its `empty` entry is committed and published.
     ServeBeforeEmpty,
+    /// While appends follow one another, a refusal counts only when it
+    /// answers the last append sent (round 2's rule, which can leave a
+    /// follower behind for as long as writes go on).
+    RefusalLatestOnly,
 }
 
 /// An entry's place: its index and term. Raft compares logs by their last.
@@ -269,6 +273,24 @@ pub enum Body {
         matched: Option<u64>,
         hint: u64,
     },
+    /// The append `echo` names carried entry `index`, of `size` payload
+    /// bytes, past the largest entry this member takes (`limit`, its
+    /// [`Config::max_entry`]): it took nothing of it.
+    AppendTooLarge {
+        echo: Echo,
+        index: u64,
+        size: u64,
+        limit: u64,
+    },
+}
+
+/// An entry a follower refused for its size: its index, its payload's size
+/// and the largest the follower takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Oversize {
+    pub index: u64,
+    pub size: u64,
+    pub limit: u64,
 }
 
 impl Body {
@@ -299,6 +321,9 @@ impl Body {
                     && echo.prev <= MAX_INDEX
                     && matched.is_none_or(|m| m <= MAX_INDEX)
                     && *hint <= MAX_INDEX
+            }
+            Body::AppendTooLarge { echo, index, .. } => {
+                echo.term <= MAX_TERM && echo.prev <= MAX_INDEX && *index <= MAX_INDEX
             }
         }
     }
@@ -373,15 +398,19 @@ struct Progress {
     /// The last entry any append sent to it checked: a success counts no
     /// further.
     sent: u64,
-    /// The entry the last append sent to it named: a refusal counts only
-    /// when it answers that one.
+    /// The entry the last append sent to it named.
     probe: Option<u64>,
-    /// Whether it is being probed: after a refusal, or before the leader
-    /// heard a success from it, one append at a time without moving `next`
-    /// on, each heartbeat repeating it, so that the append out now is
-    /// always the one naming `next - 1`. A success ends it, and appends
-    /// follow one another again.
+    /// Whether it is probed (section 7.1): after a refusal, or before the
+    /// leader heard a success from it, one append at a time without moving
+    /// `next` on, each heartbeat repeating it, so that the append out now
+    /// always names `next - 1`; only the refusal of that append moves it.
+    /// A success that reaches the probe's entry ends it. Otherwise appends
+    /// follow one another (replicating), and a refusal of any of them puts
+    /// the follower back to probing.
     probing: bool,
+    /// An entry it refused for its size: nothing more is sent to it but
+    /// empty heartbeats until it starts again.
+    blocked: Option<Oversize>,
     /// The leader's tick when the follower last answered: a new leader
     /// takes every follower as heard when it begins.
     heard_at: u64,
@@ -395,6 +424,7 @@ impl Progress {
             sent: 0,
             probe: None,
             probing: true,
+            blocked: None,
             heard_at: now,
         }
     }
@@ -442,6 +472,9 @@ pub struct Core {
     starts: BTreeMap<ServerId, u64>,
     /// The leader's `empty` entry of its term.
     empty: u64,
+    /// The leader's base when it took office: no append of its term named
+    /// an entry before it (the base only moves on).
+    floor: u64,
     pending: Option<Pending>,
     behind: BTreeSet<ServerId>,
     rng: u64,
@@ -484,6 +517,7 @@ impl Core {
             progress: BTreeMap::new(),
             starts: BTreeMap::new(),
             empty: 0,
+            floor: 0,
             pending: None,
             behind: BTreeSet::new(),
             rng,
@@ -567,6 +601,17 @@ impl Core {
     /// and stay behind.
     pub fn behind(&self) -> &BTreeSet<ServerId> {
         &self.behind
+    }
+
+    /// The followers that refused an entry for its size, with the entry: a
+    /// member given a lower [`Config::max_entry`] than the leader's log
+    /// needs. Nothing more is sent to them but empty heartbeats until they
+    /// start again.
+    pub fn blocked(&self) -> Vec<(ServerId, Oversize)> {
+        self.progress
+            .iter()
+            .filter_map(|(id, p)| p.blocked.map(|b| (*id, b)))
+            .collect()
     }
 
     /// The term of the entry at `index`, when the log knows it.
@@ -735,6 +780,7 @@ impl Core {
             .map(|m| (m, Progress::new(next, 0)))
             .collect();
         self.behind.clear();
+        self.floor = self.base.index;
         self.terms.push(self.term);
         self.empty = self.last().index;
         out.push(Action::Propose {
@@ -812,9 +858,7 @@ impl Core {
     }
 
     /// The append to `to` that named `prev` went with the entries through
-    /// `last`: as many as fit in an append's bytes. When `last` is `prev`
-    /// although it was to carry entries, the next one is too large to
-    /// send ([`Config::max_entry`]), and the follower is behind.
+    /// `last`: as many as fit in an append's bytes.
     pub fn sent(&mut self, to: ServerId, prev: u64, last: u64) {
         let Some(p) = self.progress.get_mut(&to) else {
             return;
@@ -825,14 +869,6 @@ impl Core {
         p.sent = p.sent.max(last);
         if p.next > last + 1 {
             p.next = last + 1;
-        }
-    }
-
-    /// The next entry `to` needs is past the settings' largest: it can be
-    /// had only by a state transfer.
-    pub fn oversized(&mut self, to: ServerId) {
-        if self.progress.contains_key(&to) {
-            self.behind.insert(to);
         }
     }
 
@@ -864,15 +900,17 @@ impl Core {
             return;
         };
         let next = p.next.max(base.index + 1);
-        let behind = self.behind.contains(&to);
-        if behind && !heartbeat {
+        // Behind or blocked: empty heartbeats only. Probed: one append out
+        // at a time, a heartbeat repeating it.
+        let empty = self.behind.contains(&to) || p.blocked.is_some();
+        if (empty || (p.probing && p.probe.is_some())) && !heartbeat {
             return;
         }
         let prev_index = next - 1;
         let Some(prev_term) = self.term_at(prev_index) else {
             return;
         };
-        let last = if behind {
+        let last = if empty {
             prev_index
         } else {
             durable.min(next.saturating_add(batch) - 1)
@@ -923,8 +961,9 @@ impl Core {
         if m.to != self.cfg.me || m.from == self.cfg.me || !self.members().contains(&m.from) {
             return out;
         }
-        // A term or an index past its bound: malformed, nothing changes.
-        if m.term > MAX_TERM || !m.body.bounded() {
+        // A malformed message changes nothing, the sender's start count
+        // and the term included (section 7.1).
+        if !self.well_formed(&m) {
             return out;
         }
         // Every member passes over a message of an earlier start of its
@@ -1028,13 +1067,107 @@ impl Core {
                 matched,
                 hint,
             } => self.on_reply(&mut out, m.from, echo, matched, hint),
+            Body::AppendTooLarge {
+                echo,
+                index,
+                size,
+                limit,
+            } => {
+                let oversize = Oversize { index, size, limit };
+                self.on_too_large(&mut out, m.from, echo, oversize);
+            }
         }
         out
     }
 
-    /// A leader takes a follower's answer to the append it repeats: one of
-    /// its own in this term and this start, a success no further than it
-    /// sent and holds, a refusal only of the append it has out now.
+    /// Whether a message is well formed: every term and index within its
+    /// bound; an append within the batch's entries and bytes (a single
+    /// entry of any size), its entries following the entry it names one
+    /// by one, with terms that never go down and never pass the
+    /// leader's; a success that checked at least the entry it names; a
+    /// size refusal of an entry after the one named. What is not changes
+    /// nothing (section 7.1). An entry past this member's largest is not
+    /// malformed: it is refused with its reason ([`Body::AppendTooLarge`]).
+    fn well_formed(&self, m: &Message) -> bool {
+        if m.term > MAX_TERM || !m.body.bounded() {
+            return false;
+        }
+        match &m.body {
+            Body::Append { prev, entries, .. } => {
+                let count = entries.len() as u64;
+                let bytes: u64 = entries.iter().map(|e| e.payload.len() as u64).sum();
+                let sized =
+                    count <= self.cfg.batch && (count <= 1 || bytes <= self.cfg.batch_bytes);
+                let follows = entries.iter().enumerate().all(|(k, e)| {
+                    Some(e.index) == prev.index.checked_add(k as u64 + 1) && e.term <= m.term
+                });
+                let rising = entries
+                    .iter()
+                    .try_fold(prev.term, |t, e| (e.term >= t).then_some(e.term))
+                    .is_some();
+                sized && follows && rising && prev.term <= m.term
+            }
+            Body::AppendReply {
+                echo,
+                matched: Some(k),
+                ..
+            } => *k >= echo.prev,
+            Body::AppendTooLarge {
+                echo,
+                index,
+                size,
+                limit,
+            } => *index > echo.prev && size > limit,
+            _ => true,
+        }
+    }
+
+    /// Whether a reply could answer an append this leader sent that
+    /// follower in this term and start: its own term and start repeated,
+    /// naming an entry no later than it sent that follower and not before
+    /// its base when it took office. `sent` is the follower's highest such
+    /// entry, so this does not tell which append a reply answers; an
+    /// honest follower reports only what its append checked (section 7.1).
+    fn answers(&self, from: ServerId, echo: &Echo) -> bool {
+        echo.term == self.term
+            && echo.start == self.start
+            && echo.prev >= self.floor
+            && self
+                .progress
+                .get(&from)
+                .is_some_and(|p| echo.prev <= p.sent)
+    }
+
+    /// A follower refused an entry for its size: it is blocked, and sent
+    /// only empty heartbeats until it starts again with a larger limit.
+    fn on_too_large(
+        &mut self,
+        out: &mut Vec<Action>,
+        from: ServerId,
+        echo: Echo,
+        oversize: Oversize,
+    ) {
+        if self.role != Role::Leader || !self.answers(from, &echo) {
+            return;
+        }
+        let now = self.ticks;
+        if let Some(p) = self.progress.get_mut(&from) {
+            p.heard_at = now;
+            p.blocked = Some(oversize);
+            p.probe = None;
+            p.probing = true;
+            p.next = p.matched.max(echo.prev) + 1;
+        }
+        self.replicate(out, from, true);
+    }
+
+    /// A leader takes a follower's answer to an append it sent it
+    /// ([`Core::answers`]). A success counts no further than the leader
+    /// sent and holds, and only if it then still reaches the entry it
+    /// names. A refusal of an entry the follower acknowledged is old news.
+    /// While appends follow one another, a refusal of any of them puts the
+    /// follower to probing at once; while it is probed, only the refusal
+    /// of the probe out now moves it (section 7.1).
     fn on_reply(
         &mut self,
         out: &mut Vec<Action>,
@@ -1046,38 +1179,52 @@ impl Core {
         if self.role != Role::Leader {
             return;
         }
-        let ours = echo.term == self.term && echo.start == self.start;
-        if !ours && !(matched.is_some() && planted!(self, CountStaleSuccess)) {
+        let stale_counted = matched.is_some() && planted!(self, CountStaleSuccess);
+        if !self.answers(from, &echo) && !stale_counted {
             return;
         }
         let base = self.base.index;
         let durable = self.durable;
         let now = self.ticks;
         let past_sent = planted!(self, CountPastSent);
+        let latest_only = planted!(self, RefusalLatestOnly);
         let Some(p) = self.progress.get_mut(&from) else {
             return;
         };
         match matched {
             Some(k) => {
-                if k < echo.prev {
-                    return;
-                }
                 let bound = if past_sent {
                     durable
                 } else {
                     p.sent.min(durable)
                 };
                 let k = k.min(bound);
+                if k < echo.prev {
+                    // Not a success of anything this leader sent.
+                    return;
+                }
                 p.heard_at = now;
-                p.probing = false;
                 p.matched = p.matched.max(k);
-                p.next = p.next.max(k + 1);
+                if !p.probing {
+                    p.next = p.next.max(k + 1);
+                } else if p.probe.is_some_and(|probe| k >= probe) {
+                    // The probe found where the logs meet: appends follow one
+                    // another from there.
+                    p.probing = false;
+                    p.next = p.matched + 1;
+                }
                 self.behind.remove(&from);
                 self.advance(out);
             }
             None => {
-                if p.probe != Some(echo.prev) {
-                    // Not the append out now: the next heartbeat asks again.
+                if echo.prev <= p.matched {
+                    // It acknowledged that entry since: old news.
+                    return;
+                }
+                let answers_probe = p.probe == Some(echo.prev);
+                if (p.probing || latest_only) && !answers_probe {
+                    // Probed, only the probe out now moves it: a heartbeat
+                    // repeats it.
                     return;
                 }
                 p.heard_at = now;
@@ -1085,7 +1232,7 @@ impl Core {
                 p.probing = true;
                 // Before the entry the append named, never before what the
                 // follower acknowledged.
-                let before = hint.min(echo.prev.saturating_sub(1));
+                let before = hint.min(echo.prev - 1);
                 p.next = before.max(p.matched) + 1;
                 if echo.prev == base && hint < base {
                     // A probe at the base, as it is now, refused: what it
@@ -1107,29 +1254,8 @@ impl Core {
         entries: Vec<Wire>,
         committed: u64,
     ) {
+        // Its shape was checked before anything changed (`well_formed`).
         let term = echo.term;
-        // The append is checked whole before anything but the term
-        // changes: no more entries or bytes than an append carries, none
-        // past the largest, each following `prev` one by one, terms that
-        // never go down and never pass the leader's.
-        let count = entries.len() as u64;
-        let bytes: u64 = entries.iter().map(|e| e.payload.len() as u64).sum();
-        let bounded = count <= self.cfg.batch
-            && (count <= 1 || bytes <= self.cfg.batch_bytes)
-            && entries
-                .iter()
-                .all(|e| e.payload.len() as u64 <= self.cfg.max_entry);
-        let follows = entries
-            .iter()
-            .enumerate()
-            .all(|(k, e)| Some(e.index) == prev.index.checked_add(k as u64 + 1) && e.term <= term);
-        let rising = entries
-            .iter()
-            .try_fold(prev.term, |t, e| (e.term >= t).then_some(e.term))
-            .is_some();
-        if !bounded || !follows || !rising || prev.term > term {
-            return;
-        }
         if term < self.term {
             let hint = self.last().index;
             let body = Body::AppendReply {
@@ -1151,6 +1277,21 @@ impl Core {
         // Its term recorded before it answers, however it came by it.
         if !planted!(self, AppendTermUnsaved) {
             self.persist(out);
+        }
+        // An entry past this member's largest is refused with its reason:
+        // nothing of the append is taken.
+        if let Some(e) = entries
+            .iter()
+            .find(|e| e.payload.len() as u64 > self.cfg.max_entry)
+        {
+            let body = Body::AppendTooLarge {
+                echo,
+                index: e.index,
+                size: e.payload.len() as u64,
+                limit: self.cfg.max_entry,
+            };
+            self.send(out, from, body);
+            return;
         }
         let last = self.last();
         if prev.index > last.index {
@@ -1294,6 +1435,10 @@ pub enum MemberError {
     /// The settings are refused ([`Config::check`]), are another member's,
     /// or allow an entry larger than the store's log takes.
     Config(&'static str),
+    /// The log holds entry `index` of `size` payload bytes, past the
+    /// largest entry the settings give (`limit`): a member's largest entry
+    /// is never lowered below what its log holds (section 7.1).
+    EntryTooLarge { index: u64, size: u64, limit: u64 },
 }
 
 impl std::fmt::Display for MemberError {
@@ -1302,6 +1447,11 @@ impl std::fmt::Display for MemberError {
             MemberError::Open(e) => write!(f, "the store did not open: {e}"),
             MemberError::Store(e) => write!(f, "the store: {e}"),
             MemberError::Config(why) => write!(f, "the settings: {why}"),
+            MemberError::EntryTooLarge { index, size, limit } => write!(
+                f,
+                "the log holds entry {index} of {size} bytes, past the largest entry asked for, \
+                 {limit} bytes"
+            ),
         }
     }
 }
@@ -1336,6 +1486,13 @@ impl Member {
             return Err(MemberError::Config("the store is another member's"));
         }
         let rec = store.recovered().map_err(MemberError::Store)?;
+        if let Some((index, size)) = rec.largest.filter(|(_, size)| *size > cfg.max_entry) {
+            return Err(MemberError::EntryTooLarge {
+                index,
+                size,
+                limit: cfg.max_entry,
+            });
+        }
         let core = Core::new(cfg, &rec).map_err(MemberError::Config)?;
         Ok((
             Member {
@@ -1535,10 +1692,11 @@ impl Member {
                     self.store
                         .read_wire(first, last, self.core.cfg.batch_bytes, max_entry)?;
                 if entries.is_empty() && first <= last {
-                    // An entry written under a larger setting: it cannot be
-                    // sent, and the follower needs a state transfer.
-                    self.core.oversized(to);
-                    return Ok(done);
+                    // The open refuses a largest entry below what the log
+                    // holds, so this cannot be.
+                    return Err(WriteError::Rule(
+                        "the log holds an entry past the largest the settings allow",
+                    ));
                 }
                 let sent = entries.last().map_or(prev.index, |e| e.index);
                 self.core.sent(to, prev.index, sent);
