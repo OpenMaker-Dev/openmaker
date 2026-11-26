@@ -647,9 +647,10 @@ pub(crate) enum Action {
     SetUpLayout(om_data::layout_catalog::LayoutSetupChange),
     /// Layouts > Part Setup...: its dialog, and Part Definition's change.
     PartSetup,
-    /// The Part tool used on the layout: Part Definition alone, whose OK
-    /// adds a part as Part Setup's Create does.
-    InsertPart,
+    /// Insert > Part... (None), or the Part tool used at the layout point
+    /// with this y (in points): Part Definition alone, whose OK adds a part
+    /// as Part Setup's Create does (`PartSetup::creating_alone`).
+    InsertPart(Option<f64>),
     SetPartOptions(om_data::layout_placement::PartOptionsChange),
     ConfirmDeleteLayout,
     CancelDeleteLayout,
@@ -2954,9 +2955,9 @@ impl OpenMakerApp {
             }
             // The Part tool, single use as the Field tool is: Part
             // Definition opens, and the tool goes back to Selection.
-            if self.w.layout_workspace.take_part_tool() {
+            if let Some(at) = self.w.layout_workspace.take_part_tool() {
                 self.w.tool = LayoutTool::Selection;
-                actions.push(Action::InsertPart);
+                actions.push(Action::InsertPart(Some(at)));
             }
             // A part boundary dragged with the Selection tool goes to the
             // host at once, as Part Setup's changes do.
@@ -5486,7 +5487,7 @@ impl OpenMakerApp {
 
             // A change with the host: Part Setup would read the layout as
             // it was.
-            Action::PartSetup | Action::InsertPart if self.w.layout_workspace.saving => {
+            Action::PartSetup | Action::InsertPart(_) if self.w.layout_workspace.saving => {
                 self.error = Some(
                     "This layout's last change is still being saved; try again when it is.".into(),
                 );
@@ -5502,7 +5503,7 @@ impl OpenMakerApp {
             | Action::DeleteLayout(_)
             | Action::LayoutSetup
             | Action::PartSetup
-            | Action::InsertPart
+            | Action::InsertPart(_)
                 if self.w.layout_workspace.has_changes() =>
             {
                 self.error = Some(LAYOUT_UNSAVED.into());
@@ -5529,7 +5530,7 @@ impl OpenMakerApp {
             Action::CancelDeleteLayout => self.w.delete_layout = None,
             Action::LayoutSetup => self.open_layout_setup(),
             Action::PartSetup => self.open_part_setup(),
-            Action::InsertPart => {
+            Action::InsertPart(at) => {
                 // Not over a Part Setup already open, whose request may be
                 // with the host.
                 if self.w.mode != Mode::Layout
@@ -5540,7 +5541,7 @@ impl OpenMakerApp {
                 }
                 self.open_part_setup();
                 if let Some(dialog) = self.part_setup.take() {
-                    match dialog.creating_alone() {
+                    match dialog.creating_alone(at) {
                         Ok(dialog) => self.part_setup = Some(dialog),
                         Err(refusal) => self.error = Some(refusal.into()),
                     }
@@ -6949,6 +6950,7 @@ impl OpenMakerApp {
                 part_type: part.part_type,
                 flags: part.flags,
                 page_break_after: part.page_break_after,
+                height: part.height,
                 sorted_by: part
                     .break_field()
                     .ok()

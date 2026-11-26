@@ -2366,13 +2366,34 @@ fn part_setup_creates_and_deletes_a_header_and_the_body_boundary_is_dragged() {
         (vec![(4, 0.0, 240.0), (7, 240.0, 22.0)], 20.0)
     );
 
-    // The Part tool's button dropped on the layout (#885) opens Part
-    // Definition alone, whose OK adds the part as Create does.
+    // The Part tool's button dropped within the parts adds none, as
+    // FileMaker Pro 26.1.1 added none at any such drop (#885).
     let tool = app.get_by_label("Part Tool").rect().center();
     let canvas = app.get_by_label("Layout canvas").rect();
     drag(&mut app, tool, canvas.min + egui::vec2(200.0, 60.0));
+    common::wait_until(&mut app, "the drop refused", |app| {
+        app.state().error().is_some()
+    });
+    assert_eq!(
+        app.state().error(),
+        Some("This part cannot be positioned here.")
+    );
+    shot(
+        &mut app,
+        "95b-part-tool-refused",
+        "the Part tool dropped within the Body",
+    );
+    common::click(&mut app, "OK");
+    app.run_steps(2);
+
+    // Dropped 17 points below the layout's last part, it opens Part
+    // Definition alone with the kinds that follow the Footer offered and
+    // the first chosen, and OK adds that part from the Footer's bottom
+    // down to the drop point, as Pro's did on a List layout.
+    let tool = app.get_by_label("Part Tool").rect().center();
+    drag(&mut app, tool, canvas.min + egui::vec2(200.0, 262.0 + 17.0));
     common::wait_until(&mut app, "the Part tool's Part Definition", |app| {
-        app.query_by_role_and_label(Role::RadioButton, "Header")
+        app.query_by_role_and_label(Role::RadioButton, "Title Footer")
             .is_some()
     });
     assert!(
@@ -2380,34 +2401,46 @@ fn part_setup_creates_and_deletes_a_header_and_the_body_boundary_is_dragged() {
             .is_none(),
         "Part Definition opens without Part Setup's list"
     );
-    app.get_by_role_and_label(Role::RadioButton, "Header")
-        .click();
-    app.run_steps(2);
+    let radio = |app: &common::App, kind: &str| {
+        let radio = app.get_by_role_and_label(Role::RadioButton, kind);
+        let node = radio.accesskit_node();
+        (
+            node.toggled() == Some(egui::accesskit::Toggled::True),
+            !node.is_disabled(),
+        )
+    };
+    assert_eq!(radio(&app, "Title Footer"), (true, true));
+    assert_eq!(radio(&app, "Bottom Navigation"), (false, true));
+    assert_eq!(
+        radio(&app, "Header"),
+        (false, false),
+        "not after the Footer"
+    );
     shot(
         &mut app,
         "96-part-tool",
-        "the Part tool's Part Definition, Header chosen",
+        "the Part tool dropped below the Footer, Title Footer chosen",
     );
     common::click(&mut app, "OK");
-    common::wait_until(&mut app, "the Part tool's header saved", |app| {
+    common::wait_until(&mut app, "the Part tool's part saved", |app| {
         assert!(app.state().error().is_none(), "{:?}", app.state().error());
-        app.state().is_settled() && app.query_by_label("Header boundary").is_some()
+        app.state().is_settled() && app.query_by_label("Title Footer boundary").is_some()
     });
     assert!(
-        app.query_by_role_and_label(Role::RadioButton, "Header")
+        app.query_by_role_and_label(Role::RadioButton, "Title Footer")
             .is_none(),
         "Part Definition closed"
     );
     shot(
         &mut app,
-        "97-part-tool-header",
-        "the Header the Part tool added",
+        "97-part-tool-title-footer",
+        "the Title Footer the Part tool added",
     );
     assert_eq!(
         read(&hosted),
         (
-            vec![(1, 0.0, 110.0), (4, 110.0, 240.0), (7, 350.0, 22.0)],
-            130.0
+            vec![(4, 0.0, 240.0), (7, 240.0, 22.0), (8, 262.0, 17.0)],
+            20.0
         )
     );
 
@@ -2437,11 +2470,11 @@ fn part_setup_creates_and_deletes_a_header_and_the_body_boundary_is_dragged() {
         (
             vec![
                 (12, 0.0, 22.0),
-                (1, 22.0, 110.0),
-                (4, 132.0, 240.0),
-                (7, 372.0, 22.0)
+                (4, 22.0, 240.0),
+                (7, 262.0, 22.0),
+                (8, 284.0, 17.0)
             ],
-            152.0
+            42.0
         )
     );
 }

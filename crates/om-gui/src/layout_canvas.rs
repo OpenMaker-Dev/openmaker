@@ -413,8 +413,9 @@ pub(crate) struct CanvasState {
     /// height dragged to, for the window to send.
     part_drag: Option<PartDrag>,
     part_resize: Option<PartResize>,
-    /// The Part tool was used on the layout: Part Definition opens.
-    part_tool: bool,
+    /// The Part tool was used on the layout, at this layout point's y (in
+    /// points): Part Definition opens.
+    part_tool: Option<f64>,
     /// A layout read again no longer has objects that unsaved control or
     /// text changes were made to; the changes are kept.
     orphaned_drafts: bool,
@@ -448,7 +449,7 @@ struct PartEdges<'a> {
     enabled: bool,
     drag: &'a mut Option<PartDrag>,
     resize: &'a mut Option<PartResize>,
-    tool: &'a mut bool,
+    tool: &'a mut Option<f64>,
 }
 
 /// The Part tool's button dragged from the status toolbar: dropped on the
@@ -468,10 +469,11 @@ impl CanvasState {
         std::mem::take(&mut self.orphaned_drafts)
     }
 
-    /// Whether the Part tool was used on the layout since the last call:
-    /// a click with it, or its button dropped there.
-    pub(crate) fn take_part_tool(&mut self) -> bool {
-        std::mem::take(&mut self.part_tool)
+    /// Where the Part tool was used on the layout since the last call (a
+    /// click with it, or its button dropped there): the layout point's y,
+    /// in points.
+    pub(crate) fn take_part_tool(&mut self) -> Option<f64> {
+        self.part_tool.take()
     }
 
     /// Whether the layout holds changes not saved yet: a part boundary is
@@ -1238,7 +1240,7 @@ pub(crate) fn show(
                     enabled: false,
                     drag: &mut None,
                     resize: &mut None,
-                    tool: &mut false,
+                    tool: &mut None,
                 },
                 false,
                 &|_| true,
@@ -1435,14 +1437,20 @@ fn draw(
             // The Part tool's button dropped on the layout, as Claris
             // documents it ("drag the Part tool ... to the layout"), or a
             // click on the layout with the tool chosen (OpenMaker's): Part
-            // Definition opens. The point does not matter, as the parts it
-            // adds go at their kind's place in the order of parts. Also on
-            // a frozen canvas, where the window refuses it with the reason.
-            let on_layout = pointer
-                .is_some_and(|point| surface.contains(point) && ui.clip_rect().contains(point));
+            // Definition opens for the point, which may be below the parts,
+            // where FileMaker Pro 26.1.1 adds a part reaching down to it.
+            // Also on a frozen canvas, where the window refuses it with the
+            // reason.
+            let on_layout = pointer.filter(|point| {
+                surface.x_range().contains(point.x)
+                    && area.contains(*point)
+                    && ui.clip_rect().contains(*point)
+            });
             let dropped_tool = background.dnd_release_payload::<PartToolDrag>().is_some();
-            if on_layout && (dropped_tool || (tool == LayoutTool::Part && background.clicked())) {
-                *edges.tool = true;
+            if let Some(point) = on_layout {
+                if dropped_tool || (tool == LayoutTool::Part && background.clicked()) {
+                    *edges.tool = Some(f64::from(point.y - origin.y));
+                }
             }
             let painter = ui.painter().clone();
             painter.rect_filled(

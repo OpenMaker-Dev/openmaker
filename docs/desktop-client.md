@@ -2752,22 +2752,38 @@ now.
 
 **The Part tool and Insert > Part.** Dragging the status toolbar's Part
 Tool button onto the layout, as Claris documents it (re/client-ui.md, "Part
-Setup"), choosing the tool and clicking the layout, or Insert > Part...
-opens Part Definition alone, as Part Setup's Create opens it: the kinds of
-part the layout lacks offered (not sub-summaries), the first of them
-chosen (OpenMaker's rule, from FileMaker Pro 26.1.1's Insert > Part
-choosing Title Header on a layout with a top navigation part and a body;
-Pro's choice elsewhere, and its Part tool's, are unmeasured), and OK adds
-the one chosen at its place in the order of
-parts, at Create's heights, with the same operation. While OK is with the
-host the dialog stays, taking no input; it closes with Cancel or with the
-host's answer, and the tool goes back to Selection. Where the button is dropped does not matter: each kind of part
-OpenMaker adds has one place. It is refused as Part Setup is (unsaved
-changes, a change still with the host), and with an alert when the layout
-has every kind of part OpenMaker adds. Not compared with FileMaker Pro: the
-height Pro gives a part the Part tool adds, whether the drop point decides
-anything for the kinds OpenMaker adds, and what a click with the tool does
-(OpenMaker's choice).
+Setup"), or choosing the tool and clicking the layout (OpenMaker's choice),
+works as FileMaker Pro 26.1.1's tool did (re/client-ui.md, "The Part
+tool"). Dropped below the layout's last part, it opens Part Definition
+alone, offering the kinds of part that may follow the last part and the
+layout lacks, the first of them chosen; OK adds the one chosen after the
+last part, from the layout's bottom down to the drop point, rounded to
+whole points. Dropped within the parts, it adds none and says "This part
+cannot be positioned here." Insert > Part... opens Part Definition alone
+offering every kind of part the layout lacks, the first of them chosen
+(from Pro's Insert > Part choosing Title Header on a layout with a top
+navigation part and a body; Pro's choice elsewhere is unmeasured), and OK
+adds the one chosen at its place in the order of parts, at Create's
+heights. Both add with Part Setup's operation, and neither offers
+sub-summaries. While OK is with the host the dialog stays, taking no input;
+it closes with Cancel or with the host's answer, and the tool goes back to
+Selection. Both are refused as Part Setup is (unsaved changes, a change
+still with the host), and with an alert when no kind is offered.
+
+Limits, against Pro's tool:
+- After a body, where Pro chose Sub-summary, OpenMaker chooses the next
+  kind offered, as it adds no sub-summaries.
+- Pro said "This part cannot be positioned here." at some boundaries
+  within the parts and otherwise ignored the drop, by a rule not measured,
+  so OpenMaker says it for every drop within the parts. Nor does OpenMaker
+  insert a part between two others with the tool; whether Pro does is not
+  measured.
+- Pro added no part for a drop about 22 points below a List layout's last
+  part or about 50 below a Form's. OpenMaker adds one for any drop below the
+  parts (its canvas reaches 48 points below them, or to the window's
+  bottom).
+- A drop beside the layout, outside its width, does nothing; Pro's was
+  not tried.
 
 **Layout mode's Insert menu** has FileMaker Pro 26.1.1's items, in its
 order, with its submenus and shortcuts (re/client-ui.md, "Layout mode's
