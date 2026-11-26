@@ -4232,6 +4232,9 @@ impl ScriptHost for WorkerHost<'_> {
         if let Some(saving) = held.saving {
             self.related_field_saved(saving);
         }
+        // The held step runs again: words the trigger's steps or the
+        // window's selection left are not its failure's (#818).
+        begin_step();
         self.run_act_from(held.act, held.stage, Some(held.fired))
     }
 
