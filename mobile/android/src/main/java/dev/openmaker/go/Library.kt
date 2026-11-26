@@ -6,10 +6,12 @@ import android.net.Uri
 import android.os.StatFs
 import android.provider.OpenableColumns
 import java.io.File
-import dev.openmaker.go.engine.Endpoint
-import dev.openmaker.go.engine.forgetTrustedCertificates
+import dev.openmaker.go.engine.HostChange
+import dev.openmaker.go.engine.ListedHost
+import dev.openmaker.go.engine.SavedHosts
+import dev.openmaker.go.engine.distinctHosts
+import dev.openmaker.go.engine.formerHosts
 import dev.openmaker.go.engine.hostKey
-import dev.openmaker.go.engine.saveTrustedCertificates
 import dev.openmaker.go.engine.trustedCertificate
 import org.json.JSONArray
 
@@ -50,12 +52,16 @@ data class SavedHost(val address: String, val port: Int = Entry.DEFAULT_PORT, va
     val key
         get() = hostKey(address, port.toUShort())
 
-    val endpoint
-        get() = Endpoint(address, port.toUShort())
+    /** As the engine takes it. */
+    fun listed() = ListedHost(address, port.toUShort(), name)
 
     fun isHost(address: String, port: Int) = key == hostKey(address, port.toUShort())
 
     fun isHost(other: SavedHost) = key == other.key
+
+    companion object {
+        fun of(listed: ListedHost) = SavedHost(listed.address, listed.port.toInt(), listed.name)
+    }
 }
 
 /**
@@ -87,81 +93,52 @@ class Library(context: Context) {
         set(value) = store(RECENT, value.distinct().take(MAX_RECENT))
 
     /**
-     * The Hosts list. Before it was kept, the Hosts tab remembered the one
-     * host it last browsed and the certificate authorities it was told to
-     * trust: that host is the list's first, followed by those hosts.
+     * The Hosts list, each host once ([distinctHosts]). Before it was kept,
+     * the Hosts tab remembered the one host it last browsed and the
+     * certificate authorities it was told to trust: that host is the list's
+     * first, followed by those hosts ([formerHosts]).
      */
     val hosts: List<SavedHost>
         get() {
-            val stored = prefs.getString(HOSTS, null) ?: return formerHosts()
+            val stored =
+                prefs.getString(HOSTS, null)
+                    ?: return formerHosts(
+                            prefs.getString(LAST_HOST, "").orEmpty(),
+                            prefs.getInt(LAST_PORT, Entry.DEFAULT_PORT).toString(),
+                            certificates(),
+                        )
+                        .map(SavedHost::of)
             val list = JSONArray(stored)
-            return (0 until list.length()).map {
-                val item = list.getJSONArray(it)
-                SavedHost(item.getString(0), item.getInt(1), item.getString(2))
-            }
+            val listed =
+                (0 until list.length()).map {
+                    val item = list.getJSONArray(it)
+                    ListedHost(item.getString(0), item.getInt(1).toUShort(), item.getString(2))
+                }
+            return distinctHosts(listed).map(SavedHost::of)
         }
 
-    private fun formerHosts(): List<SavedHost> {
-        val last = prefs.getString(LAST_HOST, "").orEmpty().trim()
-        val first = if (last.isEmpty()) emptyList() else listOf(SavedHost(last, prefs.getInt(LAST_PORT, Entry.DEFAULT_PORT)))
-        val trusted =
-            prefs.all.keys
-                .mapNotNull { key ->
-                    val endpoint = key.takeIf { it.startsWith(CA_PREFIX) }?.removePrefix(CA_PREFIX)
-                    val colon = endpoint?.lastIndexOf(':') ?: -1
-                    val port = endpoint?.substring(colon + 1)?.toIntOrNull()
-                    if (endpoint == null || colon <= 0 || port == null) null else SavedHost(endpoint.substring(0, colon), port)
-                }
-                .sortedBy { it.location.lowercase() }
-        return (first + trusted).fold(emptyList<SavedHost>()) { list, host -> if (list.any { it.isHost(host) }) list else list + host }
-    }
-
     /**
-     * Add [host], or with [replacing] put it in that host's place. A host
-     * already in the list that is the same host is not listed twice. The
-     * certificate authorities trusted for it, and for the entries it
-     * replaces, are the engine's to work out
-     * ([saveTrustedCertificates]): [certificate] is what the editor holds,
-     * [loaded] what it showed when it opened, and a save whose host's
-     * authorities changed since is refused ([GoException]). The list and
-     * the certificate authorities change together.
+     * Save Add Host or Edit Host's [change], by the engine's rules
+     * ([dev.openmaker.go.engine.saveHost]): the saved host, or a
+     * [GoException] saying what to fix, or that the host was changed in
+     * another window since the editor opened. The list and the certificate
+     * authorities change together.
      */
-    fun saveHost(replacing: SavedHost?, loaded: String, host: SavedHost, certificate: String) {
-        val list = hosts
-        // Where the host goes: the replaced host's place, else its own.
-        val at =
-            replacing?.let { old -> list.indexOfFirst { it.isHost(old) } }?.takeIf { it >= 0 }
-                ?: list.indexOfFirst { it.isHost(host) }.takeIf { it >= 0 }
-        val replaced = list.filterIndexed { i, other -> i == at || other.isHost(host) }
-        val updated =
-            list
-                .mapIndexedNotNull { i, other ->
-                    when {
-                        i == at -> host
-                        other.isHost(host) -> null
-                        else -> other
-                    }
-                }
-                .let { if (at == null) it + host else it }
+    fun saveHost(change: HostChange): SavedHost {
         val before = certificates()
-        val after =
-            saveTrustedCertificates(
-                before,
-                replacing?.endpoint,
-                loaded,
-                host.endpoint,
-                certificate,
-                replaced.map { it.endpoint },
-            )
-        prefs.edit().putHosts(updated).putCertificates(before, after).apply()
+        val saved = dev.openmaker.go.engine.saveHost(SavedHosts(hosts.map { it.listed() }, before), change)
+        prefs.edit()
+            .putHosts(saved.saved.hosts.map(SavedHost::of))
+            .putCertificates(before, saved.saved.certificates)
+            .apply()
+        return SavedHost.of(saved.host)
     }
 
     /** Remove [host] from the list, with the certificate authorities trusted for it. */
     fun removeHost(host: SavedHost) {
-        val (removed, kept) = hosts.partition { it.isHost(host) }
         val before = certificates()
-        val after = forgetTrustedCertificates(before, (removed + host).map { it.endpoint })
-        prefs.edit().putHosts(kept).putCertificates(before, after).apply()
+        val saved = dev.openmaker.go.engine.removeHost(SavedHosts(hosts.map { it.listed() }, before), host.listed())
+        prefs.edit().putHosts(saved.hosts.map(SavedHost::of)).putCertificates(before, saved.certificates).apply()
     }
 
     /**

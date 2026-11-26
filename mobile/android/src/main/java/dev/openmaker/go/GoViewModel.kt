@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import dev.openmaker.go.engine.Document
 import dev.openmaker.go.engine.GoException
 import dev.openmaker.go.engine.Host
+import dev.openmaker.go.engine.HostChange
 import dev.openmaker.go.engine.Input
 import dev.openmaker.go.engine.SignIn
 import dev.openmaker.go.engine.Source
@@ -148,20 +149,22 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun saveHost() {
         val editor = hostEditor ?: return
-        val checked =
+        val host =
             try {
-                dev.openmaker.go.engine.checkHost(editor.address, editor.port, editor.certificate.trim())
+                library.saveHost(
+                    HostChange(
+                        editor.replaces?.listed(),
+                        editor.loaded,
+                        editor.address,
+                        editor.port,
+                        editor.name,
+                        editor.certificate.trim(),
+                    )
+                )
             } catch (error: GoException) {
                 hostEditor = editor.copy(error = error.goMessage())
                 return
             }
-        val host = SavedHost(checked.address, checked.port.toInt(), editor.name.trim())
-        try {
-            library.saveHost(editor.replaces, editor.loaded, host, checked.certificate)
-        } catch (error: GoException) {
-            hostEditor = editor.copy(error = error.goMessage())
-            return
-        }
         hosts = library.hosts
         hostEditor = null
         // Its files are listed again: the address, port or certificate

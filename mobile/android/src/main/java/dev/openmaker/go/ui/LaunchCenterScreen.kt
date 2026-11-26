@@ -292,7 +292,7 @@ private fun Hosts(model: GoViewModel) {
         return
     }
     LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
-        items(model.hosts, key = { listOf(it.address.lowercase(), it.port) }) { host ->
+        items(model.hosts, key = { it.key }) { host ->
             var menu by remember { mutableStateOf(false) }
             ListItem(
                 headlineContent = { Text(host.label) },

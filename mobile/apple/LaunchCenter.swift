@@ -43,7 +43,18 @@ struct SavedHost: Codable, Hashable, Identifiable {
   var port: UInt16 = 5003
   var name = ""
   var id: String { hostKey(address: address, port: port) }
-  var endpoint: Endpoint { Endpoint(address: address, port: port) }
+  /// As the engine takes it.
+  var listed: ListedHost { ListedHost(address: address, port: port, name: name) }
+
+  init(address: String, port: UInt16 = 5003, name: String = "") {
+    self.address = address
+    self.port = port
+    self.name = name
+  }
+
+  init(_ listed: ListedHost) {
+    self.init(address: listed.address, port: listed.port, name: listed.name)
+  }
   /// The address, with the port when it is not FileMaker's (an IPv6
   /// address then in brackets).
   var location: String {
@@ -141,8 +152,10 @@ struct LaunchCenter: View {
 
   private var favorites: [FileEntry] { decode(favoritesData) }
   private var recent: [FileEntry] { decode(recentData) }
+  /// The Hosts list, each host once (`distinctHosts`).
   private var hosts: [SavedHost] {
-    hostsData.flatMap { try? JSONDecoder().decode([SavedHost].self, from: $0) } ?? []
+    let stored = hostsData.flatMap { try? JSONDecoder().decode([SavedHost].self, from: $0) } ?? []
+    return distinctHosts(hosts: stored.map(\.listed)).map(SavedHost.init)
   }
   /// Private certificate authorities by host and port.
   private var authorities: [String: String] {
@@ -183,7 +196,7 @@ struct LaunchCenter: View {
     .onChange(of: phase) { if $0 == .active { reload() } }
     .onOpenURL { url in importFile(url) }
     .sheet(item: $hostEdit) { edit in
-      HostEditor(edit: edit) { try saveHost($0) }
+      HostEditor(edit: edit) { try commit($0) }
     }
     .alert("Open by Name", isPresented: present($namingFile), presenting: namingFile) { host in
       TextField("File name", text: $typedFileName)
@@ -252,12 +265,12 @@ struct LaunchCenter: View {
             }
           }
           .swipeActions {
-            Button("Remove", role: .destructive) { removeHost(host) }
+            Button("Remove", role: .destructive) { removeSaved(host) }
             Button("Edit") { editHost(host) }
           }
           .contextMenu {
             Button("Edit Host…") { editHost(host) }
-            Button("Remove Host", role: .destructive) { removeHost(host) }
+            Button("Remove Host", role: .destructive) { removeSaved(host) }
           }
         }
         if hosts.isEmpty {
@@ -449,7 +462,7 @@ struct LaunchCenter: View {
   /// The certificate authorities trusted for one host and port only,
   /// under any spelling of its address (`trustedCertificate`).
   private func trusted(_ address: String, _ port: UInt16) -> String? {
-    let pem = trustedCertificate(saved: authorities, address: address, port: port)
+    let pem = trustedCertificate(certificates: authorities, address: address, port: port)
     return pem.isEmpty ? nil : pem
   }
 
@@ -462,25 +475,12 @@ struct LaunchCenter: View {
   /// Before the Hosts tab kept a list it had one host form, whose address
   /// and port were kept as typed, and it kept the certificate authorities
   /// it was told to trust: a host the form still describes is the list's
-  /// first, followed by those hosts.
+  /// first, followed by those hosts (`formerHosts`).
   private func keepFormerHosts() {
     guard hostsData == nil else { return }
-    var list: [SavedHost] = []
-    let last = (lastHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    if !last.isEmpty, let checked = try? checkHost(address: last, port: lastPort ?? "5003", certificate: "") {
-      list.append(SavedHost(address: checked.address, port: checked.port))
-    }
-    let trusted = authorities.keys.compactMap { endpoint -> SavedHost? in
-      guard let colon = endpoint.lastIndex(of: ":"), colon > endpoint.startIndex,
-        let port = UInt16(endpoint[endpoint.index(after: colon)...]), port > 0
-      else { return nil }
-      return SavedHost(address: String(endpoint[..<colon]), port: port)
-    }
-    for host in trusted.sorted(by: { $0.location.localizedStandardCompare($1.location) == .orderedAscending })
-    where !list.contains(where: { $0.isHost(host) }) {
-      list.append(host)
-    }
-    storeHosts(list)
+    let list = formerHosts(
+      lastAddress: lastHost ?? "", lastPort: lastPort ?? "5003", certificates: authorities)
+    storeHosts(list.map(SavedHost.init))
   }
 
   /// Edit Host, with the certificate authority trusted for the host.
@@ -491,39 +491,27 @@ struct LaunchCenter: View {
       certificate: certificate, loaded: certificate)
   }
 
-  /// Save the host Add Host or Edit Host describes, checked as the
-  /// desktop's Add Host checks one, or throw what to fix. The host goes in
-  /// the place of the one it replaces, else of the one at its address and
-  /// port in any case, which is not listed twice. The certificate
-  /// authorities trusted for it, and for the entries it replaces, are the
-  /// engine's to work out (`saveTrustedCertificates`), which refuses a save
-  /// whose host's authorities changed since the editor opened. A host
-  /// whose page is shown stays shown, at its new address.
-  private func saveHost(_ edit: HostEdit) throws {
-    let checked = try checkHost(
-      address: edit.address, port: edit.port,
-      certificate: edit.certificate.trimmingCharacters(in: .whitespacesAndNewlines))
-    let host = SavedHost(
-      address: checked.address, port: checked.port,
-      name: edit.name.trimmingCharacters(in: .whitespacesAndNewlines))
-    let list = hosts
-    let at =
-      edit.replaces.flatMap { old in list.firstIndex { $0.isHost(old) } }
-      ?? list.firstIndex { $0.isHost(host) }
-    let replaced = list.indices.filter { $0 == at || list[$0].isHost(host) }.map { list[$0] }
-    var updated = list.indices.compactMap { index -> SavedHost? in
-      index == at ? host : list[index].isHost(host) ? nil : list[index]
-    }
-    if at == nil { updated.append(host) }
-    let saved = try saveTrustedCertificates(
-      saved: authorities, edited: edit.replaces?.endpoint, loaded: edit.loaded,
-      host: host.endpoint, certificate: checked.certificate, replaced: replaced.map(\.endpoint))
-    storeHosts(updated)
-    storeAuthorities(saved)
+  /// Save Add Host or Edit Host's `edit` by the engine's rules
+  /// (`saveHost`), or throw what to fix, or that the host was changed in
+  /// another window since the editor opened. A host whose page is shown
+  /// stays shown, at its new address.
+  private func commit(_ edit: HostEdit) throws {
+    let before = hosts
+    let result = try saveHost(
+      saved: SavedHosts(hosts: before.map(\.listed), certificates: authorities),
+      change: HostChange(
+        replaces: edit.replaces?.listed, loaded: edit.loaded, address: edit.address,
+        port: edit.port, name: edit.name,
+        certificate: edit.certificate.trimmingCharacters(in: .whitespacesAndNewlines)))
+    let host = SavedHost(result.host)
+    storeHosts(result.saved.hosts.map(SavedHost.init))
+    storeAuthorities(result.saved.certificates)
     hostEdit = nil
     // Its files are listed again: the address, port or certificate
     // authority they were listed with may have changed.
-    for old in replaced + (edit.replaces.map { [$0] } ?? []) { listings[key(old)] = nil }
+    for old in before.filter({ $0.isHost(host) }) + (edit.replaces.map { [$0] } ?? []) {
+      listings[key(old)] = nil
+    }
     listings[key(host)] = nil
     if let shown = hostPath.last, edit.replaces?.isHost(shown) == true || shown.isHost(host) {
       Task { await listHost(host) }
@@ -532,13 +520,13 @@ struct LaunchCenter: View {
   }
 
   /// Remove `host` from the list, with the certificate authorities trusted
-  /// for it.
-  private func removeHost(_ host: SavedHost) {
-    let removed = hosts.filter { $0.isHost(host) }
-    for old in removed + [host] { listings[key(old)] = nil }
-    let saved = forgetTrustedCertificates(saved: authorities, endpoints: (removed + [host]).map(\.endpoint))
-    storeHosts(hosts.filter { !$0.isHost(host) })
-    storeAuthorities(saved)
+  /// for it (`removeHost`).
+  private func removeSaved(_ host: SavedHost) {
+    for old in hosts.filter({ $0.isHost(host) }) + [host] { listings[key(old)] = nil }
+    let result = removeHost(
+      saved: SavedHosts(hosts: hosts.map(\.listed), certificates: authorities), host: host.listed)
+    storeHosts(result.hosts.map(SavedHost.init))
+    storeAuthorities(result.certificates)
     if hostPath.contains(where: { $0.isHost(host) }) { hostPath = [] }
   }
 

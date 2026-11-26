@@ -31,20 +31,24 @@ desktop. What FileMaker Go does is in [go-client.md](re/go-client.md).
   authority. Before the Hosts tab had a list it kept one host and the
   certificate authorities it was given: that host and those hosts make
   up the list. Local hosts (Bonjour) are not listed. A private
-  certificate authority (PEM certificates; other text is refused) can be
-  saved for a host and port, and is used for that host only. Hosts are
-  the same host when their addresses are the same name to DNS (ASCII
-  case, an international name in its punycode form, never Unicode case
-  folding; `openmaker_go::host_key`). Those the old Hosts tab saved under
-  several spellings of one address are all used, each certificate once,
-  leaving out any that does not read as a certificate, and Edit Host
+  certificate authority (PEM certificates and nothing else, at most 16
+  of them in 64 KiB; other text is refused) can be saved for a host and
+  port, and is used for that host only. A host is saved, connected to
+  and trusted under one form of its address: an IP address as written
+  canonically, else a name as UTS #46 maps it to ASCII (punycode, lower
+  case; full-width digits become ASCII ones, as browsers map them), so
+  two entries are the same host only when they are to the network too;
+  an address that maps to nothing is refused. Those the old Hosts tab
+  saved under several spellings of one address are all used, each
+  certificate once, leaving out any that does not read, and Edit Host
   shows them all. A save never removes one the editor did not show: Add
   Host, or editing a host onto another saved host, adds the ones already
-  saved there. A host moved to another address or port takes what Edit
-  Host showed, except what was saved only under another spelling of its
-  old address. Edit Host refuses to save when the host's authorities
-  changed after it opened (in another window). Both apps take these rules
-  from the engine (`mobile/core/src/trust.rs`). The certificate is
+  saved there. A host moved to another address or port takes what was
+  saved under its own spelling and what was typed; what was kept under
+  other spellings of its old address stays there. Edit Host refuses to
+  save when its host was changed, moved or removed, or its authorities
+  changed, after it opened (in another window). The apps take all of
+  this from the engine (`mobile/core/src/hosts.rs`). The certificate is
   verified as the desktop client verifies it.
 - **Favorites** and **Recent** keep references to local and hosted files;
   opening one signs in again. Rows can be removed, and a local file
