@@ -255,6 +255,7 @@ fn seed_related(provider: &mut NativeProvider) {
                     privilege_set: None,
                     record_number: None,
                     prepared: None,
+                    single_field_step: false,
                 });
             }
         }

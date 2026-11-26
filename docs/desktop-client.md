@@ -37,6 +37,18 @@ own chrome uses are in [design.md](design.md). Related notes:
   to the front. Elsewhere, and in the GUI tests, which run without a native
   window, the menu bar is drawn inside each window. The window title is the
   platform's own.
+- Show/Hide Toolbars changes the status toolbar and layout bar together.
+  Lock disables View > Status Toolbar and its shortcut in the current
+  window until a script changes the lock. `Get ( StatusAreaState )` returns
+  1 for shown, 0 for hidden, 2 for shown and locked, and 3 for hidden and
+  locked. New windows inherit the current toolbar state, which is
+  unmeasured in FileMaker. In a regular macOS Browse window, hiding the
+  bars shortens the frame by 55 pt and adds 25 pt of content height.
+  Showing them reverses the change. Restoring the original frame with
+  the bars hidden gives the content area the full 80 pt.
+  OpenMaker keeps the frame size on Linux and Windows, where the
+  FileMaker comparison is unmeasured.
+  [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1040#issuecomment-7188552787)
 - The Window menu's New Window runs the step. Show Window lists every open
   file's windows but cards, front first, a hidden one in parentheses, and
   scrolls when they do not fit; choosing one brings it to the front, shown
@@ -69,8 +81,8 @@ own chrome uses are in [design.md](design.md). Related notes:
   Linux and Windows.
 - The UI font is the bundled Inter (OFL), a cross-platform stand-in for the
   system font with similar metrics. Layout text uses the fonts the host
-  sends; on macOS, System Arial is used when the file asks for it and it is
-  installed, with a bundled open font as the fallback.
+  sends. On macOS, a document's Arial or Helvetica Neue selection uses the
+  installed family when available, with a bundled open font as the fallback.
 
 ## Opening files
 
@@ -610,9 +622,33 @@ and named styles, padding, borders, fonts, styled text runs, static text,
 literal placeholders, merge fields, tab and slide panels, portals, popovers,
 button bars, conditional formatting and hide conditions, and field values
 from the current record page. Stored anchors resize objects within their
-containers. Record changes keep the user's selected panels. Browse shows no
-authoring part tabs or object kind captions.
+containers. Record changes keep the user's selected panels. Clicking a
+visible navigation dot in Browse selects its slide panel. The dots use
+the slide control's stored sizes, insets and normal and active colors.
+Slide panel contents use their own fill and border and clip their children
+to the contents frame.
+Browse shows no authoring part tabs or object kind captions.
 
+- Browse draws a single opaque outer shadow behind the fill and border of
+  an opaque, square, unrotated top-level rectangle. The offset and spread
+  come from the stored style, with egui edge feathering approximating the
+  measured blur (layout-model.md 9.2). An accompanying inset is still
+  omitted. Buttons, multiple outer layers, translucent shadows or fills,
+  rounded shapes and nested objects remain outside this support.
+- Text objects in Browse draw an edge only when its style resolves to a
+  line. A width and color alone leave the edge hidden.
+- Styled layout labels keep the stored formatting of literal text around
+  a merge symbol or field. The replacement takes the styling at its
+  opening delimiter. OpenMaker also applies this rule to merge variables
+  and paragraph runs (layout-model.md 8.2). Explicit uppercase, lowercase, and
+  title-case styles apply to their saved character runs, including resolved
+  symbols.
+  In OpenMaker an object-level uppercase style continues to apply to the
+  whole object. Its precedence in FileMaker is unmeasured.
+- Date fields, merge fields and date symbols in Browse can show the
+  fixed named month and weekday presets in month-first English (see
+  data-format.md). OpenMaker takes names from the file's locale for
+  those presets. Short System Date is still displayed as entered.
 - A text, number, date, time or timestamp value stored with character
   styles (a chunked value beside a style subtree `ff`, calc-values.md
   implementation notes) shows its text; a nested form the provider cannot
@@ -924,6 +960,31 @@ compared. Limits:
 - The last column takes what is left of the window, at least 80 points, and
   dragging its edge does not resize it.
 - The record-number column scrolls away with the others.
+
+**Table view's parts.** On a layout OpenMaker draws, Table view shows the
+top navigation, header, footer and bottom navigation parts that the
+layout's Table View Properties include, with their objects, around the
+grid ([#306](https://github.com/OpenMaker-Dev/openmaker/issues/306)).
+The options' bits and FileMaker Pro 26.1.1's placement of the parts are
+measured ([layout-model.md](re/layout-model.md) 4.2,
+[#927](https://github.com/OpenMaker-Dev/openmaker/issues/927)), and
+OpenMaker places them the same way: the top navigation and header parts
+above the column headings, the footer and bottom navigation parts below
+the rows, stacked at the window's bottom however few the rows. They do
+not scroll sideways with the columns. Their fields show the current
+record, and a web viewer in one of them shows one page that follows the
+current record, as in a List's header and footer. Limits:
+- **Zoom:** the parts zoom with the table. Pro keeps the navigation
+  parts at 100% ([#981](https://github.com/OpenMaker-Dev/openmaker/issues/981)).
+- **Tab:** Tab goes through the table's cells as it does without the
+  parts; from a part's field that has the keyboard it goes to the first
+  cell (Shift-Tab: the last). New Record's first field is the table's.
+  Whether Pro's Tab reaches the parts' fields is unmeasured.
+- **Unmeasured in Pro:** the pages of web viewers in the parts, and how
+  the header's, footer's and bottom navigation part's objects behave when
+  the table scrolls sideways.
+- **Find mode:** Table view in Find mode still draws its criteria grid
+  without the parts.
 
 **Limits.** List view shows no sub-summary parts, with a note saying why,
 when their groups cannot be read: a break field of another table, a summary
@@ -1351,12 +1412,12 @@ layout with none of them in its tab order, the first field drawn takes
 it. Table view focuses its first column (FileMaker's choice there is
 unmeasured).
 
-**Tab.** In Form and List view, Tab and Shift-Tab move the focus to the
-next or previous field object of the current record in the layout's
-stored tab order, by place and then paint order, as New Record picks the
-first field. That holds whatever the field's control is: an edit box,
-drop-down list, pop-up menu, or checkbox or radio button set. In Find
-mode they move the same way through the request's criteria, and wrap, as
+**Tab.** In Form and List view, Tab and Shift-Tab move the focus through
+the current record's field objects and the active panels of tab controls
+in the layout's stored tab order, by place and then paint order. Fields
+include edit boxes, drop-down lists, pop-up menus, and checkbox and radio
+button sets. A field's pending draft stays open when Tab focuses a panel.
+In Find mode they move through the request's criteria and wrap, as
 FileMaker Pro does on the Tasks starter (client-ui.md, "Tab in Browse");
 a criterion entered has its insertion point after its text. In Table view
 they move across the current record's cells in column order and wrap
@@ -1373,7 +1434,7 @@ in Browse"):
   typing replaces it (Pro on Meetings' Date, #964;
   `FieldObject::tab_selects_content`); that the control decides, not
   the date or an auto-entered value, is inferred;
-- Tab from the last field of the order goes to the first, and Shift-Tab
+- Tab from the last stop of the order goes to the first, and Shift-Tab
   from the first to the last;
 - in List view Tab stays on the current record;
 - with a pop-up menu's list open, Tab does nothing;
@@ -1389,15 +1450,14 @@ Inferred, unmeasured in Pro:
 - a row the portal shows only in part scrolls into view when Tab enters
   it;
 - a drop-down list's open list keeps Tab as a pop-up menu's does;
-- from a field outside the order, or with no widget focused, Tab goes to
-  the first field and Shift-Tab to the last;
+- with no widget focused, Tab goes to the first stop and Shift-Tab to
+  the last;
 - Tab with Ctrl, Alt or Command is not taken.
 
 **Limits of Tab:**
-- **Stops Pro has that OpenMaker passes over:** the front tab panel
-  itself, web viewers, buttons and container fields ([#253](https://github.com/OpenMaker-Dev/openmaker/issues/253)). On Contact
-  Details OpenMaker's cycle is Title, First Name, Last Name, Job Title,
-  Company and Website, where Pro's has 11 stops.
+- **Stops Pro has that OpenMaker passes over:** web viewers, buttons,
+  container fields and tab controls in portal rows.
+  [Open parity work](https://github.com/OpenMaker-Dev/openmaker/issues/253).
 - **Hidden tab panels:** fields on them are passed over, as in Pro.
 - **Table view's columns** are its stops, in their order. A calculation
   column, or one the account may not see, is passed over; a cell the
@@ -2124,20 +2184,32 @@ apply. The dialog has not been compared with FileMaker Pro's.
 
 Layout mode uses the provider's `LayoutGeometry` at the window zoom.
 When the decoded layout is available, the canvas uses its stored
-background, part colors, text, shapes, fields, button labels and
-standalone library images. These use Browse's static paint routines in
-their normal style,
-at the current draft frames. Merge text shows its stored markers and
-fields show their design names. The editor draws this artwork without
-evaluating record calculations or running document actions. Pasteboard
-objects, unsupported objects and geometry-only providers still use
-outlines and captions. Button icons, panel visibility and design-time
-web viewer placeholders are separate work ([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
+background, part colors, text, shapes, fields, button labels, button
+library icons and standalone library images. These use Browse's static
+paint routines in their normal style at the current draft frames. Button
+icons and labels use the saved placement. Merge text shows its stored
+markers and fields show their design names. The editor draws this artwork
+without evaluating record calculations or running document actions. If an icon
+cannot be resolved, a labeled button keeps its full-width label and an
+image-only button uses the canvas's outline and caption.
+Unsupported objects and geometry-only providers still use outlines and
+captions. Design-time web viewer placeholders are tracked
+in [#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019).
 The scrollable canvas, part tabs, objects and selection handles scale
 together. Placement, movement, resizing and the Inspector use the original
 layout points at every zoom. The toolbar, Objects pane and Inspector keep
 their size. The wheel and scroll bars scroll the canvas at every zoom.
 Touch drag to scroll is available at Actual Size.
+
+Stored artwork is dimmed on the visible pasteboard to the right of the
+layout. Objects below the last part and behind the part strip still use
+outlines. Borderless fields and text have a faint editing boundary.
+FileMaker Pro 26.1.1 can toggle field and text boundaries separately, and
+its field boundaries include dotted baselines. OpenMaker uses fixed faint
+outlines ([client-ui.md](re/client-ui.md#artwork-and-boundaries)).
+Contents of closed popovers still appear on the canvas
+([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
+
 The Objects pane is 220 pt wide, lists the layout's objects front to back,
 filters by kind or known field name, and selects and reveals the matching
 canvas object. Inspector tabs are interactive; Position shows real bounds
@@ -2178,13 +2250,25 @@ stored tab order.
 - **Selection.** Plain click selects one saved object or field draft;
   Shift-click adds/removes it from the selection, on the canvas or in
   Objects. Blank canvas clicks clear selection. With the Selection tool,
-  Edit > Select All (Cmd/Ctrl+A) selects every shown canvas object and
-  field draft. A box starting on blank layout space replaces the selection
+  Edit > Select All (Cmd/Ctrl+A) selects standalone objects, locked objects,
+  each group as one, both tab panels and their contents, and field drafts.
+  The front panel stays active. OpenMaker maps its Shape Tools button to
+  the Rectangle tool for Select All. This selects ungrouped rectangles,
+  including those on inactive panels, and returns to the Selection tool.
+  Selected shapes on inactive panels get outlines.
+  The combined handles span the visible selection. Locked objects can be
+  selected and refuse frame edits and deletion. A box starting on blank
+  layout space replaces the selection
   with the objects it crosses. Hold Cmd on macOS or Ctrl elsewhere to
-  select only objects entirely inside. Both use the canvas's existing
-  flat object list, including nested entries it already shows. Draft
-  text, buttons and portals keep their existing editors. Tool-specific
-  selection and popover-scoped boxes are not implemented. Dragging any
+  select only objects entirely inside. Crossing a group member selects
+  its group. Surrounding a whole tab control selects its panels and their
+  objects without switching the front panel. Handles span the outer
+  control and label outlines use the saved tab geometry. The modified marquee uses
+  the documented containment rule. That variant has not been tested in
+  FileMaker. Select All treats slide panels like tab panels and a portal
+  as one object, both unverified against FileMaker. Other tool-specific
+  Select All actions, Select Same and popover-scoped boxes remain unavailable.
+  Draft text, buttons and portals keep their existing editors. Dragging any
   selected movable member moves the whole selection, including a mix of saved
   objects and unsaved field drafts. Origins snap to whole points, keeping
   each object's size and the spacing between whole-point members; fractional
@@ -2192,9 +2276,12 @@ stored tab order.
   member adds it rather than replacing the selection (OpenMaker's choice;
   native Shift-drag axis constraints are not measured). If any member
   cannot move, the selection stays put and Inspector states why.
-  Unmodified arrow keys nudge the selection by one layout point, through
-  the same whole-point frame and draft checks as a drag. A focused text
-  editor keeps its keys. Delete and Edit > Clear validate the whole
+  An arrow key nudges the selection by one layout point, Shift+arrow by
+  ten, and Option+arrow on macOS by one. All three use the same whole-point
+  frame and draft checks as a drag. The distances were measured in FileMaker
+  Pro on macOS at Actual Size. OpenMaker uses layout points at every zoom
+  and also applies the plain and Shift steps on other desktop platforms.
+  A focused text editor keeps its keys. Delete and Edit > Clear validate the whole
   selection before staging deletions;
   an unsupported member refuses the whole action, without deleting peers.
   These changes stay unsaved until Save; Revert/Discard clears additions,
@@ -2519,6 +2606,16 @@ document objects; they cannot be edited.
 The revision is the one the window read when it opened the file or after
 its last placement: a layout another client changed since is refused at
 Save Layout, not shown changed before.
+
+On a decoded layout, the canvas draws and picks objects on the front tab
+or slide of each control. It starts with the stored current tab, the
+stored default tab, or the first panel, in that order. The Objects list
+still includes inactive panels and their contents. Selecting one of those
+rows reveals its containing panels in this window. This is
+OpenMaker's editor navigation and makes no layout changes. Tab and slide
+navigation directly on the design surface, handoff of the last Browse
+panel, and FileMaker's box selection of an entire control across its panels
+are not implemented.
 
 Manage Layouts opens from File > Manage > Layouts, Layouts > Manage Layouts
 and the Layout mode Manage button. Search, row selection, double-click,

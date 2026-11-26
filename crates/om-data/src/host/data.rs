@@ -43,6 +43,8 @@ pub struct RecordValues {
     /// host has none of yet (#892): the host's related sets from it are
     /// not its own ([`CachedSource`] scans them over a draft).
     pub held_new: bool,
+    /// Fields explicitly refused by a local window's pending read.
+    pub unavailable_fields: Option<Arc<BTreeSet<u64>>>,
 }
 
 impl RecordValues {

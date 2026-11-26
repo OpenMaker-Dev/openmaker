@@ -632,6 +632,8 @@ fn the_window_answers_from_the_desktop_area_and_its_toolbar() {
     ];
     let mut hide = with_value(step(29), 2);
     hide.flags |= flag::MENU_SELECTION;
+    let mut show = with_value(step(29), 1);
+    show.flags |= flag::MENU_SELECTION;
     let mut zoom = with_value(step(97), 5);
     zoom.flags |= flag::MENU_SELECTION;
     let scripts = vec![script(
@@ -646,6 +648,10 @@ fn the_window_answers_from_the_desktop_area_and_its_toolbar() {
             hide,
             probe(&geometry),
             zoom,
+            probe(&geometry),
+            move_resize(900.0, 1100.0, 120.0, 100.0),
+            probe(&geometry),
+            show,
             probe(&geometry),
             probe(&[
                 "Get ( ScreenDepth )",
@@ -680,19 +686,106 @@ fn the_window_answers_from_the_desktop_area_and_its_toolbar() {
     assert_eq!(moved[12..], ["20", "60", "260"]);
     // The toolbar hidden: the content area gains the bars' height.
     let hidden = &all[2];
-    assert_eq!(hidden[..4], ["100", "120", "1100", "900"]);
+    assert_eq!(hidden[..3], ["100", "120", "1100"]);
     let grown: i64 = hidden[5].parse().unwrap();
-    assert!(grown > content + 112, "{hidden:?}");
+    let moved_content = content + 112;
+    let frame_delta = if cfg!(target_os = "macos") {
+        assert_eq!(hidden[3], "845");
+        assert_eq!(grown, moved_content + 25);
+        55
+    } else {
+        assert_eq!(hidden[3], "900");
+        assert!(grown > moved_content, "{hidden:?}");
+        0
+    };
     assert_eq!(hidden[10], "0");
     assert_eq!(hidden[12..], ["20", "60", "260"]);
     // Zoom 150 %: the layout scaled from the content's top left.
     let zoomed = &all[3];
     assert_eq!(zoomed[11], "150");
     assert_eq!(zoomed[12..], ["30", "90", "390"]);
+    let fixed = &all[4];
+    assert_eq!(fixed[..4], ["100", "120", "1100", "900"]);
+    assert_eq!(fixed[5], (grown + frame_delta).to_string());
+    let shown = &all[5];
+    assert_eq!(shown[..3], ["100", "120", "1100"]);
+    assert_eq!(shown[3], (900 + frame_delta).to_string());
+    assert_eq!(shown[5], (moved_content + frame_delta).to_string());
+    assert_eq!(shown[10], "1");
     assert_eq!(
-        all[4],
+        all[6],
         ["32", "1", "1", "0", "-1", "1", "0", "32", "Contacts"]
     );
+}
+
+#[test]
+fn toolbar_lock_controls_the_menu_shortcut_and_status_area_state() {
+    use egui_kittest::kittest::{NodeT as _, Queryable};
+
+    let script_with_toolbar = |id, name, visibility, lock| {
+        let mut bar = with_value(step(29), visibility);
+        if lock {
+            bar.flags |= flag::LOCK;
+        }
+        script(
+            id,
+            name,
+            with_report(vec![
+                set_variable("$$r", "\"\""),
+                bar,
+                probe(&["Get ( LastError )", "Get ( StatusAreaState )"]),
+            ]),
+        )
+    };
+    let (mut app, state) = open(vec![
+        script_with_toolbar(250, "Lock shown", 1, true),
+        script_with_toolbar(251, "Lock hidden", 2, true),
+        script_with_toolbar(252, "Unlock shown", 1, false),
+        script_with_toolbar(253, "Hide unlocked", 2, false),
+    ]);
+    let shortcut = |app: &mut common::App| {
+        app.key_press_modifiers(
+            egui::Modifiers::COMMAND.plus(egui::Modifiers::ALT),
+            egui::Key::S,
+        );
+        app.run_steps(2);
+    };
+    let shots = std::env::var_os("OM_TOOLBAR_LOCK_SHOTS");
+    for (script, value, shown, locked) in [
+        ("Hide unlocked", "0", false, false),
+        ("Lock hidden", "3", false, true),
+        ("Unlock shown", "1", true, false),
+        ("Lock shown", "2", true, true),
+    ] {
+        assert_eq!(answers(&mut app, &state, script), [["0", value]]);
+        common::open_menu(&mut app, "View");
+        assert_eq!(
+            app.get_by_label("Status Toolbar")
+                .accesskit_node()
+                .is_disabled(),
+            locked
+        );
+        if let Some(dir) = &shots {
+            app.set_render_cursor(false);
+            app.render()
+                .unwrap()
+                .save(std::path::Path::new(dir).join(format!("state-{value}.png")))
+                .unwrap();
+        }
+        app.key_press(egui::Key::Escape);
+        app.run_steps(2);
+        if locked {
+            shortcut(&mut app);
+        }
+        assert_eq!(app.query_by_label("Edit Layout").is_some(), shown);
+        assert_eq!(app.query_by_label("Total (Unsorted)").is_some(), shown);
+    }
+    assert_eq!(answers(&mut app, &state, "Unlock shown"), [["0", "1"]]);
+    common::open_menu(&mut app, "View");
+    common::click(&mut app, "Status Toolbar");
+    assert!(app.query_by_label("Edit Layout").is_none());
+    shortcut(&mut app);
+    app.get_by_label("Edit Layout");
 }
 
 /// Adjust Window [Resize to Fit] gives the content area the layout's width

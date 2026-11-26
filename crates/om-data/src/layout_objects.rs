@@ -418,6 +418,9 @@ fn simple<'a>(
             "The layout has no object {object}."
         )));
     };
+    if found.is_locked() {
+        return unsupported(format!("Object {object} is locked in Layout mode."));
+    }
     if !store.root.contains(&object) {
         return unsupported(format!(
             "Object {object} is inside another object; this version {verb} top-level objects \

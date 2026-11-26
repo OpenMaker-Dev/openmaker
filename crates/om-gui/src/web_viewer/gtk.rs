@@ -11,6 +11,16 @@
 //! Views are incognito (no cookies or storage written to disk) and have no
 //! developer tools; they open no other windows, download nothing, and go
 //! only to http, https, data, blob, file and about URLs.
+//!
+//! The page bridge has two halves, both injected into the page's main
+//! frame only: the `FileMaker` object in the page's own script world
+//! ([`BRIDGE`]), and in a script world of OpenMaker's own ([`WORLD`]) the
+//! poster ([`BRIDGE_POSTER`]), which posts what `FileMaker` hands it to the
+//! view's message handler. The handler is registered in that world only,
+//! where no script of the page or of its frames runs, so another site's
+//! frame in the page cannot post to it (WebKitGTK does not say which frame
+//! posted a message). Messages are bounded on this thread, as they arrive
+//! ([`MessageBudget`]).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -20,8 +30,11 @@ use std::time::Duration;
 
 use gtk::glib;
 use gtk::prelude::*;
-use javascriptcore::ValueExt as _;
-use webkit2gtk::{UserContentManagerExt as _, WebViewExt as _};
+use javascriptcore::{ContextExt as _, ValueExt as _};
+use webkit2gtk::{
+    UserContentInjectedFrames, UserContentManagerExt as _, UserScript, UserScriptInjectionTime,
+    WebViewExt as _,
+};
 use wry::dpi::{PhysicalPosition, PhysicalSize};
 use wry::{WebView, WebViewBuilder, WebViewBuilderExtUnix, WebViewExtUnix};
 use x11rb::connection::Connection;
@@ -32,7 +45,8 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
 use super::{
-    allowed, Backend, Event, Geometry, NativeParent, Navigation, Unavailable, ViewSpec, BRIDGE,
+    allowed, Backend, Event, Geometry, MessageBudget, NativeParent, Navigation, Unavailable,
+    ViewSpec, BRIDGE, BRIDGE_POSTER, MAX_MESSAGE,
 };
 
 enum Command {
@@ -67,18 +81,32 @@ enum Command {
 pub(crate) struct GtkBackend {
     commands: Sender<Command>,
     events: Receiver<Event>,
+    /// Bridge messages the GTK thread sent and the app has not polled.
+    budget: MessageBudget,
 }
 
-/// WebKitGTK's DMA-BUF renderer shows blank pages on X servers without
-/// DRI3 (Xvfb, VNC, some proprietary drivers). There, unless the
-/// environment says otherwise, turn it off for this process's views. The
-/// variable must be set before any other thread starts.
+/// WebKitGTK's DMA-BUF renderer shows blank pages where its buffers cannot
+/// be shared with the X server. Unless the environment already chooses,
+/// for this process's views:
+///
+/// - on an X server without DRI3 (Xvfb, VNC, some proprietary drivers) the
+///   renderer is turned off;
+/// - where DRI3 hands out a device of NVIDIA's driver, pages go through
+///   shared memory instead (the web process still renders on the GPU): the
+///   renderer cannot allocate its buffers there ("Failed to create GBM
+///   buffer"), nor, without GBM, import them (measured through XWayland,
+///   NVIDIA 615, Arch's WebKitGTK 2.54). Debian's and Ubuntu's WebKitGTK
+///   make a choice of their own on NVIDIA's driver first (a patch of
+///   theirs; docs/re/layout-model.md 9.6).
+///
+/// The variables must be set before any other thread starts.
 pub(crate) fn prepare_environment() {
-    const VARIABLE: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
-    if std::env::var_os(VARIABLE).is_some() {
+    const DISABLE: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
+    const SHARED_MEMORY: &str = "WEBKIT_DMABUF_RENDERER_FORCE_SHM";
+    if std::env::var_os(DISABLE).is_some() || std::env::var_os(SHARED_MEMORY).is_some() {
         return;
     }
-    let Ok((x11, _)) = x11rb::connect(None) else {
+    let Ok((x11, screen)) = x11rb::connect(None) else {
         return;
     };
     let dri3 = x11
@@ -87,8 +115,35 @@ pub(crate) fn prepare_environment() {
         .and_then(|c| c.reply().ok())
         .is_some_and(|r| r.present);
     if !dri3 {
-        std::env::set_var(VARIABLE, "1");
+        std::env::set_var(DISABLE, "1");
+    } else if dri3_driver(&x11, screen).as_deref() == Some("nvidia") {
+        std::env::set_var(SHARED_MEMORY, "1");
     }
+}
+
+/// [`dri3_device_driver`], or `None` when the server's reply makes x11rb
+/// panic: it asserts that a reply brings the file descriptors it announces,
+/// and the X server is another process, which this check must not let end
+/// the app before its first window.
+fn dri3_driver(x11: &RustConnection, screen: usize) -> Option<String> {
+    let asked = std::panic::AssertUnwindSafe(|| dri3_device_driver(x11, screen));
+    std::panic::catch_unwind(asked).ok().flatten()
+}
+
+/// The kernel driver of the device the X server's DRI3 hands out for
+/// `screen` (the `driver` link of its `/sys/dev/char` entry).
+fn dri3_device_driver(x11: &RustConnection, screen: usize) -> Option<String> {
+    use std::os::unix::fs::MetadataExt as _;
+    use x11rb::protocol::dri3::ConnectionExt as _;
+    let root = x11.setup().roots.get(screen)?.root;
+    x11.dri3_query_version(1, 0).ok()?.reply().ok()?;
+    let reply = x11.dri3_open(root, x11rb::NONE).ok()?.reply().ok()?;
+    let rdev = std::fs::File::from(reply.device_fd).metadata().ok()?.rdev();
+    // glibc's encoding of a device number (`major`, `minor`).
+    let major = ((rdev >> 8) & 0xfff) | ((rdev >> 32) & !0xfff);
+    let minor = (rdev & 0xff) | ((rdev >> 12) & !0xff);
+    let driver = std::fs::read_link(format!("/sys/dev/char/{major}:{minor}/device/driver")).ok()?;
+    Some(driver.file_name()?.to_string_lossy().into_owned())
 }
 
 /// The views are X11 child windows, so the app's windows must be X11
@@ -126,6 +181,8 @@ fn x11_libraries() -> bool {
 
 /// The bridge's message handler (`window.webkit.messageHandlers.openmaker`).
 const HANDLER: &str = "openmaker";
+/// The script world the handler and the bridge's poster are in.
+const WORLD: &str = "openmaker-bridge";
 
 /// How long the app waits, once, for GTK to start.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -137,12 +194,18 @@ impl GtkBackend {
         let (event_tx, events) = channel();
         let (ready_tx, ready_rx) = channel();
         let ctx = ctx.clone();
+        let budget = MessageBudget::default();
+        let taken = budget.clone();
         std::thread::Builder::new()
             .name("openmaker-web-viewers".into())
-            .spawn(move || run(ctx, command_rx, event_tx, ready_tx))
+            .spawn(move || run(ctx, command_rx, event_tx, taken, ready_tx))
             .map_err(|_| Unavailable::Platform)?;
         match ready_rx.recv_timeout(START_TIMEOUT) {
-            Ok(true) => Ok(GtkBackend { commands, events }),
+            Ok(true) => Ok(GtkBackend {
+                commands,
+                events,
+                budget,
+            }),
             _ => Err(Unavailable::Platform),
         }
     }
@@ -188,7 +251,13 @@ impl Backend for GtkBackend {
     }
 
     fn poll(&mut self) -> Vec<Event> {
-        self.events.try_iter().collect()
+        let events: Vec<Event> = self.events.try_iter().collect();
+        for event in &events {
+            if let Event::Message { body, .. } = event {
+                self.budget.release(body);
+            }
+        }
+        events
     }
 }
 
@@ -196,6 +265,7 @@ impl Backend for GtkBackend {
 struct State {
     commands: Receiver<Command>,
     events: Events,
+    budget: MessageBudget,
     display: gdkx11::X11Display,
     x11: Rc<RustConnection>,
     views: HashMap<u64, Hosted>,
@@ -255,6 +325,7 @@ fn run(
     ctx: egui::Context,
     commands: Receiver<Command>,
     sender: Sender<Event>,
+    budget: MessageBudget,
     ready: Sender<bool>,
 ) {
     // The views are children of X11 windows: GDK must use X11 too, also in
@@ -274,6 +345,7 @@ fn run(
         *state.borrow_mut() = Some(State {
             commands,
             events: Events { sender, ctx },
+            budget,
             display,
             x11: Rc::new(x11),
             views: HashMap::new(),
@@ -511,8 +583,9 @@ impl State {
         let [cx, cy, cw, ch] = spec.geometry.content;
         let loads = self.events.clone();
         let messages = self.events.clone();
+        // The page loads once the bridge is in place (below): its first
+        // document gets both halves.
         let mut builder = WebViewBuilder::new()
-            .with_url(spec.url)
             .with_incognito(true)
             .with_devtools(false)
             .with_bounds(wry::Rect {
@@ -554,18 +627,31 @@ impl State {
             let manager = page
                 .user_content_manager()
                 .ok_or_else(|| "the page has no content manager".to_owned())?;
+            manager.add_script(&UserScript::for_world(
+                BRIDGE_POSTER,
+                UserContentInjectedFrames::TopFrame,
+                UserScriptInjectionTime::Start,
+                WORLD,
+                &[],
+                &[],
+            ));
+            // WebKit has already copied the message into this process; only
+            // text the bridge could have posted, within the budget, goes
+            // further.
+            let budget = self.budget.clone();
             manager.connect_script_message_received(Some(HANDLER), move |_, message| {
-                if let Some(value) = message.js_value() {
-                    messages.send(Event::Message {
-                        view,
-                        body: value.to_str().into(),
-                    });
+                let Some(body) = message.js_value().as_ref().and_then(bridge_text) else {
+                    return;
+                };
+                if budget.admit(&body) {
+                    messages.send(Event::Message { view, body });
                 }
             });
-            if !manager.register_script_message_handler(HANDLER) {
+            if !manager.register_script_message_handler_in_world(HANDLER, WORLD) {
                 return Err("the page's message handler could not be registered".into());
             }
         }
+        webview.load_url(&spec.url).map_err(|e| e.to_string())?;
         // "Allow interaction with web viewer content" off: the page takes
         // no pointer or keyboard input.
         page.set_sensitive(spec.interactive);
@@ -635,10 +721,69 @@ fn place(x11: &RustConnection, hosted: &mut Hosted, geometry: Geometry, visible:
     }
 }
 
+/// The text of a message a page posted to the bridge's handler, if it can
+/// be a bridge message: a string of ASCII without a NUL, which is all the
+/// bridge posts (`encodeURIComponent`'s output), no longer than
+/// [`MAX_MESSAGE`]. Its length is read before it is copied out, so one too
+/// long is not copied; one JavaScriptCore cannot convert (an unpaired
+/// surrogate) is `None`.
+fn bridge_text(value: &javascriptcore::Value) -> Option<String> {
+    if !value.is_string() {
+        return None;
+    }
+    let units = utf16_length(value).filter(|&units| units <= MAX_MESSAGE)?;
+    // As bytes, the string's whole length, where a C string would stop at
+    // a NUL. Their number first, so that no more than the limit is read;
+    // ASCII has as many bytes as units. A raw NUL is never the bridge's,
+    // which encodes one as `%00`.
+    let bytes = value.to_string_as_bytes()?;
+    if bytes.len() != units || !bytes.is_ascii() || bytes.contains(&0) {
+        return None;
+    }
+    std::str::from_utf8(&bytes).ok().map(str::to_owned)
+}
+
+/// A JavaScript string's length in UTF-16 code units, which is at most its
+/// length in UTF-8 bytes, read in JavaScript without copying the string.
+fn utf16_length(value: &javascriptcore::Value) -> Option<usize> {
+    let length = value
+        .context()?
+        .evaluate("(function (text) { return text.length; })")?;
+    let units = length
+        .function_callv(std::slice::from_ref(value))?
+        .to_double();
+    (units.is_finite() && units >= 0.0).then_some(units as usize)
+}
+
 fn clamp_i16(v: i32) -> i16 {
     v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
 
 fn clamp_u16(v: i32) -> u16 {
     v.clamp(1, i32::from(u16::MAX)) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use javascriptcore::ContextExt as _;
+
+    /// What a page posts reaches the app only as text the bridge could have
+    /// posted, and nothing it posts makes the handler panic (a panic in a
+    /// GTK callback aborts the app).
+    #[test]
+    fn only_text_the_bridge_could_post_is_taken_from_a_page() {
+        let context = javascriptcore::Context::new();
+        let text = |code: &str| super::bridge_text(&context.evaluate(code).expect("evaluates"));
+        let message = "openmaker-perform-script&s=a&p=%C3%A9%00&o=0";
+        assert_eq!(text(&format!("'{message}'")).as_deref(), Some(message));
+        // An unpaired surrogate, which JavaScriptCore may fail to convert,
+        // other text that is not ASCII, a raw NUL, and what is not text.
+        assert_eq!(text("'openmaker-perform-script&s=a\\uD800&p=&o=0'"), None);
+        assert_eq!(text("'openmaker-perform-script&s=\\u00e9&p=&o=0'"), None);
+        assert_eq!(text("'openmaker-perform-script&s=a&p=b\\u0000c&o=0'"), None);
+        assert_eq!(text("42"), None);
+        // Longer than a message may be, by its length alone.
+        let long = format!("'x'.repeat({})", super::MAX_MESSAGE + 1);
+        assert_eq!(text(&long), None);
+    }
 }

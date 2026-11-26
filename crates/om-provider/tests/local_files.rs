@@ -139,6 +139,379 @@ fn name(value: &str) -> FieldChanges {
     FieldChanges::from([("Name".to_owned(), Some(value.to_owned()))])
 }
 
+fn add_grouped_self_join(
+    root: &mut om_hbam::OwnedNode,
+    here: u64,
+    other: u64,
+    group: u64,
+    row_key: u64,
+) {
+    fixture::add_relationship(root, 9, (here, row_key), 1, (other, row_key));
+    // Put equality second to exercise the index even when inequality
+    // is the first predicate in the definition.
+    let segment = om_hbam::slot::uint_segment(group);
+    let mut key = vec![segment.len() as u8 + 1, segment.len() as u8];
+    key.extend(segment);
+    let mut predicate = vec![0];
+    predicate.extend(&key);
+    predicate.extend(key);
+    root.put(
+        &[&[3], &[0xfb], &[5], &[9], &[3], &[2]],
+        om_hbam::OwnedNode::leaf([], predicate),
+    );
+}
+
+#[test]
+fn grouped_self_join_reads_other_records_after_setting_the_group() {
+    use fixture::{LAYOUT, OCCURRENCE};
+    use om_data::calc::Value;
+    use om_data::host::CalcNeed;
+    use om_data::ScriptWrite;
+    use om_hbam::slot::uint_segment;
+
+    const GROUP: u64 = 30;
+    const KEY: u64 = 31;
+    const DATE: u64 = 32;
+    const TIME: u64 = 33;
+    const ELAPSED: u64 = 34;
+    const OTHER: u64 = 0xd0_0009;
+    let folder = Folder::new("grouped-unequal-self-join");
+    let path = folder.file("Events.fmp12", PASSWORD, |root| {
+        let table = uint_segment(TABLE);
+        root.remove(&[&table, &[5]]);
+        root.remove(&[&table, &[0x0d]]);
+        fixture::add_occurrence(root, OTHER, "OtherEvents", TABLE);
+        let mut names = fixture::names();
+        names.add_occurrence(OTHER, "OtherEvents", TABLE);
+        for (id, name, kind, options) in [
+            (GROUP, "GroupKey", 1, 0x8000_0000),
+            (KEY, "EventKey", 1, 0x8000_0088),
+            (DATE, "EventDate", 3, 0),
+            (TIME, "EventTime", 4, 0),
+            (ELAPSED, "Elapsed", 4, 0x8),
+        ] {
+            names.add_field(TABLE, id, name);
+            fixture::add_field(root, TABLE, id, name, 1, kind, 0, options, 0);
+        }
+        add_grouped_self_join(root, OCCURRENCE, OTHER, GROUP, KEY);
+        fixture::add_formula(root, &names, (TABLE, OCCURRENCE), KEY, 5, "Get ( UUID )");
+        fixture::add_formula(
+            root,
+            &names,
+            (TABLE, OCCURRENCE),
+            ELAPSED,
+            5,
+            "If ( IsEmpty ( Elapsed ) and not IsEmpty ( OtherEvents::EventKey ) ;\n\
+             GetAsTimestamp ( EventDate & \" \" & EventTime ) -\n\
+             GetAsTimestamp ( OtherEvents::EventDate & \" \" & OtherEvents::EventTime ) ; Elapsed )",
+        );
+    });
+    let mut provider = opened(&path);
+    let draft = ScriptWrite {
+        layout: LAYOUT as u32,
+        ..Default::default()
+    };
+    let read = |provider: &mut NativeProvider, id| {
+        let record = u64::try_from(id).unwrap();
+        provider
+            .calc_data(&[CalcNeed::Record {
+                table: TABLE,
+                record,
+            }])
+            .unwrap()
+            .records[&(TABLE, record)]
+            .clone()
+            .unwrap()
+    };
+    let mut group = String::new();
+    let mut ids = Vec::new();
+    for seconds in [0, 10, 30] {
+        provider.begin_record_commit().unwrap();
+        let record = provider.write_record(&draft).unwrap().id;
+        provider
+            .write_record(&ScriptWrite {
+                record: Some(record),
+                cells: [
+                    (DATE, Some("1/15/2030".into())),
+                    (TIME, Some(format!("8:00:{seconds:02} AM"))),
+                ]
+                .into(),
+                ..draft.clone()
+            })
+            .unwrap();
+        provider.commit_transaction(true).unwrap();
+        let values = read(&mut provider, record);
+        assert!(values.get(ELAPSED, 1).is_none());
+        if group.is_empty() {
+            let Some(Value::Text(key)) = values.get(KEY, 1) else {
+                panic!("New Record did not generate its key");
+            };
+            group = key.as_str().to_owned();
+        }
+        let page = provider.record_by_id(LAYOUT as u32, record).unwrap();
+        assert_eq!(
+            provider
+                .prepare_record_edit(&om_data::RecordEditRequest {
+                    baseline: om_data::ContainerEditBaseline {
+                        layout: LAYOUT as u32,
+                        record,
+                        version: page.versions.get(&record).copied(),
+                    },
+                    cells: [GROUP].into(),
+                    fields: Default::default(),
+                })
+                .unwrap(),
+            om_data::EditPreparation::Prepared
+        );
+        provider
+            .write_record(&ScriptWrite {
+                record: Some(record),
+                cells: [(GROUP, Some(group.clone()))].into(),
+                single_field_step: true,
+                ..draft.clone()
+            })
+            .unwrap();
+        provider.commit_transaction(false).unwrap();
+        ids.push(record);
+    }
+    provider.begin_record_commit().unwrap();
+    let candidate = provider.write_record(&draft).unwrap().id;
+    provider
+        .write_record(&ScriptWrite {
+            record: Some(candidate),
+            cells: [
+                (DATE, Some("1/15/2030".into())),
+                (TIME, Some("8:00:20 AM".into())),
+            ]
+            .into(),
+            ..draft.clone()
+        })
+        .unwrap();
+    provider.commit_transaction(false).unwrap();
+    for edits in [
+        vec![
+            (GROUP, Some(group.clone())),
+            (TIME, Some("8:00:50 AM".into())),
+        ],
+        vec![(GROUP, Some(group.clone())), (GROUP, None)],
+        vec![(GROUP, Some(format!("{group}\rAnother")))],
+        vec![(KEY, Some("First\rSecond".into()))],
+    ] {
+        provider.begin_record_commit().unwrap();
+        let refused = edits
+            .into_iter()
+            .try_for_each(|(field, value)| {
+                provider
+                    .write_record(&ScriptWrite {
+                        record: Some(candidate),
+                        cells: [(field, value)].into(),
+                        single_field_step: true,
+                        ..draft.clone()
+                    })
+                    .map(|_| ())
+            })
+            .and_then(|()| provider.commit_transaction(false))
+            .unwrap_err();
+        assert_eq!(refused.code, Some(3), "{refused:?}");
+        if provider.transaction_open() {
+            provider.revert_transaction().unwrap();
+        }
+        let values = read(&mut provider, candidate);
+        assert!(values.get(GROUP, 1).is_none());
+        assert!(values.get(ELAPSED, 1).is_none());
+    }
+
+    provider.close();
+    let mut provider = opened(&path);
+    for (record, seconds) in ids.into_iter().zip([None, Some(10), Some(30)]) {
+        let values = read(&mut provider, record);
+        let elapsed = match values.get(ELAPSED, 1) {
+            None => None,
+            Some(Value::Time(time)) => Some(time.micros() / 1_000_000),
+            value => panic!("unexpected elapsed value {value:?}"),
+        };
+        assert_eq!(elapsed, seconds);
+    }
+    provider.close();
+}
+
+#[test]
+fn replacing_group_flag_uses_the_first_peer_and_leaves_other_rows_unchanged() {
+    use fixture::{LAYOUT, OCCURRENCE};
+    use om_data::calc::Value;
+    use om_data::host::CalcNeed;
+    use om_data::rules::RecordNumber;
+    use om_data::{RecordCreation, ScriptWrite};
+
+    const GROUP: u64 = 30;
+    const KEY: u64 = 31;
+    const FLAG: u64 = 32;
+    const NOTE: u64 = 33;
+    const SERIAL: u64 = 34;
+    const OTHER: u64 = 0xd0_0009;
+    let folder = Folder::new("replacing-grouped-flag");
+    let path = folder.file("Items.fmp12", PASSWORD, |root| {
+        let table = om_hbam::slot::uint_segment(TABLE);
+        root.remove(&[&table, &[5]]);
+        root.remove(&[&table, &[0x0d]]);
+        fixture::add_occurrence(root, OTHER, "Peers", TABLE);
+        let mut names = fixture::names();
+        names.add_occurrence(OTHER, "Peers", TABLE);
+        for (id, name, kind, options) in [
+            (GROUP, "GroupKey", 1, 0x8000_0000),
+            (KEY, "ItemKey", 1, 0x8000_0088),
+            (FLAG, "Primary", 2, 0xa8),
+            (NOTE, "Note", 1, 0),
+            (SERIAL, "Serial", 1, 0x2),
+        ] {
+            names.add_field(TABLE, id, name);
+            fixture::add_field(root, TABLE, id, name, 1, kind, 0, options, 0);
+        }
+        fixture::set_field_serial_increment(root, TABLE, SERIAL, 1);
+        root.put(
+            &[
+                &table,
+                &[3],
+                &[5],
+                &om_hbam::slot::uint_segment(SERIAL),
+                &[0x0c],
+            ],
+            om_scripts::text_node(&[], "1"),
+        );
+        add_grouped_self_join(root, OCCURRENCE, OTHER, GROUP, KEY);
+        for (field, text) in [
+            (KEY, "Get ( UUID )"),
+            (FLAG, "If ( Peers::Primary = 1 ; 0 ; 1 )"),
+        ] {
+            fixture::add_formula(root, &names, (TABLE, OCCURRENCE), field, 5, text);
+        }
+    });
+
+    let mut provider = opened(&path);
+    let draft = ScriptWrite {
+        layout: LAYOUT as u32,
+        ..Default::default()
+    };
+    let refused = ScriptWrite {
+        record_number: Some(RecordNumber::Window(1)),
+        ..draft.clone()
+    };
+    assert_eq!(
+        provider.preview_new_record(&refused).unwrap_err().code,
+        Some(3)
+    );
+    assert_eq!(provider.write_record(&refused).unwrap_err().code, Some(3));
+    assert_eq!(
+        provider
+            .import_record(draft.layout, None, &BTreeMap::new(), true)
+            .unwrap_err()
+            .code,
+        Some(3)
+    );
+    provider.begin_record_commit().unwrap();
+    assert_eq!(provider.write_record(&refused).unwrap_err().code, Some(3));
+    provider.revert_transaction().unwrap();
+    provider.close();
+    let file = om_hbam::HbamFile::open(&path).unwrap();
+    let tree = file.key_tree().unwrap();
+    let next = tree
+        .at(&[TABLE, 3, 5, SERIAL, 0x0c])
+        .unwrap()
+        .text()
+        .unwrap()
+        .unwrap();
+    assert_eq!(next, "1", "a refused creation leaves the serial untouched");
+    drop(tree);
+    drop(file);
+
+    let mut provider = opened(&path);
+    let read = |provider: &mut NativeProvider, record: i64| {
+        let record = u64::try_from(record).unwrap();
+        let need = CalcNeed::Record {
+            table: TABLE,
+            record,
+        };
+        let page = provider.calc_data(&[need]).unwrap();
+        let values = page.records[&(TABLE, record)].as_ref().unwrap();
+        match values.get(FLAG, 1) {
+            Some(Value::Number(number) | Value::NumberText(number, _)) => number.to_i64(),
+            None => None,
+            value => panic!("unexpected group flag {value:?}"),
+        }
+    };
+    let set = |record, field, value: &str| ScriptWrite {
+        record: Some(record),
+        cells: [(field, Some(value.to_owned()))].into(),
+        single_field_step: true,
+        ..draft.clone()
+    };
+    let mut ids = Vec::new();
+    for (index, (group, want)) in [("A", 1), ("A", 0), ("A", 0), ("B", 1)]
+        .into_iter()
+        .enumerate()
+    {
+        let start = ScriptWrite {
+            record_number: Some(RecordNumber::LocalNewRecord(index as u64 + 1)),
+            ..draft.clone()
+        };
+        provider.begin_record_commit().unwrap();
+        let created = provider
+            .write_record_with_creation(&start, RecordCreation::NewRecord)
+            .unwrap();
+        let record = created.id;
+        assert_eq!(
+            read(&mut provider, record),
+            Some(1),
+            "New Record: {created:?}"
+        );
+        let mut assignment = set(record, GROUP, group);
+        assignment.record_number = start.record_number;
+        assignment.single_field_step = false;
+        let pending = provider.compute_pending(&assignment, &[]).unwrap().unwrap();
+        assert_eq!(
+            pending.values[&FLAG].as_deref(),
+            Some(want.to_string().as_str())
+        );
+        assert!(!pending.unknown.contains(&FLAG), "{pending:?}");
+        provider.write_record(&assignment).unwrap();
+        provider.commit_transaction(true).unwrap();
+        assert_eq!(read(&mut provider, record), Some(want), "after Commit");
+        ids.push(record);
+    }
+
+    // Moving A's first row to B reads B's first row and only changes
+    // the moved row.
+    provider.begin_record_commit().unwrap();
+    provider.write_record(&set(ids[0], GROUP, "B")).unwrap();
+    provider.commit_transaction(true).unwrap();
+    assert_eq!(read(&mut provider, ids[0]), Some(0));
+    let mut outside = set(ids[1], GROUP, "A");
+    outside.cells.insert(NOTE, Some("Another change".into()));
+    outside.single_field_step = false;
+    let pending = provider.compute_pending(&outside, &[]).unwrap().unwrap();
+    assert!(pending.unavailable.contains(&FLAG), "{pending:?}");
+    // A2's first peer is now A3, whose flag is zero. An unrelated
+    // edit preserves the old value, and reassigning A computes one.
+    for (field, value, want) in [(NOTE, "Edited", 0), (GROUP, "A", 1)] {
+        provider.begin_record_commit().unwrap();
+        let assignment = set(ids[1], field, value);
+        let pending = provider.compute_pending(&assignment, &[]).unwrap().unwrap();
+        assert_eq!(
+            pending.values[&FLAG].as_deref(),
+            Some(want.to_string().as_str())
+        );
+        assert!(!pending.unknown.contains(&FLAG), "{pending:?}");
+        provider.write_record(&assignment).unwrap();
+        provider.commit_transaction(true).unwrap();
+        assert_eq!(read(&mut provider, ids[1]), Some(want));
+    }
+    provider.close();
+    let mut provider = opened(&path);
+    for (record, want) in ids.into_iter().zip([0, 1, 0, 1]) {
+        assert_eq!(read(&mut provider, record), Some(want), "after reopen");
+    }
+}
+
 /// A field with furigana ("Use Furigana Field", option `0x40`): FileMaker
 /// Pro writes the reading of the text entered there into another field,
 /// which OpenMaker does not (#1301), so a change of its value is refused,
@@ -1051,6 +1424,8 @@ fn name_of(provider: &mut dyn DataProvider, layout: u32, id: i64) -> Option<Stri
 fn a_variable_source_opens_on_first_read_and_keeps_its_file() {
     use om_data::calc::{eval::Variables, Value};
     use om_data::host::CalcNeed;
+    use om_hbam::slot::uint_segment;
+    use om_layout::{encode, Rect};
 
     let folder = Folder::new("variable-source");
     let root_path = folder.file("Root.fmp12", PASSWORD, |root| {
@@ -1061,6 +1436,26 @@ fn a_variable_source_opens_on_first_read_and_keeps_its_file() {
             "Peer",
             &[("", "", "$$RelatedPath")],
         );
+        let layout_key = uint_segment(fixture::LAYOUT);
+        let path = [&[4][..], &[5], &layout_key, &[7]];
+        let store = root
+            .at(&path)
+            .and_then(|node| node.value.as_deref())
+            .unwrap_or_default();
+        let field = encode::field_object(
+            420,
+            &Rect {
+                left: 20.0,
+                top: 20.0,
+                right: 120.0,
+                bottom: 38.0,
+                ..Default::default()
+            },
+            om_data::layout_placement::serial_value(PEER_ROWS).unwrap(),
+            om_data::layout_placement::serial_value(fixture::NAME).unwrap(),
+        );
+        let store = encode::append_to_store(store, &[420], &[field]);
+        root.put(&path, om_hbam::OwnedNode::leaf(Vec::new(), store));
     });
     folder.file("First.fmp12", PASSWORD, |_| {});
     folder.file("Second.fmp12", PASSWORD, |_| {});
@@ -1070,6 +1465,23 @@ fn a_variable_source_opens_on_first_read_and_keeps_its_file() {
     assert!(root.calc_schema().unwrap().unwrap().is_pending(PEER_ROWS));
     assert!(root.related_file_warnings().is_empty());
     assert!(!root.references_peer("First").unwrap());
+
+    root.record_capabilities_for_layout(fixture::LAYOUT as u32, true)
+        .unwrap();
+    assert!(root.related_file_warnings().is_empty());
+    assert!(root
+        .render_script_layout(fixture::LAYOUT as u32)
+        .unwrap()
+        .is_some());
+    assert!(root.related_file_warnings().is_empty());
+    assert!(root
+        .render_layout(fixture::LAYOUT as u32)
+        .unwrap()
+        .is_some());
+    assert!(root
+        .related_file_warnings()
+        .iter()
+        .any(|warning| warning.contains("$$RelatedPath")));
 
     let mut variables = Variables::new();
     variables.set("$$RelatedPath", 1, Value::text("file:First.fmp12"));
@@ -2932,6 +3344,470 @@ fn starter_fields_read_as_the_fields_tab_lists_them() {
 }
 
 #[test]
+fn local_new_record_keeps_utc_clock_samples_through_commit() {
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
+    use om_data::ScriptWrite;
+    use om_hbam::OwnedNode;
+
+    const CUSTOM: u64 = 40;
+    const DIRECT: u64 = 41;
+    let folder = Folder::new("utc-milliseconds-auto-entry");
+    let path = folder.file("Clocks.fmp12", PASSWORD, |root| {
+        let mut names = fixture::names();
+        names.add_custom_function(1, "UtcSample", 0);
+        root.put(
+            &[&[16], &[5], &[1], &[16]],
+            om_scripts::text_node(&[], "UtcSample"),
+        );
+        let body = om_formula::polish::encode(&om_formula::Expr::Get(
+            om_data::host::session::selector::CURRENT_TIME_UTC_MILLISECONDS,
+        ));
+        root.put(
+            &[&[16], &[5], &[1], &[35], &[6]],
+            OwnedNode::leaf(Vec::new(), body),
+        );
+        for (id, name, kind, formula) in [
+            (CUSTOM, "ViaFunction", 1, "UtcSample"),
+            (DIRECT, "Direct", 2, "Get ( CurrentTimeUTCMilliseconds )"),
+        ] {
+            fixture::add_field(root, TABLE, id, name, 1, kind, 0, 0x88, 0);
+            fixture::add_formula(root, &names, (TABLE, OCCURRENCE), id, 5, formula);
+        }
+    });
+    let mut provider = opened(&path);
+    let request = ScriptWrite {
+        layout: LAYOUT as u32,
+        ..Default::default()
+    };
+    let preview = provider.preview_new_record(&request).unwrap().unwrap();
+    let observed: Vec<_> = [CUSTOM, DIRECT]
+        .into_iter()
+        .map(|field| {
+            let value = preview.values[&field].clone().unwrap();
+            assert!(value.parse::<i64>().is_ok());
+            (field, value)
+        })
+        .collect();
+    // The next evaluation must not sample the current clock again.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let row = provider
+        .write_record(&ScriptWrite {
+            prepared: Some(preview.id),
+            cells: [(NAME, Some("Unrelated edit".into()))].into(),
+            ..request.clone()
+        })
+        .unwrap();
+
+    let fields = provider.records(request.layout, 0, 0).unwrap().fields;
+    let tracked = [(CUSTOM, "ViaFunction"), (DIRECT, "Direct")]
+        .map(|(id, name)| (id, fields.iter().position(|f| f.name == name).unwrap()));
+    provider.begin_record_commit().unwrap();
+    let held = provider.write_record(&request).unwrap();
+    let held_samples = tracked.map(|(id, index)| {
+        let value = held.values[index].clone().unwrap();
+        assert!(value.parse::<i64>().is_ok());
+        (id, value)
+    });
+    for name in ["First edit", "Second edit"] {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let edited = provider
+            .write_record(&ScriptWrite {
+                record: Some(held.id),
+                cells: [(NAME, Some(name.into()))].into(),
+                ..request.clone()
+            })
+            .unwrap();
+        for ((_, index), (_, value)) in tracked.iter().zip(&held_samples) {
+            assert_eq!(edited.values[*index].as_deref(), Some(value.as_str()));
+        }
+    }
+    provider.commit_record_session(false).unwrap();
+    provider.close();
+
+    let file = om_hbam::HbamFile::open(&path).unwrap();
+    let records = file.records(TABLE).unwrap();
+    for (record, samples) in [(row, observed.as_slice()), (held, held_samples.as_slice())] {
+        let stored = records
+            .iter()
+            .find(|stored| stored.id == record.id as u64)
+            .unwrap();
+        for (field, value) in samples {
+            assert_eq!(
+                stored.text(*field).transpose().unwrap().as_deref(),
+                Some(value.as_str())
+            );
+        }
+    }
+}
+
+#[test]
+fn unsupported_stored_record_position_does_not_reserve_a_serial() {
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
+    use om_data::rules::{error, RecordNumber};
+    use om_hbam::slot::uint_segment;
+
+    const SERIAL: u64 = 40;
+    const POSITION: u64 = 41;
+    let folder = Folder::new("stored-position-preflight");
+    let path = folder.file("Events.fmp12", PASSWORD, |root| {
+        fixture::add_field(root, TABLE, SERIAL, "Serial", 1, 1, 0, 0x2, 0);
+        fixture::set_field_serial_increment(root, TABLE, SERIAL, 1);
+        root.put(
+            &[
+                &uint_segment(TABLE),
+                &[3],
+                &[5],
+                &uint_segment(SERIAL),
+                &[0x0c],
+            ],
+            om_scripts::text_node(&[], "1"),
+        );
+        fixture::add_field(root, TABLE, POSITION, "Position", 2, 2, 0, 0x80000, 0);
+        fixture::add_formula(
+            root,
+            &fixture::names(),
+            (TABLE, OCCURRENCE),
+            POSITION,
+            5,
+            "Get ( RecordNumber )",
+        );
+    });
+    let mut provider = opened(&path);
+    let write = om_data::ScriptWrite {
+        layout: LAYOUT as u32,
+        record_number: Some(RecordNumber::Window(3)),
+        ..Default::default()
+    };
+    let preview_error = provider.preview_new_record(&write).err().unwrap();
+    assert_eq!(preview_error.code, Some(error::UNAVAILABLE));
+    let create_error = provider.write_record(&write).unwrap_err();
+    assert_eq!(create_error.code, Some(error::UNAVAILABLE));
+    let cells = [(NAME, Some("Imported".into()))].into();
+    let import_error = provider
+        .import_record(LAYOUT as u32, None, &cells, true)
+        .unwrap_err();
+    assert_eq!(import_error.code, Some(error::UNAVAILABLE));
+    provider.begin_record_commit().unwrap();
+    let import_error = provider
+        .import_record(LAYOUT as u32, None, &cells, true)
+        .unwrap_err();
+    assert_eq!(import_error.code, Some(error::UNAVAILABLE));
+    let create_error = provider.write_record(&write).err().unwrap();
+    assert_eq!(create_error.code, Some(error::UNAVAILABLE));
+    provider.revert_transaction().unwrap();
+    provider.close();
+
+    let file = om_hbam::HbamFile::open(&path).unwrap();
+    let tree = file.key_tree().unwrap();
+    let next = tree
+        .at(&[TABLE, 3, 5, SERIAL, 0x0c])
+        .unwrap()
+        .text()
+        .unwrap()
+        .unwrap();
+    assert_eq!(next, "1");
+    drop(tree);
+    drop(file);
+
+    let mut provider = opened(&path);
+    provider.begin_record_commit().unwrap();
+    let made = provider
+        .write_record(&om_data::ScriptWrite {
+            record_number: Some(RecordNumber::LocalNewRecord(3)),
+            ..write
+        })
+        .unwrap();
+    provider.commit_record_session(false).unwrap();
+    provider.close();
+
+    let mut reopened = opened(&path);
+    let saved = reopened.record_by_id(LAYOUT as u32, made.id).unwrap();
+    assert_eq!(text(&saved, made.id, "Position"), Some("3"));
+    assert_eq!(text(&saved, made.id, "Serial"), Some("1"));
+}
+
+#[test]
+fn local_new_record_auto_enters_a_file_variable_at_creation() {
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
+    use om_data::calc::{eval::Variables, Value};
+    use om_data::ScriptWrite;
+
+    const MARKER: u64 = 40;
+    let folder = Folder::new("file-variable-auto-entry");
+    let path = folder.file("Sample.fmp12", PASSWORD, |root| {
+        fixture::add_field(root, TABLE, MARKER, "Marker", 1, 1, 0, 0x8, 0);
+        fixture::add_formula(
+            root,
+            &fixture::names(),
+            (TABLE, OCCURRENCE),
+            MARKER,
+            5,
+            "$$Marker",
+        );
+    });
+    let mut provider = opened(&path);
+    let mut variables = Variables::new();
+    let new_record = ScriptWrite {
+        layout: LAYOUT as u32,
+        ..Default::default()
+    };
+    let mut expected = Vec::new();
+    for (value, text) in [("alpha", Some("alpha")), ("beta", Some("beta")), ("", None)] {
+        variables.set("$$Marker", 1, Value::text(value));
+        provider.set_file_variables(&variables);
+        let preview = provider.preview_new_record(&new_record).unwrap().unwrap();
+        assert_eq!(preview.values.get(&MARKER).and_then(Option::as_deref), text);
+
+        // A preview keeps the file variable it read, as it keeps the
+        // creation clock, when the window later commits the row.
+        variables.set("$$Marker", 1, Value::text("later"));
+        provider.set_file_variables(&variables);
+        let record = provider
+            .write_record(&ScriptWrite {
+                prepared: Some(preview.id),
+                cells: [(NAME, Some("Note".into()))].into(),
+                ..new_record.clone()
+            })
+            .unwrap();
+        expected.push((record.id as u64, text));
+    }
+    provider.close();
+
+    let file = om_hbam::HbamFile::open(&path).unwrap();
+    let rows = file.records(TABLE).unwrap();
+    for (id, value) in expected {
+        let row = rows.iter().find(|row| row.id == id).unwrap();
+        assert_eq!(row.text(MARKER).transpose().unwrap().as_deref(), value);
+        if value.is_none() {
+            assert!(!row.cells.contains_key(&MARKER));
+        }
+    }
+}
+
+#[test]
+fn held_new_record_shows_the_proposed_self_result_and_commits_it_once() {
+    use fixture::{LAYOUT, OCCURRENCE};
+    use om_data::found::{FoundSetChange, SortField, SortOrder};
+    use om_data::rules::RecordNumber;
+
+    const AMOUNT: u64 = 40;
+    for sorted in [false, true] {
+        let folder = Folder::new("held-proposed-self");
+        let path = folder.file("Numbers.fmp12", PASSWORD, |root| {
+            fixture::add_field(root, TABLE, AMOUNT, "Amount", 1, 2, 0, 0x88, 0);
+            fixture::add_formula(
+                root,
+                &fixture::names(),
+                (TABLE, OCCURRENCE),
+                AMOUNT,
+                5,
+                "If ( IsEmpty ( Self ) ; 0 ; Self + 1 )",
+            );
+        });
+        let layout = LAYOUT as u32;
+        let mut provider = opened(&path);
+        let fields = provider.records(layout, 0, 0).unwrap().fields;
+        let amount = fields.iter().position(|f| f.name == "Amount").unwrap();
+        let record_number = if sorted {
+            provider
+                .change_found_set(
+                    layout,
+                    FoundSetChange::Sort(vec![SortField::new("Name", SortOrder::Descending)]),
+                )
+                .unwrap();
+            let first = provider.records(layout, 0, 1).unwrap().records[0].id;
+            provider.copy_window(1, 2);
+            provider.use_window(2);
+            RecordNumber::LocalSortedNewRecord {
+                position: 2,
+                after: first as u64,
+            }
+        } else {
+            RecordNumber::LocalNewRecord(3)
+        };
+        provider.begin_record_commit().unwrap();
+        let created = provider
+            .write_record_with_creation(
+                &om_data::ScriptWrite {
+                    layout,
+                    record_number: Some(record_number),
+                    ..Default::default()
+                },
+                om_data::RecordCreation::NewRecord,
+            )
+            .unwrap();
+        assert_eq!(created.values[amount].as_deref(), Some("0"));
+        let held = provider
+            .write_record(&om_data::ScriptWrite {
+                layout,
+                record: Some(created.id),
+                cells: BTreeMap::from([(AMOUNT, Some("25".into()))]),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(held.values[amount].as_deref(), Some("26"));
+        let (found, state) = provider.records_with_summary(layout, 0, 4, &[]).unwrap();
+        assert_eq!(state.unwrap().sorted, sorted);
+        assert_eq!(
+            found.records[record_number.value() as usize - 1].id,
+            created.id
+        );
+        provider.commit_record_session(false).unwrap();
+        provider.close();
+
+        let mut reopened = opened(&path);
+        let saved = reopened.record_by_id(layout, created.id).unwrap();
+        assert_eq!(text(&saved, created.id, "Amount"), Some("26"));
+    }
+}
+
+#[test]
+fn a_local_sorted_new_record_keeps_its_insertion_position() {
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
+    use om_data::found::{FoundSetChange, SortField, SortOrder};
+    use om_data::rules::RecordNumber;
+
+    const POSITION: u64 = 41;
+    let folder = Folder::new("sorted-stored-position");
+    let path = folder.file("Events.fmp12", PASSWORD, |root| {
+        fixture::add_field(root, TABLE, POSITION, "Position", 2, 2, 0, 0x80000, 0);
+        fixture::add_formula(
+            root,
+            &fixture::names(),
+            (TABLE, OCCURRENCE),
+            POSITION,
+            5,
+            "Get ( RecordNumber )",
+        );
+    });
+    let mut provider = opened(&path);
+    let layout = LAYOUT as u32;
+    let sort = || FoundSetChange::Sort(vec![SortField::new("Name", SortOrder::Descending)]);
+    provider.change_found_set(layout, sort()).unwrap();
+    let first = provider.records(layout, 0, 1).unwrap().records[0].id;
+    provider.copy_window(1, 2);
+    provider.use_window(2);
+    provider.begin_record_commit().unwrap();
+    let created = provider
+        .write_record(&om_data::ScriptWrite {
+            layout,
+            cells: BTreeMap::from([(NAME, Some("Zulu".into()))]),
+            record_number: Some(RecordNumber::LocalSortedNewRecord {
+                position: 2,
+                after: first as u64,
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+    let found = provider.records(layout, 0, 4).unwrap();
+    assert_eq!(found.records[1].id, created.id);
+    assert_eq!(text(&found, created.id, "Position"), Some("2"));
+    provider.commit_record_session(false).unwrap();
+    provider.change_found_set(layout, sort()).unwrap();
+    let reordered = provider.records(layout, 0, 4).unwrap();
+    assert_eq!(reordered.records[0].id, created.id);
+    assert_eq!(text(&reordered, created.id, "Position"), Some("2"));
+}
+
+#[test]
+fn global_text_auto_entry_reads_current_or_assigned_self() {
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
+    use om_data::calc::Value;
+    use om_data::host::CalcNeed;
+
+    const FIELDS: [(u64, &str, u32, &str); 3] = [
+        (
+            40,
+            "Replacing",
+            0x1_0088,
+            r#"If ( IsEmpty ( Self ) ; "Initial" ; Self & "!" )"#,
+        ),
+        (
+            41,
+            "Preserving",
+            0x1_0008,
+            r#"If ( IsEmpty ( Self ) ; "Initial" ; Self & "!" )"#,
+        ),
+        (
+            42,
+            "Identity",
+            0x1_0088,
+            r#"If ( IsEmpty ( Self ) ; "Initial" ; Self )"#,
+        ),
+    ];
+    let folder = Folder::new("global-text-self");
+    let path = folder.file(FILE, PASSWORD, |root| {
+        for (field, name, options, formula) in FIELDS {
+            fixture::add_field(root, TABLE, field, name, 1, 1, 0, options, 0);
+            fixture::add_formula(
+                root,
+                &fixture::names(),
+                (TABLE, OCCURRENCE),
+                field,
+                5,
+                formula,
+            );
+        }
+    });
+    let mut provider = opened(&path);
+    let new = om_data::ScriptWrite {
+        layout: LAYOUT as u32,
+        ..Default::default()
+    };
+    let values = |provider: &mut NativeProvider| {
+        let data = provider
+            .calc_data(&[CalcNeed::Globals { table: TABLE }])
+            .unwrap();
+        FIELDS.map(|(field, ..)| match data.globals[&TABLE].get(field, 1) {
+            Some(Value::Text(text)) => text.as_str().to_owned(),
+            None => String::new(),
+            other => panic!("expected a Text global, got {other:?}"),
+        })
+    };
+    provider.begin_record_commit().unwrap();
+    assert_eq!(provider.write_record(&new).unwrap_err().code, Some(3));
+    provider.revert_transaction().unwrap();
+    assert_eq!(values(&mut provider), ["", "", ""]);
+    let create = |provider: &mut NativeProvider| {
+        provider.begin_record_commit().unwrap();
+        let id = provider
+            .write_record_with_creation(&new, om_data::RecordCreation::NewRecord)
+            .unwrap()
+            .id;
+        u64::try_from(id).unwrap()
+    };
+    let first = create(&mut provider);
+    assert_eq!(values(&mut provider), ["Initial", "Initial", "Initial"]);
+    provider
+        .write_record(&om_data::ScriptWrite {
+            record: Some(i64::try_from(first).unwrap()),
+            cells: [(NAME, Some("An unrelated edit".into()))].into(),
+            ..new.clone()
+        })
+        .unwrap();
+    assert_eq!(values(&mut provider), ["Initial", "Initial", "Initial"]);
+    provider.commit_record_session(false).unwrap();
+    for (field, ..) in FIELDS {
+        provider.set_global(TABLE, field, 1, "Manual").unwrap();
+    }
+    assert_eq!(values(&mut provider), ["Manual!", "Manual", "Manual"]);
+    let second = create(&mut provider);
+    assert_eq!(values(&mut provider), ["Manual!!", "Manual", "Manual"]);
+    provider.commit_record_session(false).unwrap();
+    for (field, ..) in FIELDS {
+        provider.set_global(TABLE, field, 1, "").unwrap();
+    }
+    assert_eq!(values(&mut provider), ["Initial", "Initial", "Initial"]);
+    provider.close();
+    let file = om_hbam::HbamFile::open(&path).unwrap();
+    for record in [first, second] {
+        for (field, ..) in FIELDS {
+            assert!(file.cell(TABLE, record, field).unwrap().is_none());
+        }
+    }
+}
+
+#[test]
 fn new_record_auto_enters_the_session_globals() {
     use fixture::{LAYOUT, NAME, OCCURRENCE};
     use om_data::calc::Value;
@@ -2941,12 +3817,14 @@ fn new_record_auto_enters_the_session_globals() {
     const CONSTANT: u64 = 40;
     const CALCULATED: u64 = 41;
     const SERIAL: u64 = 42;
+    const REPLACING: u64 = 43;
     let folder = Folder::new("global-auto-entry");
-    let path = folder.file("Sample.fmp12", PASSWORD, |root| {
+    let path = folder.file(FILE, PASSWORD, |root| {
         for (id, label, options) in [
             (CONSTANT, "Default setting", 0x1_0004),
             (CALCULATED, "Calculated setting", 0x1_0008),
             (SERIAL, "Serial setting", 0x1_0002),
+            (REPLACING, "Replacing setting", 0x1_0088),
         ] {
             fixture::add_field(root, TABLE, id, label, 1, 1, 0, options, 0);
         }
@@ -2955,14 +3833,9 @@ fn new_record_auto_enters_the_session_globals() {
             &[&table, &[3], &[5], &uint_segment(CONSTANT), &[0x0d]],
             om_scripts::text_node(&[], "X"),
         );
-        fixture::add_formula(
-            root,
-            &fixture::names(),
-            (TABLE, OCCURRENCE),
-            CALCULATED,
-            5,
-            "\"Y\"",
-        );
+        for id in [CALCULATED, REPLACING] {
+            fixture::add_formula(root, &fixture::names(), (TABLE, OCCURRENCE), id, 5, "\"Y\"");
+        }
         fixture::set_field_serial_increment(root, TABLE, SERIAL, 1);
         root.put(
             &[&table, &[3], &[5], &uint_segment(SERIAL), &[0x0c]],
@@ -2982,9 +3855,16 @@ fn new_record_auto_enters_the_session_globals() {
         ..Default::default()
     };
     provider.begin_record_commit().unwrap();
-    let record = provider.write_record(&new).unwrap();
+    let record = provider
+        .write_record_with_creation(&new, om_data::RecordCreation::NewRecord)
+        .unwrap();
     let values = globals(&mut provider);
-    for (field, text) in [(CONSTANT, "X"), (CALCULATED, "Y"), (SERIAL, "1")] {
+    for (field, text) in [
+        (CONSTANT, "X"),
+        (CALCULATED, "Y"),
+        (SERIAL, "1"),
+        (REPLACING, "Y"),
+    ] {
         assert!(matches!(values.get(field, 1), Some(Value::Text(value)) if value.as_str() == text));
     }
     provider
@@ -2994,7 +3874,9 @@ fn new_record_auto_enters_the_session_globals() {
             ..new.clone()
         })
         .unwrap();
-    provider.set_global(TABLE, CONSTANT, 1, "Changed").unwrap();
+    for field in [CONSTANT, CALCULATED, SERIAL, REPLACING] {
+        provider.set_global(TABLE, field, 1, "Changed").unwrap();
+    }
     provider.commit_transaction(false).unwrap();
     assert_eq!(
         name_of(&mut provider, LAYOUT as u32, record.id).as_deref(),
@@ -3004,10 +3886,99 @@ fn new_record_auto_enters_the_session_globals() {
     assert!(
         matches!(values.get(CONSTANT, 1), Some(Value::Text(value)) if value.as_str() == "Changed")
     );
+    // A duplicate without a record session and a portal write held in
+    // one both keep all nonempty globals and the serial counter.
+    let duplicate = om_data::ScriptWrite {
+        cells: [(NAME, Some("A note".into()))].into(),
+        ..new.clone()
+    };
+    assert_eq!(provider.write_record(&duplicate).unwrap_err().code, Some(3));
     provider.begin_record_commit().unwrap();
-    assert_eq!(provider.write_record(&new).unwrap_err().code, Some(3));
+    let portal = om_data::ScriptWrite {
+        table: Some(TABLE),
+        cells: [(NAME, Some("Related row".into()))].into(),
+        ..new.clone()
+    };
+    assert_eq!(provider.write_record(&portal).unwrap_err().code, Some(3));
     provider.revert_transaction().unwrap();
+    let values = globals(&mut provider);
+    for field in [CONSTANT, CALCULATED, SERIAL, REPLACING] {
+        assert!(
+            matches!(values.get(field, 1), Some(Value::Text(value)) if value.as_str() == "Changed")
+        );
+    }
+    provider.begin_record_commit().unwrap();
+    let second = provider
+        .write_record_with_creation(&new, om_data::RecordCreation::NewRecord)
+        .unwrap();
+    let values = globals(&mut provider);
+    for (field, text) in [
+        (CONSTANT, "X"),
+        (CALCULATED, "Changed"),
+        (SERIAL, "2"),
+        (REPLACING, "Y"),
+    ] {
+        assert!(matches!(values.get(field, 1), Some(Value::Text(value)) if value.as_str() == text));
+    }
+    provider.commit_transaction(false).unwrap();
     provider.close();
+
+    let file = om_hbam::HbamFile::open(&path).unwrap();
+    let tree = file.key_tree().unwrap();
+    let stored = om_hbam::record::records(&tree, TABLE);
+    for id in [record.id, second.id] {
+        let row = stored
+            .iter()
+            .find(|row| row.id == u64::try_from(id).unwrap())
+            .unwrap();
+        for field in [CONSTANT, CALCULATED, SERIAL, REPLACING] {
+            assert!(
+                !row.cells.contains_key(&field),
+                "global field {field} leaked into row {id}"
+            );
+        }
+    }
+    let next = tree
+        .at(&[TABLE, 3, 5, SERIAL, 0x0c])
+        .unwrap()
+        .text()
+        .unwrap()
+        .unwrap();
+    assert_eq!(next, "3");
+
+    // Use the same synthetic file over loopback to exercise the hosted
+    // client path, where ordinary New Record still refuses.
+    let (port, ca_pem) = om_server(&path, &folder.0.join("recordings"));
+    let client = rcgen::generate_simple_self_signed(vec!["OpenMaker".into()]).unwrap();
+    let mut hosted = NativeProvider::new(NativeConfig {
+        client_cert_pem: client.cert.pem().into_bytes(),
+        client_key_pem: client.key_pair.serialize_pem().into_bytes(),
+        additional_ca_pem: ca_pem,
+        callback_host: "127.0.0.1".into(),
+        machine: MachineInfo::default(),
+    });
+    hosted
+        .open(&Connection {
+            host: "127.0.0.1".into(),
+            port,
+            file: FILE.into(),
+            account: ACCOUNT.into(),
+            password: PASSWORD.into(),
+        })
+        .unwrap();
+    assert!(hosted.local_path().is_none());
+    hosted.set_global(TABLE, CONSTANT, 1, "Hosted").unwrap();
+    hosted.begin_record_commit().unwrap();
+    let error = hosted
+        .write_record_with_creation(&new, om_data::RecordCreation::NewRecord)
+        .unwrap_err();
+    assert_eq!(error.code, Some(3));
+    assert!(error.message.contains("auto-entry into a nonempty global"));
+    hosted.revert_transaction().unwrap();
+    assert!(
+        matches!(globals(&mut hosted).get(CONSTANT, 1), Some(Value::Text(value)) if value.as_str() == "Hosted")
+    );
+    hosted.close();
 }
 
 /// An auto-entered and a validation formula over a global field read the
@@ -3088,6 +4059,62 @@ fn option_formulas_read_the_sessions_global_value() {
     check(&mut provider, "y").unwrap();
     assert_eq!(stamp(&mut provider).2.as_deref(), Some("y"));
     provider.close();
+}
+
+#[test]
+fn a_held_new_record_keeps_its_other_table_global_from_creation() {
+    use fixture::{LAYOUT, NAME, NOTES, OCCURRENCE};
+
+    const MARKER: u64 = 40;
+    const STAMP: u64 = 41;
+    const SETTINGS: u64 = 0xd0_0048;
+    let folder = Folder::new("held-other-global");
+    let path = folder.file("Requests.fmp12", PASSWORD, |root| {
+        let mut names = fixture::names();
+        names.add_occurrence(SETTINGS, "Settings", NOTES);
+        names.add_field(NOTES, MARKER, "Marker");
+        fixture::add_occurrence(root, SETTINGS, "Settings", NOTES);
+        fixture::add_field(root, NOTES, MARKER, "Marker", 1, 1, 0, 0x10000, 0);
+        fixture::add_field(root, TABLE, STAMP, "Stamp", 1, 1, 0, 0x8, 0);
+        fixture::add_formula(
+            root,
+            &names,
+            (TABLE, OCCURRENCE),
+            STAMP,
+            5,
+            "Settings::Marker",
+        );
+    });
+    let mut provider = opened(&path);
+    let layout = LAYOUT as u32;
+    let fields = provider.records(layout, 0, 0).unwrap().fields;
+    let stamp = fields.iter().position(|f| f.name == "Stamp").unwrap();
+    provider.set_global(NOTES, MARKER, 1, "alpha").unwrap();
+    provider.begin_record_commit().unwrap();
+    let created = provider
+        .write_record(&om_data::ScriptWrite {
+            layout,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(created.values[stamp].as_deref(), Some("alpha"));
+
+    provider.set_global(NOTES, MARKER, 1, "beta").unwrap();
+    let edited = provider
+        .write_record(&om_data::ScriptWrite {
+            layout,
+            record: Some(created.id),
+            cells: [(NAME, Some("Note".into()))].into(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(edited.values[stamp].as_deref(), Some("alpha"));
+    provider.commit_record_session(false).unwrap();
+    provider.close();
+
+    let mut reopened = opened(&path);
+    let saved = reopened.record_by_id(layout, created.id).unwrap();
+    assert_eq!(text(&saved, created.id, "Stamp"), Some("alpha"));
 }
 
 /// A row imported inside a transaction and then edited there is computed

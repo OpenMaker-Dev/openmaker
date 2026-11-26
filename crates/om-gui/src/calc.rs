@@ -3648,16 +3648,18 @@ impl<'a> Evaluator<'a> {
         Some(value)
     }
 
-    /// Layout text with its merge variables and symbols, `None` while their
-    /// data is being fetched.
+    /// Layout text with its merge variables and symbols, optionally with
+    /// byte ranges for remapping static styles. `None` while fetching data.
     pub fn merge_text_in_portal(
         &self,
         text: &str,
         record: Option<u64>,
         portal: Option<PortalRow>,
-    ) -> Option<String> {
+        format: Option<&om_layout::DataFormat>,
+        track_substitutions: bool,
+    ) -> Option<(String, Vec<layout::TextSubstitution>)> {
         if !text.contains("<<$") && !text.contains("{{") {
-            return Some(text.to_owned());
+            return Some((text.to_owned(), Vec::new()));
         }
         let context = match record {
             Some(record) => self.portal_context(record, portal),
@@ -3666,7 +3668,32 @@ impl<'a> Evaluator<'a> {
                 ..Context::default()
             },
         };
-        self.with_host(|host| layout::merge_text(host, text, &context))
+        self.with_host(|host| {
+            let mut substitutions = Vec::new();
+            let text = layout::merge_text_with_substitutions(
+                host,
+                text,
+                &context,
+                |kind, shown| match (kind, format) {
+                    (ValueType::Date | ValueType::Time, Some(format)) => {
+                        crate::document::data_format::display(
+                            &shown,
+                            kind,
+                            Some(format),
+                            &self.context(),
+                        )
+                        .into_owned()
+                    }
+                    _ => shown,
+                },
+                |substitution| {
+                    if track_substitutions {
+                        substitutions.push(substitution);
+                    }
+                },
+            );
+            (text, substitutions)
+        })
     }
 }
 
@@ -3871,6 +3898,46 @@ mod tests {
             summaries: SummaryCache::default(),
             group: Cell::new(None),
         }
+    }
+
+    #[test]
+    fn date_and_time_layout_symbols_use_the_objects_data_format() {
+        use om_data::calc::{Time, TimeStyle, Timestamp};
+        let calcs = Calculations::default();
+        let schema = portal_schema();
+        let mut eval = evaluator(&calcs, &schema);
+        let time = Time::from_micros((21 * 3600 + 3 * 60 + 4) * 1_000_000, TimeStyle::default());
+        eval.info.now =
+            Some(Timestamp::from_date_time(Date::from_ymd(2017, 4, 11).unwrap(), time).unwrap());
+        let format = om_layout::DataFormat {
+            date: om_layout::DateFormat {
+                flags: 1 << 24,
+                elements: [6, 1, 8, 0],
+                separators: ["".into(), " ".into(), ", ".into(), "".into(), "".into()],
+                ..Default::default()
+            },
+            time: om_layout::TimeFormat {
+                flags: 0x93,
+                minute_second_style: 1,
+                separator: ':',
+                ..Default::default()
+            },
+            font_height: 0,
+            number: Default::default(),
+            raw: Vec::new(),
+        };
+        let (text, substitutions) = eval
+            .merge_text_in_portal(
+                "Run {{1002}} at {{CurrentTime}}",
+                None,
+                None,
+                Some(&format),
+                true,
+            )
+            .unwrap();
+        assert_eq!(text, "Run April 11, 2017 at 21:03");
+        assert_eq!(substitutions[0].source, 4..12);
+        assert_eq!(&text[substitutions[0].display.clone()], "April 11, 2017");
     }
 
     #[test]
@@ -5192,8 +5259,9 @@ mod tests {
             assert_eq!(state.label.as_deref(), Some(expected), "{portal:?}");
             assert_eq!(
                 evaluator
-                    .merge_text_in_portal("Row {{RecordNumber}}", Some(1), portal)
-                    .unwrap(),
+                    .merge_text_in_portal("Row {{RecordNumber}}", Some(1), portal, None, false)
+                    .unwrap()
+                    .0,
                 format!("Row {expected}")
             );
         }

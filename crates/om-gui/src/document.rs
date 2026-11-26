@@ -9,7 +9,7 @@ use egui::{
 };
 use om_data::calc::Value;
 use om_data::choice::{self, ChoiceError, ChoiceTarget, Choices, MenuCommand};
-use om_data::host::layout::ObjectState;
+use om_data::host::layout::{ObjectState, TextSubstitution};
 use om_data::host::NO_RECORD;
 use om_data::{EditRefusal, Field, FieldKind, RecordCapabilities, RenderLayout};
 use om_layout::{Color, Layout, LayoutObject, ObjectKind, ResolvedStyle, TextRun};
@@ -37,6 +37,7 @@ pub(crate) mod portals;
 mod rich_text;
 mod scaled_text;
 pub(crate) mod scroll;
+mod slide;
 pub(crate) mod value_dialogs;
 pub(crate) mod zoom;
 
@@ -1197,6 +1198,7 @@ impl DocumentState {
                 row: portals::enclosing(layout, object.id).zip(row),
                 key: Some((field, object.id)),
                 object: false,
+                departure_only: false,
             });
         }
     }
@@ -1236,6 +1238,7 @@ impl DocumentState {
             object,
             row: None,
             key: None,
+            departure_only: false,
         });
     }
 
@@ -1384,7 +1387,13 @@ impl DocumentState {
         from: Option<egui::Id>,
         find: bool,
     ) -> TabMove {
-        let mut stops: Vec<&TabStop> = self.painted_stops.iter().collect();
+        // A stop Tab only leaves from is not among them: from it, Tab goes
+        // to the first (Shift-Tab: the last).
+        let mut stops: Vec<&TabStop> = self
+            .painted_stops
+            .iter()
+            .filter(|stop| !stop.departure_only)
+            .collect();
         if stops.iter().any(|stop| stop.place > 0) {
             stops.retain(|stop| stop.place > 0);
         }
@@ -3308,15 +3317,7 @@ fn show_document(
     state.resolve_first();
     state.resolve_tab(ui, session, state.find.is_some());
     state.settle_completions(ui);
-    if let Some(error) = state.choice_refusal.take() {
-        actions.push(Action::RefuseChoice(error));
-    }
-    // Edit… saves the record first, as FileMaker Pro 26.0.3 does (#869):
-    // the window commits a changed record before the action goes on.
-    if let Some(list) = state.edit_list.take() {
-        actions.push(Action::EditValueList(list));
-    }
-    show_other_dialog(ui, session, state);
+    take_requests(ui, session, state, actions);
     if view == ViewMode::List {
         // Zoomed as Form view is: its parts and records in the document's
         // zoom layer, in the layout's own coordinates.
@@ -3476,6 +3477,20 @@ fn show_document(
             frame.hold(ui);
         });
     state.scroll.finish(frame, &output);
+}
+
+/// What the layout's fields asked for in the last frame: a refused choice,
+/// Edit… on a value list, and Other…'s dialog, which shows here.
+fn take_requests(ui: &Ui, session: &Session, state: &mut DocumentState, actions: &mut Vec<Action>) {
+    if let Some(error) = state.choice_refusal.take() {
+        actions.push(Action::RefuseChoice(error));
+    }
+    // Edit… saves the record first, as FileMaker Pro 26.0.3 does (#869):
+    // the window commits a changed record before the action goes on.
+    if let Some(list) = state.edit_list.take() {
+        actions.push(Action::EditValueList(list));
+    }
+    show_other_dialog(ui, session, state);
 }
 
 /// An object whose hide condition OpenMaker cannot decide
@@ -3866,6 +3881,96 @@ fn show_list(
         );
     }
     ui.spacing_mut().item_spacing.y = spacing;
+}
+
+/// Browse's Table view of a drawn layout: the found set's `grid` between the
+/// parts the layout's Table View Properties include, the top navigation and
+/// header parts above it and the footer and bottom navigation parts below,
+/// stacked at the window's bottom, as FileMaker Pro 26.1.1 places them
+/// (layout-model.md 4.2). They show the current record, and their web
+/// viewers one page each that follows it, as List view's header and footer
+/// do.
+///
+/// The grid paints first: a field focus asked by name finds its cell
+/// before a part's copy. A part's objects come after it, over it where
+/// they reach past their part (an open popover). Tab goes through the
+/// table's cells, as it does without the parts, and from a part's field
+/// that has the keyboard to the first cell (Shift-Tab: the last); New
+/// Record's focus goes to the table too [I: whether Pro's Tab reaches
+/// the parts' fields is unmeasured].
+pub(crate) fn show_table(
+    ui: &mut Ui,
+    session: &Session,
+    document: &RenderLayout,
+    state: &mut DocumentState,
+    calc: Option<&Evaluator<'_>>,
+    actions: &mut Vec<Action>,
+    grid: impl FnOnce(&mut Ui, &mut DocumentState, &mut Vec<Action>),
+) {
+    use om_layout::PartKind;
+    take_requests(ui, session, state, actions);
+    let layout = &document.layout;
+    let included = |part: &&om_layout::Part| {
+        layout
+            .def
+            .as_ref()
+            .is_some_and(|def| def.table_view_includes(part.kind()))
+    };
+    let parts: Vec<&om_layout::Part> = layout.parts.iter().filter(included).collect();
+    let below = |part: &om_layout::Part| {
+        matches!(part.kind(), PartKind::Footer | PartKind::BottomNavigation)
+    };
+    let area = ui.max_rect();
+    let width = finite_size(layout.width()).max(area.width());
+    let mut placed = Vec::with_capacity(parts.len());
+    let mut top = area.top();
+    for part in parts.iter().filter(|part| !below(part)) {
+        let height = finite_size(part.height);
+        placed.push((
+            *part,
+            Rect::from_min_size(pos2(area.left(), top), vec2(width, height)),
+        ));
+        top += height;
+    }
+    let footer: f32 = parts
+        .iter()
+        .filter(|part| below(part))
+        .map(|part| finite_size(part.height))
+        .sum();
+    // The grid takes what the parts leave, however little.
+    let grid_bottom = (area.bottom() - footer).max(top);
+    let mut bottom = grid_bottom;
+    for part in parts.iter().filter(|part| below(part)) {
+        let height = finite_size(part.height);
+        placed.push((
+            *part,
+            Rect::from_min_size(pos2(area.left(), bottom), vec2(width, height)),
+        ));
+        bottom += height;
+    }
+    let rows = Rect::from_x_y_ranges(area.x_range(), top..=grid_bottom);
+    ui.scope_builder(UiBuilder::new().max_rect(rows), |ui| {
+        grid(ui, state, actions);
+    });
+    let focus_first = std::mem::take(&mut state.focus_first);
+    let stops = state.tab_stops.len();
+    for (part, rect) in placed {
+        paint_part(
+            ui,
+            session,
+            document,
+            state,
+            calc,
+            part,
+            rect,
+            session.current,
+            actions,
+        );
+    }
+    for stop in &mut state.tab_stops[stops..] {
+        stop.departure_only = true;
+    }
+    state.focus_first = focus_first;
 }
 
 /// Why List view shows no sub-summary parts, above its records.
@@ -4762,12 +4867,29 @@ fn paint_object_repetition(
         } else {
             1
         };
-    let style = state
+    let mut style = state
         .layout_cache
         .formatted_style(layout, object, conditions, 1, style_state);
+    if !finding && object.kind() == ObjectKind::Text {
+        // Browse draws no Text edge without a line style, even when the
+        // definition retained its width and color (layout-model.md 6.2).
+        for (width, line_style) in style.border_width.iter_mut().zip(style.border_style) {
+            if line_style.is_none() {
+                *width = None;
+            }
+        }
+    }
     if object.kind() == ObjectKind::Line {
         line::paint(ui.painter(), rect, object.flags, &style);
     } else {
+        if !finding
+            && portal.is_none()
+            && object.parent.is_none()
+            && object.rotation == 0
+            && object.kind() == ObjectKind::Rectangle
+        {
+            paint_outer_box_shadow(ui, rect, &style);
+        }
         paint_box(ui, rect, &style, object.kind());
     }
     if object.kind() == ObjectKind::Popover {
@@ -5194,6 +5316,15 @@ fn paint_object_repetition(
             // Paint only the active panel. Hidden panels contain overlapping
             // field objects and must never bleed into the selected panel.
             let active = *selected;
+            let clip = ui.clip_rect();
+            let contents = if !finding && object.kind() == ObjectKind::SlideControl {
+                slide::paint_contents(ui, layout, object, rect)
+            } else {
+                None
+            };
+            if let Some(contents) = contents {
+                ui.set_clip_rect(clip.intersect(contents));
+            }
             for &child in &object.children {
                 if state.layout_cache.object(layout, child).is_some_and(|o| {
                     matches!(o.kind(), ObjectKind::TabPanel | ObjectKind::SlidePanel)
@@ -5216,18 +5347,44 @@ fn paint_object_repetition(
                     visited,
                 );
             }
+            if contents.is_some() {
+                ui.set_clip_rect(clip);
+            }
             if object.kind() == ObjectKind::TabControl {
                 let selected = state
                     .panels
                     .get_mut(&(layout.id, object.id))
                     .expect("selected panel");
-                tab_headers(
+                let focus_record = session
+                    .current_record()
+                    .filter(|_| !finding && portal.is_none() && record_index == session.current)
+                    .map(|(_, record)| record.id);
+                let keyboard = focus_record.is_some() && object.tab_order > 0;
+                let widget = tab_headers(
                     ui,
                     &state.layout_cache,
                     layout,
                     object,
                     &panels,
+                    (rect, keyboard),
+                    selected,
+                );
+                if let Some((record, widget)) = focus_record.zip(widget) {
+                    let target = (layout.id, record, object.id);
+                    state.note_tab_stop(object.tab_order, target, widget, false);
+                }
+            } else if !finding && object.shows_slide_dots() {
+                let selected = state
+                    .panels
+                    .get_mut(&(layout.id, object.id))
+                    .expect("selected panel");
+                slide::navigation(
+                    ui,
+                    layout,
+                    object,
+                    &panels,
                     rect,
+                    ui.scope_id().with((record_index, portal)),
                     selected,
                 );
             }
@@ -5274,62 +5431,30 @@ fn paint_object_repetition(
         ObjectKind::Text | ObjectKind::Button | ObjectKind::PopoverButton => {
             // "Image only" shows the icon alone and centered (layout-model.md
             // 5.6.1); its stored label stays the button's accessible name.
-            let text = match object.shows_label() {
-                true => object_text(
+            let mut rich = object.rich_text.as_ref().map(Cow::Borrowed);
+            let track_substitutions = rich.as_ref().is_some_and(|rich| {
+                object.merge_source.as_deref().or(object.text.as_deref())
+                    == Some(rich.text.as_str())
+            });
+            let (text, substitutions) = match object.shows_label() {
+                true => object_text_with_substitutions(
                     session,
                     object,
                     (record_index, !finding),
                     calc,
                     &calc_state,
                     portal,
+                    track_substitutions,
                 ),
-                false => String::new(),
+                false => (String::new(), Vec::new()),
             };
-            let mut text_rect = rect;
-            let icon = match (&object.button, &object.popover_button) {
-                (Some(button), _) => Some((button.library_key, button.icon_size)),
-                (None, Some(button)) => Some((button.library_key, button.icon_size)),
-                (None, None) => None,
-            };
-            // A calculated icon (FileMaker Pro 26.1) is the SVG its formula
-            // gives on the record, in the library icon's place.
-            // Not evaluated (Find mode, or until its data is read): the
-            // library icon, if any [I: what Find mode shows is unmeasured].
-            let svg = object
-                .active_icon_formula()
-                .and_then(|_| calc_state.icon_svg.clone());
-            // A library icon shows only with its key; a calculated one
-            // always, its size the button's icon size.
-            let shown = icon.filter(|(key, _)| svg.is_some() || *key != 0);
-            if let Some((library_key, icon_size)) = shown {
-                let size = (icon_size.max(1) as f32)
-                    .min(rect.width())
-                    .min(rect.height());
-                let center = if text.is_empty() {
-                    rect.center()
-                } else {
-                    pos2(rect.left() + size / 2.0 + 6.0, rect.center().y)
-                };
-                let icon = state
-                    .layout_cache
-                    .formatted_style(layout, object, &[], 4, style_state);
-                let tint = icon
-                    .icon_color
-                    .or(icon.color)
-                    .or(style.border_color[0])
-                    .map(color);
-                let at = Rect::from_center_size(center, vec2(size, size));
-                match &svg {
-                    Some(svg) => paint_calculated_icon(ui, svg, at, tint),
-                    None => {
-                        paint_library_image(ui, &state.layout_cache, layout, library_key, at, tint)
-                    }
-                }
-                if !text.is_empty() {
-                    text_rect.min.x += size + 10.0;
-                }
+            let text_style = state
+                .layout_cache
+                .text_style(layout, object, conditions, style_state);
+            if !substitutions.is_empty() {
+                rich = rich
+                    .map(|data| Cow::Owned(rich_text::substitute(&data, &text, &substitutions)));
             }
-            let mut rich = object.rich_text.as_ref().map(std::borrow::Cow::Borrowed);
             if !conditions.is_empty() {
                 if let Some(rich) = &mut rich {
                     rich_text::apply_conditional(
@@ -5343,16 +5468,23 @@ fn paint_object_repetition(
                     );
                 }
             }
-            let _ = paint_rich_text(
+            // A calculated icon (FileMaker Pro 26.1) uses the library
+            // icon until its formula is evaluated in this Browse context.
+            let svg = object
+                .active_icon_formula()
+                .and(calc_state.icon_svg.as_deref());
+            let (label, _) = paint_label_icon(
                 ui,
-                text_rect,
-                &text,
-                &state
-                    .layout_cache
-                    .text_style(layout, object, conditions, style_state),
-                rich.as_deref(),
-                None,
+                &state.layout_cache,
+                (layout, object),
+                rect,
+                (&text, &text_style, rich.as_deref()),
+                ButtonIconMode::Browse(svg),
+                (style_state, style.border_color[0]),
             );
+            if let Some(label) = label {
+                let _ = paint_rich_text(ui, label, &text, &text_style, rich.as_deref(), None);
+            }
         }
         ObjectKind::Graphic => {
             if let Some(graphic) = &object.graphic {
@@ -6236,6 +6368,9 @@ fn paint_object_repetition(
                     Some(NO_ACCESS)
                 } else if state.web_viewers.len() >= MAX_WEB_VIEWERS {
                     Some("Web viewer: this window shows too many web viewers.")
+                } else if !crate::web_viewer::fits(to_window(ui, rect), ui.ctx().pixels_per_point())
+                {
+                    Some("Web viewer: too large to show.")
                 } else {
                     state.web_note
                 };
@@ -7448,6 +7583,9 @@ struct TabStop {
     /// shows, which a Tab aims at (`tab_goal`), as its widget may change
     /// when its portal is read again.
     key: Option<(RelatedField, u64)>,
+    /// A stop Tab leaves from but never goes to: a field of a part around
+    /// Table view's table (`show_table`).
+    departure_only: bool,
 }
 
 /// A checkbox or radio button set as `paint_object` found it.
@@ -8280,6 +8418,140 @@ fn paint_icon(ui: &Ui, icon: Icon, side: f32, field: Rect, color: Option<Color32
     );
 }
 
+enum ButtonIconMode<'a> {
+    Browse(Option<&'a str>),
+    Layout,
+}
+
+/// Paint the available icon and return the label's bounds, if it shows,
+/// and whether there is icon content. The design canvas uses the latter
+/// to decide whether to show its outline and caption for an image-only button.
+fn paint_label_icon(
+    ui: &Ui,
+    cache: &layout_cache::LayoutCache,
+    (layout, object): (&Layout, &LayoutObject),
+    rect: Rect,
+    (text, text_style, rich): (&str, &ResolvedStyle, Option<&om_layout::StyledText>),
+    mode: ButtonIconMode<'_>,
+    (state, border): (i32, Option<Color>),
+) -> (Option<Rect>, bool) {
+    let icon = match (&object.button, &object.popover_button) {
+        (Some(button), _) => Some((
+            button.library_key,
+            button.icon_size,
+            button.display_type,
+            button.calculated_icon(),
+        )),
+        (None, Some(button)) => Some((
+            button.library_key,
+            button.icon_size,
+            button.display_type,
+            button.calculated_icon(),
+        )),
+        (None, None) => None,
+    };
+    let Some((key, size, direction, calculated)) = icon else {
+        return (Some(rect), false);
+    };
+    // Browse supplies its visible label. Layout keeps an authored
+    // image-only button image-only even when its library key is missing.
+    let label_shows = !matches!(mode, ButtonIconMode::Layout) || direction != 1;
+    let full_label = label_shows.then_some(rect);
+    let svg = match mode {
+        ButtonIconMode::Browse(svg) => svg,
+        ButtonIconMode::Layout if calculated => return (full_label, false),
+        ButtonIconMode::Layout => None,
+    };
+    let style = cache.formatted_style(layout, object, &[], 4, state);
+    let tint = style.icon_color.or(style.color).or(border).map(color);
+    let library = if svg.is_some() {
+        None
+    } else {
+        let Some(source) = (key != 0)
+            .then(|| cache.library_image(layout, key, tint))
+            .flatten()
+        else {
+            return (full_label, false);
+        };
+        Some(source)
+    };
+    let size = (size.max(1) as f32).min(rect.width()).min(rect.height());
+    let (at, label) = button_icon_and_label(
+        rect,
+        size,
+        direction,
+        label_shows && !text.is_empty(),
+        || {
+            let [top, right, bottom, left] = text_style.padding.map(|p| p.unwrap_or(0.0) as f32);
+            ui.fonts_mut(|fonts| {
+                let job = rich_text::layout_job(
+                    fonts,
+                    text,
+                    text_style,
+                    rich,
+                    (rect.width() - left - right).max(0.0),
+                );
+                fonts.layout_job(job).size().y + top + bottom
+            })
+        },
+    );
+    if let Some(svg) = svg {
+        paint_calculated_icon(ui, svg, at, tint);
+    } else if let Some(image) = library {
+        egui::Image::new(image)
+            .show_loading_spinner(false)
+            .paint_at(ui, at);
+    }
+    (label_shows.then_some(label), true)
+}
+
+/// The icon and label's bounds. For vertical choices the
+/// label uses the whole width and the pair is centered together.
+fn button_icon_and_label(
+    rect: Rect,
+    size: f32,
+    display_type: i32,
+    has_label: bool,
+    label_height: impl FnOnce() -> f32,
+) -> (Rect, Rect) {
+    let mut label = rect;
+    let center = if !has_label {
+        rect.center()
+    } else {
+        match display_type {
+            2 | 3 => {
+                // Eight points between the icon and the label's line box
+                // in the measured standard-theme buttons (layout-model 5.6.1).
+                let available = (rect.height() - size).max(0.0);
+                let gap = available.min(8.0);
+                let height = label_height().clamp(0.0, available - gap);
+                let top = rect.center().y - (size + gap + height) / 2.0;
+                label.min.y = if display_type == 2 {
+                    top + size + gap
+                } else {
+                    top
+                };
+                label.max.y = label.min.y + height;
+                let icon_top = if display_type == 2 {
+                    top
+                } else {
+                    label.max.y + gap
+                };
+                pos2(rect.center().x, icon_top + size / 2.0)
+            }
+            5 => {
+                label.max.x -= size + 10.0;
+                pos2(rect.right() - size / 2.0 - 6.0, rect.center().y)
+            }
+            _ => {
+                label.min.x += size + 10.0;
+                pos2(rect.left() + size / 2.0 + 6.0, rect.center().y)
+            }
+        }
+    };
+    (Rect::from_center_size(center, vec2(size, size)), label)
+}
+
 fn paint_library_image(
     ui: &Ui,
     cache: &layout_cache::LayoutCache,
@@ -8494,14 +8766,15 @@ fn tab_headers(
     layout: &Layout,
     control: &LayoutObject,
     panels: &[&LayoutObject],
-    rect: Rect,
+    (rect, keyboard): (Rect, bool),
     selected: &mut u64,
-) {
+) -> Option<egui::Id> {
     let height = control
         .tab
         .as_ref()
         .map_or(30.0, |tab| tab.tab_height.max(1) as f32);
     let mut left = rect.left();
+    let mut focus_stop = None;
     for panel in panels {
         let info = panel.tab_panel.as_ref();
         let width = info.map_or(100.0, |tab| tab.tab_width.max(1) as f32);
@@ -8525,6 +8798,12 @@ fn tab_headers(
             *selected = panel.id;
         }
         let active = *selected == panel.id;
+        if active && keyboard && ui.is_rect_visible(header) {
+            focus_stop = Some(response.id);
+            if response.has_focus() {
+                keep_tab(ui, response.id);
+            }
+        }
         let state = if active {
             7
         } else if response.hovered() {
@@ -8549,8 +8828,17 @@ fn tab_headers(
         text.text_align = Some(2);
         text.vertical_align = Some(1);
         paint_text(ui, header, label, &text);
+        if focus_stop == Some(response.id) && response.has_focus() {
+            ui.painter().rect_stroke(
+                header,
+                CornerRadius::ZERO,
+                Stroke::new(1.0, theme::FOCUS),
+                egui::StrokeKind::Inside,
+            );
+        }
         left = header.right();
     }
+    focus_stop
 }
 
 fn bound_value<'a>(
@@ -8889,54 +9177,116 @@ fn object_text(
     state: &ObjectState,
     portal: Option<PortalRow>,
 ) -> String {
+    object_text_with_substitutions(
+        session,
+        object,
+        (record_index, values),
+        calc,
+        state,
+        portal,
+        false,
+    )
+    .0
+}
+
+fn object_text_with_substitutions(
+    session: &Session,
+    object: &LayoutObject,
+    (record_index, values): (u64, bool),
+    calc: Option<&Evaluator<'_>>,
+    state: &ObjectState,
+    portal: Option<PortalRow>,
+    track_substitutions: bool,
+) -> (String, Vec<TextSubstitution>) {
     if let Some(label) = &state.label {
-        return label.clone();
+        return (label.clone(), Vec::new());
     }
     let record = session
         .record_at(record_index)
         .and_then(|(_, r)| u64::try_from(r.id).ok());
-    let merged = |text: &str| -> String {
-        calc.and_then(|calc| calc.merge_text_in_portal(text, record, portal))
-            .unwrap_or_else(|| text.to_owned())
+    let merged = |text: &str, track_substitutions| {
+        calc.and_then(|calc| {
+            calc.merge_text_in_portal(
+                text,
+                record,
+                portal,
+                object.data_format.as_ref(),
+                track_substitutions,
+            )
+        })
+        .unwrap_or_else(|| (text.to_owned(), Vec::new()))
     };
     if object.text_runs.is_empty() {
-        return merged(object.text.as_deref().unwrap_or_default());
+        return merged(
+            object.text.as_deref().unwrap_or_default(),
+            track_substitutions,
+        );
     }
-    object
-        .text_runs
-        .iter()
-        .map(|run| match run {
-            TextRun::Literal(text) => merged(text),
-            TextRun::MergeField(_) if !values => String::new(),
+    let field_value = |name: &str| {
+        if !values {
+            String::new()
+        } else if calc.is_some_and(Evaluator::layout_masked) {
             // A layout whose records the set gives no access shows
             // `<No Access>` for a merge field (#707's reading).
-            TextRun::MergeField(_) if calc.is_some_and(Evaluator::layout_masked) => {
-                NO_ACCESS.to_owned()
+            NO_ACCESS.to_owned()
+        } else {
+            if let (Some(calc), Some(record)) = (calc, record) {
+                if let Some(value) = calc.named_value_in_portal(name, record, portal) {
+                    // A merge field shows its value through the object's
+                    // own data format, as a field object does.
+                    return data_format::display(
+                        &calc.display(&value),
+                        value.value_type(),
+                        object.data_format.as_ref(),
+                        &calc.context(),
+                    )
+                    .into_owned();
+                }
+            }
+            if portal.is_some() {
+                String::new()
+            } else {
+                value_named(session, name, record_index).to_owned()
+            }
+        }
+    };
+    let mut output = String::new();
+    let mut substitutions = Vec::new();
+    let mut fields = object.stored_merge_field_ranges();
+    let mut source = track_substitutions.then_some(0);
+    for run in &object.text_runs {
+        match run {
+            TextRun::Literal(text) => {
+                let (shown, ranges) = merged(text, source.is_some());
+                let start = output.len();
+                output.push_str(&shown);
+                if let Some(source) = &mut source {
+                    substitutions.extend(ranges.into_iter().map(|range| TextSubstitution {
+                        source: (*source + range.source.start)..(*source + range.source.end),
+                        display: (start + range.display.start)..(start + range.display.end),
+                    }));
+                    *source += text.len();
+                }
             }
             TextRun::MergeField(name) => {
-                if let (Some(calc), Some(record)) = (calc, record) {
-                    if let Some(value) = calc.named_value_in_portal(name, record, portal) {
-                        // A merge field shows its value through the
-                        // object's own data format, as a field object
-                        // does (data-format.md) and as Preview and PDF
-                        // already show it (`report::object_text`).
-                        return data_format::display(
-                            &calc.display(&value),
-                            value.value_type(),
-                            object.data_format.as_ref(),
-                            &calc.context(),
-                        )
-                        .into_owned();
+                let start = output.len();
+                output.push_str(&field_value(name));
+                if let Some(expected_start) = source {
+                    if let Some(range) = fields.next().filter(|r| r.start == expected_start) {
+                        source = Some(range.end);
+                        substitutions.push(TextSubstitution {
+                            source: range,
+                            display: start..output.len(),
+                        });
+                    } else {
+                        source = None;
+                        substitutions.clear();
                     }
                 }
-                if portal.is_some() {
-                    String::new()
-                } else {
-                    value_named(session, name, record_index).to_owned()
-                }
             }
-        })
-        .collect()
+        }
+    }
+    (output, substitutions)
 }
 
 /// An object's style for `component` in `state`, with the conditional
@@ -9131,6 +9481,49 @@ fn resized_bounds(layout: &Layout, id: u64, mut growth: egui::Vec2) -> Option<Re
     Some(rect)
 }
 
+/// A solid rectangle hides the part of its outer shadow behind its own fill.
+/// Other shapes need separate clipping and are outside this path.
+fn paint_outer_box_shadow(ui: &Ui, rect: Rect, style: &ResolvedStyle) {
+    let Some([shadow]) = style.box_shadows.as_deref() else {
+        return;
+    };
+    if shadow.kind != 1
+        || shadow.inset
+        || style.border_radius.unwrap_or(0.0) != 0.0
+        || !style.background.is_some_and(|fill| fill.alpha == 1.0)
+    {
+        return;
+    }
+    let Some(tint) = shadow.color.filter(|tint| tint.alpha == 1.0) else {
+        return;
+    };
+    // Keep non-finite and excessive file coordinates out of tessellation.
+    let points = |length: Option<&om_layout::Length>| {
+        length
+            .and_then(om_layout::Length::points)
+            .filter(|value| value.abs() <= 4096.0)
+            .map(|value| value as f32)
+    };
+    let (Some(x), Some(y), Some(blur), Some(spread)) = (
+        points(shadow.offset[0].as_ref()),
+        points(shadow.offset[1].as_ref()),
+        points(shadow.blur.as_ref()),
+        points(shadow.spread.as_ref()),
+    ) else {
+        return;
+    };
+    if blur < 0.0 || spread < 0.0 || !rect.is_positive() {
+        return;
+    }
+    let bounds = rect.translate(egui::vec2(x, y)).expand(spread);
+    // Epaint centers its feathering on the edge. Use a full width of
+    // twice the blur distance to reach about one blur distance outward.
+    ui.painter().add(
+        egui::epaint::RectShape::filled(bounds, CornerRadius::ZERO, color(tint))
+            .with_blur_width(2.0 * blur),
+    );
+}
+
 fn paint_box(ui: &Ui, rect: Rect, style: &ResolvedStyle, kind: ObjectKind) {
     let painter = ui.painter();
     if kind == ObjectKind::Line {
@@ -9310,6 +9703,121 @@ mod tests {
         assert_eq!(edit.buffer.value, "AB");
         assert_eq!(edit.buffer.original, "AB");
         assert_eq!(edit.version, Some(7));
+    }
+
+    #[test]
+    fn button_icon_above_or_below_leaves_the_full_width_for_the_label() {
+        let frame = Rect::from_min_size(pos2(20.0, 40.0), vec2(100.0, 90.0));
+        let (above, below_label) = button_icon_and_label(frame, 48.0, 2, true, || 18.0);
+        let (below, above_label) = button_icon_and_label(frame, 48.0, 3, true, || 18.0);
+        assert_eq!(below_label.width(), frame.width());
+        assert_eq!(above_label.width(), frame.width());
+        assert_eq!(above.center().x, frame.center().x);
+        assert_eq!(below.center().x, frame.center().x);
+        assert_eq!(below_label.top() - above.bottom(), 8.0);
+        assert_eq!(below.top() - above_label.bottom(), 8.0);
+    }
+
+    fn layout_button_icon(
+        frame: Rect,
+        button: om_layout::ButtonObject,
+        has_library_image: bool,
+    ) -> (Option<Rect>, bool) {
+        let mut layout = Layout::default();
+        if has_library_image {
+            layout.library_images.insert(
+                button.library_key,
+                om_layout::LibraryImage {
+                    format: om_layout::LibraryImageFormat::Svg,
+                    data: br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><circle cx="4" cy="4" r="4"/></svg>"#.to_vec(),
+                },
+            );
+        }
+        let object = LayoutObject {
+            button: Some(button),
+            ..Default::default()
+        };
+        let cache = layout_cache::LayoutCache::default();
+        let ctx = egui::Context::default();
+        let mut result = None;
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            result = Some(paint_label_icon(
+                ui,
+                &cache,
+                (&layout, &object),
+                frame,
+                ("Open list", &ResolvedStyle::default(), None),
+                ButtonIconMode::Layout,
+                (1, None),
+            ));
+        })
+        .drop_without_applying_deltas();
+        result.unwrap()
+    }
+
+    fn button_frame() -> Rect {
+        Rect::from_min_size(pos2(20.0, 40.0), vec2(100.0, 90.0))
+    }
+
+    #[test]
+    fn missing_layout_button_icon_keeps_the_full_label() {
+        let frame = button_frame();
+        let button = om_layout::ButtonObject {
+            library_key: 7,
+            icon_size: 48,
+            display_type: 4,
+            ..Default::default()
+        };
+        assert_eq!(
+            layout_button_icon(frame, button, false),
+            (Some(frame), false)
+        );
+    }
+
+    #[test]
+    fn missing_image_only_button_icon_requests_the_layout_fallback() {
+        let button = om_layout::ButtonObject {
+            icon_size: 48,
+            display_type: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            layout_button_icon(button_frame(), button, false),
+            (None, false)
+        );
+    }
+
+    #[test]
+    fn layout_image_only_button_centers_its_icon_without_a_label() {
+        let frame = button_frame();
+        let button = om_layout::ButtonObject {
+            library_key: 7,
+            icon_size: 48,
+            display_type: 1,
+            ..Default::default()
+        };
+        let (label, has_icon) = layout_button_icon(frame, button, true);
+        assert_eq!((label, has_icon), (None, true));
+        let (icon, _) = button_icon_and_label(frame, 48.0, 1, label.is_some(), || {
+            panic!("an image-only button does not measure a label")
+        });
+        assert_eq!(icon.center(), frame.center());
+    }
+
+    #[test]
+    fn layout_calculated_icon_skips_a_stale_library_key() {
+        let frame = button_frame();
+        let button = om_layout::ButtonObject {
+            flags: 0x4,
+            library_key: 7,
+            icon_size: 48,
+            display_type: 5,
+            ..Default::default()
+        };
+        assert_eq!(
+            layout_button_icon(frame, button, true),
+            (Some(frame), false)
+        );
     }
 
     #[test]

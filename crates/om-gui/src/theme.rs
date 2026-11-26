@@ -117,6 +117,7 @@ pub(crate) const WINDOW_ZOOM: Color32 = Color32::from_rgb(0x28, 0xC8, 0x40);
 // Metrics, in points.
 pub(crate) const MENU_BAR_HEIGHT: f32 = 24.0;
 pub(crate) const TOOLBAR_HEIGHT: f32 = 54.0;
+pub(crate) const MACOS_BROWSE_TOOLBAR_HEIGHT: f32 = 55.0;
 pub(crate) const LAYOUT_BAR_HEIGHT: f32 = 25.0;
 pub(crate) const FORMATTING_BAR_HEIGHT: f32 = 27.0;
 pub(crate) const MENU_ROW_HEIGHT: f32 = 22.0;
@@ -175,13 +176,13 @@ pub(crate) fn document_font(family: Option<&str>, bold: bool, italic: bool) -> F
         .unwrap_or("")
         .trim_matches([' ', '\'', '"'])
         .to_ascii_lowercase();
-    if matches!(name.as_str(), "arial" | "helvetica") {
-        FontFamily::Name(format!("document-{name}-{}-{}", u8::from(bold), u8::from(italic)).into())
-    } else if bold {
-        semibold()
-    } else {
-        FontFamily::Proportional
-    }
+    let name = match name.as_str() {
+        "helvetica neue" => "helvetica-neue",
+        "arial" | "helvetica" => name.as_str(),
+        _ if bold => return semibold(),
+        _ => return FontFamily::Proportional,
+    };
+    FontFamily::Name(format!("document-{name}-{}-{}", u8::from(bold), u8::from(italic)).into())
 }
 
 pub(crate) fn small() -> FontId {
@@ -275,34 +276,49 @@ fn fonts() -> FontDefinitions {
             .collect();
         fonts.families.insert(FontFamily::Name(name.into()), family);
     }
-    #[cfg(target_os = "macos")]
-    let helvetica = std::fs::read("/System/Library/Fonts/Helvetica.ttc")
-        .ok()
-        .map(FontData::from_owned);
-    // Legacy FileMaker files commonly use Helvetica. Its metrics differ
-    // enough from the UI font to clip small labels and alter line breaks.
-    for (bold, italic, index) in [
-        (false, false, 0),
-        (true, false, 1),
-        (false, true, 2),
-        (true, true, 3),
+    // Both Helvetica collections use these four indices for the regular,
+    // bold, italic and bold italic faces. Substituting the UI font can
+    // wrap the final word of a Text label into a clipped line.
+    for (font, file) in [
+        ("helvetica", "Helvetica.ttc"),
+        ("helvetica-neue", "HelveticaNeue.ttc"),
     ] {
-        let name = format!("document-helvetica-{}-{}", u8::from(bold), u8::from(italic));
-        let mut family = Vec::new();
-        #[cfg(target_os = "macos")]
-        if let Some(data) = &helvetica {
-            let mut data = data.clone();
-            data.index = index;
-            fonts.font_data.insert(name.clone(), Arc::new(data));
-            family.push(name.clone());
+        let installed = system_font_collection(file);
+        for (bold, italic, index) in [
+            (false, false, 0),
+            (true, false, 1),
+            (false, true, 2),
+            (true, true, 3),
+        ] {
+            let name = format!("document-{font}-{}-{}", u8::from(bold), u8::from(italic));
+            let mut family = Vec::new();
+            if let Some(data) = &installed {
+                let mut data = data.clone();
+                data.index = index;
+                fonts.font_data.insert(name.clone(), Arc::new(data));
+                family.push(name.clone());
+            }
+            family.push(if bold { "Inter-SemiBold" } else { "Inter" }.to_owned());
+            family.extend(fallbacks.iter().cloned());
+            fonts.families.insert(FontFamily::Name(name.into()), family);
         }
-        #[cfg(not(target_os = "macos"))]
-        let _ = index;
-        family.push(if bold { "Inter-SemiBold" } else { "Inter" }.to_owned());
-        family.extend(fallbacks.iter().cloned());
-        fonts.families.insert(FontFamily::Name(name.into()), family);
     }
     fonts
+}
+
+fn system_font_collection(file: &str) -> Option<FontData> {
+    #[cfg(target_os = "macos")]
+    {
+        let directory = std::path::Path::new("/System/Library/Fonts");
+        std::fs::read(directory.join(file))
+            .ok()
+            .map(FontData::from_owned)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = file;
+        None
+    }
 }
 
 /// Load macOS's Arial `file` as font `name`, when it is installed.

@@ -62,7 +62,7 @@
 
 use super::*;
 use om_data::rules::HeldRecords;
-use om_data::rules::{Entry, RecordEnvironment, WriteContext, WriteMode};
+use om_data::rules::{Entry, RecordEnvironment, RecordNumber, WriteContext, WriteMode};
 use om_data::{NewRecordPreview, PendingRecord, PreparedId, ScriptWrite};
 
 use super::records::{CurrentSet, Origin};
@@ -119,7 +119,7 @@ pub(crate) struct KeptPreviews(BTreeMap<PreparedId, Preview>);
 
 enum Preview {
     /// A record of this file's table `snapshot.table`.
-    Own(Snapshot),
+    Own(Box<Snapshot>),
     /// A related record of imported table `table`, or a new record of a
     /// layout of it, written through this file's `layout` and previewed by
     /// the owner `route` reaches as its preview `owner`.
@@ -181,6 +181,8 @@ impl Stamp {
 pub(crate) struct Created {
     pub(crate) stamp: Stamp,
     pub(crate) values: BTreeMap<u64, Option<String>>,
+    /// Computed cells whose proposal may differ from what the record shows.
+    pub(crate) proposed_self: BTreeSet<u64>,
 }
 
 /// What a write reuses of its preview: the serial numbers taken when the
@@ -198,7 +200,8 @@ pub(crate) struct Reuse {
 struct Operation {
     layout: Option<u32>,
     set: CurrentSet,
-    record_number: Option<u64>,
+    record_number: Option<RecordNumber>,
+    single_field_step: bool,
 }
 
 /// The fields of the window's unsaved records whose values may not be what
@@ -307,6 +310,7 @@ impl NativeProvider {
                         layout: Some(write.layout),
                         set: CurrentSet::Step(write.privilege_set.clone()),
                         record_number: None,
+                        single_field_step: false,
                     };
                     // Held records of the opened file's tables the owner
                     // reads are read too.
@@ -365,6 +369,7 @@ impl NativeProvider {
                             layout: None,
                             set: CurrentSet::Account,
                             record_number: None,
+                            single_field_step: false,
                         };
                         let none = BTreeSet::new();
                         owner.pending_overlay((Some(wire), &none), &rows, operation, unknown)?
@@ -407,6 +412,7 @@ impl NativeProvider {
                     layout: Some(write.layout),
                     set: CurrentSet::Step(write.privilege_set.clone()),
                     record_number: None,
+                    single_field_step: false,
                 };
                 let (none, unknown) = (BTreeSet::new(), Unknown::new());
                 self.pending_overlay((Some(table), &none), &all, operation, unknown)?
@@ -487,8 +493,14 @@ impl NativeProvider {
         let mut any = overlay != HeldRecords::default();
         let mut named = None;
         for (at, record) in ordered {
-            let Some((id, row, fields)) =
-                self.pending_one(record, at, (&overlay, &unknown), &operation)?
+            let single_field_step = Some(at) == own && operation.single_field_step;
+            let Some((id, row, fields)) = self.pending_one(
+                record,
+                at,
+                (&overlay, &unknown),
+                &operation,
+                single_field_step,
+            )?
             else {
                 return Ok(None);
             };
@@ -587,6 +599,7 @@ impl NativeProvider {
             layout: None,
             set: CurrentSet::Account,
             record_number: None,
+            single_field_step: false,
         };
         let computed = self.pending_overlay((None, &reading), &[], operation, elsewhere)?;
         let owner_of = |root: u64| {
@@ -636,13 +649,33 @@ impl NativeProvider {
             Some(table) => table,
             None => self.read_table_for_layout(&layout)?.id,
         };
+        if self.external.route(table).is_some() {
+            return Ok(None);
+        }
+        let mut affected = BTreeSet::new();
+        let mut proposed_self = BTreeSet::new();
+        if !write.cells.is_empty() {
+            let (_, plan) = self.table_plan(table)?;
+            affected.extend(plan.replacing_groups_assigned(&write.cells));
+            proposed_self.extend(write.cells.keys().copied().filter(|cell| {
+                !write.typed.contains(cell) && plan.auto_enters_proposed_self(*cell)
+            }));
+            affected.extend(&proposed_self);
+        }
+        let unavailable = || {
+            (!affected.is_empty()).then(|| om_data::PendingValues {
+                unknown: affected.clone(),
+                unavailable: affected.clone(),
+                ..Default::default()
+            })
+        };
         let usable = others.iter().all(|p| {
             self.external.route(p.table).is_none() && (p.record.is_some() || p.table == table)
         });
         // A write naming a preview takes that preview's context, which this
         // does not compute with.
-        if self.external.route(table).is_some() || !usable || write.prepared.is_some() {
-            return Ok(None);
+        if !usable || write.prepared.is_some() {
+            return Ok(unavailable());
         }
         let own = PendingRecord {
             table,
@@ -660,17 +693,21 @@ impl NativeProvider {
             layout: Some(write.layout),
             set: CurrentSet::Step(write.privilege_set.clone()),
             record_number: write.record_number,
+            single_field_step: write.single_field_step && write.table.is_none(),
         };
         let at = all.len() - 1;
-        let Some((_, Some((row, unknown)))) = self.pending_computed(
+        let computed = self.pending_computed(
             (Some(table), &BTreeSet::new()),
             &all,
             operation,
             Unknown::new(),
             Some(at),
-        )?
-        else {
-            return Ok(None);
+        );
+        let (row, unknown) = match computed {
+            Ok(Some((_, Some(values)))) => values,
+            Ok(_) => return Ok(unavailable()),
+            Err(_) if !affected.is_empty() => return Ok(unavailable()),
+            Err(error) => return Err(error),
         };
         let mut values: BTreeMap<u64, Option<String>> = row
             .into_iter()
@@ -681,7 +718,17 @@ impl NativeProvider {
                 values.entry(*cell).or_insert(None);
             }
         }
-        Ok(Some(om_data::PendingValues { values, unknown }))
+        let unavailable = affected.intersection(&unknown).copied().collect();
+        proposed_self.retain(|cell| !unknown.contains(cell));
+        for cell in &proposed_self {
+            values.entry(*cell).or_insert(None);
+        }
+        Ok(Some(om_data::PendingValues {
+            values,
+            unknown,
+            unavailable,
+            proposed_self,
+        }))
     }
 
     /// Pending record `record` (the `at`th given) computed as its commit
@@ -695,6 +742,7 @@ impl NativeProvider {
         at: usize,
         (overlay, unknown): (&HeldRecords, &Unknown),
         operation: &Operation,
+        single_field_step: bool,
     ) -> Result<Option<(u64, BTreeMap<u64, String>, BTreeSet<u64>)>, DataError> {
         use crate::transaction::HeldBasis;
         use om_data::rules::Written;
@@ -714,6 +762,8 @@ impl NativeProvider {
                 set: operation.set.clone(),
                 record_number: operation.record_number,
                 prepared: None,
+                creation: om_data::RecordCreation::Other,
+                single_field_step,
             };
             provider.origin_context(&plan, origin)
         };
@@ -728,6 +778,7 @@ impl NativeProvider {
             Some(transaction) => Entry {
                 script: true,
                 keep_written: create,
+                imported: false,
                 skip_data_entry_validation: transaction.skips_validation(),
                 skip_auto_enter: transaction.skips_auto_enter(),
                 mapped_cells: None,
@@ -887,6 +938,7 @@ impl NativeProvider {
             Some(transaction) => Entry {
                 script: true,
                 keep_written: true,
+                imported: false,
                 skip_data_entry_validation: transaction.skips_validation(),
                 skip_auto_enter: transaction.skips_auto_enter(),
                 mapped_cells: None,
@@ -900,8 +952,11 @@ impl NativeProvider {
             set,
             record_number: write.record_number,
             prepared: write.prepared,
+            creation: om_data::RecordCreation::Other,
+            single_field_step: false,
         };
         let context = self.origin_context(&plan, origin)?;
+        plan.check_creation_context(&context, entry)?;
         let mut environment = self.rule_environment(table, &plan, context)?;
         let on_creation = plan
             .serials_for(WriteMode::Create, entry)
@@ -945,13 +1000,13 @@ impl NativeProvider {
         values.retain(|cell, value| cells.get(cell) != Some(value));
         let id = match write.prepared {
             Some(id) => id,
-            None => self.previews.insert(Preview::Own(Snapshot {
+            None => self.previews.insert(Preview::Own(Box::new(Snapshot {
                 table,
                 layout,
                 serials: std::mem::take(&mut environment.serials),
                 stamp: Stamp::of(&environment),
                 context: environment.context,
-            })),
+            }))),
         };
         Ok(Some(NewRecordPreview { id, values }))
     }
@@ -1092,13 +1147,19 @@ impl NativeProvider {
             .filter(|(cell, value)| value.is_none() || serials.get(cell) != value.as_ref())
             .map(|(cell, value)| (*cell, value.clone()))
             .collect();
-        let fields = plan.preview_fields(false);
+        let fields = plan.preview_creation_fields(&given);
         let none = |_, _, _| false;
         let reads = (&fields, &none as om_data::rules::UnknownValue<'_>);
         let values = self.preview_record(plan, (entry, false), &given, &environment, reads)?;
+        let proposed_self = values
+            .keys()
+            .copied()
+            .filter(|cell| plan.auto_enters_proposed_self(*cell))
+            .collect();
         Ok(Created {
             stamp: Stamp::of(&environment),
             values,
+            proposed_self,
         })
     }
 

@@ -75,6 +75,7 @@ struct Server {
     /// own record session (#1104); `pending_panics`: it panics instead.
     pending_text: Option<String>,
     pending_panics: bool,
+    pending_proposed_self: bool,
 }
 struct Provider {
     server: Arc<Mutex<Server>>,
@@ -688,7 +689,12 @@ impl DataProvider for Provider {
         }
         Ok(server.session_entered.then(|| om_data::PendingValues {
             values: [(1, server.pending_text.clone())].into(),
-            unknown: Default::default(),
+            proposed_self: server
+                .pending_proposed_self
+                .then_some(1)
+                .into_iter()
+                .collect(),
+            ..Default::default()
         }))
     }
     fn close(&mut self) {
@@ -1021,6 +1027,27 @@ fn a_record_held_apart_is_computed_in_its_own_session() {
         !c.server.lock().unwrap().session_entered,
         "left after a panic"
     );
+}
+
+#[test]
+fn a_script_reads_the_computed_self_value_over_its_pending_clear() {
+    let mut c = Client::new(vec![exit("Rows::Text")], vec![]);
+    {
+        let mut server = c.server.lock().unwrap();
+        server.session_apart = true;
+        server.pending_text = Some("0".into());
+        server.pending_proposed_self = true;
+    }
+    let mut window = WindowState {
+        layout: Some(1),
+        record: Some(1),
+        ..Default::default()
+    };
+    window.uncommitted.session = true;
+    window.drafts.insert("Text".into(), None);
+    window.uncommitted.cells.insert(1, None);
+    c.run_in(window);
+    assert_eq!(c.result(), "0");
 }
 
 #[test]

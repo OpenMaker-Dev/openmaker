@@ -36,6 +36,7 @@ pub(crate) struct MenuContext<'a> {
     pub home: bool,
     pub find: &'a FindState,
     pub toolbar: bool,
+    pub toolbar_toggle_available: bool,
     pub formatting: bool,
     pub inspector: bool,
     pub objects: bool,
@@ -106,7 +107,7 @@ pub(crate) struct MenuContext<'a> {
     /// A draft or a redo branch can be discarded explicitly.
     pub layout_revert: bool,
     pub layout_history: (bool, bool),
-    /// The Layout mode Selection tool can take Edit > Select All.
+    /// The active Layout mode tool can take Edit > Select All.
     pub layout_select_all: bool,
     /// Layout mode has an object selected that can be deleted (Edit >
     /// Clear).
@@ -665,8 +666,8 @@ fn edit_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
     rows.separator();
     if context.mode == Mode::Layout {
         if rows.keyed_item(
-            "select-all-layout-objects",
-            "Select All",
+            om_data::layout_selection::ID,
+            om_data::layout_selection::LABEL,
             Some(shortcuts::SELECT_ALL),
             false,
             context.layout_select_all,
@@ -706,7 +707,7 @@ fn view_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
         "Status Toolbar",
         Some(shortcuts::STATUS_TOOLBAR),
         open && context.toolbar,
-        open,
+        open && context.toolbar_toggle_available,
     ) {
         actions.push(Action::ToggleToolbar);
     }
