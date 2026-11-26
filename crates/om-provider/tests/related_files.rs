@@ -8305,6 +8305,179 @@ fn a_previewed_portal_row_stores_the_values_its_preview_showed() {
     provider.close();
 }
 
+/// A new record of a layout of another file's table is previewed by that
+/// file (#43), as a portal row of its table is (#1047). On Root's layout of
+/// Remote Tasks, Related's `Stamp` auto-enters `Get ( UUID )`, `Serial` a
+/// serial number on creation (next 7) and `Number` `Get ( RecordNumber )`:
+/// - The preview shows the UUID, 7 and the window's record number 3. It
+///   writes nothing and reserves the serial once.
+/// - The write naming it, outside a transaction, stores those values in
+///   Related without reserving again, and the window's found set takes
+///   the record. The preview is then used up.
+/// - Inside a script's transaction a second preview's held write stores
+///   its values when Commit Transaction commits.
+/// - A preview of Root's own table named there is refused (3).
+#[test]
+fn a_new_record_of_another_files_layout_stores_the_values_its_preview_showed() {
+    use om_protocol::Opcode;
+    const NUMBER: u64 = 31;
+    const STAMP: u64 = 32;
+    const SERIAL: u64 = 33;
+    let mut root = fixture::tree(&[], true);
+    let mut child = fixture::tree(&[], true);
+    reference(&mut root, (REMOTE, "Remote Tasks"), 1, "Related");
+    root.put(
+        &[&[4], &[5], &uint_segment(fixture::NOTES_LAYOUT), &[2]],
+        OwnedNode::leaf([], layout_def(REMOTE)),
+    );
+    let mut names = fixture::names();
+    for (id, name) in [(NUMBER, "Number"), (STAMP, "Stamp"), (SERIAL, "Serial")] {
+        names.add_field(TABLE, id, name);
+    }
+    fixture::add_field(&mut child, TABLE, STAMP, "Stamp", 1, 1, 0, 0x8, 0);
+    fixture::add_formula(
+        &mut child,
+        &names,
+        (TABLE, OCCURRENCE),
+        STAMP,
+        5,
+        "Get ( UUID )",
+    );
+    fixture::add_field(&mut child, TABLE, NUMBER, "Number", 1, 2, 0, 0x8, 0);
+    let number = "Get ( RecordNumber )";
+    fixture::add_formula(&mut child, &names, (TABLE, OCCURRENCE), NUMBER, 5, number);
+    fixture::add_field(&mut child, TABLE, SERIAL, "Serial", 1, 2, 0, 0x2, 0);
+    fixture::set_field_serial_increment(&mut child, TABLE, SERIAL, 1);
+    child.put(
+        &[
+            &uint_segment(TABLE),
+            &[3],
+            &[5],
+            &uint_segment(SERIAL),
+            &[0x0c],
+        ],
+        om_scripts::text_node(&[], "7"),
+    );
+    let host = Host::new(
+        "previewed-layout-record",
+        vec![(ROOT, root), (RELATED, child)],
+    );
+    let written = || {
+        [
+            Opcode::HostCreateRecord,
+            Opcode::UploadListToHostTempLocation,
+            Opcode::HostCommit,
+            Opcode::TransactInfo,
+        ]
+        .map(|op| host.captures.with_opcode(op).len())
+    };
+    let reserved = || host.captures.with_opcode(Opcode::HostGetSerial).len();
+    let stored = |id: i64| {
+        let mut reader = host.open(RELATED);
+        let page = reader.records(fixture::LAYOUT as u32, 0, 100).unwrap();
+        let at = |name: &str| page.fields.iter().position(|f| f.name == name).unwrap();
+        let record = page.records.iter().find(|r| r.id == id).unwrap();
+        let values = ["Name", "Stamp", "Serial", "Number"]
+            .map(|name| record.values[at(name)].clone().unwrap_or_default());
+        reader.close();
+        values
+    };
+    let mut provider = host.open(ROOT);
+    let layout = fixture::NOTES_LAYOUT as u32;
+    let new = |name: &str, record_number| om_data::ScriptWrite {
+        layout,
+        cells: [(NAME, Some(name.to_owned()))].into(),
+        record_number: Some(record_number),
+        ..Default::default()
+    };
+    let named = |write: om_data::ScriptWrite, id| om_data::ScriptWrite {
+        prepared: Some(id),
+        ..write
+    };
+    let found = |provider: &mut NativeProvider| {
+        provider
+            .records(layout, 0, 10)
+            .unwrap()
+            .records
+            .into_iter()
+            .map(|r| r.id)
+            .collect::<Vec<_>>()
+    };
+
+    let (before, serials) = (written(), reserved());
+    let preview = provider
+        .preview_new_record(&new("Previewed", 3))
+        .unwrap()
+        .expect("the owning file previews the layout's new record");
+    let uuid = preview.values[&STAMP].clone().unwrap();
+    assert_eq!(uuid.len(), 36, "{uuid}");
+    assert_eq!(preview.values[&SERIAL].as_deref(), Some("7"));
+    assert_eq!(preview.values[&NUMBER].as_deref(), Some("3"));
+    assert!(!preview.values.contains_key(&NAME), "the write's own cell");
+    assert_eq!(written(), before, "a preview writes nothing");
+    assert_eq!(reserved(), serials + 1, "its serial is reserved once");
+
+    // Written outside a transaction with what the preview drew.
+    let made = provider
+        .write_record(&named(new("Previewed", 3), preview.id))
+        .unwrap();
+    assert_eq!(reserved(), serials + 1, "no second reservation");
+    assert_eq!(stored(made.id), ["Previewed", uuid.as_str(), "7", "3"]);
+    assert_eq!(found(&mut provider), [1, 2, made.id]);
+    // Used up by the write.
+    let again = provider.write_record(&named(new("Again", 3), preview.id));
+    assert_eq!(again.unwrap_err().code, Some(3));
+
+    // Held in a script's transaction, stored by its commit.
+    provider.begin_transaction(Default::default()).unwrap();
+    let second = provider
+        .preview_new_record(&new("Held", 4))
+        .unwrap()
+        .unwrap();
+    let second_uuid = second.values[&STAMP].clone().unwrap();
+    assert_ne!(second_uuid, uuid);
+    assert_eq!(second.values[&SERIAL].as_deref(), Some("8"));
+    let held = provider
+        .write_record(&named(new("Held", 4), second.id))
+        .unwrap();
+    provider.commit_transaction(false).unwrap();
+    assert_eq!(reserved(), serials + 2);
+    assert_eq!(stored(held.id), ["Held", second_uuid.as_str(), "8", "4"]);
+
+    // A preview of Root's own table is of another record there.
+    let own = provider
+        .preview_new_record(&om_data::ScriptWrite {
+            layout: fixture::LAYOUT as u32,
+            ..new("Own", 3)
+        })
+        .unwrap()
+        .unwrap();
+    let before = written();
+    let refused = provider.write_record(&named(new("Own", 3), own.id));
+    assert_eq!(refused.unwrap_err().code, Some(3));
+    // So is a portal row's preview of Remote Tasks, through Root's own
+    // layout: a preview names the layout its write goes through.
+    let remote = provider
+        .calc_schema()
+        .unwrap()
+        .unwrap()
+        .table_of(REMOTE)
+        .unwrap()
+        .id;
+    let row = provider
+        .preview_new_record(&om_data::ScriptWrite {
+            layout: fixture::LAYOUT as u32,
+            table: Some(remote),
+            ..new("Row", 3)
+        })
+        .unwrap()
+        .unwrap();
+    let refused = provider.write_record(&named(new("Row", 3), row.id));
+    assert_eq!(refused.unwrap_err().code, Some(3));
+    assert_eq!(written(), before);
+    provider.close();
+}
+
 /// The opened file (English) validates Code against a related-values list
 /// of Remote Tasks::Name, a field of the related file (German) indexed in
 /// language 0, that file's own (#571): its keys are German's, which

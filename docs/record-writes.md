@@ -428,8 +428,12 @@ before the record commit writes it.
   after a reconnect.
 - **Related files.** A portal row of another file's table is previewed by
   that file's provider through the table's route, as its write goes
-  (related_owner.rs); the opened file maps its preview id to the owner's.
-  A layout of another file's table ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)) has no preview.
+  (related_owner.rs); the opened file maps its preview id to the owner's,
+  and to the layout the write goes through. So is a new record of a layout
+  of another file's table ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)):
+  its write naming the preview, outside a transaction or held in one, stores
+  what the preview drew, with no layout of the owning file's. A related
+  record of such a layout has no preview, since its write is refused.
 - **The desktop window's use.** OnObjectSave when leaving a changed field
   by clicking the layout's background or using keyboard Commit
   (an ordinary commit, #1070), previews the window's begun rows before its
