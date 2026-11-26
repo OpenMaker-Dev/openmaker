@@ -440,6 +440,39 @@ pub fn with_base_width(def: &[u8], width: f64) -> Option<Vec<u8>> {
     with_double(def, "LayoutDef", 8, width)
 }
 
+/// `LayoutDef.customMargins`, Layout Setup's fixed page margins (a `Rect`;
+/// layout-model.md 4.1, 4.2).
+pub const CUSTOM_MARGINS_FIELD: u32 = 12;
+
+/// A stored `LayoutDef` with its fixed page margins `customMargins` set to
+/// `margins` (insets: top, left, bottom, right): the four doubles of the
+/// one stored `Rect` rewritten where they are, or a `Rect` added at the end
+/// when the definition has none, every other field and byte kept as stored.
+/// `None` when the definition does not read, or holds the field more than
+/// once or not as a message.
+pub fn with_custom_margins(def: &[u8], margins: &Rect) -> Option<Vec<u8>> {
+    let fields = spans(def, "LayoutDef")?;
+    let mut found = fields.iter().filter(|(n, ..)| *n == CUSTOM_MARGINS_FIELD);
+    let mut out = Vec::with_capacity(def.len() + 38);
+    match (found.next(), found.next()) {
+        (None, _) => {
+            out.extend_from_slice(def);
+            bytes(CUSTOM_MARGINS_FIELD, &rect(margins), &mut out);
+        }
+        (Some((_, Value::Bytes(stored), start, end)), None) => {
+            out.extend_from_slice(&def[..*start]);
+            bytes(
+                CUSTOM_MARGINS_FIELD,
+                &with_edges(stored, margins)?,
+                &mut out,
+            );
+            out.extend_from_slice(&def[*end..]);
+        }
+        _ => return None,
+    }
+    Some(out)
+}
+
 /// `PartDef.offset` (field 4) and `PartDef.size` (field 5), doubles
 /// (layout-model.md 4.3).
 pub const PART_OFFSET_FIELD: u32 = 4;
@@ -849,6 +882,39 @@ mod tests {
             .step_by(2)
             .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
             .collect()
+    }
+
+    /// Layout Setup's fixed page margins replace `customMargins` (field 12)
+    /// in place, its four doubles top, left, bottom and right, as FileMaker
+    /// Pro 26.0.3 rewrote them for top, bottom, left and right 50 / 60 / 70
+    /// / 80 points in #609's runs (layout-model.md 4.2); the rest of the
+    /// definition stays as stored. A definition without them gets them at
+    /// its end; one holding them twice is refused.
+    #[test]
+    fn fixed_page_margins_replace_the_stored_rect_as_filemaker_pro_does() {
+        // The Rect FileMaker Pro wrote.
+        let pro = unhex(
+            "09 0000000000004940 11 0000000000805140 19 0000000000004e40 21 0000000000005440",
+        );
+        let margins = frame(50.0, 70.0, 60.0, 80.0);
+        let def = |margins: &[u8]| {
+            let mut def = Vec::new();
+            double(8, 1024.0, &mut def);
+            uint(11, 2, &mut def);
+            bytes(CUSTOM_MARGINS_FIELD, margins, &mut def);
+            uint(17, 0, &mut def);
+            def
+        };
+        let stored = def(&rect(&frame(36.0, 36.0, 36.0, 36.0)));
+        assert_eq!(with_custom_margins(&stored, &margins), Some(def(&pro)));
+        let mut bare = Vec::new();
+        double(8, 1024.0, &mut bare);
+        let mut added = bare.clone();
+        bytes(CUSTOM_MARGINS_FIELD, &pro, &mut added);
+        assert_eq!(with_custom_margins(&bare, &margins), Some(added));
+        let mut twice = stored.clone();
+        bytes(CUSTOM_MARGINS_FIELD, &pro, &mut twice);
+        assert_eq!(with_custom_margins(&twice, &margins), None);
     }
 
     #[test]

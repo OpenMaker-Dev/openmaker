@@ -528,6 +528,10 @@ struct LoadedLayout {
     id: u64,
     name: String,
     member: OwnedNode,
+    /// The layout catalog's index `[4, 1]`, from the same download as
+    /// `member`: its entry holds the layout's words when the member does not
+    /// (`layout_catalog::layout_word`, #977).
+    index: Option<OwnedNode>,
     revision: Revision,
     /// The occurrence it shows records of, and that occurrence's table of
     /// this file.
@@ -3461,19 +3465,26 @@ impl Service {
     /// (`om_data::layout_catalog::plan_setup`) through the host's authoring
     /// extension, then read the layout back over a new connection.
     fn layout_setup(&mut self, params: &LayoutSetupParams) -> Result<Value, AuthorError> {
-        use layout_catalog::{general, views, MENU_HIDDEN};
+        use layout_catalog::{general, printing, views, LayoutWord, MENU_HIDDEN};
         let expected = parse_revision(&params.expected_revision)?;
         let layout = self.load_layout(&LayoutParams {
             layout: params.layout.clone(),
             layout_name: params.layout_name.clone(),
         })?;
         let layout_ref = self.layout_ref(layout.id);
-        let word = |member: &OwnedNode, key: u8| {
-            member
-                .child(&[key])
-                .and_then(|n| n.value.as_deref())
-                .and_then(om_hbam::slot::be_uint)
-                .unwrap_or(0)
+        // The flags as the host's Layout Setup reads them: the member's, else
+        // the index entry's, so a request keeps what only the entry holds
+        // (#977). Both come from one download. A concurrent change to a word
+        // only the entry holds is not covered by the member's revision; see
+        // docs/authoring.md, "Layout Setup".
+        let stored = |word| {
+            layout_catalog::layout_word(
+                Some(&layout.member),
+                layout.index.as_ref(),
+                layout.id,
+                word,
+            )
+            .unwrap_or(0)
         };
         let invalid = |message: String| AuthorError::new(ErrorKind::InvalidRequest, message);
         let view = |name: &str| match name {
@@ -3484,7 +3495,7 @@ impl Service {
                 "{other:?} is not a view: form, list or table."
             ))),
         };
-        let mut flags = word(&layout.member, 0xf1);
+        let mut flags = stored(LayoutWord::ViewFlags);
         if let Some(available) = &params.views {
             flags |= views::FORM_OFF | views::LIST_OFF | views::TABLE_OFF;
             for name in available {
@@ -3516,11 +3527,34 @@ impl Service {
                 flags &= !bit;
             }
         }
-        let hidden = params
-            .include_in_layout_menus
-            .map_or(word(&layout.member, 0xf0) & MENU_HIDDEN != 0, |include| {
-                !include
+        if let Some(fixed) = params.fixed_page_margins {
+            if fixed {
+                flags |= printing::FIXED_PAGE_MARGINS;
+            } else {
+                flags &= !printing::FIXED_PAGE_MARGINS;
+            }
+        }
+        // A layout that stores no margins gets 36 points with "Use fixed
+        // page margins", as the desktop's dialog shows them and every new
+        // layout stores them: the host refuses the box without margins.
+        let none_stored = layout_placement::definition(&layout.member)
+            .is_ok_and(|def| def.custom_margins.is_none());
+        let margins = params
+            .page_margins
+            .map(|m| (m.top, m.left, m.bottom, m.right))
+            .or((params.fixed_page_margins == Some(true) && none_stored)
+                .then_some((36.0, 36.0, 36.0, 36.0)))
+            .map(|(top, left, bottom, right)| om_layout::Rect {
+                top,
+                left,
+                bottom,
+                right,
+                ..Default::default()
             });
+        let hidden = params.include_in_layout_menus.map_or(
+            stored(LayoutWord::MemberFlags) & MENU_HIDDEN != 0,
+            |include| !include,
+        );
         let name = match &params.name {
             Some(name) => name.clone(),
             None => layout_catalog::member_name(&layout.member).ok_or_else(|| {
@@ -3532,12 +3566,15 @@ impl Service {
         };
         let mut opened = layout.opened;
         Self::require_grant(&mut opened, &catalog::LAYOUT_SETUP)?;
+        // With margins, operation 23: the setup and the margins in one
+        // commit.
         let set = opened.layout_setup_on_host(wire::LayoutSetup {
             expected,
             layout: layout.id,
             name: name.clone(),
             flags,
             hidden,
+            margins: margins.as_ref().map(|m| [m.top, m.left, m.bottom, m.right]),
         });
         drop(opened);
         let label = layout_ref.clone();
@@ -3562,12 +3599,28 @@ impl Service {
             layout_name: None,
         }) {
             Ok(fresh) => {
+                // As the request read them: the member's, else the entry's.
+                let read_word = |word| {
+                    layout_catalog::layout_word(
+                        Some(&fresh.member),
+                        fresh.index.as_ref(),
+                        fresh.id,
+                        word,
+                    )
+                    .unwrap_or(0)
+                };
                 let read = (
                     layout_catalog::member_name(&fresh.member),
-                    word(&fresh.member, 0xf1),
-                    word(&fresh.member, 0xf0) & MENU_HIDDEN != 0,
+                    read_word(LayoutWord::ViewFlags),
+                    read_word(LayoutWord::MemberFlags) & MENU_HIDDEN != 0,
                 );
-                if fresh.revision != set.revision || read != (Some(name.clone()), flags, hidden) {
+                let margins_read = margins
+                    .as_ref()
+                    .is_none_or(|m| layout_placement::already_margins(&fresh.member, m));
+                if fresh.revision != set.revision
+                    || read != (Some(name.clone()), flags, hidden)
+                    || !margins_read
+                {
                     return Err(AuthorError::new(
                         ErrorKind::VerificationFailed,
                         format!(
@@ -3616,6 +3669,10 @@ impl Service {
                 .iter()
                 .map(|(option, _, bit, set_on)| ((*option).to_owned(), json!((flags & bit != 0) == *set_on)))
                 .collect::<serde_json::Map<_, _>>(),
+            "fixed_page_margins": flags & printing::FIXED_PAGE_MARGINS != 0,
+            "page_margins": margins.map(|m| json!({
+                "top": m.top, "bottom": m.bottom, "left": m.left, "right": m.right,
+            })),
             "previous_revision": revision_text(&expected),
             "revision": revision_text(&set.revision),
             "verified": verified,
@@ -3818,7 +3875,8 @@ impl Service {
     fn load_layout(&self, params: &LayoutParams) -> Result<LoadedLayout, AuthorError> {
         let file = self.file();
         let mut opened = self.open()?;
-        let members = opened.layout_members().map_err(Self::read_error)?;
+        let snapshot = opened.layout_catalog_snapshot().map_err(Self::read_error)?;
+        let (members, index) = (snapshot.members, snapshot.index);
         let listed: Vec<_> = members
             .iter()
             .map(|(&id, member)| {
@@ -3889,6 +3947,7 @@ impl Service {
             id,
             name,
             member,
+            index,
             occurrence,
             table,
             schema,
@@ -3987,6 +4046,15 @@ impl Service {
             )
         })?;
         let def = decoded.def.clone().unwrap_or_default();
+        // The flags as Layout Setup reads them: the member's, else the
+        // index entry's (#977), else the definition's.
+        let view_flags = layout_catalog::layout_word(
+            Some(&layout.member),
+            layout.index.as_ref(),
+            layout.id,
+            layout_catalog::LayoutWord::ViewFlags,
+        )
+        .unwrap_or(def.flags);
         let parts: Vec<Value> = decoded
             .parts
             .iter()
@@ -4019,6 +4087,12 @@ impl Service {
             "table": layout.table.map(|t| reference("table", t, &file)),
             "width": def.base_width,
             "responsive": def.layout_client_type == 2,
+            // Layout Setup > Printing: the layout prints within its page
+            // margins only with fixed_page_margins.
+            "fixed_page_margins": view_flags & layout_catalog::printing::FIXED_PAGE_MARGINS != 0,
+            "page_margins": def.custom_margins.as_ref().map(|m| json!({
+                "top": m.top, "bottom": m.bottom, "left": m.left, "right": m.right,
+            })),
             "parts": parts,
             "objects": objects,
             "root_stack": stack,

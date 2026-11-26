@@ -39,7 +39,9 @@ use om_protocol::{validate_client_license, LoginEnvironment, MachineInfo, NodeSt
 use om_session::Session;
 
 mod schema;
-pub use authoring::{Authoring, AuthoringError, DesignCatalogs, ScriptDefinitions};
+pub use authoring::{
+    Authoring, AuthoringError, DesignCatalogs, LayoutCatalogSnapshot, ScriptDefinitions,
+};
 pub use calc::local_utc_offset;
 pub use choice::ListedChoices;
 pub use schema::{schema_from_tree, schema_from_tree_with, DatabaseSchemaSnapshot};
@@ -3391,6 +3393,15 @@ impl DataProvider for NativeProvider {
             let route = self.external.route(table.id).ok_or_else(|| {
                 DataError::with_code(3, "The related file holding this table is unavailable.")
             })?;
+            // The layout's related records, its portals and related fields,
+            // as on a layout of this file's table (#43): a table of this
+            // file by its own rules, another file's by its owner's
+            // (`routed_related_fields`), each written by the file that owns
+            // it (`write_record`).
+            let mut related = {
+                let tree = download_tree(&self.schema_downloads)?;
+                self.related_capabilities(&file, &layout, &tree)
+            };
             // Planned over the owner's routed plan (#187), as its write is,
             // opening nothing; deferred while a file its rules read waits
             // (`routed_edits`, #1160).
@@ -3399,6 +3410,7 @@ impl DataProvider for NativeProvider {
                 related_owner::RoutedEdits::ReadOnly => {
                     return Ok(om_data::RecordCapabilities {
                         editable_fields: Some(BTreeSet::new()),
+                        related,
                         ..Default::default()
                     });
                 }
@@ -3452,7 +3464,6 @@ impl DataProvider for NativeProvider {
                 })
                 .map(|f| f.id)
                 .collect();
-            let mut related = BTreeMap::new();
             if !repetitions.is_empty() {
                 related.insert(layout_occurrence(&layout)?, repetitions);
             }
@@ -3465,8 +3476,6 @@ impl DataProvider for NativeProvider {
                 // it does not evaluate the table's field-entry rules.
                 delete: true,
                 editable_fields: Some(editable.unwrap_or_default()),
-                // Related records of a layout of another file's table
-                // are not edited in Browse yet.
                 related,
                 refused,
                 globals: file
@@ -4143,26 +4152,15 @@ impl DataProvider for NativeProvider {
         let table = write.table.unwrap_or(layout_table);
         self.check_asset_write(write, table)?;
         if self.external.route(table).is_some() {
-            // A related record of another file's table on a layout of this
-            // file's table: that file writes it (related_owner.rs).
-            if table != layout_table && self.external.route(layout_table).is_none() {
+            // A related record of another file's table, on a layout of this
+            // file's table or of another file's table (#43): that file
+            // writes it (related_owner.rs).
+            if table != layout_table {
                 return self.write_routed_related(write, table);
             }
-            // Only the layout's own base table: an existing record, or a new
-            // one (New Record, Duplicate Record) created by the owner.
-            if table != layout_table {
-                return Err(DataError::with_code(
-                    3,
-                    "Related-file script writes support only records of the layout's base table.",
-                ));
-            }
-            // A layout of another file's table previews nothing (preview.rs).
-            if write.prepared.is_some() {
-                return Err(DataError::with_code(
-                    3,
-                    "A new record of another file's layout has no preview.",
-                ));
-            }
+            // The layout's own base table, of another file: an existing
+            // record, or a new one (New Record, Duplicate Record) created by
+            // the owner.
             // Inside the window's record session, or a script's transaction,
             // the owner holds it as one of the transaction's parts, as it
             // holds a portal row of its table (related_owner.rs): op71 under
@@ -4197,6 +4195,12 @@ impl DataProvider for NativeProvider {
                 }
                 return self.with_calculations(write.layout, record);
             }
+            // A previewed new record names the owner's preview (preview.rs),
+            // as a related record's write does (`write_routed_related`).
+            let prepared = write
+                .prepared
+                .map(|id| self.routed_preview(id, table, write.layout))
+                .transpose()?;
             let script_write = |owner: &mut Self, wire| {
                 let (table, plan) = owner.table_plan(wire)?;
                 Self::check_scalar_cells(&table, &write.cells)?;
@@ -4206,12 +4210,24 @@ impl DataProvider for NativeProvider {
                         *text = owner.check_typed_entry(wire, *cell, text)?;
                     }
                 }
-                // This file's script's elevation is not the owner's.
-                let context = owner.write_context(&plan, None, records::CurrentSet::Account)?;
+                // This file's script's elevation is not the owner's, and no
+                // layout of the owner's is used. The record's number is the
+                // window's, and a preview's context, serial numbers, clock
+                // and UUID are the preview's, as for a related record's
+                // write (`routed_write`, #1084).
+                let context = owner.origin_context(
+                    &plan,
+                    records::Origin {
+                        layout: None,
+                        set: records::CurrentSet::Account,
+                        record_number: write.record_number,
+                        prepared,
+                    },
+                )?;
                 owner.script_table_record(
                     &table,
                     &plan,
-                    (write.record, None),
+                    (write.record, prepared),
                     (&cells, &write.typed),
                     write.skip_validation,
                     context,
@@ -4927,6 +4943,7 @@ impl DataProvider for NativeProvider {
                 name: change.name,
                 flags: change.flags,
                 hidden: change.hidden,
+                margins: change.margins.map(|m| [m.top, m.left, m.bottom, m.right]),
             })
             .map(|framed| om_data::layout_objects::FramedObjects {
                 changed: framed.changed,

@@ -19,8 +19,8 @@ use om_hbam::{serial, OwnedNode};
 use om_protocol::authoring::{
     self, content_revision, status, Reply, Request, Revision, OP_CHANGE_PARTS, OP_CREATE_FIELD,
     OP_CREATE_LAYOUT, OP_DELETE_LAYOUT, OP_DELETE_OBJECTS, OP_DUPLICATE_LAYOUT, OP_FIELD_CONTROL,
-    OP_LAYOUT_SETUP, OP_LAYOUT_WIDTH, OP_PART_OPTIONS, OP_PLACE_FIELD, OP_REPLACE_SCRIPT_STEPS,
-    OP_SAVE, OP_SET_OBJECT_FRAMES, OP_SET_TEXT,
+    OP_LAYOUT_SETUP, OP_LAYOUT_SETUP_MARGINS, OP_LAYOUT_WIDTH, OP_PART_OPTIONS, OP_PLACE_FIELD,
+    OP_REPLACE_SCRIPT_STEPS, OP_SAVE, OP_SET_OBJECT_FRAMES, OP_SET_TEXT,
 };
 
 use crate::{
@@ -79,6 +79,15 @@ impl DesignCatalogs {
 pub struct ScriptDefinitions {
     pub catalog: ScriptCatalog,
     pub definitions: BTreeMap<u64, OwnedNode>,
+    pub index: Option<OwnedNode>,
+}
+
+/// The layouts as the host stores them, from one download of `[4]`: the
+/// members `[4, 5, L]` the account may see, by id, and the catalog's index
+/// `[4, 1]` ([`NativeProvider::layout_catalog_snapshot`]).
+#[derive(Clone, Debug, Default)]
+pub struct LayoutCatalogSnapshot {
+    pub members: BTreeMap<u64, OwnedNode>,
     pub index: Option<OwnedNode>,
 }
 
@@ -373,16 +382,24 @@ impl NativeProvider {
     /// A layout the account's custom set gives no access is left out;
     /// folders, their ends and separators stay (session-identity.md 2.2).
     pub fn layout_members(&mut self) -> Result<BTreeMap<u64, OwnedNode>, DataError> {
+        Ok(self.layout_catalog_snapshot()?.members)
+    }
+
+    /// [`Self::layout_members`] and the catalog's index `[4, 1]` from the
+    /// same download, so a layout's words read from its member, else from
+    /// its index entry (`om_data::layout_catalog::layout_word`, #977),
+    /// describe one observation.
+    pub fn layout_catalog_snapshot(&mut self) -> Result<LayoutCatalogSnapshot, DataError> {
         self.require_open()?;
         let Some(downloaded) = download_node(
             self.session.as_mut().expect("open session"),
             vec![vec![LAYOUTS as u8]],
         )?
         else {
-            return Ok(BTreeMap::new());
+            return Ok(LayoutCatalogSnapshot::default());
         };
         let tree = download_tree(std::slice::from_ref(&downloaded))?;
-        Ok(tree
+        let members = tree
             .at(&[LAYOUTS, LAYOUT_MEMBERS])
             .into_iter()
             .flat_map(|members| &members.children)
@@ -391,7 +408,11 @@ impl NativeProvider {
                 om_data::meta::layout_flags(&tree, *id) & (1 | 2 | 0x10) != 0
                     || self.shows_layout(*id)
             })
-            .collect())
+            .collect();
+        Ok(LayoutCatalogSnapshot {
+            members,
+            index: tree.at(&[LAYOUTS, 1]).map(|index| index.to_owned_node()),
+        })
     }
 
     /// Layout `layout`'s catalog member `[4, 5, L]` as stored on the host,
@@ -832,6 +853,16 @@ impl NativeProvider {
         self.authoring(OP_LAYOUT_SETUP, "setting up layouts")
     }
 
+    /// Whether this connection may set up layouts with their fixed page
+    /// margins on its host (operation 23), as
+    /// [`NativeProvider::script_authoring`].
+    pub fn layout_margin_setting(&mut self) -> Result<Authoring, DataError> {
+        self.authoring(
+            OP_LAYOUT_SETUP_MARGINS,
+            "setting layouts' fixed page margins",
+        )
+    }
+
     /// Set a layout's name and views as Layout Setup does if its member is
     /// still at revision `expected`. The host checks the account, the
     /// layout and its lock and saves the file before it answers.
@@ -839,7 +870,12 @@ impl NativeProvider {
         &mut self,
         setup: authoring::LayoutSetup,
     ) -> Result<authoring::Framed, AuthoringError> {
-        match self.layout_setting() {
+        // With margins, operation 23, which a host may lack.
+        let available = match setup.margins {
+            Some(_) => self.layout_margin_setting(),
+            None => self.layout_setting(),
+        };
+        match available {
             Ok(Authoring::Available { .. }) => {}
             Ok(Authoring::Denied(reason) | Authoring::Unavailable(reason)) => {
                 return Err(AuthoringError::Unavailable(reason))

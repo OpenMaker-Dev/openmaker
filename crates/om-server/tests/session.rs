@@ -148,7 +148,7 @@ fn handshake_open_and_unsupported_ops() {
     assert!(
         missing
             .as_ref()
-            .is_err_and(|e| e.to_string().contains("0x0004")),
+            .is_err_and(|e| e.to_string().contains("0x4fb5")),
         "{missing:?}"
     );
 
