@@ -224,12 +224,91 @@ step), and the id = `(next LCG top byte) + LE32(connectionKey[0..3])`, retried
 until unique in `RCConnectionList`. The 16-byte key and the id both feed later
 credential obscuring (section 4).
 
+**A session's other connections** [O: FileMaker Pro 26.1.1 for macOS
+against FileMaker Server 26.0.3.309 for Ubuntu, and against OpenMaker
+Server at [#917](https://github.com/OpenMaker-Dev/openmaker/pull/917)'s
+head, 2026-11-26, through the certificate-validating recording relay,
+while FileMaker Pro opened a large third-party solution hosted read only;
+[#968](https://github.com/OpenMaker-Dev/openmaker/issues/968)]. Which server
+answered each run was established from the bytes: FileMaker Server's
+Connect ids are the first four bytes of their key, little-endian, plus one
+generator byte (above), its Perform replies carry a varying CPU report
+(6.1) and its Open replies the flags `0x00810000`; OpenMaker Server's ids
+are unrelated to their keys, its back-channel is always `fe 00` and its
+Open flags `0x00a10000`.
+
+- FileMaker Pro opened another TLS connection to the server for a call it
+  made while its first connection had a call outstanding. Each of the 12
+  calls seen on another connection came while exactly one call was
+  outstanding on the first, and its header `transidlo` (one count across
+  all of the client's connections) falls between that call's and the
+  first connection's next: a
+  Download Thumbnail (op96), outstanding 0.57 s and 0.26 s, or a Download
+  With Lock (op90) of about 14 ms. One call went out 38 ms after that
+  op90's reply, the time its new connection took to open. Calls made while
+  the first connection was free went on it.
+- The first message on the new connection is the `Perform` itself: no
+  `_is_a`, LocateRequest or `Connect`, and no service context (the first
+  connection's `_is_a` carries the BiDirIIOP context, section 2; the new
+  connection never offers one, so it carries no calls from the server).
+- Each `Perform` names, as its first argument, the connection id the first
+  connection's latest `Connect` returned; its string argument is empty,
+  its `maxreturn` the same as on the first connection (about 1 MiB), and
+  its header carries session id 1 and the id of a file the session had
+  opened and logged in to 4 s before. Request ids are the connection's
+  own: 2, 4, 6, ...
+- The calls: an op92 Download List with flag 1 of an entry of the file's
+  image library `[31, 5, x]`, its key list (280 bytes) whole in one
+  request, then an op90 of that entry's `SVG ` member, which FileMaker
+  Server answered as a value inline; and, on a later connection, an op90
+  of a table's record list `[T, 0d]`. Nothing else. No reply was paged,
+  and no continuation was sent on any connection.
+- FileMaker Server answered each with GIOP NO_EXCEPTION within 20 ms,
+  status and lock error 0, and the CPU report alone in the back-channel,
+  and sent nothing else on that connection. FileMaker Pro closed the
+  connection itself, with a GIOP CloseConnection, 76.5 s after its last
+  reply; the first connection and its session went on. When it needed
+  another connection 81 s later, it opened a new one.
+- The connections are not tied to a session. OpenMaker Server, before
+  #968, refused every call on the second connection with `BAD_PARAM`.
+  FileMaker Pro took each refusal as a lost session and opened a new
+  session on its first connection (`_is_a`, `Connect`, Open and Login of
+  each file, 6.3), and its next call on the second connection, made while
+  the first was busy, named the new session: nine refused calls, the
+  first in the original session and one about 2.8 s after each of the
+  next eight sessions' `Connect`, every 4.1 s; a tenth session had begun
+  when the run was stopped. Against FileMaker Server the later connection
+  named a later session than the second.
+- Every connection came from the same client address.
+
+FileMaker Server ended FileMaker Pro's first two sessions in that run: a
+Tickle 61 s after the session's last reply, and a download 23 s after the
+next one's, were answered `BAD_PARAM`, and FileMaker Pro reconnected each
+time as above. Both silences were far shorter than the 125 s of 6.2, and
+neither followed a refused call; why the sessions ended is not known.
+
+Inferred: the client's network library opens another connection when its
+connections are busy, up to 10 to one server (section 2), and FileMaker
+Server finds a session by the id each call names, whatever the
+connection, as an unknown id is answered `BAD_PARAM` on a connection that
+stays open (6.2).
+
+Unknowns:
+- whether FileMaker Pro presents the same client certificate on another
+  connection, or resumes the first connection's TLS session: the relay
+  presented its own certificate to the server and recorded neither;
+- which other calls go on another connection when the first is busy:
+  locks, commits, scripts, Tickles
+  ([#994](https://github.com/OpenMaker-Dev/openmaker/issues/994));
+- whether a paged download can be continued on another connection than
+  its first page's;
+- whether FileMaker Pro uses more than two connections at once;
+- why FileMaker Server ended the sessions early in this run.
+
 **OpenMaker Server: reads on a session's other connections**
-([#968](https://github.com/OpenMaker-Dev/openmaker/issues/968)). FileMaker
-Pro 26.1.1 was seen opening a second TLS connection while it started a file
-hosted read only, and sending Download (op90) and Download List (op92) there
-with no Connect of its own; FileMaker Server answered them. What OpenMaker
-Server does, its own choices throughout (`om-server`'s `joins`):
+([#968](https://github.com/OpenMaker-Dev/openmaker/issues/968)). What
+OpenMaker Server does with them, its own choices throughout (`om-server`'s
+`joins`):
 
 - A connection with no session of its own has op90 and op92 answered from
   the session they name, when the rule below holds. Everything else it
@@ -273,7 +352,8 @@ Server does, its own choices throughout (`om-server`'s `joins`):
   same for each condition.
 
 Limits. Only the two operations FileMaker Pro was seen sending there are
-served. If, as section 2 suggests, any of its calls can travel on any of
+served; the same client certificate on both connections is OpenMaker's
+requirement, not yet measured of FileMaker Pro. If, as section 2 suggests, any of its calls can travel on any of
 its connections, a lock or a write it sends on a second connection while
 another call is out is still refused, and FileMaker Pro would reconnect as
 before ([#994](https://github.com/OpenMaker-Dev/openmaker/issues/994)). The
