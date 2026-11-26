@@ -7466,38 +7466,43 @@ mod tests {
 
     #[test]
     fn a_pending_container_transfer_leaves_other_local_cells_writable() {
-        let table = Table {
-            id: 0x8002,
-            name: "Items".into(),
-            fields: vec![
-                field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
-                field(2, FieldKind::Normal, DataType::Container, 0, 0x6000, 0),
-            ],
-        };
         let tree = KeyTree::default();
         let file = CalcSchema::new("Items", Locale::en_us());
-        assert!(RecordPlan::from_desktop_file_schema(&table, &tree, &file, false).is_err());
-        let plan = RecordPlan::from_desktop_file_schema(&table, &tree, &file, true).unwrap();
-        let existing = BTreeMap::from([(1, "Before".into()), (2, "Existing reference".into())]);
-        let changes = BTreeMap::from([(1, Some("Example".into()))]);
         let env = environment();
-        for (mode, row) in [
-            (WriteMode::Create, &BTreeMap::new()),
-            (WriteMode::Update, &existing),
-        ] {
-            let prepared = plan.prepare(mode, row, &changes, &env).unwrap();
-            assert_eq!(prepared.changed_fields, [1]);
-            assert_eq!(decoded(&prepared, 1).as_deref(), Some("Example"));
-            assert!(!prepared.values.contains_key(&2));
+        for (options, repetitions, cell) in [(0x6000, 1u16, 2), (0x4000, 24, 2 * 256 + 2)] {
+            let mut container = field(2, FieldKind::Normal, DataType::Container, 0, options, 0);
+            container.options[24..26].copy_from_slice(&repetitions.to_be_bytes());
+            let table = Table {
+                id: 0x8002,
+                name: "Items".into(),
+                fields: vec![
+                    field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                    container,
+                ],
+            };
+            assert!(RecordPlan::from_desktop_file_schema(&table, &tree, &file, false).is_err());
+            let plan = RecordPlan::from_desktop_file_schema(&table, &tree, &file, true).unwrap();
+            let existing =
+                BTreeMap::from([(1, "Before".into()), (cell, "Existing reference".into())]);
+            let changes = BTreeMap::from([(1, Some("Example".into()))]);
+            for (mode, row) in [
+                (WriteMode::Create, &BTreeMap::new()),
+                (WriteMode::Update, &existing),
+            ] {
+                let prepared = plan.prepare(mode, row, &changes, &env).unwrap();
+                assert_eq!(prepared.changed_fields, [1]);
+                assert_eq!(decoded(&prepared, 1).as_deref(), Some("Example"));
+                assert!(!prepared.values.contains_key(&cell));
+            }
+            let refused = plan.compute(
+                WriteMode::Update,
+                &existing,
+                &BTreeMap::from([(cell, None)]),
+                &env,
+                Entry::script(false, false),
+            );
+            assert_eq!(refused.err().and_then(|e| e.code), Some(error::UNAVAILABLE));
         }
-        let refused = plan.compute(
-            WriteMode::Update,
-            &existing,
-            &BTreeMap::from([(2, None)]),
-            &env,
-            Entry::script(false, false),
-        );
-        assert_eq!(refused.err().and_then(|e| e.code), Some(error::UNAVAILABLE));
     }
 
     #[test]

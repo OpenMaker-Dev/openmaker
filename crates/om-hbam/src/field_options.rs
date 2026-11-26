@@ -112,13 +112,16 @@ impl FieldOptions {
         self.field_kind == 1 && self.options & 8 != 0
     }
 
-    /// External Open storage was disabled and transfer to embedded storage
-    /// was deferred. Existing cells can still refer to external data.
+    /// A measured local Container definition awaiting transfer from
+    /// external to embedded storage. Existing cells can still refer to
+    /// external data (containers.md 8.1).
     pub fn pending_embedded_container_transfer(&self) -> bool {
         self.field_kind == 1
             && self.data_type == 6
-            && self.options == 0x6000
-            && self.max_repetitions == 1
+            && matches!(
+                (self.options, self.max_repetitions),
+                (0x6000, 1) | (0x4000, 24)
+            )
     }
 
     pub fn calculation_replaces_existing(&self) -> bool {
