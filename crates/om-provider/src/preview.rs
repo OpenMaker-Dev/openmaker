@@ -119,7 +119,7 @@ pub(crate) struct KeptPreviews(BTreeMap<PreparedId, Preview>);
 
 enum Preview {
     /// A record of this file's table `snapshot.table`.
-    Own(Snapshot),
+    Own(Box<Snapshot>),
     /// A related record of imported table `table`, or a new record of a
     /// layout of it, written through this file's `layout` and previewed by
     /// the owner `route` reaches as its preview `owner`.
@@ -948,13 +948,13 @@ impl NativeProvider {
         values.retain(|cell, value| cells.get(cell) != Some(value));
         let id = match write.prepared {
             Some(id) => id,
-            None => self.previews.insert(Preview::Own(Snapshot {
+            None => self.previews.insert(Preview::Own(Box::new(Snapshot {
                 table,
                 layout,
                 serials: std::mem::take(&mut environment.serials),
                 stamp: Stamp::of(&environment),
                 context: environment.context,
-            })),
+            }))),
         };
         Ok(Some(NewRecordPreview { id, values }))
     }
