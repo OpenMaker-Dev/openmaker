@@ -872,8 +872,12 @@ auto-enter a direct `$$` variable read. A Text value comes from the
 owning file's current script variables, and an unset variable gives an
 empty field. OpenMaker keeps the New Record snapshot through its preview
 and commit. That timing is inferred when the variable changes between
-those two steps. Hosted files, compound variable formulas, and non-Text
-variable values are outside this change.
+those two steps. Planning refuses with error 3 when a calculated
+auto-entry formula reads a script variable outside this form, including
+a bare read in a hosted file. A non-Text value in the supported form
+returns error 3 at evaluation. The plan check covers the field's
+auto-entry formula itself. Variable reads through custom functions,
+validation and stored calculations remain separate.
 [FileMaker Pro measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1037#issuecomment-7185794811).
 
 A local stored Text calculation can use a literal `Evaluate` with
@@ -886,8 +890,15 @@ result empty. Creation needs an unsorted local window. Clearing all listed
 fields while an unlisted input still holds a value refuses with error 3
 when the empty-input guard is on. The expression and its dependencies
 are kept in the file.
-A field-supplied expression, hosted files and other dynamic record-rule
-expressions remain outside this support.
+For a field-supplied text join, the source itself also triggers
+recalculation. OpenMaker compiles the current source when a trigger
+changes. The source, listed triggers and referenced fields must be
+ordinary single-repetition Text fields of the same row without their
+own auto-entry or lookup. When a trigger changes, the write refuses with
+error 3 if the source is missing, cannot compile to the supported join,
+or no longer reads every listed trigger field.
+Hosted files and other dynamic record-rule expressions remain outside
+this support.
 [FileMaker Pro measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1072)
 
 **An auto-entered or validation formula may read an unstored
@@ -1200,7 +1211,8 @@ related record is locked when the record is saved, not as typing begins
 (FileMaker Pro locks as editing begins, write-path.md 4.1); a record
 another client changed since the window showed it is refused with 306
 (`DataProvider::retain_related_record`; a transaction's lock now checks
-the version the window kept, as an edit outside one does). A number field
+the version the window kept, as an edit outside one does). When the window
+leaves a record, it drops that record's edit baseline. A number field
 stores the text as typed, with
 no parsing, reformatting or conversion, as Set Field stores it (script
 oracle 13.20: `abc` in a number field is stored as typed). Its entry rules
@@ -2096,6 +2108,22 @@ application creation plan.
     value, so those sequences return error 3. Hosted and routed writes
     using the grouped self-join return 3.
     [Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7184309703).
+    This join also supports the replacing Number formula
+    `If ( Peer::Primary = 1 ; 0 ; 1 )` with a replacing UUID row key on
+    the same table. Ordinary New Record in an unsorted local found set
+    shows `1` before the group is assigned. After Set Field assigns the
+    group, a script calculation reads the recomputed result before
+    commit. Commit stores the result for the final group and row key. A single
+    field-setting step can assign an existing record's nonempty group
+    again or move it to another group. An unrelated field edit keeps the
+    stored result. OpenMaker computes the exact single-field assignment
+    for script reads before commit and evaluates it again at commit.
+    Where the pending assignment falls outside that supported sequence,
+    the affected result returns calculation error 3 instead of a stale value.
+    Explicit edits of the result or the stored row key and clearing the
+    group are refused. Hosted, routed, and other creation paths are
+    refused before record creation or serial reservation.
+    [Replacing native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7191674029).
   - **What is unmeasured:** sorted and other non-equality joins with
     matches, stored and validation formulas, and portal rows made in one
     commit.

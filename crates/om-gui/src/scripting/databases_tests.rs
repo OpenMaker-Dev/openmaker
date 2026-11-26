@@ -688,7 +688,7 @@ impl DataProvider for Provider {
         }
         Ok(server.session_entered.then(|| om_data::PendingValues {
             values: [(1, server.pending_text.clone())].into(),
-            unknown: Default::default(),
+            ..Default::default()
         }))
     }
     fn close(&mut self) {

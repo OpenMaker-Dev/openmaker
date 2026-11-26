@@ -162,6 +162,10 @@ pub(crate) struct Uncommitted {
 }
 
 impl Uncommitted {
+    pub(super) fn single_script_field(&self, cells: &Cells, typed: &BTreeSet<u64>) -> bool {
+        self.single_field_step && typed.is_empty() && cells.len() == 1 && self.related.is_empty()
+    }
+
     /// The place in [`Self::related`] of the draft `key` names, while it
     /// is there.
     pub fn draft_index(&self, key: DraftKey) -> Option<usize> {
@@ -689,14 +693,27 @@ impl Window {
         let Some((fields, record)) = self.current(provider)? else {
             return Err(DataError::with_code(101, "There is no current record."));
         };
-        let Some(i) = fields.iter().position(|f| f.name == field) else {
+        let Some(index) = fields.iter().position(|f| f.name == field) else {
             return Err(DataError::with_code(
                 102,
                 format!("The table has no field named {field:?}."),
             ));
         };
-        let stored = record.values.get(i).cloned().flatten().unwrap_or_default();
-        if stored == text && !self.state.drafts.contains_key(field) {
+        let same_value = record
+            .values
+            .get(index)
+            .and_then(Option::as_deref)
+            .unwrap_or_default()
+            == text;
+        let open = &self.state.uncommitted;
+        let single_field_step = !open.new
+            && self.state.drafts.is_empty()
+            && open.cells.is_empty()
+            && open.related.is_empty();
+        if same_value && !self.state.drafts.contains_key(field) {
+            // Set Field still supplies its cell to the commit. It can
+            // trigger entry rules without opening a draft for the text.
+            self.state.uncommitted.single_field_step = single_field_step;
             return Ok(());
         }
         self.prepare_edit(
@@ -704,11 +721,7 @@ impl Window {
             BTreeSet::new(),
             [field.to_owned()].into_iter().collect(),
         )?;
-        let open = &mut self.state.uncommitted;
-        open.single_field_step = !open.new
-            && self.state.drafts.is_empty()
-            && open.cells.is_empty()
-            && open.related.is_empty();
+        self.state.uncommitted.single_field_step = single_field_step;
         self.state
             .drafts
             .insert(field.to_owned(), (!text.is_empty()).then_some(text));
@@ -915,10 +928,7 @@ impl Window {
             let pinned = own
                 .and_then(|draft| draft.version.map(|version| (draft.table, version)))
                 .filter(|(table, version)| provider.retain_related_record(*table, id, *version));
-            let single_field_step = open.single_field_step
-                && typed.is_empty()
-                && cells.len() == 1
-                && open.related.is_empty();
+            let single_field_step = open.single_script_field(&cells, &typed);
             let result = provider.write_record(&ScriptWrite {
                 layout,
                 table: None,
@@ -1305,6 +1315,7 @@ impl Window {
         }
         self.record = None;
         self.state.record = None;
+        self.state.record_version = None;
         self.state.drafts.clear();
         self.stray_session |= self.state.uncommitted.session;
         self.state.uncommitted = Uncommitted::default();
@@ -1843,6 +1854,31 @@ impl Window {
 mod scroll_tests {
     use super::*;
     use om_data::runtime::{ErrorCode, HostError};
+
+    #[test]
+    fn a_new_record_drops_the_previous_records_edit_version() {
+        let mut provider = om_data::mock::MockProvider::new();
+        provider
+            .open(&om_data::Connection {
+                host: "records.test.invalid".into(),
+                port: 5003,
+                file: "Records.fmp12".into(),
+                account: "Admin".into(),
+                password: String::new(),
+            })
+            .unwrap();
+        let mut window = Window::default();
+        window.set_layout(1, Some(0x8002));
+        window.state.record = Some(1);
+        window.state.record_version = Some(12);
+
+        window
+            .new_record(&mut provider, FieldChanges::new(), Cells::new(), None)
+            .unwrap();
+
+        assert!(window.state.record.is_some_and(|id| id != 1));
+        assert_eq!(window.state.record_version, None);
+    }
 
     /// The last sort order is kept per table in a window, as FileMaker Pro
     /// keeps it (#840's reading: Tasks by Task descending and Assignees by

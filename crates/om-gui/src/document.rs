@@ -37,6 +37,7 @@ pub(crate) mod portals;
 mod rich_text;
 mod scaled_text;
 pub(crate) mod scroll;
+mod slide;
 pub(crate) mod value_dialogs;
 pub(crate) mod zoom;
 
@@ -5310,6 +5311,15 @@ fn paint_object_repetition(
             // Paint only the active panel. Hidden panels contain overlapping
             // field objects and must never bleed into the selected panel.
             let active = *selected;
+            let clip = ui.clip_rect();
+            let contents = if !finding && object.kind() == ObjectKind::SlideControl {
+                slide::paint_contents(ui, layout, object, rect)
+            } else {
+                None
+            };
+            if let Some(contents) = contents {
+                ui.set_clip_rect(clip.intersect(contents));
+            }
             for &child in &object.children {
                 if state.layout_cache.object(layout, child).is_some_and(|o| {
                     matches!(o.kind(), ObjectKind::TabPanel | ObjectKind::SlidePanel)
@@ -5332,18 +5342,44 @@ fn paint_object_repetition(
                     visited,
                 );
             }
+            if contents.is_some() {
+                ui.set_clip_rect(clip);
+            }
             if object.kind() == ObjectKind::TabControl {
                 let selected = state
                     .panels
                     .get_mut(&(layout.id, object.id))
                     .expect("selected panel");
-                tab_headers(
+                let focus_record = session
+                    .current_record()
+                    .filter(|_| !finding && portal.is_none() && record_index == session.current)
+                    .map(|(_, record)| record.id);
+                let keyboard = focus_record.is_some() && object.tab_order > 0;
+                let widget = tab_headers(
                     ui,
                     &state.layout_cache,
                     layout,
                     object,
                     &panels,
+                    (rect, keyboard),
+                    selected,
+                );
+                if let Some((record, widget)) = focus_record.zip(widget) {
+                    let target = (layout.id, record, object.id);
+                    state.note_tab_stop(object.tab_order, target, widget, false);
+                }
+            } else if !finding && object.shows_slide_dots() {
+                let selected = state
+                    .panels
+                    .get_mut(&(layout.id, object.id))
+                    .expect("selected panel");
+                slide::navigation(
+                    ui,
+                    layout,
+                    object,
+                    &panels,
                     rect,
+                    ui.scope_id().with((record_index, portal)),
                     selected,
                 );
             }
@@ -8864,14 +8900,15 @@ fn tab_headers(
     layout: &Layout,
     control: &LayoutObject,
     panels: &[&LayoutObject],
-    rect: Rect,
+    (rect, keyboard): (Rect, bool),
     selected: &mut u64,
-) {
+) -> Option<egui::Id> {
     let height = control
         .tab
         .as_ref()
         .map_or(30.0, |tab| tab.tab_height.max(1) as f32);
     let mut left = rect.left();
+    let mut focus_stop = None;
     for panel in panels {
         let info = panel.tab_panel.as_ref();
         let width = info.map_or(100.0, |tab| tab.tab_width.max(1) as f32);
@@ -8895,6 +8932,12 @@ fn tab_headers(
             *selected = panel.id;
         }
         let active = *selected == panel.id;
+        if active && keyboard && ui.is_rect_visible(header) {
+            focus_stop = Some(response.id);
+            if response.has_focus() {
+                keep_tab(ui, response.id);
+            }
+        }
         let state = if active {
             7
         } else if response.hovered() {
@@ -8919,8 +8962,17 @@ fn tab_headers(
         text.text_align = Some(2);
         text.vertical_align = Some(1);
         paint_text(ui, header, label, &text);
+        if focus_stop == Some(response.id) && response.has_focus() {
+            ui.painter().rect_stroke(
+                header,
+                CornerRadius::ZERO,
+                Stroke::new(1.0, theme::FOCUS),
+                egui::StrokeKind::Inside,
+            );
+        }
         left = header.right();
     }
+    focus_stop
 }
 
 fn bound_value<'a>(

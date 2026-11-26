@@ -594,6 +594,29 @@ Its segments are Go to Layout buttons (step 6, value 5, the layout's key in
 `reserved`), each a single-step button like any other (section 5.6); the
 active segment is section 5.5.1.
 
+Slide navigation [O, FileMaker Pro 26.1.1]. In a synthetic three-panel control
+with swipe enabled, `dotObj` (field 19) stores `08 00` when Show navigation
+dots is on and `08 01` when it is off. Clicking a dot switches the active
+panel. The dots use component 26, normal state 1 and active state 7. In
+Enlightened the default dot is 9 pt. Setting 11 pt saves the dot's width
+and height (properties 109 and 110) as 11 pt, the dot container height
+(27/110) as 17 pt, and the contents bottom (8/119) as 23 pt. The default
+heights are 15 and 21 pt. The dot row is centered, with a gap of about
+4 pt and a row bottom inset of 3 pt in both cases. The theme stores a dot
+left margin of 0.33 em and a dot container bottom of 0.25 em. Relating
+these lengths to 12 pt for the measured theme is inferred. Other theme
+unit bases, missing flags, swipe and panel-switch triggers were not measured.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1031#issuecomment-7192568479).
+
+The contents component paints the panel's background and border and clips
+its child objects [O, FileMaker Pro 26.1.1]. A two-line label placed at the
+lower edge shows the portion inside the panel, and the remainder stays
+clipped even when the label is still present in accessibility. The same
+control with dots disabled has a taller contents frame: near 3 pt of its
+height remains below the border in Enlightened. Using the dot container's
+bottom inset for that remaining space is inferred from the measured
+geometry. [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1121#issuecomment-7192729802).
+
 Popovers [I: the field names]: a popover button's `popoverKey` is the object
 key of its popover, and the popover's `buttonKey` the key of its button. In
 Browse, OpenMaker keeps a popover hidden until its button is clicked; a second
