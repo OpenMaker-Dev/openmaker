@@ -2204,9 +2204,34 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   new windows or downloads, and navigate only to http, https, data, blob,
   file and about URLs. On an X server without DRI3 the process turns off
   WebKitGTK's DMA-BUF renderer at startup (it draws blank pages there) unless
-  `WEBKIT_DISABLE_DMABUF_RENDERER` is set; the page bridge uses its own
-  `openmaker` script message handler (wry's IPC drops messages from `data:`
-  pages, whose URL it cannot parse).
+  `WEBKIT_DISABLE_DMABUF_RENDERER` is set.
+- On Linux (`web_viewer/gtk.rs`) the page bridge posts to a script message
+  handler of its own, `openmaker` (wry's IPC drops messages from `data:`
+  pages, whose URL it cannot parse). WebKit shows a page's message
+  handlers to every frame of the page, and WebKitGTK does not say which
+  frame posted a message (its `WebKitFrame` belongs to the web process's
+  extension API), so the handler is registered in a script world of
+  OpenMaker's own, where no script of the page or of its frames runs. Two
+  scripts go into the main frame only, as each document starts and before
+  the page's own scripts: the `FileMaker` object, in the page's world, and
+  in OpenMaker's world a poster, which posts what `FileMaker` hands it
+  through an element that only the two hold (it is taken out of the
+  document at once). A view starts loading only once both halves and the
+  handler are in place. Another site's frame in the page reaches neither the
+  handler nor the main frame's `FileMaker`; a frame of the page's own
+  origin can call `parent.FileMaker` [I, OpenMaker's choice; FileMaker
+  Pro's scope for `FileMaker.PerformScript` in frames is unmeasured].
+  Unlike macOS's token, nothing has to reach a document after it commits,
+  and a page whose Content Security Policy forbids frames still posts.
+  `tests/web_viewer_native.rs` embeds a frame from another loopback port,
+  which posts to the handler and calls `parent.FileMaker`, and checks that
+  neither reaches the bridge and no script runs, and that the first
+  document's inline call does run. On both platforms the bridge's
+  messages are bounded where they arrive, on the thread that hears the page
+  and without waiting for the app: only well-formed ones are kept, and one
+  longer than 16 MiB, or one that would put more than 256 messages or
+  32 MiB (each counted as at least 1 KiB) in wait for the app, is dropped
+  [I, OpenMaker's bounds; FileMaker's are unmeasured].
 - On macOS (`web_viewer/appkit.rs`) AppKit's views live on the main thread,
   where the app's frames run: commands apply as they come, and a page is
   made at the end of the frame, with wry, as a child of the root window,
@@ -2221,11 +2246,9 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   from the OS's random source (without it the bridge stays off), and the
   last document's stops working as the next one commits, with what it
   posted that the app has not taken yet: another site's frame in the page
-  cannot post, nor can a page that learned an earlier document's token. Only
-  well-formed messages are kept; one longer than 16 MiB, or one that would
-  put more than 256 messages or 32 MiB (each counted as at least 1 KiB) in
-  wait for the app, is dropped. A page whose Content
-  Security Policy forbids frames (`frame-src 'none'`) cannot post at all.
+  cannot post, nor can a page that learned an earlier document's token. A
+  page whose Content Security Policy forbids frames (`frame-src 'none'`)
+  cannot post at all.
   For the same reason the history and loading state that Set Web Viewer's
   Back and Forward need are read through key-value coding. wry reports a
   load only when it commits and when it finishes, so each frame also looks
@@ -2250,16 +2273,48 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   every web viewer shows "Web viewer: unavailable on this display." Builds without the feature stay on native
   Wayland. Through XWayland:
   - **Scale** comes from the X server: XSETTINGS `Xft/DPI`, then the
-    `Xft.dpi` resource, then the monitor's size, unless
-    `WINIT_X11_SCALE_FACTOR` is set. A compositor that gives X clients no
-    scale draws them enlarged (unmeasured here).
-  - **Input** is X11's, with XIM for input methods.
+    `Xft.dpi` resource, then each monitor's size in RandR (winit 0.30: its
+    pixel density over 96 dpi, rounded to twelfths, at least 1), unless
+    `WINIT_X11_SCALE_FACTOR` is set. What a desktop at a higher scale shows
+    depends on its compositor. Measured 2026-11-26 with the mock provider,
+    comparing the same build through XWayland and natively on Wayland
+    (`DISPLAY` unset), by screenshot
+    ([evidence](../evidence/xwayland-scale/README.md)):
+    - **sway 1.12 (wlroots, headless)** gives XWayland the output's logical
+      size (a 1920 × 1080 output is 960 × 540 pixels on 254 × 143 mm at
+      scale 2, 1280 × 720 on 339 × 190 mm at 1.5) and stretches X windows by
+      the output's scale. With no XSETTINGS or `Xft.dpi` the app draws at
+      1, so its windows have the native windows' size but are blurred, at 2
+      and at 1.5. Native Wayland windows are sharp at both, 1.5 included
+      (winit follows fractional scales). [I] Raising
+      `WINIT_X11_SCALE_FACTOR` would only enlarge the stretched window (not
+      tried).
+    - **Hyprland 0.56 with `xwayland:force_zero_scaling`** (Omarchy's
+      default) does not stretch X windows: XWayland has the monitor's
+      pixels (1920 × 1080 on 600 × 340 mm at scale 2 as at 1) and no
+      `Xft.dpi`. At scale 1 the app draws at 1, as natively. At scale 2 it
+      still draws at 1: sharp, but half the size of the native window. [I]
+      `WINIT_X11_SCALE_FACTOR=2` (or an `Xft.dpi` of 192) would give it the
+      desktop's scale (not tried).
+    - WebKitGTK, in the app's process, takes GDK's scale from
+      `GDK_SCALE`, which some desktops set for X11 apps (Omarchy sets 2);
+      its pages then draw at that scale within objects the app draws at 1
+      ([#1086](https://github.com/OpenMaker-Dev/openmaker/issues/1086)).
+  - **Input** is X11's, with XIM for input methods (not measured).
   - **The clipboard** is X selections (arboard), which the compositor shares
     with Wayland applications.
 
   A test runs the real event loop with `WAYLAND_DISPLAY` naming no socket.
-  An XWayland window under a nested compositor was checked by hand, and no
-  Wayland desktop has been tried.
+  `tests/web_viewer_native.rs`, built from
+  [#1087](https://github.com/OpenMaker-Dev/openmaker/pull/1087)'s first
+  revision (its shared-memory choice on NVIDIA's driver; without it the page
+  stays blank there,
+  [#1085](https://github.com/OpenMaker-Dev/openmaker/issues/1085)), passed
+  on Hyprland's XWayland at scale 1 with `GDK_SCALE` unset; with
+  `GDK_SCALE=2` its click on the page misses
+  ([#1086](https://github.com/OpenMaker-Dev/openmaker/issues/1086)). A native
+  Wayland backend was studied and prototyped in
+  [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323).
 - Every window shows its own views. eframe 0.37 gives out only the root
   viewport's native window; another window's viewport is an immediate
   viewport whose X11 window OpenMaker finds from the server

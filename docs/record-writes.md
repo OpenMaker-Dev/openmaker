@@ -153,7 +153,9 @@ OpenMaker does the same with the window's record session
   instead.
 - **The commit** writes the record, and what was changed through it,
   together (op14, op70) and reads them back
-  (`DataProvider::commit_record_session`). The related files' records it
+  (`DataProvider::commit_record_session`). Committing a held new record
+  without further edits also reloads the window's page, so the next edit
+  uses the stored record version. The related files' records it
   wrote, a row of a related file's table typed into the record's portal
   among them, are committed in their files before this file's (#1119).
   Each file takes part in its own way. A related file on this file's
@@ -781,16 +783,71 @@ but for a lookup's, which would write into it: a stray `0x80`
 (auto-entry.md) leaves the table writable. A stored calculation's unknown
 bits keep it read-only.
 
-An ordinary new record can fill an empty single-repetition global Text
-field with its constant, a calculation that reads no fields, or its
-creation serial. That value goes to the session immediately. It never
-becomes a cell of the new record. If the global already has a value,
-New Record returns 3 before reserving an ID or serial. Other rows in the
-table can still be edited. The scope excludes import with auto-entry,
-new records from a preview, and explicit script transactions. The desktop
-currently keeps local globals in memory for the session. See the native
+A local table accepts ordinary record writes to its other fields when a
+Container awaits transfer to embedded storage. This covers a
+single-repetition field marked `0x6000` (external Open storage) and a
+24-repetition field marked `0x4000` (external Secure storage). OpenMaker
+keeps the definition and payload references and returns error 3 on a
+write to the container itself. Other storage words, repetition counts
+and hosted use remain outside this support.
+[Open storage comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1060)
+[Secure storage comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1083)
+
+In a local file, a replacing 24-repetition Text auto-enter calculation
+can read the filename of the same occurrence's 24-repetition Container.
+With the measured formula and option word, a new empty record has no
+filename cells, and editing an existing source changes only its matching
+repetition. OpenMaker refuses direct writes into the calculated Text and
+creation with a nonempty source. The deferred-transfer refusal still
+applies to source containers awaiting a transfer.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39)
+
+In a local file, ordinary New Record applies a constant, a calculation
+that reads no fields, or a creation serial to a supported
+single-repetition global Text field. A calculation with replacement off
+keeps a nonempty global. Constants, replacing calculations and creation
+serials overwrite it, including on later creations. A creation serial
+also advances the stored next serial. The value goes to the session
+immediately and is absent from the new record's cells. Revert Record
+leaves the session value in place in OpenMaker. FileMaker's Revert
+behavior is unmeasured.
+
+Hosted files, Duplicate Record, portal creation and routed writes still
+return error 3 when the global already holds a value. The hosted test
+covered an empty global with constant auto-entry only. Import with
+auto-entry, new records from a preview and explicit script transactions
+remain unsupported for global auto-entry. OpenMaker keeps local globals
+in memory for the session. See the native
 observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
 and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
+
+A local Text or Number calculated auto-enter may read
+`Get ( CurrentTimeUTCMilliseconds )` at New Record, including through a
+custom function. Each field takes its own samples and replays them
+through later edits and commit of a held creation. Applying the same
+sampling to duplicate, import and portal creations is inferred.
+Evaluating a clock-dependent rule again on an existing record, and
+clock reads in hosted writes, validation and stored calculations, are
+outside this support.
+[Native Browse check](https://github.com/OpenMaker-Dev/openmaker/issues/1055).
+
+A local Text auto-enter calculation can read a single-repetition plain
+Text global from another table in the same file, through an unrelated
+occurrence. The field is read from the session, independent of the
+table's records. A held new record keeps the value read at creation. A
+formula that reads a missing or styled session value refuses the write.
+FileMaker Pro 26.1.1 copied the value at New Record, including with zero
+source rows.
+[Claris global-field documentation](https://help.claris.com/en/pro-help/content/global-fields.html)
+and [the timing check](https://github.com/OpenMaker-Dev/openmaker/issues/1051).
+
+Local desktop files can auto-enter Creation Time into a single-repetition
+Text field when the file and the desktop's configured system time format
+use hours without a leading zero, colon separators and a trailing AM/PM
+suffix. An unknown or mismatched system format is refused.
+The Text field stores the creation-time string, including seconds. Other
+type conversions and hosted Creation Time into Text remain unsupported.
+[FileMaker Pro measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1035#issuecomment-7185794163).
 
 An ordinary single-repetition Text field in a local file can
 auto-enter a direct `$$` variable read. A Text value comes from the
@@ -1046,10 +1103,20 @@ record's place in what the rules read:
 - **Hosted files** take the same answer, an inference (parity-unverified).
 - **Routed writes:** a portal row of another file's table carries the
   calling window's number to that file.
-- The number is also unavailable for a portal that sorts or filters, the
-  desktop's New Record command, and edits of stored records.
+- A stored Number calculation consisting of `Get ( RecordNumber )` can
+  use the position from ordinary New Record in a local window, including
+  when earlier rows are omitted. An unsorted set appends the row. A sorted
+  set inserts it immediately after the current row when that row is known.
+  Unrelated edits and later re-sorting leave its stored value alone.
+  Automatic re-sorting after commit is a separate difference.
+  The same field definition refuses writes
+  on hosted files and routed tables. Duplicate Record, portal creation
+  and other creates without the local New Record position refuse with 3
+  ([#1011](https://github.com/OpenMaker-Dev/openmaker/issues/1011)).
+- The number is unavailable for a portal that sorts or filters, a sorted
+  desktop window without a known insertion position, and edits of stored records.
 - **Edits that evaluate no such formula are written.** An auto-entered
-  calculation with no field inputs is evaluated only at creation.
+  or stored calculation with no field inputs is evaluated only at creation.
 - **The desktop window gives it in the measured shape only**
   (`begun_record_numbers`, `scripting/host/portals.rs`):
   - one record begun in a creation row, the only record of its table the
@@ -1787,9 +1854,10 @@ the starting occurrence, must be as FileMaker Pro writes them. It holds:
   in Japanese.
   The record's match fields may be supported stored Text calculations
   of one repetition, nonglobal, with complete dependencies (#1194), plain
-  fields without auto-entry, or keys whose only auto-entry is
-  `Get ( UUID )` (#657). Unstored/global keys, unsupported or unavailable
-  dependencies and dependency cycles remain refused.
+  fields without auto-entry, or ordinary Text keys with a supported
+  calculated auto-enter. A calculated auto-enter key can read the same row.
+  Unstored/global keys, unsupported or unavailable dependencies and
+  dependency cycles remain refused.
 
 How OpenMaker performs it:
 - A write that sets a match field, also to the value it had, reads the
@@ -1811,6 +1879,15 @@ How OpenMaker performs it:
   behavior, general related calculations, same-value input writes, or
   `0xa0000000` all-empty behavior. Same-value input relookup remains
   inference, as does extending the native result to those conditions.
+- When auto-entry changes a Text key, OpenMaker reads the lookup with that
+  final key. An input edit that retains the key under "Do not replace
+  existing value" also retains the prior looked-up value. FileMaker Pro
+  exposes those changes at New Record and Set Field, and OpenMaker uses
+  the commit-time lookup path. A same-value write to the input of an
+  auto-entered key does not rerun its lookup. OpenMaker refuses Relookup
+  Field Contents through that input with error 3. FileMaker has not been
+  measured for these two cases.
+  [Native measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1036#issuecomment-7185794524).
 - A write that sets the lookup field itself keeps that value. Which came
   last is not known; this is OpenMaker's choice.
 - A write that fires a lookup it could not read is refused with error 3.

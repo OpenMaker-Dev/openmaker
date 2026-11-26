@@ -5,8 +5,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use om_data::found::{code, FindRequest, FoundSet, FoundSetChange, SortField};
+use om_data::rules::RecordNumber;
 use om_data::runtime::Mode;
-use om_data::{DataError, DataProvider, Field, FieldChanges, Record, ScriptWrite};
+use om_data::{DataError, DataProvider, Field, FieldChanges, Record, RecordCreation, ScriptWrite};
 
 use super::host::transaction::{missing_related_parent, Staged};
 use super::{ScrollRequest, WindowState, WindowUpdate};
@@ -155,9 +156,9 @@ pub(crate) struct Uncommitted {
     /// The new record's place in the found set when it was made, which
     /// its auto-entered `Get ( RecordNumber )` was given: its later
     /// writes before its commit give it again, as the value is entered
-    /// when the record is made (Duplicate Record, #526). `None` when it
-    /// is not known (New Record, #298).
-    pub record_number: Option<u64>,
+    /// when the record is made (Duplicate Record, #526, and ordinary
+    /// local New Record, #1011). `None` when the position is unknown.
+    pub record_number: Option<RecordNumber>,
 }
 
 impl Uncommitted {
@@ -217,7 +218,7 @@ pub(crate) struct NewRecord {
     saved: bool,
     /// Its place in the found set when it was made, if known
     /// ([`Uncommitted::record_number`]).
-    record_number: Option<u64>,
+    record_number: Option<RecordNumber>,
 }
 
 /// What [`Window::commit`] writes with, as its caller gave it.
@@ -715,8 +716,7 @@ impl Window {
         Ok(())
     }
 
-    /// Whether the current record has unsaved changes (or is new), its
-    /// related records included.
+    /// Whether the current record or its related records have unsaved edits.
     pub fn is_modified(&self) -> bool {
         let open = &self.state.uncommitted;
         !self.state.drafts.is_empty() || !open.cells.is_empty() || !open.related.is_empty()
@@ -820,6 +820,11 @@ impl Window {
                 self.commit_session(provider, skip_validation)?;
             }
             let new = std::mem::take(&mut self.state.uncommitted.new);
+            if new && session && self.state.record.is_some() {
+                // A page showing the held row has no stored version.
+                // Reload it so the next edit starts with the saved version.
+                self.changed_data();
+            }
             return Ok(self
                 .state
                 .record
@@ -994,7 +999,10 @@ impl Window {
                 typed: draft.typed.clone(),
                 skip_validation,
                 privilege_set: privilege_set.clone(),
-                record_number: record_numbers.get(&index).copied(),
+                record_number: record_numbers
+                    .get(&index)
+                    .copied()
+                    .map(RecordNumber::Window),
                 // Its preview's values went into the record it holds.
                 prepared: draft
                     .prepared
@@ -1417,9 +1425,58 @@ impl Window {
         privilege_set: Option<String>,
     ) -> Result<(), DataError> {
         let session = self.open_new_record(provider);
-        let made =
-            self.make_new_record(provider, session, (values, cells), (privilege_set, None))?;
+        let record_number = if session
+            && !cfg!(any(target_os = "ios", target_os = "android"))
+            && provider.local_path().is_some()
+        {
+            self.next_local_new_record(provider)
+        } else {
+            None
+        };
+        let made = self.make_new_record(
+            provider,
+            session,
+            (values, cells),
+            (privilege_set, record_number),
+            RecordCreation::NewRecord,
+        )?;
         self.adopt_new_record(provider, made)
+    }
+
+    /// An unsorted window appends a new record to its current found set.
+    /// Its position is unknown when the provider cannot read that set or
+    /// keeps it sorted.
+    pub(super) fn next_unsorted_record_number(
+        &self,
+        provider: &mut dyn DataProvider,
+    ) -> Option<u64> {
+        let layout = self.state.layout?;
+        let (_, found) = provider.records_with_summary(layout, 0, 0, &[]).ok()?;
+        let found = found.filter(|found| !found.sorted)?;
+        found.found.checked_add(1)
+    }
+
+    fn next_local_new_record(&self, provider: &mut dyn DataProvider) -> Option<RecordNumber> {
+        let layout = self.state.layout?;
+        let (_, found) = provider.records_with_summary(layout, 0, 0, &[]).ok()?;
+        let found = found?;
+        if !found.sorted || found.found == 0 {
+            return found.found.checked_add(1).map(RecordNumber::LocalNewRecord);
+        }
+        if self.state.index >= found.found {
+            return None;
+        }
+        let page = provider
+            .records_with_calculations(layout, self.state.index, ONE, &[])
+            .ok()?;
+        let current = page.records.first()?.id;
+        if self.state.record.is_some_and(|id| id != current) {
+            return None;
+        }
+        Some(RecordNumber::LocalSortedNewRecord {
+            position: self.state.index.checked_add(2)?,
+            after: u64::try_from(current).ok()?,
+        })
     }
 
     /// Open the record session a new record is held in, as FileMaker Pro
@@ -1450,7 +1507,8 @@ impl Window {
         provider: &mut dyn DataProvider,
         session: bool,
         (values, cells): (FieldChanges, Cells),
-        (privilege_set, record_number): (Option<String>, Option<u64>),
+        (privilege_set, record_number): (Option<String>, Option<RecordNumber>),
+        creation: RecordCreation,
     ) -> Result<NewRecord, DataError> {
         let revert = |provider: &mut dyn DataProvider, session: bool| {
             if session {
@@ -1474,7 +1532,7 @@ impl Window {
             prepared: None,
             single_field_step: false,
         };
-        let (record, saved) = match provider.write_record(&write) {
+        let (record, saved) = match provider.write_record_with_creation(&write, creation) {
             Ok(record) => (record, !session && !provider.transaction_open()),
             Err(error) => {
                 revert(provider, session);

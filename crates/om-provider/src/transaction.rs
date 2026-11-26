@@ -1033,19 +1033,23 @@ impl NativeProvider {
                     record_number: context.record_number.or(previewed.context.record_number),
                     ..previewed.context.clone()
                 },
-                // A record made in the transaction keeps the place it was
-                // made at, which its auto-entered Get ( RecordNumber ) was
-                // given, through later writes that give none: a window's
-                // commit or navigation forgets it, the record is still
-                // the transaction's to create (#526).
-                None => WriteContext {
-                    record_number: context.record_number.or_else(|| {
-                        before
-                            .filter(|h| matches!(h.change, Change::New(_)))
-                            .and_then(|h| h.context.record_number)
-                    }),
-                    ..context
-                },
+                // Keep what the new record knew at creation as it takes
+                // later field edits in this record session.
+                None => {
+                    let created = before.filter(|held| matches!(held.change, Change::New(_)));
+                    WriteContext {
+                        record_number: context
+                            .record_number
+                            .or_else(|| created.and_then(|held| held.context.record_number)),
+                        other_globals: created
+                            .and_then(|held| held.context.other_globals.clone())
+                            .or(context.other_globals),
+                        creation_utc_clock: created
+                            .and_then(|held| held.context.creation_utc_clock.clone())
+                            .or(context.creation_utc_clock),
+                        ..context
+                    }
+                }
             };
             let mut context = context;
             // Entry preparation can hold a lock with no cells yet. Any
@@ -1402,7 +1406,7 @@ impl NativeProvider {
             &plan,
             entry,
             cells,
-            false,
+            om_data::RecordCreation::NewRecord,
             (context, None, Some(layout_id)),
         )
     }
@@ -1420,9 +1424,10 @@ impl NativeProvider {
         plan: &om_data::rules::RecordPlan,
         entry: Entry,
         mut cells: Cells,
-        script: bool,
+        creation: om_data::RecordCreation,
         (context, prepared, layout): (WriteContext, Option<om_data::PreparedId>, Option<u32>),
     ) -> Result<Record, DataError> {
+        plan.check_creation_context(&context)?;
         let mut globals = if plan.has_global_auto_entry(entry) {
             if self.transaction_kind() != Some(TransactionKind::Record) || prepared.is_some() {
                 return Err(unavailable(
@@ -1431,7 +1436,7 @@ impl NativeProvider {
             }
             self.leave_single_root_recovery()?;
             let environment = self.rule_environment(table.id, plan, context.clone())?;
-            self.new_record_defaults(plan, entry, &environment)?
+            self.new_record_defaults(plan, entry, &environment, creation)?
         } else {
             self.begin_single_root_proof(table.id, cells.keys().copied().collect(), layout);
             records::NewGlobals::default()
@@ -1503,7 +1508,7 @@ impl NativeProvider {
         if let Some(transaction) = &mut self.transaction {
             transaction.serials.insert((table.id, record), serials);
         }
-        self.hold(table.id, record, Change::New(cells), script, context);
+        self.hold(table.id, record, Change::New(cells), entry.script, context);
         let Some(held) = self
             .transaction
             .as_mut()
@@ -1718,6 +1723,7 @@ impl NativeProvider {
         };
         let prepared = origin.prepared;
         let layout = origin.layout;
+        let creation = origin.creation;
         // A new record a refused commit parked, named by its next write.
         if let Some(id) = record.and_then(|id| u64::try_from(id).ok()) {
             self.unpark(table.id, id);
@@ -1730,7 +1736,7 @@ impl NativeProvider {
                 &plan,
                 entry,
                 cells.clone(),
-                true,
+                creation,
                 (context, prepared, layout),
             ),
             Some(id) => self.hold_edit(&table, id, cells.clone(), true, (context, layout)),

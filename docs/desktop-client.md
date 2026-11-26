@@ -37,6 +37,14 @@ own chrome uses are in [design.md](design.md). Related notes:
   to the front. Elsewhere, and in the GUI tests, which run without a native
   window, the menu bar is drawn inside each window. The window title is the
   platform's own.
+- Show/Hide Toolbars changes the status toolbar and layout bar together.
+  Lock disables View > Status Toolbar and its shortcut in the current
+  window until a script changes the lock. `Get ( StatusAreaState )` returns
+  1 for shown, 0 for hidden, 2 for shown and locked, and 3 for hidden and
+  locked. New windows inherit the current toolbar state, which is
+  unmeasured in FileMaker. OpenMaker keeps the outer frame size when the
+  bars change. The measured FileMaker Pro window changes its outer
+  height ([#1064](https://github.com/OpenMaker-Dev/openmaker/issues/1064)).
 - The Window menu's New Window runs the step. Show Window lists every open
   file's windows but cards, front first, a hidden one in parentheses, and
   scrolls when they do not fit; choosing one brings it to the front, shown
@@ -617,6 +625,10 @@ authoring part tabs or object kind captions.
   a merge symbol or field. The replacement takes the styling at its
   opening delimiter. OpenMaker also applies this rule to merge variables
   and paragraph runs (layout-model.md 8.2).
+- Date fields, merge fields and date symbols in Browse can show the
+  fixed named month and weekday presets in month-first English (see
+  data-format.md). OpenMaker takes names from the file's locale for
+  those presets. Short System Date is still displayed as entered.
 - A text, number, date, time or timestamp value stored with character
   styles (a chunked value beside a style subtree `ff`, calc-values.md
   implementation notes) shows its text; a nested form the provider cannot

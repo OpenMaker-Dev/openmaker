@@ -6,8 +6,68 @@ extension Error {
     switch self as? GoError {
     case .Credentials(let message), .SignInRequired(let message), .Failed(_, let message):
       return message
+    case .Untrusted(_, _, let message, _, _, _, _, _, _):
+      return message
     case nil:
       return localizedDescription
+    }
+  }
+
+  /// A host whose certificate could not be verified, if that is the error.
+  var untrustedHost: UntrustedHost? {
+    guard
+      case .Untrusted(
+        let host, let port, let reason, let subject, let issuer, let validFrom, let validUntil,
+        let fingerprint, _) = self as? GoError
+    else { return nil }
+    return UntrustedHost(
+      host: host, port: port, reason: reason, subject: subject, issuer: issuer,
+      valid: validFrom.isEmpty && validUntil.isEmpty ? "" : "\(validFrom) to \(validUntil)",
+      fingerprint: fingerprint)
+  }
+}
+
+/// A host whose certificate could not be verified, as FileMaker Go asks
+/// about one ([`GoError.Untrusted`]).
+struct UntrustedHost: Identifiable {
+  let id = UUID()
+  var host: String
+  var port: UInt16
+  var reason: String
+  var subject: String
+  var issuer: String
+  var valid: String
+  var fingerprint: String
+  /// What met it, done again once its certificate is permitted.
+  var retry: (() -> Void)?
+}
+
+/// The question about a host whose certificate could not be verified: why,
+/// what the certificate says, and Always Permit, Connect (this time) or
+/// Don't Connect, as FileMaker Go asks.
+private struct TrustAlert: ViewModifier {
+  @Binding var asking: UntrustedHost?
+  let permit: (UntrustedHost, Bool) -> Void
+
+  func body(content: Content) -> some View {
+    content.alert(
+      "Connect to \(asking?.host ?? "")?",
+      isPresented: Binding(get: { asking != nil }, set: { if !$0 { asking = nil } }),
+      presenting: asking
+    ) { host in
+      Button("Always Permit") { permit(host, true) }
+      Button("Connect") { permit(host, false) }
+      Button("Don't Connect", role: .cancel) {}
+    } message: { host in
+      Text(
+        [
+          host.reason,
+          "Connect only if you trust this host and its certificate's fingerprint is the one its administrator gave you.",
+          host.subject.isEmpty ? "" : "Certificate: \(host.subject)",
+          host.issuer.isEmpty ? "" : "Issued by: \(host.issuer)",
+          host.valid.isEmpty ? "" : "Valid: \(host.valid)",
+          "SHA-256 fingerprint: \(host.fingerprint)",
+        ].filter { !$0.isEmpty }.joined(separator: "\n\n"))
     }
   }
 }
@@ -85,6 +145,9 @@ private struct HostEdit: Identifiable {
   var certificate = ""
   /// The certificate authorities Edit Host showed when it opened.
   var loaded = ""
+  /// The fingerprint of the certificate permitted for the host edited;
+  /// empty for none.
+  var permitted = ""
 }
 
 @main
@@ -131,6 +194,14 @@ struct LaunchCenter: View {
   @AppStorage("lastHost") private var lastHost: String?
   @AppStorage("lastPort") private var lastPort: String?
   @AppStorage("trustedHostCertificates") private var certificates = Data()
+  /// The fingerprints of certificates permitted (Always Permit), by host
+  /// and port.
+  @AppStorage("permittedHostCertificates") private var permitsData = Data()
+  /// Certificates permitted with Connect, for as long as the app runs, by
+  /// host (lowercase) and port.
+  @State private var connectedOnce: [String: Permit] = [:]
+  /// The host whose certificate a listing could not verify, asked about.
+  @State private var askingTrust: UntrustedHost?
   /// The host whose files the Hosts tab shows, if any.
   @State private var hostPath: [SavedHost] = []
   /// Each host's file list, by its address (as typed) and port, while the
@@ -196,8 +267,14 @@ struct LaunchCenter: View {
     .onChange(of: phase) { if $0 == .active { reload() } }
     .onOpenURL { url in importFile(url) }
     .sheet(item: $hostEdit) { edit in
-      HostEditor(edit: edit) { try commit($0) }
+      HostEditor(edit: edit, save: { try commit($0) }, forgetPermitted: forgetPermitted)
     }
+    .modifier(
+      TrustAlert(asking: $askingTrust) { host, always in
+        // The host the alert shows, and what met it.
+        permit(host, always: always)
+        host.retry?()
+      })
     .alert("Open by Name", isPresented: present($namingFile), presenting: namingFile) { host in
       TextField("File name", text: $typedFileName)
         .textInputAutocapitalization(.never)
@@ -209,9 +286,12 @@ struct LaunchCenter: View {
       do { importFile(try result.get()) } catch { self.error = error.goMessage }
     }
     .sheet(item: $signingIn) { file in
-      SignInView(file: file, licenseSaved: licenseSaved) { account, password, license in
-        try await open(file, account: account, password: password, license: license)
-      }
+      SignInView(
+        file: file, licenseSaved: licenseSaved,
+        open: { account, password, license in
+          try await open(file, account: account, password: password, license: license)
+        },
+        permit: { host, always in permit(host, always: always) })
     }
     .sheet(isPresented: $showingSettings) { SettingsView(licenseSaved: $licenseSaved) }
     .fullScreenCover(item: $opened, onDismiss: { error = stopped; stopped = nil }) { model in
@@ -466,14 +546,6 @@ struct LaunchCenter: View {
     return pem.isEmpty ? nil : pem
   }
 
-  /// A host to connect to, with every certificate authority saved for it,
-  /// or the error saying why they cannot be used (`connectCertificate`).
-  private func endpoint(_ address: String, _ port: UInt16) throws -> Host {
-    Host(
-      address: address, port: port,
-      certificate: try connectCertificate(certificates: authorities, address: address, port: port))
-  }
-
   private func storeHosts(_ list: [SavedHost]) {
     hostsData = (try? JSONEncoder().encode(list)) ?? Data()
     lastHost = nil
@@ -491,18 +563,103 @@ struct LaunchCenter: View {
     storeHosts(list.map(SavedHost.init))
   }
 
-  /// Edit Host, with the certificate authority trusted for the host.
+  /// Edit Host, with the certificate authority trusted for the host and
+  /// the certificate permitted for it.
   private func editHost(_ host: SavedHost) {
     let certificate = trusted(host.address, host.port) ?? ""
     hostEdit = HostEdit(
       replaces: host, address: host.address, port: String(host.port), name: host.name,
-      certificate: certificate, loaded: certificate)
+      certificate: certificate, loaded: certificate,
+      permitted: permitted(host.address, host.port))
+  }
+
+  private var permits: [String: String] {
+    (try? JSONDecoder().decode([String: String].self, from: permitsData)) ?? [:]
+  }
+
+  /// The fingerprint of the certificate permitted for a host and port
+  /// (Always Permit), under any spelling of its address (`hostKey`);
+  /// empty for none.
+  private func permitted(_ address: String, _ port: UInt16) -> String {
+    let all = permits
+    if let exact = all[authority(address, port)] { return exact }
+    return pinKeys(hostKey(address: address, port: port), in: all).sorted().first.flatMap { all[$0] } ?? ""
+  }
+
+  /// The keys of `all` that name the host `key` identifies.
+  private func pinKeys(_ key: String, in all: [String: String]) -> [String] {
+    all.keys.filter { stored in
+      guard let colon = stored.lastIndex(of: ":"), colon > stored.startIndex,
+        let port = UInt16(stored[stored.index(after: colon)...])
+      else { return false }
+      return hostKey(address: String(stored[..<colon]), port: port) == key
+    }
+  }
+
+  /// Forget the certificates permitted for a host and port, under any
+  /// spelling of its address.
+  private func unpermit(_ address: String, _ port: UInt16, in all: inout [String: String]) {
+    for stored in pinKeys(hostKey(address: address, port: port), in: all) { all[stored] = nil }
+  }
+
+  private func storePermits(_ all: [String: String]) {
+    permitsData = (try? JSONEncoder().encode(all)) ?? Data()
+  }
+
+  /// Connect (this time), or with `always` Always Permit: the certificate
+  /// asked about is accepted for its host.
+  private func permit(_ host: UntrustedHost, always: Bool) {
+    let once = hostKey(address: host.host, port: host.port)
+    if always {
+      var all = permits
+      unpermit(host.host, host.port, in: &all)
+      all[authority(host.host, host.port)] = host.fingerprint
+      storePermits(all)
+      connectedOnce[once] = nil
+    } else {
+      connectedOnce[once] = Permit(address: host.host, port: host.port, fingerprint: host.fingerprint)
+    }
+  }
+
+  /// Forget the certificate permitted for the host Edit Host edits.
+  private func forgetPermitted(_ host: SavedHost) {
+    var all = permits
+    unpermit(host.address, host.port, in: &all)
+    storePermits(all)
+    connectedOnce[host.id] = nil
+    listings[key(host)] = nil
+  }
+
+  /// A host as the engine connects to it: with every certificate
+  /// authority saved for it (`connectCertificate`, which throws when they
+  /// cannot all be used), and the certificate permitted for it, the one
+  /// permitted with Connect in this run first (a newer certificate than
+  /// one saved with Always Permit); and those permitted for other hosts,
+  /// for a file a script opens there.
+  private func endpoint(_ address: String, _ port: UInt16) throws -> Host {
+    let key = hostKey(address: address, port: port)
+    // Those permitted for other hosts, for a file a script opens there.
+    let saved = permits.compactMap { stored, fingerprint -> Permit? in
+      guard let colon = stored.lastIndex(of: ":"), colon > stored.startIndex,
+        let port = UInt16(stored[stored.index(after: colon)...])
+      else { return nil }
+      return Permit(address: String(stored[..<colon]), port: port, fingerprint: fingerprint)
+    }
+    let elsewhere = (saved + Array(connectedOnce.values)).filter {
+      hostKey(address: $0.address, port: $0.port) != key
+    }
+    return Host(
+      address: address, port: port,
+      certificate: try connectCertificate(certificates: authorities, address: address, port: port),
+      permitted: connectedOnce[key]?.fingerprint ?? permitted(address, port),
+      permittedElsewhere: elsewhere)
   }
 
   /// Save Add Host or Edit Host's `edit` by the engine's rules
   /// (`saveHost`), or throw what to fix, or that the host was changed in
-  /// another window since the editor opened. A host whose page is shown
-  /// stays shown, at its new address.
+  /// another window since the editor opened. A host that leaves the list
+  /// (moved, or merged into another) loses the certificate permitted for
+  /// it. A host whose page is shown stays shown, at its new address.
   private func commit(_ edit: HostEdit) throws {
     let before = hosts
     let result = try saveHost(
@@ -512,8 +669,15 @@ struct LaunchCenter: View {
         // As typed: the engine checks its bounds before anything else.
         port: edit.port, name: edit.name, certificate: edit.certificate))
     let host = SavedHost(result.host)
-    storeHosts(result.saved.hosts.map(SavedHost.init))
+    let listed = result.saved.hosts.map(SavedHost.init)
+    var all = permits
+    for old in before + (edit.replaces.map { [$0] } ?? []) where !listed.contains(where: { $0.isHost(old) }) {
+      unpermit(old.address, old.port, in: &all)
+      connectedOnce[old.id] = nil
+    }
+    storeHosts(listed)
     storeAuthorities(result.saved.certificates)
+    storePermits(all)
     hostEdit = nil
     // Its files are listed again: the address, port or certificate
     // authority they were listed with may have changed.
@@ -528,13 +692,19 @@ struct LaunchCenter: View {
   }
 
   /// Remove `host` from the list, with the certificate authorities trusted
-  /// for it (`removeHost`).
+  /// for it (`removeHost`) and the certificate permitted for it.
   private func removeSaved(_ host: SavedHost) {
-    for old in hosts.filter({ $0.isHost(host) }) + [host] { listings[key(old)] = nil }
+    var all = permits
+    for old in hosts.filter({ $0.isHost(host) }) + [host] {
+      unpermit(old.address, old.port, in: &all)
+      connectedOnce[old.id] = nil
+      listings[key(old)] = nil
+    }
     let result = removeHost(
       saved: SavedHosts(hosts: hosts.map(\.listed), certificates: authorities), host: host.listed)
     storeHosts(result.hosts.map(SavedHost.init))
     storeAuthorities(result.certificates)
+    storePermits(all)
     if hostPath.contains(where: { $0.isHost(host) }) { hostPath = [] }
   }
 
@@ -546,15 +716,22 @@ struct LaunchCenter: View {
     let asked = UUID()
     listings[id] = .pending(asked)
     let listing: Listing
+    var untrusted: UntrustedHost?
     do {
       let server = try endpoint(host.address, host.port)
       let names = try await Task.detached { try hostedFiles(host: server) }.value
       listing = .listed(names.map { FileEntry(name: $0, address: host.address, port: host.port) })
     } catch {
       listing = .failed(error.goMessage)
+      untrusted = error.untrustedHost
     }
     guard case .pending(asked)? = listings[id] else { return }
     listings[id] = listing
+    // Asked about, and listed again if permitted.
+    if var untrusted {
+      untrusted.retry = { Task { await listHost(host) } }
+      askingTrust = untrusted
+    }
   }
 
   /// Sign in to a file `host` does not list, by its name (name.fmp12).
@@ -680,14 +857,19 @@ private struct HostFiles<Row: View>: View {
 private struct HostEditor: View {
   @State private var edit: HostEdit
   let save: (HostEdit) throws -> Void
+  let forgetPermitted: (SavedHost) -> Void
   @Environment(\.dismiss) private var dismiss
   @State private var showsCertificate: Bool
   @State private var error = ""
 
-  init(edit: HostEdit, save: @escaping (HostEdit) throws -> Void) {
+  init(
+    edit: HostEdit, save: @escaping (HostEdit) throws -> Void,
+    forgetPermitted: @escaping (SavedHost) -> Void
+  ) {
     _edit = State(initialValue: edit)
     _showsCertificate = State(initialValue: !edit.certificate.isEmpty)
     self.save = save
+    self.forgetPermitted = forgetPermitted
   }
 
   var body: some View {
@@ -728,6 +910,18 @@ private struct HostEditor: View {
         } footer: {
           Text("Trusted for this host and port only.")
         }
+        if let host = edit.replaces, !edit.permitted.isEmpty {
+          Section {
+            Button("Forget Permitted Certificate", role: .destructive) {
+              forgetPermitted(host)
+              edit.permitted = ""
+            }
+          } footer: {
+            Text(
+              "Connects although its certificate cannot be verified: you permitted the one with SHA-256 fingerprint \(edit.permitted)."
+            )
+          }
+        }
       }
       .navigationTitle(edit.replaces == nil ? "Add Host" : "Edit Host")
       .navigationBarTitleDisplayMode(.inline)
@@ -751,6 +945,10 @@ private struct SignInView: View {
   let file: FileEntry
   let licenseSaved: Bool
   let open: (String, String, String) async throws -> Void
+  /// Connect or Always Permit the certificate of a host the open met.
+  let permit: (UntrustedHost, Bool) -> Void
+  /// The host whose certificate the open could not verify, asked about.
+  @State private var asking: UntrustedHost?
   @Environment(\.dismiss) private var dismiss
   @State private var account = ""
   @State private var password = ""
@@ -797,6 +995,11 @@ private struct SignInView: View {
       .toolbar { Button("Cancel") { dismiss() }.disabled(busy) }
     }
     .interactiveDismissDisabled(busy)
+    .modifier(
+      TrustAlert(asking: $asking) { host, always in
+        permit(host, always)
+        signIn()
+      })
   }
 
   private func signIn() {
@@ -806,6 +1009,10 @@ private struct SignInView: View {
       defer { busy = false }
       do {
         try await open(account, password, license)
+      } catch let refused where refused.untrustedHost != nil {
+        // Asked about here, over the sign-in; signed in again if permitted.
+        error = refused.goMessage
+        asking = refused.untrustedHost
       } catch GoError.Credentials(let message) {
         // The account was refused: try the password again.
         error = message

@@ -2,24 +2,35 @@
 //!
 //! The server requires a client certificate (mutual TLS); a throwaway
 //! self-signed one passes the gate (spec F10/F11). Application callers use
-//! [`Transport::connect_verified`] for certificate-chain and hostname checks.
-//! [`Transport::connect`] preserves the explicitly permissive RE CLI transport.
+//! [`Transport::connect_verified`] for certificate-chain and hostname checks,
+//! or [`Transport::connect_trusting`], which also accepts a certificate the
+//! user permitted by its fingerprint. A certificate that cannot be verified
+//! comes back as [`TransportError::Unverified`], with what it says, so the
+//! user can be asked. [`Transport::connect`] preserves the explicitly
+//! permissive RE CLI transport.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::crypto::{ring, verify_tls12_signature, verify_tls13_signature, CryptoProvider};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls::client::WebPkiServerVerifier;
+use rustls::crypto::{
+    ring, verify_tls12_signature, verify_tls13_signature, CryptoProvider, WebPkiSupportedAlgorithms,
+};
+use rustls::pki_types::{
+    CertificateDer, PrivateKeyDer, ServerName, SubjectPublicKeyInfoDer, UnixTime,
+};
 use rustls::sign::{CertifiedKey, SingleCertAndKey};
 use rustls::{
-    ClientConfig, ClientConnection, DigitallySignedStruct, RootCertStore, SignatureScheme,
-    StreamOwned,
+    CertificateError, ClientConfig, ClientConnection, DigitallySignedStruct, RootCertStore,
+    SignatureScheme, StreamOwned,
 };
 
 use om_giop::{MessageReader, ReadError};
+
+use crate::cert;
 
 /// Largest GIOP message this transport will buffer. A single FileMaker reply
 /// fragment is well under this; larger logical replies arrive as fragments.
@@ -90,6 +101,235 @@ impl ServerCertVerifier for AcceptServerCert {
     }
 }
 
+/// Verifies a server's certificate against the trusted roots, and else
+/// accepts one whose SHA-256 fingerprint the user permitted for this host:
+/// its handshake signature is then checked as rustls checks one for the
+/// TLS version, with the public key read from the certificate itself
+/// (`cert`, which also reads X.509 version 1). It keeps what it decided for
+/// the transport. One per connection.
+#[derive(Debug)]
+struct HostVerifier {
+    roots: Arc<WebPkiServerVerifier>,
+    algorithms: WebPkiSupportedAlgorithms,
+    permitted: Vec<[u8; 32]>,
+    decision: Mutex<Option<Decision>>,
+}
+
+#[derive(Debug)]
+enum Decision {
+    Verified,
+    Permitted,
+    Refused(Box<UnverifiedCertificate>),
+}
+
+impl HostVerifier {
+    fn decide(&self, decision: Decision) {
+        *self.decision.lock().unwrap_or_else(PoisonError::into_inner) = Some(decision);
+    }
+
+    fn take(&self) -> Option<Decision> {
+        self.decision
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
+    /// Whether `cert` is the permitted certificate this connection accepted.
+    fn accepted_permitted(&self, cert: &CertificateDer<'_>) -> bool {
+        matches!(
+            *self.decision.lock().unwrap_or_else(PoisonError::into_inner),
+            Some(Decision::Permitted)
+        ) && self.permitted.contains(&cert::sha256(cert))
+    }
+
+    /// A permitted certificate's handshake signature, checked with its own
+    /// public key under rustls's rules for the version: in TLS 1.3 the one
+    /// algorithm the scheme names, in TLS 1.2 each it may stand for.
+    fn permitted_signature(
+        &self,
+        tls13: bool,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        let bad = rustls::Error::InvalidCertificate;
+        let spki = SubjectPublicKeyInfoDer::from(
+            cert::parse(cert)
+                .ok_or(bad(CertificateError::BadEncoding))?
+                .spki,
+        );
+        if tls13 {
+            return rustls::crypto::verify_tls13_signature_with_raw_key(
+                message,
+                &spki,
+                dss,
+                &self.algorithms,
+            );
+        }
+        let key = webpki::RawPublicKeyEntity::try_from(&spki)
+            .map_err(|_| bad(CertificateError::BadEncoding))?;
+        let candidates = self
+            .algorithms
+            .mapping
+            .iter()
+            .find(|(scheme, _)| *scheme == dss.scheme)
+            .map(|(_, algorithms)| *algorithms)
+            .ok_or(rustls::Error::PeerMisbehaved(
+                rustls::PeerMisbehaved::SignedHandshakeWithUnadvertisedSigScheme,
+            ))?;
+        if candidates.iter().any(|algorithm| {
+            key.verify_signature(*algorithm, message, dss.signature())
+                .is_ok()
+        }) {
+            Ok(HandshakeSignatureValid::assertion())
+        } else {
+            Err(bad(CertificateError::BadSignature))
+        }
+    }
+}
+
+/// Whether a certificate's public key is one whose handshake signatures
+/// the client checks: it reads, and is a key the TLS algorithms take (RSA
+/// of at least 2048 bits, ECDSA P-256 or P-384, Ed25519). Only such a
+/// certificate can be permitted: another would fail its handshake once
+/// permitted, after the user had chosen to trust it.
+fn has_usable_key(parsed: Option<&cert::Certificate<'_>>) -> bool {
+    parsed.is_some_and(|c| {
+        let takes = match c.key {
+            cert::PublicKey::Rsa { bits, .. } => bits >= 2048,
+            cert::PublicKey::EcP256(_)
+            | cert::PublicKey::EcP384(_)
+            | cert::PublicKey::Ed25519(_) => true,
+            cert::PublicKey::Other(_) => false,
+        };
+        takes
+            && webpki::RawPublicKeyEntity::try_from(&SubjectPublicKeyInfoDer::from(c.spki)).is_ok()
+    })
+}
+
+impl ServerCertVerifier for HostVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        let error = match self.roots.verify_server_cert(
+            end_entity,
+            intermediates,
+            server_name,
+            ocsp_response,
+            now,
+        ) {
+            Ok(verified) => {
+                self.decide(Decision::Verified);
+                return Ok(verified);
+            }
+            Err(error) => error,
+        };
+        let fingerprint = cert::sha256(end_entity);
+        let parsed = cert::parse(end_entity);
+        // A certificate whose key cannot be read cannot be checked once
+        // permitted either: it fails as it is, and nothing asks about it.
+        if !has_usable_key(parsed.as_ref()) {
+            return Err(error);
+        }
+        if self.permitted.contains(&fingerprint) {
+            self.decide(Decision::Permitted);
+            return Ok(ServerCertVerified::assertion());
+        }
+        // Not one permitted: changed if another was.
+        self.decide(Decision::Refused(Box::new(unverified(
+            &error,
+            fingerprint,
+            parsed,
+            !self.permitted.is_empty(),
+        ))));
+        Err(error)
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        if self.accepted_permitted(cert) {
+            return self.permitted_signature(false, message, cert, dss);
+        }
+        self.roots.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        if self.accepted_permitted(cert) {
+            return self.permitted_signature(true, message, cert, dss);
+        }
+        self.roots.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.roots.supported_verify_schemes()
+    }
+}
+
+/// What a user is told of a certificate the roots refused with `error`.
+fn unverified(
+    error: &rustls::Error,
+    fingerprint: [u8; 32],
+    parsed: Option<cert::Certificate<'_>>,
+    changed: bool,
+) -> UnverifiedCertificate {
+    let problem = match error {
+        // webpki reads only version 3; it refuses the others whatever else
+        // is wrong with them.
+        _ if parsed.is_some_and(|c| c.version < 3) => CertificateProblem::OldFormat,
+        rustls::Error::InvalidCertificate(error) => match error {
+            CertificateError::UnknownIssuer => CertificateProblem::UnknownIssuer {
+                self_signed: parsed.is_some_and(|c| c.issuer == c.subject),
+            },
+            CertificateError::Expired | CertificateError::ExpiredContext { .. } => {
+                CertificateProblem::Expired
+            }
+            CertificateError::NotValidYet | CertificateError::NotValidYetContext { .. } => {
+                CertificateProblem::NotYetValid
+            }
+            CertificateError::NotValidForName | CertificateError::NotValidForNameContext { .. } => {
+                CertificateProblem::WrongName
+            }
+            _ => CertificateProblem::Other,
+        },
+        _ => CertificateProblem::Other,
+    };
+    let (subject, issuer) = parsed.map_or_else(Default::default, |c| {
+        (
+            cert::describe_name(c.subject),
+            cert::describe_name(c.issuer),
+        )
+    });
+    let (valid_from, valid_until) = parsed
+        .and_then(|c| c.validity)
+        .map_or_else(Default::default, |(from, until)| {
+            (from.describe(), until.describe())
+        });
+    UnverifiedCertificate {
+        problem,
+        detail: error.to_string(),
+        fingerprint,
+        subject,
+        issuer,
+        valid_from,
+        valid_until,
+        changed,
+    }
+}
+
 /// Errors establishing or using the transport.
 #[derive(Debug)]
 pub enum TransportError {
@@ -99,6 +339,60 @@ pub enum TransportError {
     /// Reading a GIOP message failed: closed, oversized (over
     /// [`MAX_MESSAGE_LEN`]), or malformed.
     Read(ReadError),
+    /// The server's certificate could not be verified, and was not one
+    /// permitted for this host: why, and what it says.
+    Unverified(Box<UnverifiedCertificate>),
+}
+
+/// How a connection's server certificate was accepted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerTrust {
+    /// It chained to a trusted root and named the host.
+    Verified,
+    /// It could not be verified, and the user permitted it for this host by
+    /// its fingerprint ([`Transport::connect_trusting`]).
+    Permitted,
+}
+
+/// Why a server certificate could not be verified.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CertificateProblem {
+    /// Issued by an authority this client does not trust; `self_signed`
+    /// when it is its own issuer.
+    UnknownIssuer {
+        self_signed: bool,
+    },
+    Expired,
+    NotYetValid,
+    /// It does not name the host connected to.
+    WrongName,
+    /// In a form the verifier does not read: X.509 version 1, as FileMaker
+    /// Server's default certificate is.
+    OldFormat,
+    /// Another reason, which [`UnverifiedCertificate::detail`] gives.
+    Other,
+}
+
+/// A server certificate that could not be verified, as a user is asked
+/// about it: why, what it says, and the fingerprint a permit keeps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnverifiedCertificate {
+    pub problem: CertificateProblem,
+    /// The TLS library's own words for it.
+    pub detail: String,
+    /// The SHA-256 fingerprint of the certificate's DER encoding.
+    pub fingerprint: [u8; 32],
+    /// Its subject's and issuer's names ([`cert::describe_name`]), empty
+    /// when they do not read.
+    pub subject: String,
+    pub issuer: String,
+    /// When it becomes valid and when it expires ([`cert::Time::describe`]),
+    /// empty when they do not read.
+    pub valid_from: String,
+    pub valid_until: String,
+    /// Another certificate was permitted for this host: this one replaced
+    /// it.
+    pub changed: bool,
 }
 
 impl TransportError {
@@ -138,6 +432,7 @@ impl std::fmt::Display for TransportError {
             TransportError::Tls(e) => write!(f, "tls: {e}"),
             TransportError::Pem(e) => write!(f, "pem: {e}"),
             TransportError::Read(e) => write!(f, "{e}"),
+            TransportError::Unverified(e) => f.write_str(&e.detail),
         }
     }
 }
@@ -147,6 +442,9 @@ impl std::error::Error for TransportError {}
 pub struct Transport {
     stream: StreamOwned<ClientConnection, Socket>,
     reader: MessageReader,
+    /// How the server's certificate was accepted; `None` for the lab
+    /// transport, which checks nothing ([`Transport::connect`]).
+    trust: Option<ServerTrust>,
 }
 
 /// The TCP socket under the TLS stream. While a deadline is set, each read
@@ -236,7 +534,7 @@ impl Transport {
             .dangerous()
             .with_custom_certificate_verifier(verifier)
             .with_client_cert_resolver(Arc::new(client_cert));
-        Self::connect_config(host, port, config)
+        Self::connect_config(host, port, config, None)
     }
 
     /// Connect with normal chain and hostname validation. The public Web PKI
@@ -247,6 +545,32 @@ impl Transport {
         client_cert_pem: &[u8],
         client_key_pem: &[u8],
         additional_ca_pem: &[u8],
+    ) -> Result<Self, TransportError> {
+        Self::connect_trusting(
+            host,
+            port,
+            client_cert_pem,
+            client_key_pem,
+            additional_ca_pem,
+            &[],
+        )
+    }
+
+    /// [`Self::connect_verified`], and when the certificate cannot be
+    /// verified, accept it if its SHA-256 fingerprint is one of `permitted`,
+    /// the certificates the user permitted for this host and port: FileMaker
+    /// Server's default certificate, X.509 version 1 and issued by Claris's
+    /// own authority, connects no other way. Its handshake signature is
+    /// still checked, with its own key; its name and dates are not.
+    /// [`Self::trust`] says which way it was accepted. A certificate
+    /// refused is [`TransportError::Unverified`].
+    pub fn connect_trusting(
+        host: &str,
+        port: u16,
+        client_cert_pem: &[u8],
+        client_key_pem: &[u8],
+        additional_ca_pem: &[u8],
+        permitted: &[[u8; 32]],
     ) -> Result<Self, TransportError> {
         let provider = Arc::new(ring::default_provider());
         let certs = rustls_pemfile::certs(&mut &client_cert_pem[..])
@@ -262,16 +586,37 @@ impl Transport {
                 .add(cert.map_err(|e| TransportError::Pem(e.to_string()))?)
                 .map_err(TransportError::Tls)?;
         }
+        let roots = WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone())
+            .build()
+            .map_err(|e| TransportError::Pem(e.to_string()))?;
+        let verifier = Arc::new(HostVerifier {
+            roots,
+            algorithms: provider.signature_verification_algorithms,
+            permitted: permitted.to_vec(),
+            decision: Mutex::new(None),
+        });
         let config = ClientConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
             .map_err(TransportError::Tls)?
-            .with_root_certificates(roots)
+            .dangerous()
+            .with_custom_certificate_verifier(verifier.clone())
             .with_client_auth_cert(certs, key)
             .map_err(TransportError::Tls)?;
-        Self::connect_config(host, port, config)
+        Self::connect_config(host, port, config, Some(verifier))
     }
 
-    fn connect_config(host: &str, port: u16, config: ClientConfig) -> Result<Self, TransportError> {
+    /// How the server's certificate was accepted: `None` for the lab
+    /// transport ([`Self::connect`]), which checks nothing.
+    pub fn trust(&self) -> Option<ServerTrust> {
+        self.trust
+    }
+
+    fn connect_config(
+        host: &str,
+        port: u16,
+        config: ClientConfig,
+        verifier: Option<Arc<HostVerifier>>,
+    ) -> Result<Self, TransportError> {
         let server_name = ServerName::try_from(host.to_owned())
             .map_err(|_| TransportError::Pem(format!("invalid server name {host}")))?;
         let conn = ClientConnection::new(Arc::new(config), server_name)?;
@@ -285,12 +630,23 @@ impl Transport {
             write_deadline: None,
         };
         let mut stream = StreamOwned::new(conn, socket);
-        // Force the handshake now so cert problems surface here.
-        stream.flush()?;
-
+        // Force the handshake now so cert problems surface here, with the
+        // certificate that caused them.
+        let handshake = stream.flush();
+        let decision = verifier.as_ref().and_then(|v| v.take());
+        if let Some(Decision::Refused(refused)) = decision {
+            return Err(TransportError::Unverified(refused));
+        }
+        handshake?;
+        let trust = match decision {
+            Some(Decision::Permitted) => Some(ServerTrust::Permitted),
+            Some(Decision::Verified) => Some(ServerTrust::Verified),
+            Some(Decision::Refused(_)) | None => None,
+        };
         Ok(Self {
             stream,
             reader: MessageReader::new(MAX_MESSAGE_LEN),
+            trust,
         })
     }
 

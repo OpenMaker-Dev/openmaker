@@ -160,6 +160,16 @@ name and user name are distinct variables. The table describes the selected
 variable; it does not establish when creation and modification defaults are
 scheduled, including initialization of modification fields on creation.
 
+FileMaker Pro 26.1.1 allows Creation Time on a Text field and retains the
+option when a Time field is converted to Text. Both Text fields use the
+creation selector `01` and option word `0x00000001`. With a local English
+12-hour file and system locale, New Record stored the same time-of-day
+string as a Time field's stored text, including seconds and the AM/PM
+suffix. An unrelated edit, a later commit, reopen and the Time field's
+24-hour layout display kept that Text value. A 24-hour file or system
+locale remains unmeasured.
+[Native results](https://github.com/OpenMaker-Dev/openmaker/issues/1035#issuecomment-7185794163).
+
 On FileMaker Pro 26.1.1, a local Text field with the calculated
 auto-enter `$$Marker` read the current file's variable at New Record.
 The two Text assignments produced two corresponding stored values. An
@@ -211,6 +221,23 @@ unformatted calculation is exactly `9b 65`; context child 4 is `03 d0 00 02`.
 The formatted stream is 20 bytes and must not be confused with that two-byte
 code. The high option bit in PrimaryKey is preserved, not treated as an
 auto-entry flag. Fields 1..7 have none of the four supported auto-entry modes.
+
+## Filenames from a repeating Container
+
+FileMaker Pro 26.1.1 on a disposable local file saved a 24-repetition Text
+field with option word `0x88` and `GetContainerAttribute ( Attachment ;
+"Filename" )`, where Attachment was a 24-repetition Container of the
+same occurrence. "Do not evaluate if all referenced fields are empty"
+was on. Creating and committing a record with Attachment empty left no
+stored Text cells. Inserting or replacing a container affected only the
+matching Text repetition. Clearing the second container removed the
+second Text cell and kept the first. A separate Text edit left both
+repetitions as they were. Each write returned 0 with no alert, and
+closed copies confirmed the stored cells.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39)
+
+Entering a value directly in the result field, preparing a new record
+with a nonempty source, other formulas and hosted writes are unmeasured.
 
 ## Lookups
 
@@ -358,6 +385,16 @@ lookups; the values are then read through it:
   data-entry conversion is applied.
 - An empty related value is copied as empty (asset 2's date and time).
 
+A local Text equality check in FileMaker Pro 26.1.1 used a regular Text
+key with calculated auto-enter. A constant formula produced its key and
+copied value at New Record. A formula that read a Text input left the
+new key and copy empty until Set Field supplied the input. With "Do not
+replace existing value" off (option word `0x00000088`), changing the input
+changed the key and copied value at Set Field. With it on
+(`0x00000008`), the original key and copied value stayed. The values
+survived commit and reopen.
+[Native steps and results](https://github.com/OpenMaker-Dev/openmaker/issues/1036#issuecomment-7185794524).
+
 FileMaker Pro 26.1.1, a local two-table Text lookup over an equality
 relationship with "If no exact match: Use" selected
 ([native steps and results](https://github.com/OpenMaker-Dev/openmaker/issues/1020#issuecomment-7185793871)):
@@ -376,8 +413,21 @@ relationship with "If no exact match: Use" selected
 Unmeasured for this option: explicit clear with a blank fallback, a replacing
 `Get ( UUID )` match key, hosting, imports and other field types. More generally,
 copying the next lower or higher value, container fields, Relookup Field
-Contents, and which of several matches an unsorted relationship gives remain
-unmeasured here.
+Contents, which of several matches an unsorted relationship gives, and
+additional scripted and import cases remain unmeasured here.
+
+## Reading a global from an unrelated table
+
+Claris documents that a calculation can read a global field from any
+context of the same file, including an unrelated table occurrence.
+[Global fields](https://help.claris.com/en/pro-help/content/global-fields.html) and
+[calculation context](https://help.claris.com/en/pro-help/content/calculation-evaluation-context.html).
+In FileMaker Pro 26.1.1, a local Text field with calculated auto-enter
+copied an unrelated table's Text global at New Record. An unrelated edit
+kept that value. Changing the global affected subsequent new records,
+and the earlier record kept its stored value. The same read and copy
+worked with a saved global and zero records in its source table.
+[Native Browse check](https://github.com/OpenMaker-Dev/openmaker/issues/1051).
 
 ## Calculations over related fields
 
@@ -621,7 +671,41 @@ or related-values lists. Carry-over to them is inference, and this case
 does not distinguish validation being skipped from other internal timing
 that saves without a dialog. Hosted behavior is unmeasured.
 
+## Get ( CurrentTimeUTCMilliseconds )
+
+FileMaker Pro 26.1.1 in a local file displayed the UTC millisecond value
+of a Text auto-enter calling a custom function at New Record. Its value
+fell inside a bracket around that operation and survived an unrelated
+Text edit and close. A direct Number auto-enter was stored as well. With
+replacement enabled, one record stored the direct and custom results
+one millisecond apart, so different field evaluations can take different
+samples. These checks did not change an input the calculation reads.
+[Native Browse check](https://github.com/OpenMaker-Dev/openmaker/issues/1055).
+
 ## Get ( RecordNumber )
+
+FileMaker Pro 26.1.1 [measured sorted ordinary New Record](https://github.com/OpenMaker-Dev/openmaker/issues/1011)
+with a stored Number calculation consisting of `Get ( RecordNumber )`.
+When sorted, a new row initially follows the current row. When unsorted,
+it goes at the end. A new window kept the found set, sort and current
+record. The stored value held the insertion position across commit and
+later reordering. The live record number changed from 3 to 2 in one
+sorted case while the stored value remained 3.
+
+**Stored Number calculation.** [O: FileMaker Pro 26.1.1, local disposable
+file, [#1011](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7184565879).]
+FileMaker lets a Number calculation whose entire formula is
+`Get ( RecordNumber )` store its results (option word `0x00080000`).
+After scripted New Record in an unsorted found set, the field showed the
+record's position immediately. A later Set Field on another field and Commit
+kept that number. Omitting an earlier row before making a record gave the
+new row's position in the reduced found set. A later sort or omit changed
+the window position while the stored result stayed as first evaluated. In
+one descending sorted set, New Record produced a stored 2 and window
+position 2. The closed copies held the stored numbers across unrelated
+edits and reopening. All script steps returned 0 with no alerts. Timing
+before the first read remains unmeasured, as do duplicates, portals and
+hosted files for this stored formula.
 
 Two cases [O: FileMaker Pro 26.0.3, a local disposable pair made in the
 native UI, #1038, relayed sanitized].
@@ -737,8 +821,20 @@ case on FileMaker Server 26.0.3 followed the same sequence in the open
 session. After reopening, the hosted global was empty again.
 [O, disposable FileMaker Pro runs](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7183655256).
 
-Unknowns include a second New Record with a nonempty global and a
-calculated default configured to keep an existing value.
+A second local run started each variant with an empty global, created
+and committed a record, set the global to `Y`, then created and committed
+another record. The second New Record entered `X` for a constant or a
+replacing calculation, retained `Y` for a calculation with replacement
+off, and entered `2` for the creation serial with an increment of 1.
+All steps returned 0 and the resulting globals survived a local reopen.
+[O, second New Record](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7184310177).
+
+Closed copies read back the serial's next-value member `0c` as `1`
+before creation, `2` after one creation, and `3` after two. The resulting
+records had no cell for the global field. This measures the counter
+persisted at close. The timing of the counter write before close and
+the result of reverting a newly created record were not measured.
+[O, closed-file readback](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7185027447).
 
 ## A stored calculation before the commit
 
