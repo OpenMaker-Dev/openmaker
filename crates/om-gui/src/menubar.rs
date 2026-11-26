@@ -12,6 +12,7 @@ use om_data::scripts::save_records::Format as SaveFormat;
 
 use crate::app::{shortcuts, steps, Action, EditCommand, FindState, Mode, ViewMode};
 use crate::file_history::{Change, History, SavedFile, Tab};
+use crate::layout_canvas::DraftEdit;
 use crate::session::Session;
 use crate::theme;
 use crate::widgets::{menu_item, menu_separator, submenu};
@@ -102,6 +103,9 @@ pub(crate) struct MenuContext<'a> {
     /// Layout mode has a field placed with the Field tool and not yet
     /// saved (Save Layout, Revert Layout).
     pub layout_edit: bool,
+    /// A draft or a redo branch can be discarded explicitly.
+    pub layout_revert: bool,
+    pub layout_history: (bool, bool),
     /// Layout mode has an object selected that can be deleted (Edit >
     /// Clear).
     pub layout_delete: bool,
@@ -601,15 +605,28 @@ fn edit_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
     // Undo, Redo, Clear and Select All change the record's own field's
     // text here; a portal row's editor takes only its keys.
     let own = text && context.own_field;
-    let (undo, redo) = context.field_undo;
-    let (undo, redo) = (own && undo, own && redo);
+    let layout = context.mode == Mode::Layout;
+    let (undo, redo) = if layout {
+        context.layout_history
+    } else {
+        let (undo, redo) = context.field_undo;
+        (own && undo, own && redo)
+    };
     let undo_label = if undo { "Undo" } else { "Can't Undo" };
-    if rows.item(undo_label, command(CMD, Key::Z), false, undo) {
-        actions.push(Action::EditField(EditCommand::Undo));
+    if rows.item(undo_label, Some(shortcuts::UNDO), false, undo) {
+        actions.push(if layout {
+            Action::EditLayoutDraft(DraftEdit::Undo)
+        } else {
+            Action::EditField(EditCommand::Undo)
+        });
     }
     let redo_label = if redo { "Redo" } else { "Can't Redo" };
-    if rows.item(redo_label, command(SHIFT_CMD, Key::Z), false, redo) {
-        actions.push(Action::EditField(EditCommand::Redo));
+    if rows.item(redo_label, Some(shortcuts::REDO), false, redo) {
+        actions.push(if layout {
+            Action::EditLayoutDraft(DraftEdit::Redo)
+        } else {
+            Action::EditField(EditCommand::Redo)
+        });
     }
     rows.separator();
     if rows.item("Cut", command(CMD, Key::X), false, text) {
@@ -1088,7 +1105,7 @@ fn layouts_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mu
     ) {
         actions.push(Action::SaveLayout);
     }
-    if rows.item("Revert Layout", None, false, context.layout_edit) {
+    if rows.item("Revert Layout", None, false, context.layout_revert) {
         actions.push(Action::RevertLayout);
     }
 }

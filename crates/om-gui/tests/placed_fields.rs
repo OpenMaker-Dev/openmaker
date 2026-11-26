@@ -1123,6 +1123,31 @@ fn a_stored_field_is_moved_and_resized_and_kept() {
         .accesskit_node()
         .numeric_value();
     assert_eq!(left, Some(150.0));
+    common::open_menu(&mut app, "Edit");
+    shot(
+        &mut app,
+        "layout-undo-available",
+        "Undo enabled for the unsaved move",
+    );
+    common::click(&mut app, "Undo");
+    assert_eq!(
+        canvas_frame(&app, "Field: Count (object 1)"),
+        [110.0, 20.0, 230.0, 42.0]
+    );
+    shot(
+        &mut app,
+        "layout-undo-result",
+        "the move undone before Save Layout",
+    );
+    app.key_press_modifiers(
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        egui::Key::Z,
+    );
+    app.run_steps(3);
+    assert_eq!(
+        canvas_frame(&app, "Field: Count (object 1)"),
+        [150.0, 50.0, 270.0, 72.0]
+    );
     // Another layout, or Browse, would drop the move: both wait for Save
     // Layout or Revert Layout.
     common::click(&mut app, "Layout");
@@ -1160,25 +1185,119 @@ fn a_stored_field_is_moved_and_resized_and_kept() {
     );
     let handle = app.get_by_label("Resize right").rect().center();
     drag(&mut app, handle, handle + egui::vec2(30.0, 0.0));
+    // Move directly from one Inspector editor to the next without Return.
+    app.get_by_label("Object Width").click();
+    app.run_steps(3);
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.event(egui::Event::Text("160".into()));
+    app.run_steps(2);
     // A click on the Inspector's Height starts typing a value into it.
     app.get_by_label("Object Height").click();
     app.run_steps(3);
     app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
-    app.event(egui::Event::Text("30".into()));
-    app.key_press(egui::Key::Enter);
+    app.event(egui::Event::Text("2".into()));
+    app.run_steps(2);
+    app.event(egui::Event::Text("7".into()));
+    app.run_steps(2);
+    // Selecting and replacing characters in the same editor keeps this
+    // one typing session.
+    let height = app.get_by_label("Object Height").rect();
+    drag(
+        &mut app,
+        egui::pos2(height.right() - 4.0, height.center().y),
+        egui::pos2(height.left() + 4.0, height.center().y),
+    );
+    app.event(egui::Event::Text("28".into()));
+    app.run_steps(2);
+    // An outside drag can keep the Inspector editor focused.
+    let handle = app.get_by_label("Resize bottom").rect().center();
+    drag(&mut app, handle, handle + egui::vec2(0.0, 2.0));
+    click_at(&mut app, origin + egui::vec2(420.0, 150.0));
+    assert_eq!(
+        canvas_frame(&app, "Field: Count (object 1)"),
+        [150.0, 50.0, 310.0, 80.0]
+    );
+    let history_key = |app: &mut common::App, redo: bool| {
+        let modifiers = if redo {
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT
+        } else {
+            egui::Modifiers::COMMAND
+        };
+        app.key_press_modifiers(modifiers, egui::Key::Z);
+        app.run_steps(3);
+    };
+    history_key(&mut app, true);
+    assert_eq!(
+        canvas_frame(&app, "Field: Count (object 1)"),
+        [150.0, 50.0, 310.0, 80.0],
+        "a disabled Redo must not run Undo"
+    );
+    history_key(&mut app, false);
+    assert_eq!(
+        canvas_frame(&app, "Field: Count (object 1)"),
+        [150.0, 50.0, 310.0, 78.0],
+        "a canvas drag while an Inspector editor is focused gets its own step"
+    );
+    history_key(&mut app, false);
+    assert_eq!(
+        canvas_frame(&app, "Field: Count (object 1)"),
+        [150.0, 50.0, 310.0, 72.0],
+        "one Undo reverses the entire Inspector typing session"
+    );
+    history_key(&mut app, false);
+    assert_eq!(
+        canvas_frame(&app, "Field: Count (object 1)"),
+        [150.0, 50.0, 300.0, 72.0],
+        "switching Inspector editors starts a separate step"
+    );
+    history_key(&mut app, false);
+    assert_eq!(
+        canvas_frame(&app, "Field: Count (object 1)"),
+        [150.0, 50.0, 270.0, 72.0],
+        "one Undo reverses the full resize gesture"
+    );
+    history_key(&mut app, true);
+    history_key(&mut app, true);
+    history_key(&mut app, true);
+    history_key(&mut app, true);
+    // Both keys reach the app in one frame. Undo makes the next Redo available.
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    app.key_press_modifiers(
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        egui::Key::Z,
+    );
     app.run_steps(3);
     assert_eq!(
         canvas_frame(&app, "Field: Count (object 1)"),
-        [150.0, 50.0, 300.0, 80.0]
+        [150.0, 50.0, 310.0, 80.0]
     );
-    shot(&mut app, "31-moved", "Count moved and resized, not saved");
-    save_layout(&mut app);
+    common::click(&mut app, "Field: Count (object 1)");
+    app.key_press(egui::Key::Delete);
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    app.run_steps(3);
+    assert_eq!(
+        canvas_frame(&app, "Field: Count (object 1)"),
+        [150.0, 50.0, 310.0, 80.0],
+        "Undo in the same frame as Delete restores the object"
+    );
+    common::click(&mut app, "Field: Count (object 1)");
+    app.key_press(egui::Key::Delete);
+    app.run_steps(3);
+    assert!(app.query_by_label("Field: Count (object 1)").is_none());
+    // Undo Delete and then Save in one frame. Save writes the restored
+    // object with its earlier unsaved geometry.
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    app.run_steps(3);
     common::wait_until(&mut app, "the layout saved", |app| {
         assert!(app.state().error().is_none(), "{:?}", app.state().error());
         app.state().is_settled()
             && app.query_by_label("Field: Count (object 1)").is_some()
             && app.query_by_label("Resize right").is_none()
     });
+    common::open_menu(&mut app, "Edit");
+    app.get_by_label("Can't Undo");
+    app.get_by_label("Can't Redo");
     drop(app);
 
     // Over a new connection, and in a new window, it is where it was put.
@@ -1193,7 +1312,7 @@ fn a_stored_field_is_moved_and_resized_and_kept() {
             top: 50.0,
             left: 150.0,
             bottom: 80.0,
-            right: 300.0,
+            right: 310.0,
             other: Vec::new(),
         })
     );
@@ -1204,7 +1323,7 @@ fn a_stored_field_is_moved_and_resized_and_kept() {
     });
     assert_eq!(
         canvas_frame(&again, "Field: Count (object 1)"),
-        [150.0, 50.0, 300.0, 80.0]
+        [150.0, 50.0, 310.0, 80.0]
     );
     shot(&mut again, "32-reopened", "Count where it was put");
 }
@@ -1883,6 +2002,9 @@ fn a_stored_text_is_retyped_in_layout_mode_and_saved() {
     common::wait_until(&mut app, "the layout canvas", |app| {
         app.query_by_label("Text (object 1)").is_some()
     });
+    let edge = app.get_by_label("Layout width").rect().center();
+    drag(&mut app, edge, edge - egui::vec2(30.0, 0.0));
+    let draft_edge = app.get_by_label("Layout width").rect().center();
     let at = app.get_by_label("Text (object 1)").rect().center();
     common::workspace::double_click_at(&mut app, at);
     common::wait_until(&mut app, "the text being typed", |app| {
@@ -1891,6 +2013,18 @@ fn a_stored_text_is_retyped_in_layout_mode_and_saved() {
     app.input_mut()
         .events
         .push(egui::Event::Text(" date".into()));
+    app.run_steps(2);
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    app.run_steps(2);
+    assert_eq!(
+        common::text_field(&app, "Text being typed")
+            .accesskit_node()
+            .value()
+            .as_deref(),
+        Some("Due")
+    );
+    assert_eq!(app.get_by_label("Layout width").rect().center(), draft_edge);
+    app.event(egui::Event::Text(" date".into()));
     app.run_steps(2);
     shot(&mut app, "70-retyping", "the stored text being typed");
     // Saved with Ctrl+S while still typing: the words go as Return would
