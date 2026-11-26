@@ -208,12 +208,15 @@ pub fn compile_address(
     );
     // What the planner would refuse is refused here, before the address is
     // kept: too long, or a function of the file's.
-    address(&WebViewerPlacement {
-        frame: Rect::default(),
-        flags: 0,
-        formatted: formatted.clone(),
-        polish: polish.clone(),
-    })?;
+    address(
+        &WebViewerPlacement {
+            frame: Rect::default(),
+            flags: 0,
+            formatted: formatted.clone(),
+            polish: polish.clone(),
+        },
+        schema.names(),
+    )?;
     Ok((formatted, polish))
 }
 
