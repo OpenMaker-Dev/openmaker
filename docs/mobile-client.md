@@ -27,8 +27,8 @@ desktop. What FileMaker Go does is in [go-client.md](re/go-client.md).
   lists, with a search box, and pulled down (or Refresh on Android) lists
   them again; Open by Name opens a file it does not list (`.fmp12` may be
   left out). Swiping a host (iOS), or its menu or a long press, edits or
-  removes it; removing forgets only the saved entry and its certificate
-  authority. Before the Hosts tab had a list it kept one host and the
+  removes it; removing forgets only the saved entry, its certificate
+  authority and the certificate permitted for it. Before the Hosts tab had a list it kept one host and the
   certificate authorities it was given: that host and those hosts make
   up the list. Local hosts (Bonjour) are not listed. A private
   certificate authority (PEM certificates and nothing else, at most 16
@@ -57,6 +57,21 @@ desktop. What FileMaker Go does is in [go-client.md](re/go-client.md).
   authorities changed, after it opened (in another window). The apps take all of
   this from the engine (`mobile/core/src/hosts.rs`). The certificate is
   verified as the desktop client verifies it.
+- **A certificate that cannot be verified** (self-signed, from an
+  authority the device does not trust, expired, not naming the address,
+  or X.509 version 1, as FileMaker Server's default certificate is) is
+  asked about when listing a host's files or opening a file there, as
+  FileMaker Go asks (go-client.md): the reason, the certificate's subject,
+  issuer, validity and SHA-256 fingerprint, with Don't Connect, Connect
+  and Always Permit. Connect accepts that certificate for that host and
+  port until the app quits; Always Permit saves its fingerprint for them,
+  which Edit Host shows and can forget. Only that certificate is
+  accepted: its handshake signature is checked with its own key, and
+  another certificate from the same host asks again, saying it changed.
+  Its names and dates are not checked once permitted. FileMaker's own
+  permit is kept by host name alone (network-protocol.md); this one is
+  OpenMaker's stricter choice. A host that does not encrypt cannot be
+  reached at all. A certificate that verifies connects without asking.
 - **Favorites** and **Recent** keep references to local and hosted files;
   opening one signs in again. Rows can be removed, and a local file
   deleted after a confirmation.

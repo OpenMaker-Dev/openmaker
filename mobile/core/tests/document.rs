@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use om_server::{HostedFile, Identity, Server, ServerConfig, ServerIdentity};
 use openmaker_go::{
     hosted_files, Command, Document, DocumentMode, DocumentObserver, DocumentState, Element,
-    ElementKind, Host, Input, Key, Menu, SignIn, Source, Viewport,
+    ElementKind, GoError, Host, Input, Key, Menu, SignIn, Source, Viewport,
 };
 
 struct Headless;
@@ -234,8 +234,38 @@ fn text_typed_on_device_is_saved_by_close_and_found_on_a_host() {
         address: "127.0.0.1".into(),
         port,
         certificate: pem.clone(),
+        permitted: String::new(),
     };
     assert!(hosted_files(host()).unwrap().iter().any(|f| f == name));
+    // Without its certificate authority the host's self-signed certificate
+    // cannot be verified: the listing says so with the certificate's
+    // fingerprint, another permitted certificate is reported as changed,
+    // and with that fingerprint permitted the host lists its files.
+    let untrusted = Host {
+        certificate: String::new(),
+        ..host()
+    };
+    let fingerprint = match hosted_files(untrusted.clone()) {
+        Err(GoError::Untrusted {
+            fingerprint,
+            changed: false,
+            ..
+        }) => fingerprint,
+        other => panic!("expected an untrusted host, got {other:?}"),
+    };
+    let other = Host {
+        permitted: "00".repeat(32),
+        ..untrusted.clone()
+    };
+    assert!(matches!(
+        hosted_files(other),
+        Err(GoError::Untrusted { changed: true, .. })
+    ));
+    let permitted = Host {
+        permitted: fingerprint,
+        ..untrusted
+    };
+    assert!(hosted_files(permitted).unwrap().iter().any(|f| f == name));
     let mut hosted = Shown::open(Source::Hosted {
         host: host(),
         file: name.into(),

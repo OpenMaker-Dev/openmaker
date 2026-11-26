@@ -188,6 +188,7 @@ fun LaunchCenterScreen(model: GoViewModel) {
                 onEdit = { model.hostEditor = it.copy(error = null) },
                 onSave = model::saveHost,
                 onCancel = { model.hostEditor = null },
+                onForgetPermitted = model::forgetPermitted,
             )
         }
         deleting?.let { entry ->
@@ -397,7 +398,13 @@ private fun PageNote(text: String) {
 
 /** Add Host and Edit Host: the address, port, name and a private certificate authority. */
 @Composable
-private fun HostDialog(editor: HostEditor, onEdit: (HostEditor) -> Unit, onSave: () -> Unit, onCancel: () -> Unit) {
+private fun HostDialog(
+    editor: HostEditor,
+    onEdit: (HostEditor) -> Unit,
+    onSave: () -> Unit,
+    onCancel: () -> Unit,
+    onForgetPermitted: () -> Unit,
+) {
     var certificate by remember { mutableStateOf(editor.certificate.isNotEmpty()) }
     AlertDialog(
         onDismissRequest = onCancel,
@@ -453,6 +460,13 @@ private fun HostDialog(editor: HostEditor, onEdit: (HostEditor) -> Unit, onSave:
                     )
                 } else {
                     TextButton(onClick = { certificate = true }) { Text("Private certificate authority…") }
+                }
+                if (editor.permitted.isNotEmpty()) {
+                    Text(
+                        "Connects although its certificate cannot be verified: you permitted the one with SHA-256 fingerprint ${editor.permitted}.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    TextButton(onClick = onForgetPermitted) { Text("Forget Permitted Certificate") }
                 }
             }
         },

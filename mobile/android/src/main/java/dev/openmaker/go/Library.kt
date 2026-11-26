@@ -126,19 +126,51 @@ class Library(context: Context) {
      */
     fun saveHost(change: HostChange): SavedHost {
         val before = certificates()
-        val saved = dev.openmaker.go.engine.saveHost(SavedHosts(hosts.map { it.listed() }, before), change)
-        prefs.edit()
-            .putHosts(saved.saved.hosts.map(SavedHost::of))
-            .putCertificates(before, saved.saved.certificates)
-            .apply()
+        val hostsBefore = hosts
+        val saved = dev.openmaker.go.engine.saveHost(SavedHosts(hostsBefore.map { it.listed() }, before), change)
+        val edit =
+            prefs.edit().putHosts(saved.saved.hosts.map(SavedHost::of)).putCertificates(before, saved.saved.certificates)
+        // A host that left the list (moved, or merged into another) loses the certificate permitted for it.
+        val after = saved.saved.hosts.map { hostKey(it.address, it.port) }
+        for (old in hostsBefore + listOfNotNull(change.replaces?.let(SavedHost::of))) {
+            if (old.key !in after) edit.unpermit(old.address, old.port)
+        }
+        edit.apply()
         return SavedHost.of(saved.host)
     }
 
-    /** Remove [host] from the list, with the certificate authorities trusted for it. */
+    /**
+     * Remove [host] from the list, with the certificate authorities trusted
+     * for it and the certificate permitted for it.
+     */
     fun removeHost(host: SavedHost) {
         val before = certificates()
         val saved = dev.openmaker.go.engine.removeHost(SavedHosts(hosts.map { it.listed() }, before), host.listed())
-        prefs.edit().putHosts(saved.hosts.map(SavedHost::of)).putCertificates(before, saved.certificates).apply()
+        prefs.edit()
+            .putHosts(saved.hosts.map(SavedHost::of))
+            .putCertificates(before, saved.certificates)
+            .unpermit(host.address, host.port)
+            .apply()
+    }
+
+    /**
+     * The SHA-256 fingerprint of the server certificate the user permitted
+     * for one host and port although it cannot be verified (Always
+     * Permit), under any spelling of its address ([hostKey]); empty for
+     * none.
+     */
+    fun permitted(host: String, port: Int): String =
+        prefs.getString(pinKey(host, port), null)
+            ?: pins(host, port).sortedBy { it.key }.firstNotNullOfOrNull { it.value as? String }.orEmpty()
+
+    /** Always Permit: connect to the host's certificate with [fingerprint] from now on. */
+    fun permit(host: String, port: Int, fingerprint: String) {
+        prefs.edit().unpermit(host, port).putString(pinKey(host, port), fingerprint).apply()
+    }
+
+    /** Forget the certificate permitted for a host and port. */
+    fun forgetPermitted(host: String, port: Int) {
+        prefs.edit().unpermit(host, port).apply()
     }
 
     /**
@@ -161,6 +193,23 @@ class Library(context: Context) {
             .filter { it.key.startsWith(CA_PREFIX) }
             .mapNotNull { entry -> (entry.value as? String)?.let { entry.key.removePrefix(CA_PREFIX) to it } }
             .toMap()
+
+    private fun pinKey(host: String, port: Int) = "$PIN_PREFIX$host:$port"
+
+    /** The permits saved for [host] and [port] under any spelling of the address. */
+    private fun pins(host: String, port: Int): List<Map.Entry<String, *>> {
+        val key = hostKey(host, port.toUShort())
+        return prefs.all.entries.filter { entry ->
+            val stored = entry.key.removePrefix(PIN_PREFIX).takeIf { entry.key.startsWith(PIN_PREFIX) }
+            val colon = stored?.lastIndexOf(':') ?: -1
+            val storedPort = stored?.substring(colon + 1)?.toUShortOrNull()
+            stored != null && colon > 0 && storedPort != null && hostKey(stored.substring(0, colon), storedPort) == key
+        }
+    }
+
+    private fun SharedPreferences.Editor.unpermit(host: String, port: Int): SharedPreferences.Editor = apply {
+        for (entry in pins(host, port)) remove(entry.key)
+    }
 
     /** Write the certificate authorities [after] in place of [before]. */
     private fun SharedPreferences.Editor.putCertificates(before: Map<String, String>, after: Map<String, String>) =
@@ -242,6 +291,7 @@ class Library(context: Context) {
         const val LAST_HOST = "lastHost"
         const val LAST_PORT = "lastPort"
         const val CA_PREFIX = "ca:"
+        const val PIN_PREFIX = "permitted:"
         const val MAX_RECENT = 30
         // Room an import leaves on the device for the files it opens.
         const val SPARE_BYTES = 256L shl 20
