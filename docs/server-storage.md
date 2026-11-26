@@ -4910,10 +4910,12 @@ hold and publish everything committed or be one the leader reports as
 behind. Then a minority goes down for good, the leader first, and the
 rest must elect a leader that serves and commit a new entry. A run where
 they cannot is passed only where the disks show a barrier: some survivor
-last agrees with every survivor that could be elected (one with the most
-up to date log; every survivor's vote is needed) before that one's log
-base, so what it lacks is retired there (state transfer is not built).
-The leader's own report does not decide it.
+last agrees with the log that would have to send it what it lacks before
+that log's base, so what it lacks is retired there (state transfer is
+not built). That log is the leader's in office, which a behind follower
+keeps in office by answering its empty heartbeats; with none in office,
+it is each survivor's that could be elected (the most up to date: every
+survivor's vote is needed). The leader's own report does not decide it.
 
 Sixteen planted defects (`consensus::Plant`) each name the checks they
 must break, and a seed of the default run must find each one by one of

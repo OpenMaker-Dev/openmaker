@@ -2165,21 +2165,34 @@ impl World {
             self.cov.minority_progress += 1;
             return Ok(());
         }
-        // A barrier on the disks: only a survivor with the most up to date
-        // log can be elected (every survivor's vote is needed), and some
-        // survivor's log last agrees with each such one's before that one's
+        // A barrier on the disks: some survivor's log last agrees with the
+        // log that would have to send it what it lacks before that log's
         // base, so what it lacks is retired there (state transfer is not
-        // built).
+        // built). That log is the leader's in office: a behind follower
+        // answers its empty heartbeats, so it stays. With none in office,
+        // it is each survivor's with the most up to date log, the only ones
+        // that can be elected (every survivor's vote is needed).
         let ups = self.up();
+        let core = |i: usize| &self.nodes[i].member.as_ref().unwrap().core;
         let tip = |i: usize| {
             let (index, term, _) = self.nodes[i].member.as_ref().unwrap().store.durable_entry();
             (term, index)
         };
-        let best = ups.iter().map(|i| tip(*i)).max().unwrap();
-        let electable: Vec<usize> = ups.iter().copied().filter(|i| tip(*i) == best).collect();
+        let in_office = ups
+            .iter()
+            .copied()
+            .filter(|i| core(*i).role() == Role::Leader)
+            .max_by_key(|i| core(*i).term());
+        let sources: Vec<usize> = match in_office {
+            Some(l) => vec![l],
+            None => {
+                let best = ups.iter().map(|i| tip(*i)).max().unwrap();
+                ups.iter().copied().filter(|i| tip(*i) == best).collect()
+            }
+        };
         let barrier = ups.iter().any(|j| {
-            !electable.contains(j)
-                && electable
+            !sources.contains(j)
+                && sources
                     .iter()
                     .all(|m| self.meet(*j, *m).is_none_or(|at| at < self.base_of(*m)))
         });
