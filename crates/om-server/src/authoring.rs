@@ -2440,40 +2440,43 @@ fn place_web_viewer(ed: &mut Editor<'_, '_, '_>, request: &PlaceWebViewer) -> Re
             "The web address is not a calculation this host reads.".to_owned(),
         );
     };
-    // And their names, as Web Viewer Setup shows them, for the planner's
-    // check that the address's text reads back as what it stores.
-    let mut names = om_data::formula::NameTable::default();
-    {
+    // And the file's names, as Web Viewer Setup resolves them, for the
+    // planner's check that the address's text reads back as what it
+    // stores; a binding whose name another occurrence or field shares is
+    // refused, as its text could resolve to either.
+    let names = {
         let derived = ed.tx.derived();
         let catalog = derived.catalog();
-        for field in expr.field_references() {
-            let found = field.occurrence.id().zip(field.field.id()).and_then(
-                |(occurrence_id, field_id)| {
-                    let occurrence = catalog
-                        .table_occurrences
-                        .iter()
-                        .find(|o| o.id == occurrence_id)?;
-                    let table = catalog.table(occurrence.base_table()?)?;
-                    let field = table.field(field_id)?;
-                    Some((
-                        occurrence_id,
-                        &occurrence.name,
-                        table.id,
-                        field_id,
-                        &field.name,
-                    ))
-                },
+        let fields: Vec<(u64, u64)> = expr
+            .field_references()
+            .iter()
+            .filter_map(|field| field.occurrence.id().zip(field.field.id()))
+            .collect();
+        if fields.len() != expr.field_references().len() {
+            return refused(
+                status::FIELD_MISSING,
+                "The web address reads a field this file's tables do not have.".to_owned(),
             );
-            let Some((occurrence_id, occurrence, table, field_id, field)) = found else {
+        }
+        match address_names(catalog, &fields) {
+            Ok(names) => names,
+            Err(AddressNames::Missing) => {
                 return refused(
                     status::FIELD_MISSING,
                     "The web address reads a field this file's tables do not have.".to_owned(),
-                );
-            };
-            names.add_occurrence(occurrence_id, occurrence, table);
-            names.add_field(table, field_id, field);
+                )
+            }
+            Err(AddressNames::Ambiguous(binding)) => {
+                return refused(
+                    status::UNSUPPORTED,
+                    format!(
+                        "The web address reads {binding}, a name another occurrence or field of \
+                         this file shares; its text could stand for either, so it is not placed."
+                    ),
+                )
+            }
         }
-    }
+    };
     let key = uint_segment(id);
     let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
     let Some(current) = ed
@@ -2550,6 +2553,64 @@ fn place_web_viewer(ed: &mut Editor<'_, '_, '_>, request: &PlaceWebViewer) -> Re
         label_object: 0,
         revision,
     })
+}
+
+/// Why a web viewer's address has no names to be checked with.
+#[derive(Debug, PartialEq)]
+enum AddressNames {
+    /// A field it reads is not one of this file's tables'.
+    Missing,
+    /// A field it reads is named `Occurrence::Field` as another one of the
+    /// file is (names compared without case), so its text is ambiguous.
+    Ambiguous(String),
+}
+
+/// The file's names for checking a web viewer's address that reads
+/// `fields` (occurrence and field ids): every occurrence of this file and
+/// every field of its tables, as the address's text is resolved.
+fn address_names(
+    catalog: &om_hbam::Catalog,
+    fields: &[(u64, u64)],
+) -> Result<om_data::formula::NameTable, AddressNames> {
+    let mut names = om_data::formula::NameTable::default();
+    for occurrence in &catalog.table_occurrences {
+        if let Some(table) = occurrence.base_table() {
+            names.add_occurrence(occurrence.id, &occurrence.name, table);
+        }
+    }
+    for table in &catalog.tables {
+        for field in &table.fields {
+            names.add_field(table.id, field.id, &field.name);
+        }
+    }
+    let same = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
+    for &(occurrence_id, field_id) in fields {
+        let occurrence = catalog
+            .table_occurrences
+            .iter()
+            .find(|o| o.id == occurrence_id)
+            .ok_or(AddressNames::Missing)?;
+        let table = occurrence
+            .base_table()
+            .and_then(|table| catalog.table(table))
+            .ok_or(AddressNames::Missing)?;
+        let field = table.field(field_id).ok_or(AddressNames::Missing)?;
+        let shared_occurrence = catalog
+            .table_occurrences
+            .iter()
+            .any(|o| o.id != occurrence.id && same(&o.name, &occurrence.name));
+        let shared_field = table
+            .fields
+            .iter()
+            .any(|f| f.id != field.id && same(&f.name, &field.name));
+        if shared_occurrence || shared_field {
+            return Err(AddressNames::Ambiguous(format!(
+                "{}::{}",
+                occurrence.name, field.name
+            )));
+        }
+    }
+    Ok(names)
 }
 
 /// Whether table occurrences `a` and `b` are joined in the file's
@@ -2994,6 +3055,54 @@ mod tests {
     use super::*;
     use crate::config::{ServerConfig, ServerIdentity};
     use crate::{Identity, Server};
+
+    /// A web viewer's address is checked with every name of the file, and
+    /// a field whose `Occurrence::Field` another occurrence or field shares
+    /// is refused: files with older name indexes can hold two fields named
+    /// alike (schema-path.md), and the text would read back as the first.
+    #[test]
+    fn a_web_address_reading_a_shared_name_is_refused() {
+        use om_hbam::catalog::{DataType, Field, FieldKind, Table, TableOccurrence};
+        let field = |id, name: &str| Field {
+            id,
+            name: name.into(),
+            kind: FieldKind::Normal,
+            data_type: DataType::Text,
+            options: Vec::new(),
+        };
+        let occurrence = |id, name: &str, table: u8| TableOccurrence {
+            id,
+            name: name.into(),
+            definition: vec![2, 1, 0, 2, 1, table],
+        };
+        let catalog = om_hbam::Catalog {
+            tables: vec![Table {
+                id: 0x81,
+                name: "Contacts".into(),
+                fields: vec![field(6, "Name"), field(7, "Website"), field(8, "website")],
+            }],
+            table_occurrences: vec![
+                occurrence(0xd0_0002, "Contacts", 0x81),
+                occurrence(0xd0_0003, "Leads", 0x81),
+                occurrence(0xd0_0004, "LEADS", 0x81),
+            ],
+            layouts: Vec::new(),
+        };
+        assert!(address_names(&catalog, &[(0xd0_0002, 6)]).is_ok());
+        for fields in [[(0xd0_0002, 7)], [(0xd0_0002, 8)], [(0xd0_0003, 6)]] {
+            assert!(
+                matches!(
+                    address_names(&catalog, &fields),
+                    Err(AddressNames::Ambiguous(_))
+                ),
+                "{fields:?}"
+            );
+        }
+        assert_eq!(
+            address_names(&catalog, &[(0xd0_0002, 9)]).err(),
+            Some(AddressNames::Missing)
+        );
+    }
 
     #[test]
     fn stamps_count_up_from_none_and_keep_other_children() {

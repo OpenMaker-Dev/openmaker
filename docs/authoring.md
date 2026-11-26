@@ -615,7 +615,10 @@ with a custom web address (operation 28, planned with
   back exactly the stored tokens and calculation, so what Setup shows and
   what Browse evaluates cannot differ. An address that does not read back
   is refused; so are fields whose occurrence name ends, or whose field
-  name begins, with a colon, which would show as `Occurrence:::Field`. Some
+  name begins, with a colon, which would show as `Occurrence:::Field`, and
+  fields whose occurrence or field name another one of the file shares
+  (older files can hold two fields named alike), whose text could stand
+  for either. Some
   valid addresses are refused too, where OpenMaker's printer does not give
   the same tokens back: names written as `${...}` and numbers whose
   precision changes when printed. The address has no context of its own
