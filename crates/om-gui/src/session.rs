@@ -192,6 +192,14 @@ impl Session {
         }
     }
 
+    pub fn empty_field_alert(&self) -> Option<&'static str> {
+        let layout = self.layout?;
+        if self.is_loading_records() || self.layout_masked() || !self.shows_layout(layout) {
+            return None;
+        }
+        om_data::layout_catalog::general::empty_field_alert(self.layout_def()?.flags, self.total())
+    }
+
     pub fn view_enabled(&self, view: crate::app::ViewMode) -> bool {
         let flags = match &self.render {
             RenderState::Loaded(document) => {

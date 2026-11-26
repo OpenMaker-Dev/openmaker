@@ -916,6 +916,21 @@ fn page_setup_menu_toolbar_round_trip_changes_preview_without_record_writes() {
     );
     assert!(app.state().record_modified());
     assert!(!events().iter().any(|e| e.ends_with(":write")));
+    // The page setups saved in the file (#112): Cancel saves none.
+    let saved = || {
+        events()
+            .iter()
+            .filter_map(|e| e.split_once(":page_format:").map(|(_, hex)| hex.to_owned()))
+            .collect::<Vec<_>>()
+    };
+    let hex = |paper: om_layout::paper::PaperSettings| -> String {
+        paper
+            .common_format()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    };
+    assert!(saved().is_empty());
     // Discard only this synthetic draft explicitly before Preview's own commit.
     app.state_mut().apply(&ctx, Action::RevertRecord);
     wait(&mut app, OpenMakerApp::is_settled);
@@ -965,6 +980,9 @@ fn page_setup_menu_toolbar_round_trip_changes_preview_without_record_writes() {
         app.state().w.session.as_ref().unwrap().paper,
         Some(session_paper())
     );
+    // A4 landscape's OK saved it in the file, as one `Comm` chunk; the
+    // OK without changes saved nothing more, the file storing it already.
+    assert_eq!(saved(), [hex(session_paper())]);
 
     // At 50% a page holds twice as much of the layout each way, on the
     // same sheet, and Preview starts over at page one.
@@ -992,6 +1010,16 @@ fn page_setup_menu_toolbar_round_trip_changes_preview_without_record_writes() {
     assert!((plan.paper.width - 2.0 * 841.8898).abs() < 0.01);
     shot(&mut app, "page-setup-a4-landscape-50");
     assert!(!events().iter().any(|e| e.ends_with(":write")));
+    assert_eq!(
+        saved(),
+        [
+            hex(session_paper()),
+            hex(om_layout::paper::PaperSettings {
+                scale: 0.5,
+                ..session_paper()
+            })
+        ]
+    );
 
     fn session_paper() -> om_layout::paper::PaperSettings {
         om_layout::paper::PaperSettings {
