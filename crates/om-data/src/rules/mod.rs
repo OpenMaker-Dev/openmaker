@@ -3403,6 +3403,32 @@ impl RecordPlan {
             })
     }
 
+    /// Reject an unsupported stored record position before a create or
+    /// preview reserves an ID or a serial number.
+    pub fn check_creation_context(&self, context: &WriteContext) -> Result<(), DataError> {
+        if matches!(context.record_number, Some(RecordNumber::LocalNewRecord(_))) {
+            return Ok(());
+        }
+        if let Some(field) = self.fields.values().find(|field| {
+            field.stored_calculation()
+                && field.expression.as_ref().is_some_and(|expression| {
+                    matches!(
+                        expression.formula.polish,
+                        Expr::Get(selector::RECORD_NUMBER)
+                    )
+                })
+        }) {
+            return Err(DataError::with_code(
+                error::UNAVAILABLE,
+                format!(
+                    "Field {}: a stored record number requires ordinary New Record in an unsorted local window.",
+                    field.name
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     /// The [`CONTEXT_SELECTORS`] the table's auto-entered, stored and
     /// validation formulas read, through the custom functions they call:
     /// what a write's operation must supply in its [`WriteContext`].
@@ -4249,6 +4275,9 @@ impl RecordPlan {
         entry: Entry,
         preview: Option<&BTreeSet<u64>>,
     ) -> Result<Computed, DataError> {
+        if mode == WriteMode::Create {
+            self.check_creation_context(&environment.context)?;
+        }
         let validate = preview.is_none();
         let mut deferred = BTreeSet::new();
         let mut evaluated = BTreeSet::new();
@@ -5192,23 +5221,6 @@ impl RecordPlan {
         session: &Evaluation,
         remaining: &mut u64,
     ) -> Result<(Value, String), RunError> {
-        if matches!(
-            expression.formula.polish,
-            Expr::Get(selector::RECORD_NUMBER)
-        ) && !matches!(session.record_number, Some(RecordNumber::LocalNewRecord(_)))
-            && self
-                .fields
-                .get(&id)
-                .is_some_and(PlannedField::stored_calculation)
-        {
-            return Err(RunError::Unread(DataError::with_code(
-                error::UNAVAILABLE,
-                format!(
-                    "Field {}: a stored record number requires ordinary New Record in an unsorted local window.",
-                    self.fields[&id].name
-                ),
-            )));
-        }
         let def = self
             .schema
             .table(self.table)
