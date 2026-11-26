@@ -2917,8 +2917,10 @@ impl RecordPlan {
         serials: &BTreeMap<u64, String>,
     ) -> Result<BTreeSet<u64>, DataError> {
         let (row, mut dirty) = self.written(existing, changes, entry)?;
+        let assigned_groups: BTreeSet<_> = self.replacing_groups_assigned(changes).collect();
         if mode == WriteMode::Update
             && dirty.is_empty()
+            && assigned_groups.is_empty()
             && !self.fields.iter().any(|(id, f)| {
                 f.lookup
                     .as_ref()
@@ -2959,6 +2961,7 @@ impl RecordPlan {
             let expression = field.expression.as_ref().is_some_and(|expression| {
                 (field.stored_calculation() || !entry.skip_auto_enter && !entry.keeps(changes, *id))
                     && (mode == WriteMode::Create
+                        || assigned_groups.contains(id)
                         || expression.dependencies.iter().any(|d| dirty.contains(d)))
                     && (field.stored_calculation()
                         || field.options.calculation_replaces_existing()
@@ -4703,6 +4706,20 @@ impl RecordPlan {
         volatile
     }
 
+    /// Replacing grouped auto-entry follows an explicit group assignment,
+    /// even when the stored group value is the same (auto-entry.md).
+    fn replacing_groups_assigned<'a>(
+        &'a self,
+        changes: &'a BTreeMap<u64, Option<String>>,
+    ) -> impl Iterator<Item = u64> + 'a {
+        self.grouped_self_joins
+            .iter()
+            .filter_map(|&(result, group, _, entry)| {
+                (entry == GroupedAutoEntry::Replace && changes.contains_key(&group))
+                    .then_some(result)
+            })
+    }
+
     /// Preserve the measured stored result when evaluation is deferred to
     /// commit. A group set and then cleared is still an assignment, even
     /// if it would appear unchanged in the final row.
@@ -4747,10 +4764,7 @@ impl RecordPlan {
                             && (!key_assigned
                                 || row.get(&key).is_some_and(|value| !value.is_empty()))
                     }
-                    WriteMode::Update => {
-                        changes.is_empty()
-                            || (single_group_step && stored.get(&group) != row.get(&group))
-                    }
+                    WriteMode::Update => !key_assigned && (!group_assigned || single_group_step),
                 },
                 GroupedAutoEntry::Replace => false,
             };
@@ -4801,7 +4815,12 @@ impl RecordPlan {
                 .as_ref()
                 .is_some_and(|lookup| self.fires(*id, lookup, mode, &dirty, changes, entry))
         });
-        if mode == WriteMode::Update && dirty.is_empty() && !fires_lookup {
+        let assigned_groups: BTreeSet<_> = self.replacing_groups_assigned(changes).collect();
+        if mode == WriteMode::Update
+            && dirty.is_empty()
+            && !fires_lookup
+            && assigned_groups.is_empty()
+        {
             return Ok(Computed {
                 row,
                 dirty,
@@ -4981,6 +5000,7 @@ impl RecordPlan {
                 .iter()
                 .any(|id| deferred.contains(id));
             let should_evaluate = mode == WriteMode::Create
+                || assigned_groups.contains(id)
                 || depends_on_deferred
                 || expression.dependencies.iter().any(|id| dirty.contains(id));
             let can_replace = field.stored_calculation()

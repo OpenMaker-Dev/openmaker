@@ -346,6 +346,7 @@ fn replacing_group_flag_uses_the_first_peer_and_leaves_other_rows_unchanged() {
     const GROUP: u64 = 30;
     const KEY: u64 = 31;
     const FLAG: u64 = 32;
+    const NOTE: u64 = 33;
     const OTHER: u64 = 0xd0_0009;
     let folder = Folder::new("replacing-grouped-flag");
     let path = folder.file("Items.fmp12", PASSWORD, |root| {
@@ -359,6 +360,7 @@ fn replacing_group_flag_uses_the_first_peer_and_leaves_other_rows_unchanged() {
             (GROUP, "GroupKey", 1, 0x8000_0000),
             (KEY, "ItemKey", 1, 0x8000_0088),
             (FLAG, "Primary", 2, 0xa8),
+            (NOTE, "Note", 1, 0),
         ] {
             names.add_field(TABLE, id, name);
             fixture::add_field(root, TABLE, id, name, 1, kind, 0, options, 0);
@@ -428,9 +430,17 @@ fn replacing_group_flag_uses_the_first_peer_and_leaves_other_rows_unchanged() {
     provider.write_record(&set(ids[0], GROUP, "B")).unwrap();
     provider.commit_transaction(true).unwrap();
     assert_eq!(read(&mut provider, ids[0]), Some(0));
+    // A2's first peer is now A3, whose flag is zero. An unrelated
+    // edit preserves the old value, and reassigning A computes one.
+    for (field, value, want) in [(NOTE, "Edited", 0), (GROUP, "A", 1)] {
+        provider.begin_record_commit().unwrap();
+        provider.write_record(&set(ids[1], field, value)).unwrap();
+        provider.commit_transaction(true).unwrap();
+        assert_eq!(read(&mut provider, ids[1]), Some(want));
+    }
     provider.close();
     let mut provider = opened(&path);
-    for (record, want) in ids.into_iter().zip([0, 0, 0, 1]) {
+    for (record, want) in ids.into_iter().zip([0, 1, 0, 1]) {
         assert_eq!(read(&mut provider, record), Some(want), "after reopen");
     }
 }

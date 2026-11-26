@@ -686,19 +686,17 @@ impl Window {
             self.touch();
             return Ok(());
         }
-        let Some((fields, record)) = self.current(provider)? else {
+        let Some((fields, _)) = self.current(provider)? else {
             return Err(DataError::with_code(101, "There is no current record."));
         };
-        let Some(i) = fields.iter().position(|f| f.name == field) else {
+        if !fields.iter().any(|f| f.name == field) {
             return Err(DataError::with_code(
                 102,
                 format!("The table has no field named {field:?}."),
             ));
-        };
-        let stored = record.values.get(i).cloned().flatten().unwrap_or_default();
-        if stored == text && !self.state.drafts.contains_key(field) {
-            return Ok(());
         }
+        // A script's assignment can fire a lookup or auto-entry even when
+        // it writes the same match value. Hold it through commit.
         self.prepare_edit(
             provider,
             BTreeSet::new(),

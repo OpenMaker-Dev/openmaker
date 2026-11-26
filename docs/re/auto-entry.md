@@ -660,6 +660,13 @@ values throughout. All actions returned zero and reopened with the
 observed values.
 [Replacing native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7191674029).
 
+The follow-up isolated a row whose stored value, `0`, differed from
+the value its current first peer would give, `1`. Changing Note or
+opening and committing without a write preserved `0`. Assigning the
+same group key entered `1` during Set Field. Commit and reopen kept
+the result and the other rows were unchanged.
+[Native trigger check](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7192013761).
+
 Still unmeasured:
 - sorted joins and other non-equality and multi-predicate joins,
   stored calculations and validation, and portal rows created in one

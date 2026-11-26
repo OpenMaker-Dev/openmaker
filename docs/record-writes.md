@@ -2059,9 +2059,11 @@ application creation plan.
     the same table. Ordinary New Record in an unsorted local found set
     shows `1` before the group is assigned. A new record stores the
     result for its final group and row key at commit. A single
-    field-setting step can move an existing record to another nonempty
-    group. Reassigning that same group, other edits on stored rows,
-    explicit edits of the result and clearing the group are refused. Hosted, routed, and
+    field-setting step can assign an existing record's nonempty group
+    again or move it to another group. An unrelated field edit keeps the
+    stored result. OpenMaker evaluates the existing row at commit.
+    Explicit edits of the result or the stored row key and clearing the
+    group are refused. Hosted, routed, and
     other creation paths are outside this support.
     [Replacing native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7191674029).
   - **What is unmeasured:** sorted and other non-equality joins with
