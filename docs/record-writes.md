@@ -781,13 +781,14 @@ but for a lookup's, which would write into it: a stray `0x80`
 (auto-entry.md) leaves the table writable. A stored calculation's unknown
 bits keep it read-only.
 
-An ordinary new record can fill an empty single-repetition global Text
-field with its constant, a calculation that reads no fields, or its
-creation serial. That value goes to the session immediately. It never
-becomes a cell of the new record. If the global already has a value,
-New Record returns 3 before reserving an ID or serial. Other rows in the
-table can still be edited. The scope excludes import with auto-entry,
-new records from a preview, and explicit script transactions. The desktop
+An ordinary New Record applies a constant, a calculation that reads no
+fields, or a creation serial to a supported single-repetition global
+Text field. A calculation with replacement off keeps a nonempty
+global. Constants, replacing calculations and creation serials overwrite
+it, including on later creations. A creation serial also advances the
+stored next serial. The auto-entered value goes to the session immediately
+and is absent from the new record's cells. The scope excludes import with
+auto-entry, new records from a preview, and explicit script transactions. The desktop
 currently keeps local globals in memory for the session. See the native
 observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
 and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).

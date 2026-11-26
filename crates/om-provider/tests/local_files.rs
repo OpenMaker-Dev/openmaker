@@ -2941,12 +2941,14 @@ fn new_record_auto_enters_the_session_globals() {
     const CONSTANT: u64 = 40;
     const CALCULATED: u64 = 41;
     const SERIAL: u64 = 42;
+    const REPLACING: u64 = 43;
     let folder = Folder::new("global-auto-entry");
     let path = folder.file("Sample.fmp12", PASSWORD, |root| {
         for (id, label, options) in [
             (CONSTANT, "Default setting", 0x1_0004),
             (CALCULATED, "Calculated setting", 0x1_0008),
             (SERIAL, "Serial setting", 0x1_0002),
+            (REPLACING, "Replacing setting", 0x1_0088),
         ] {
             fixture::add_field(root, TABLE, id, label, 1, 1, 0, options, 0);
         }
@@ -2955,14 +2957,9 @@ fn new_record_auto_enters_the_session_globals() {
             &[&table, &[3], &[5], &uint_segment(CONSTANT), &[0x0d]],
             om_scripts::text_node(&[], "X"),
         );
-        fixture::add_formula(
-            root,
-            &fixture::names(),
-            (TABLE, OCCURRENCE),
-            CALCULATED,
-            5,
-            "\"Y\"",
-        );
+        for id in [CALCULATED, REPLACING] {
+            fixture::add_formula(root, &fixture::names(), (TABLE, OCCURRENCE), id, 5, "\"Y\"");
+        }
         fixture::set_field_serial_increment(root, TABLE, SERIAL, 1);
         root.put(
             &[&table, &[3], &[5], &uint_segment(SERIAL), &[0x0c]],
@@ -2984,7 +2981,12 @@ fn new_record_auto_enters_the_session_globals() {
     provider.begin_record_commit().unwrap();
     let record = provider.write_record(&new).unwrap();
     let values = globals(&mut provider);
-    for (field, text) in [(CONSTANT, "X"), (CALCULATED, "Y"), (SERIAL, "1")] {
+    for (field, text) in [
+        (CONSTANT, "X"),
+        (CALCULATED, "Y"),
+        (SERIAL, "1"),
+        (REPLACING, "Y"),
+    ] {
         assert!(matches!(values.get(field, 1), Some(Value::Text(value)) if value.as_str() == text));
     }
     provider
@@ -2994,7 +2996,9 @@ fn new_record_auto_enters_the_session_globals() {
             ..new.clone()
         })
         .unwrap();
-    provider.set_global(TABLE, CONSTANT, 1, "Changed").unwrap();
+    for field in [CONSTANT, CALCULATED, SERIAL, REPLACING] {
+        provider.set_global(TABLE, field, 1, "Changed").unwrap();
+    }
     provider.commit_transaction(false).unwrap();
     assert_eq!(
         name_of(&mut provider, LAYOUT as u32, record.id).as_deref(),
@@ -3005,9 +3009,41 @@ fn new_record_auto_enters_the_session_globals() {
         matches!(values.get(CONSTANT, 1), Some(Value::Text(value)) if value.as_str() == "Changed")
     );
     provider.begin_record_commit().unwrap();
-    assert_eq!(provider.write_record(&new).unwrap_err().code, Some(3));
-    provider.revert_transaction().unwrap();
+    let second = provider.write_record(&new).unwrap();
+    let values = globals(&mut provider);
+    for (field, text) in [
+        (CONSTANT, "X"),
+        (CALCULATED, "Changed"),
+        (SERIAL, "2"),
+        (REPLACING, "Y"),
+    ] {
+        assert!(matches!(values.get(field, 1), Some(Value::Text(value)) if value.as_str() == text));
+    }
+    provider.commit_transaction(false).unwrap();
     provider.close();
+
+    let file = om_hbam::HbamFile::open(&path).unwrap();
+    let tree = file.key_tree().unwrap();
+    let stored = om_hbam::record::records(&tree, TABLE);
+    for id in [record.id, second.id] {
+        let row = stored
+            .iter()
+            .find(|row| row.id == u64::try_from(id).unwrap())
+            .unwrap();
+        for field in [CONSTANT, CALCULATED, SERIAL, REPLACING] {
+            assert!(
+                !row.cells.contains_key(&field),
+                "global field {field} leaked into row {id}"
+            );
+        }
+    }
+    let next = tree
+        .at(&[TABLE, 3, 5, SERIAL, 0x0c])
+        .unwrap()
+        .text()
+        .unwrap()
+        .unwrap();
+    assert_eq!(next, "3");
 }
 
 /// An auto-entered and a validation formula over a global field read the
