@@ -1169,10 +1169,12 @@ record's place in what the rules read:
   set inserts it immediately after the current row when that row is known.
   Unrelated edits and later re-sorting leave its stored value alone.
   Automatic re-sorting after commit is a separate difference.
-  An unindexed stored Number calculation also gets position 1 when local
-  Set Field creates the first match of a direct, unsorted equality
-  relationship from a plain global Text key to a plain stored Text key.
-  The script can read that value and count the new match before Commit.
+  The stored Number calculation (`0x00080000` or value-indexed
+  `0x80080000`) also gets position 1 when local Set Field creates the
+  first match of a direct, unsorted equality relationship from a plain
+  global Text key to a plain stored Text key. The script can read the
+  position and count the new match before Commit. With the value index,
+  an exact Find for the stored position includes the new record.
   The parent's record is already stored and otherwise unedited. The
   matching key and position are checked again at save.
   The same field definition refuses writes

@@ -4142,7 +4142,7 @@ impl RecordPlan {
         }) {
             let reason = if !sorted
                 && !(first_related
-                    && field.options.options == 0x0008_0000
+                    && matches!(field.options.options, 0x0008_0000 | 0x8008_0000)
                     && field.options.validation_options == 0)
                 && matches!(
                     expression.formula.polish,
@@ -9266,6 +9266,21 @@ mod tests {
             !edited.values.contains_key(&23),
             "preserve the stored number"
         );
+
+        at_creation.context.record_number = Some(RecordNumber::LocalFirstRelated);
+        at_creation.context.sequence = WriteSequence::Local;
+        for (options, supported) in [(0x8008_0000, true), (0xc008_0000, false)] {
+            *table.fields.last_mut().unwrap() =
+                field(23, FieldKind::Calculation, DataType::Number, 0, options, 0);
+            let index_plan = plan_of(&table, &formulas, &[]).unwrap();
+            let result =
+                index_plan.prepare(WriteMode::Create, &BTreeMap::new(), &changes, &at_creation);
+            if supported {
+                assert_eq!(decoded(&result.unwrap(), 23).as_deref(), Some("1"));
+            } else {
+                assert_eq!(result.err().unwrap().code, Some(error::UNAVAILABLE));
+            }
+        }
 
         for (data_type, source) in [
             (DataType::Number, "Get ( RecordNumber ) + 0"),
