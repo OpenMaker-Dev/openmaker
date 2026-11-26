@@ -65,9 +65,8 @@ const AUTO_ENTRY_OPTIONS: u32 = 0x38f;
 /// A serial number generated when the record is committed, set instead of
 /// `0x2` (schema-path.md 5.9, E41).
 const SERIAL_ON_COMMIT: u32 = 0x200;
-/// The auto-entered values of which a field has one at most: a creation
-/// or modification value, a serial number on creation, a constant, a
-/// calculation, a serial number on commit (schema-path.md 5.9, E40).
+/// Auto-entry sources (schema-path.md 5.9, E40). The planner rejects
+/// multiple sources except for Creation Date with a calculated value.
 const AUTO_ENTRY_MODES: u32 = 0x20f;
 /// Auto-enter options measured on global Text fields (#987): a constant,
 /// a calculation or a serial generated on creation.
@@ -123,6 +122,7 @@ const SUPPORTED_VALIDATION: u32 = VALIDATE_BY_CALCULATION
 const FIELD_FORMULA: u64 = 5;
 const FIELD_VALUE_LIST: u64 = 0x07;
 const FIELD_LOOKUP: u64 = 0x08;
+const FIELD_LOOKUP_FALLBACK: u64 = 0x0b;
 const FIELD_CONSTANT: u64 = 0x0d;
 /// A child FileMaker Pro 26 left beside one lookup definition, `00000000`;
 /// its meaning is unknown (schema-path.md 5.5).
@@ -377,6 +377,30 @@ pub enum WriteSequence {
     SingleLocalFieldStep,
 }
 
+/// The owning local file's script variables at the start of a write.
+#[derive(Clone)]
+pub struct WriteFileVariables(Arc<Variables>);
+
+impl WriteFileVariables {
+    pub fn new(variables: Arc<Variables>) -> Self {
+        Self(variables)
+    }
+}
+
+impl std::fmt::Debug for WriteFileVariables {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteFileVariables").finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for WriteFileVariables {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.revision() == other.0.revision()
+    }
+}
+
+impl Eq for WriteFileVariables {}
+
 /// What the operation making a write knows that its formulas may read
 /// ([`CONTEXT_SELECTORS`]). A value left out refuses a write whose
 /// evaluated formula reads it; it is never answered empty in its place.
@@ -399,6 +423,9 @@ pub struct WriteContext {
     /// typed into an unsorted portal's creation row: its place among the
     /// related records), never a position this planner infers.
     pub record_number: Option<u64>,
+    /// The local file's `$$` variables for directly reading a Text
+    /// auto-enter value. New Record's preview retains this snapshot.
+    pub file_variables: Option<WriteFileVariables>,
 }
 
 impl WriteContext {
@@ -743,6 +770,7 @@ pub(crate) struct Evaluation {
     /// The session's global values ([`RecordEnvironment::globals`]).
     globals: Option<Arc<RecordValues>>,
     /// `Get ( RecordNumber )` ([`WriteContext::record_number`]).
+    file_variables: Option<WriteFileVariables>,
     record_number: Option<u64>,
     /// [`RecordEnvironment::related_needs`].
     related_needs: Option<Arc<RelatedNeeds>>,
@@ -853,6 +881,7 @@ impl RecordEnvironment {
             related: self.lookups.related.clone(),
             globals: self.globals.clone(),
             record_number: context.record_number,
+            file_variables: context.file_variables.clone(),
             related_needs: self.related_needs.clone(),
             written: self.lookups.written,
             stored: BTreeMap::new(),
@@ -996,6 +1025,9 @@ struct PlannedField {
     editable: bool,
     /// A stored calculation or an auto-enter calculation.
     expression: Option<Expression>,
+    /// Creation Date supplies the value on create. The calculation's
+    /// dependencies identify updates with an unmeasured result.
+    creation_date_with_calculation: bool,
     /// Auto-entered constant data (`0d`).
     constant: Option<String>,
     validation: Option<Expression>,
@@ -1062,21 +1094,24 @@ struct Lookup {
     copied: u64,
     /// "Don't copy contents if empty" off: an empty value is copied too.
     copy_empty: bool,
+    /// Value to copy when there is no matching record, including an empty value.
+    fallback: Option<String>,
     /// The field's table's match fields: a write changing one fires it.
     matches: Vec<u64>,
 }
 
-/// A lookup definition `08` for "if no exact match: do not copy"
-/// (schema-path.md 5.5): byte 0 `00` ("do not copy"), byte 1 "don't copy
-/// contents if empty" (`00` on, `01` off), then three fixed-size key
-/// buffers, each a key string's length, the key and padding: the occurrence
+/// A lookup definition `08` (schema-path.md 5.5): byte 0 `00` ("do not
+/// copy") or `03` ("use" the fallback from `0b`, empty when absent),
+/// byte 1 "don't copy contents if empty" (`00` on, `01` off), then three
+/// fixed-size key buffers, each a key string's length, the key and padding:
+/// the occurrence
 /// looked up from (6 bytes), the field copied (7), a byte `01` whose
 /// meaning is unknown, and the starting occurrence (6), 22 bytes in all.
 /// The padding is whatever the writer left there (`00`, `7f`, `5e` and
 /// others, which change no setting FileMaker Pro's dialog shows), so any
 /// value is read; every other byte must be as stated, and each key minimally
 /// encoded within its buffer. Anything else is `None`.
-fn exact_lookup(bytes: &[u8]) -> Option<Lookup> {
+fn exact_lookup(bytes: &[u8], fallback: Option<String>) -> Option<Lookup> {
     fn expect(bytes: &[u8], at: &mut usize, expected: &[u8]) -> Option<()> {
         let end = at.checked_add(expected.len())?;
         (bytes.get(*at..end)? == expected).then(|| *at = end)
@@ -1091,8 +1126,12 @@ fn exact_lookup(bytes: &[u8]) -> Option<Lookup> {
         (Key::from_id(id) == key).then(|| *at += size)?;
         Some(id)
     }
-    let mut at = 0;
-    expect(bytes, &mut at, &[0])?;
+    let fallback = match bytes.first()? {
+        0 => None,
+        3 => Some(fallback?),
+        _ => return None,
+    };
+    let mut at = 1;
     let copy_empty = match *bytes.get(at)? {
         0 => false,
         1 => true,
@@ -1108,6 +1147,7 @@ fn exact_lookup(bytes: &[u8]) -> Option<Lookup> {
         to,
         copied,
         copy_empty,
+        fallback,
         matches: Vec::new(),
     })
 }
@@ -1593,6 +1633,22 @@ impl PlannedField {
         self.options.validation_options & VALIDATE_ALWAYS != 0
     }
 
+    /// A direct `$$` read by the measured Text auto-enter form (#1037).
+    fn auto_entry_file_variable(&self) -> Option<&str> {
+        if self.options.field_kind != 1
+            || self.options.max_repetitions != 1
+            || !self.in_row()
+            || self.data_type != DataType::Text
+            || !self.options.auto_entry_calculation()
+        {
+            return None;
+        }
+        match &self.expression.as_ref()?.formula.polish {
+            Expr::Variable(name) if name.starts_with("$$") => Some(name),
+            _ => None,
+        }
+    }
+
     /// Whether the rules FileMaker checks as a value is entered (maximum
     /// characters, strict data types, range, value list) apply to `entry`:
     /// a script's Set Field is checked only against a field validated
@@ -1863,6 +1919,15 @@ impl RecordPlan {
             let unstored =
                 kind == FieldKind::Calculation && (options.options & UNSTORED != 0 || global);
             let auto_calculation = options.auto_entry_calculation();
+            // FileMaker used the creation date at New Record even with
+            // calculation replacement on. The test had editing allowed.
+            let creation_date_with_calculation = !global
+                && field.data_type == DataType::Date
+                && options.max_repetitions == 1
+                && options.options & AUTO_ENTRY_MODES == 0x9
+                && options.options & ALWAYS_EVALUATE == 0
+                && !options.auto_entry_editing_prohibited()
+                && options.auto_entry_variable() == Some(EntryVariable::CreationDate);
             let looked_up = options.options & LOOKUP != 0;
             let allowed = match kind {
                 // An unstored calculation is computed when read, and
@@ -1959,8 +2024,23 @@ impl RecordPlan {
                     None => true,
                     Some(n) => n.assembled().is_some_and(|b| *b == [0u8; 4]),
                 };
+                let fallback =
+                    if definition.first() == Some(&3) && field.data_type == DataType::Text {
+                        Some(
+                            match field_node.and_then(|n| n.get(FIELD_LOOKUP_FALLBACK)) {
+                                // FileMaker omits the member when the fallback box is blank.
+                                None => String::new(),
+                                Some(node) => node
+                                    .text()
+                                    .and_then(Result::ok)
+                                    .ok_or_else(|| error("lookup fallback is unreadable."))?,
+                            },
+                        )
+                    } else {
+                        None
+                    };
                 Some(
-                    exact_lookup(&definition)
+                    exact_lookup(&definition, fallback)
                         .filter(|_| seen)
                         .ok_or_else(|| error("unsupported lookup options."))?,
                 )
@@ -2060,7 +2140,9 @@ impl RecordPlan {
                     ));
                 }
             }
-            if (options.options & AUTO_ENTRY_MODES).count_ones() > 1 {
+            if (options.options & AUTO_ENTRY_MODES).count_ones() > 1
+                && !creation_date_with_calculation
+            {
                 return Err(error("multiple auto-entry modes are unsupported."));
             }
             if options.validation_unique() || options.validation_options & VALIDATE_EXISTING != 0 {
@@ -2169,6 +2251,7 @@ impl RecordPlan {
                     data_type: field.data_type,
                     editable,
                     expression,
+                    creation_date_with_calculation,
                     constant,
                     validation,
                     message,
@@ -2192,6 +2275,22 @@ impl RecordPlan {
             let lookup = field.lookup.as_ref().expect("a lookup");
             let matches = lookup_matches(&schema, table.id, &fields, lookup, field.data_type)
                 .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
+            // Creation skips mode-0 lookups when it generates a replacing UUID.
+            // Whether FileMaker applies a fallback in this case is unmeasured.
+            if lookup.fallback.is_some()
+                && matches.iter().any(|key| {
+                    let field = &fields[key];
+                    field.fresh_key() && field.options.calculation_replaces_existing()
+                })
+            {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: a lookup fallback with a replacing Get ( UUID ) key is unsupported.",
+                        field.name
+                    ),
+                ));
+            }
             if let Some(lookup) = fields.get_mut(&id).and_then(|f| f.lookup.as_mut()) {
                 lookup.matches = matches;
             }
@@ -3403,6 +3502,13 @@ impl RecordPlan {
             })
     }
 
+    /// Whether a direct Text auto-enter reads the local file's variables.
+    pub fn reads_auto_entry_file_variables(&self) -> bool {
+        self.fields
+            .values()
+            .any(|field| field.auto_entry_file_variable().is_some())
+    }
+
     /// The [`CONTEXT_SELECTORS`] the table's auto-entered, stored and
     /// validation formulas read, through the custom functions they call:
     /// what a write's operation must supply in its [`WriteContext`].
@@ -4299,6 +4405,7 @@ impl RecordPlan {
         let mut deferred = BTreeSet::new();
         let mut evaluated = BTreeSet::new();
         let mut probed = BTreeSet::new();
+        let mut supplied_dependencies = None;
         let (mut row, mut dirty) = self.written(existing, changes, entry)?;
         if !entry.skip_auto_enter {
             self.check_grouped_self_join_write(mode, existing, changes, &row, environment)?;
@@ -4434,10 +4541,13 @@ impl RecordPlan {
                 let keys = Self::lookup_keys(lookup, &row);
                 match environment.lookups.copied.get(id) {
                     Some((read_keys, found)) if *read_keys == keys => {
-                        if let Some(value) = found
-                            .as_ref()
-                            .filter(|v| lookup.copy_empty || !v.is_empty())
-                        {
+                        let value = match found {
+                            Some(value) => {
+                                Some(value).filter(|v| lookup.copy_empty || !v.is_empty())
+                            }
+                            None => lookup.fallback.as_ref(),
+                        };
+                        if let Some(value) = value {
                             assign(&mut row, &mut dirty, *id, value.clone());
                         }
                     }
@@ -4458,7 +4568,10 @@ impl RecordPlan {
             let Some(expression) = &field.expression else {
                 continue;
             };
-            if !field.stored_calculation() && (entry.skip_auto_enter || entry.keeps(changes, *id)) {
+            let combined_create = field.creation_date_with_calculation && mode == WriteMode::Create;
+            if !field.stored_calculation()
+                && (entry.skip_auto_enter || (entry.keeps(changes, *id) && !combined_create))
+            {
                 continue;
             }
             let depends_on_deferred = expression
@@ -4474,9 +4587,44 @@ impl RecordPlan {
             if !should_evaluate || !can_replace {
                 continue;
             }
+            if combined_create {
+                // New Record alone uses the creation date. A held create
+                // can also carry later edits before the first commit. Only
+                // those supplied inputs, not creation defaults, make this
+                // an unmeasured re-evaluation.
+                let affected = supplied_dependencies.get_or_insert_with(|| {
+                    self.computed_from(
+                        changes
+                            .keys()
+                            .filter_map(|cell| self.cell_field(*cell))
+                            .map(|(field, _)| field)
+                            .collect(),
+                    )
+                });
+                if !expression
+                    .dependencies
+                    .iter()
+                    .any(|dep| dep != id && affected.contains(dep))
+                {
+                    continue;
+                }
+            }
             if depends_on_deferred {
                 deferred.insert(*id);
                 continue;
+            }
+            if field.creation_date_with_calculation {
+                if !validate {
+                    deferred.insert(*id);
+                    continue;
+                }
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: recalculating the auto-entry combined with Creation Date is unsupported for this write. No values were changed.",
+                        field.name
+                    ),
+                ));
             }
             let globals = self.session_globals(*id, expression, &session)?;
             let mut remaining = session.calculation_budget();
@@ -5100,6 +5248,25 @@ impl RecordPlan {
             followed: std::cell::RefCell::default(),
         };
         let (mut locals, mut globals) = (Variables::new(), Variables::new());
+        if let Some(snapshot) = &session.file_variables {
+            let name = self.fields.get(&field).and_then(|rule| {
+                rule.expression
+                    .as_ref()
+                    .filter(|e| std::ptr::eq(*e, expression))
+                    .and_then(|_| rule.auto_entry_file_variable())
+            });
+            if let Some((name, value)) =
+                name.and_then(|name| snapshot.0.get(name, 1).map(|value| (name, value)))
+            {
+                if !matches!(value, Value::Text(_)) {
+                    return Err(RunError::Unread(DataError::with_code(
+                        error::UNAVAILABLE,
+                        "A non-Text script variable cannot be auto-entered into Text.",
+                    )));
+                }
+                globals.set(name, 1, value.clone());
+            }
+        }
         // Rules belong to the table's file, including when a root layout
         // edits an imported table. Caller layout/script identity stays outside
         // this record-only evaluation.
@@ -7534,6 +7701,142 @@ mod tests {
         RecordPlan::from_schema(table, &tree)
     }
 
+    #[test]
+    fn creation_date_is_used_with_a_calculated_auto_entry_value() {
+        // The closed FileMaker Pro copies held both option words with
+        // selector 0 and a saved formula.
+        for options in [0x0000_0009, 0x0000_0089] {
+            let mut table = table();
+            table
+                .fields
+                .push(field(20, FieldKind::Normal, DataType::Date, 0, options, 0));
+            let mut formulas = base_formulas();
+            formulas.push((20, 5, "Date ( 1 ; 15 ; 2030 )"));
+            let plan = plan_of(&table, &formulas, &[]).unwrap();
+            let environment = environment();
+            let created = plan
+                .prepare(
+                    WriteMode::Create,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &environment,
+                )
+                .unwrap();
+            assert_eq!(
+                decoded(&created, 20).as_deref(),
+                Some(environment.date.as_str())
+            );
+
+            let explicit = "3/3/2031";
+            let saved = plan
+                .prepare_entry(
+                    WriteMode::Create,
+                    &BTreeMap::new(),
+                    &BTreeMap::from([(20, Some(explicit.into()))]),
+                    &environment,
+                    Entry {
+                        keep_written: true,
+                        ..Entry::script(false, false)
+                    },
+                )
+                .unwrap();
+            assert_eq!(decoded(&saved, 20).as_deref(), Some(explicit));
+
+            for extra in [ALWAYS_EVALUATE, 0x100] {
+                *table.fields.last_mut().unwrap() =
+                    field(20, FieldKind::Normal, DataType::Date, 0, options | extra, 0);
+                assert!(plan_of(&table, &formulas, &[])
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("multiple auto-entry modes"));
+            }
+        }
+    }
+
+    #[test]
+    fn combined_creation_date_refuses_inputs_set_before_first_commit() {
+        let mut table = table();
+        table.fields.retain(|field| field.id <= 2);
+        table.fields.extend([
+            field(20, FieldKind::Normal, DataType::Date, 0, 0x0000_0089, 0),
+            field(21, FieldKind::Calculation, DataType::Number, 0, 0, 0),
+        ]);
+        let environment = environment();
+        let entry = Entry {
+            keep_written: true,
+            ..Entry::script(false, false)
+        };
+        for expression in [
+            "Date ( 1 ; 15 ; 2030 ) + Length ( Field1 )",
+            "Date ( 1 ; 15 ; 2030 ) + Field21",
+        ] {
+            let formulas = [(20, 5, expression), (21, 5, "Length ( Field1 )")];
+            let plan = plan_of(&table, &formulas, &[]).unwrap();
+            let created = plan
+                .prepare_entry(
+                    WriteMode::Create,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &environment,
+                    entry,
+                )
+                .unwrap();
+            assert_eq!(
+                decoded(&created, 20).as_deref(),
+                Some(environment.date.as_str())
+            );
+
+            let result = plan.prepare_entry(
+                WriteMode::Create,
+                &BTreeMap::new(),
+                &BTreeMap::from([(1, Some("abc".into()))]),
+                &environment,
+                entry,
+            );
+            assert_eq!(
+                result.err().and_then(|error| error.code),
+                Some(error::UNAVAILABLE)
+            );
+        }
+    }
+
+    #[test]
+    fn combined_creation_date_refuses_updates_that_would_run_its_calculation() {
+        for (options, target_update, should_refuse) in [
+            (0x0000_0089, (1, Some("abc".into())), true),
+            (0x0000_0009, (20, None), true),
+            (0x0000_0009, (1, Some("abc".into())), false),
+            (0x0000_0089, (2, Some("unrelated".into())), false),
+        ] {
+            let mut table = table();
+            table.fields.retain(|field| field.id <= 2);
+            table
+                .fields
+                .push(field(20, FieldKind::Normal, DataType::Date, 0, options, 0));
+            let formulas = [(
+                20,
+                5,
+                "If ( IsEmpty ( Field20 ) ; Date ( 1 ; 15 ; 2030 ) ; \
+                 Date ( 1 ; 15 ; 2030 ) + Length ( Field1 ) )",
+            )];
+            let plan = plan_of(&table, &formulas, &[]).unwrap();
+            let stored = BTreeMap::from([(1, "previous".into()), (20, "11/26/2026".into())]);
+            let result = plan.prepare_entry(
+                WriteMode::Update,
+                &stored,
+                &BTreeMap::from([target_update]),
+                &environment(),
+                Entry::script(false, false),
+            );
+            if should_refuse {
+                assert_eq!(result.err().unwrap().code, Some(error::UNAVAILABLE));
+            } else {
+                assert_eq!(decoded(&result.unwrap(), 20), None, "date is unchanged");
+            }
+        }
+    }
+
     const INITIALS: &str = "Case ( not IsEmpty ( Field2 ) ; Left ( Field2 ; 1 ) ; \
                             not IsEmpty ( Field1 ) ; Left ( Field1 ; 1 ) )";
 
@@ -7660,6 +7963,7 @@ mod tests {
             // (#1038).
             record_number: Some(3),
             sequence: WriteSequence::Unmeasured,
+            file_variables: None,
         };
         let created = write(known.clone(), WriteMode::Create).unwrap();
         assert_eq!(
@@ -8714,10 +9018,15 @@ mod tests {
                 right: 1,
             }],
         ));
-        let plan_for = |off: &[u8]| {
+        let plan_with_fallback = |off: &[u8], fallback: Option<&str>| {
             let mut on = OFF.to_vec();
             on[1] = 0;
-            let leaves = [(2, 8, off), (2, 0x26, &[0; 4][..]), (3, 8, &on[..])];
+            let mut leaves = vec![(2, 8, off)];
+            let stored = fallback.map(om_scsu::encode_scsu);
+            if let Some(stored) = &stored {
+                leaves.push((2, FIELD_LOOKUP_FALLBACK, stored.as_slice()));
+            }
+            leaves.extend([(2, 0x26, &[0; 4][..]), (3, 8, &on[..])]);
             let paths: Vec<Vec<Vec<u8>>> = leaves
                 .iter()
                 .map(|(field, key, _)| {
@@ -8735,6 +9044,7 @@ mod tests {
             }
             RecordPlan::from_file_schema(&table, &tree, &file)
         };
+        let plan_for = |off: &[u8]| plan_with_fallback(off, None);
         // Assets' form, with this test's keys: FileMaker Pro's dialog shows
         // its settings as ON's (#549), and it reads as the same lookup.
         let assets = [
@@ -8744,8 +9054,8 @@ mod tests {
         let mut on = OFF.to_vec();
         on[1] = 0;
         assert_eq!(
-            format!("{:?}", exact_lookup(&assets).unwrap()),
-            format!("{:?}", exact_lookup(&on).unwrap())
+            format!("{:?}", exact_lookup(&assets, None).unwrap()),
+            format!("{:?}", exact_lookup(&on, None).unwrap())
         );
         assert!(plan_for(&assets)
             .unwrap()
@@ -8775,8 +9085,8 @@ mod tests {
             padded[11..15].copy_from_slice(padding);
             padded[21] = last[i % last.len()];
             assert_eq!(
-                format!("{:?}", exact_lookup(&padded)),
-                format!("{:?}", exact_lookup(OFF)),
+                format!("{:?}", exact_lookup(&padded, None)),
+                format!("{:?}", exact_lookup(OFF, None)),
                 "{padded:02x?}"
             );
         }
@@ -8785,7 +9095,7 @@ mod tests {
             0x00, 0x01, 0x04, 0x03, 0xd0, 0x00, 0x03, 0x00, 0x02, 0x01, 0x17, 0x00, 0x02, 0x00,
             0x00, 0x01, 0x04, 0x03, 0xd0, 0x00, 0x01, 0x00,
         ];
-        let read = exact_lookup(&hosted).unwrap();
+        let read = exact_lookup(&hosted, None).unwrap();
         assert_eq!(
             (read.from, read.to, read.copied, read.copy_empty),
             (0xd0_0001, 0xd0_0003, 0x17, true)
@@ -8812,7 +9122,10 @@ mod tests {
             OFF[..21].to_vec(),
             longer,
         ] {
-            assert!(exact_lookup(&unsupported).is_none(), "{unsupported:02x?}");
+            assert!(
+                exact_lookup(&unsupported, None).is_none(),
+                "{unsupported:02x?}"
+            );
             let refused = plan_for(&unsupported).err().unwrap();
             assert!(refused.to_string().contains("unsupported lookup options"));
         }
@@ -8838,9 +9151,12 @@ mod tests {
             values.set(2, 1, Value::text(x));
             b.put_record(0x8007, id, values);
         }
-        let write = |mode, existing: &[(u64, &str)], k: &str| {
+        let write = |plan: &RecordPlan, mode, existing: &[(u64, &str)], key: Option<&str>| {
             let existing = existing.iter().map(|(f, v)| (*f, v.to_string())).collect();
-            let changes = BTreeMap::from([(1, Some(k.to_string()))]);
+            let changes = key
+                .into_iter()
+                .map(|key| (1, (!key.is_empty()).then(|| key.to_owned())))
+                .collect();
             let mut environment = environment();
             environment.lookups = plan
                 .read_lookups(mode, &existing, &changes, Entry::default(), &b)
@@ -8852,17 +9168,53 @@ mod tests {
         };
         let copied = Some(Some("COPIED_VALUE".to_string()));
         assert_eq!(
-            write(WriteMode::Create, &[], "K_MATCH"),
+            write(&plan, WriteMode::Create, &[], Some("K_MATCH")),
             (copied.clone(), copied)
         );
         let manual = [(1, "K_MATCH"), (2, "MANUAL_OFF"), (3, "MANUAL_ON")];
         assert_eq!(
-            write(WriteMode::Update, &manual, "K_NO_MATCH"),
+            write(&plan, WriteMode::Update, &manual, Some("K_NO_MATCH")),
             (None, None)
         );
         let manual = [(1, "K_NO_MATCH"), (2, "MANUAL_OFF"), (3, "MANUAL_ON")];
         assert_eq!(
-            write(WriteMode::Update, &manual, "K_EMPTY"),
+            write(&plan, WriteMode::Update, &manual, Some("K_EMPTY")),
+            (Some(None), None)
+        );
+
+        let with_fallback = plan_with_fallback(&changed(0, 3), Some("Unknown")).unwrap();
+        assert_eq!(
+            write(
+                &with_fallback,
+                WriteMode::Update,
+                &manual,
+                Some("K_MISSING")
+            ),
+            (Some(Some("Unknown".into())), None)
+        );
+        assert_eq!(
+            write(&with_fallback, WriteMode::Update, &manual, Some("K_EMPTY")),
+            (Some(None), None)
+        );
+
+        assert_eq!(
+            write(&with_fallback, WriteMode::Create, &[], None),
+            (None, None)
+        );
+        assert_eq!(
+            write(&with_fallback, WriteMode::Update, &manual, Some("")),
+            (Some(Some("Unknown".into())), None)
+        );
+        let mut guard = changed(0, 3);
+        guard[1] = 0;
+        let guarded = plan_with_fallback(&guard, Some("Unknown")).unwrap();
+        assert_eq!(
+            write(&guarded, WriteMode::Update, &manual, Some("K_EMPTY")),
+            (None, None)
+        );
+        let blank = plan_for(&changed(0, 3)).unwrap();
+        assert_eq!(
+            write(&blank, WriteMode::Update, &manual, Some("K_MISSING")),
             (Some(None), None)
         );
 
@@ -8972,11 +9324,11 @@ mod tests {
                 right: 1,
             }],
         ));
-        let plan_for = |key_options: u32, variable, key_code: &[u8]| {
+        let plan_for = |key_options: u32, variable, key_code: &[u8], lookup: &[u8]| {
             let leaves: [(u64, &[u64], &[u8]); 3] = [
                 (1, &[5, 4], &[3, 0xd0, 0, 6]),
                 (1, &[5, 6], key_code),
-                (2, &[8], LOOKUP),
+                (2, &[8], lookup),
             ];
             let paths: Vec<Vec<Vec<u8>>> = leaves
                 .iter()
@@ -8998,8 +9350,15 @@ mod tests {
         };
         // A starter's PrimaryKey: Get ( UUID ), replacing, prohibiting
         // modification, indexed.
-        let plan = plan_for(0x8000_0188, 0, &[0x9b, 0x65]).unwrap();
+        let plan = plan_for(0x8000_0188, 0, &[0x9b, 0x65], LOOKUP).unwrap();
         assert!(plan.editable_fields().contains("Field2"));
+        let mut fallback = LOOKUP.to_vec();
+        fallback[0] = 3;
+        let refused_fallback = plan_for(0x8000_0188, 0, &[0x9b, 0x65], &fallback).err();
+        assert_eq!(
+            refused_fallback.and_then(|e| e.code),
+            Some(error::UNAVAILABLE)
+        );
         // Relookup Field Contents' target: not this key, whose auto-entry
         // a write of it could replace (3); not the looked-up field, which
         // no lookup matches through (3); not a field the table lacks (102).
@@ -9016,7 +9375,7 @@ mod tests {
         assert_eq!(refused("Missing").code, Some(error::FIELD_MISSING));
         // Another auto-entry on the key (the creator's account name) keeps
         // the table read-only.
-        let other = plan_for(0x8000_0101, 4, &[0x9b, 0x65]);
+        let other = plan_for(0x8000_0101, 4, &[0x9b, 0x65], LOOKUP);
         assert!(other
             .err()
             .is_some_and(|e| e.message.contains("auto-entered as Get ( UUID )")));
