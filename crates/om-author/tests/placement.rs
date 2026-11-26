@@ -12,7 +12,7 @@ use om_author::api::{
     ArrangeObjectsParams, ChangePartsParams, CreateFieldParams, CreateLayoutParams,
     DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, FieldControlParams, FieldType,
     FrameParams, InspectParams, LabelParams, LayoutParams, LayoutSetupParams, LayoutWidthParams,
-    ObjectFrameParams, ObjectFramesParams, Part, PartOptionsParams, PlaceFieldParams,
+    ObjectFrameParams, ObjectFramesParams, PageMargins, Part, PartOptionsParams, PlaceFieldParams,
     PlacePortalParams, PlaceTextParams, PlacementParams, TextParams,
 };
 use om_author::{Command, Service};
@@ -399,10 +399,12 @@ fn a_deleted_layout_is_gone_and_stays_gone_after_a_restart() {
     reopened.stop();
 }
 
-/// layout_setup renames a layout, sets its views and default view and
-/// leaves it out of the layout menus, at the revision get_layout gave;
-/// repeated, it reports already_applied; at a stale revision with other
-/// values it is refused; and the layout is so after the server restarts.
+/// layout_setup renames a layout, sets its views and default view, leaves
+/// it out of the layout menus and prints it within fixed page margins (in
+/// one commit, operation 23), at the revision get_layout gave; repeated, it
+/// reports already_applied; at a stale revision with other values it is
+/// refused, though its margins are already there; a refused setup changes
+/// no margins; and the layout is so after the server restarts.
 #[test]
 fn a_set_up_layout_keeps_its_name_views_and_menus_after_a_restart() {
     let mut tree = form_tree();
@@ -447,6 +449,15 @@ fn a_set_up_layout_keeps_its_name_views_and_menus_after_a_restart() {
                 ]
                 .into(),
             ),
+            fixed_page_margins: Some(true),
+            // Layout Setup's top, bottom, left and right, as FileMaker Pro
+            // stored them in #609's runs.
+            page_margins: Some(PageMargins {
+                top: 50.0,
+                bottom: 60.0,
+                left: 70.0,
+                right: 80.0,
+            }),
         })
     };
     let set = ok(service.handle(&setup(&base, "Meeting notes")));
@@ -457,17 +468,34 @@ fn a_set_up_layout_keeps_its_name_views_and_menus_after_a_restart() {
     assert_eq!(set["options"]["show_record_indicator"], true);
     assert_eq!(set["options"]["enable_quick_find"], false);
     assert_eq!(set["options"]["save_record_changes"], true);
+    assert_eq!(set["fixed_page_margins"], true);
     assert_eq!(error(get(&mut service, "Notes"))["kind"], "not_found");
     let again = ok(service.handle(&setup(&base, "Meeting notes")));
     assert_eq!(again["status"], "already_applied", "{again:#}");
     let stale = error(service.handle(&setup(&base, "Other notes")));
     assert_eq!(stale["kind"], "conflict", "{stale:#}");
+    // Other margins with a name Layout Setup refuses: nothing is written.
+    let Command::LayoutSetup(mut unnamed) = setup(text(&set["revision"]), "") else {
+        unreachable!()
+    };
+    unnamed.page_margins = Some(PageMargins {
+        top: 90.0,
+        bottom: 90.0,
+        left: 90.0,
+        right: 90.0,
+    });
+    error(service.handle(&Command::LayoutSetup(unnamed)));
     host.stop();
 
     let reopened = common::host(&file, "OpenMaker Server test restart");
     let mut service = Service::new(target(&reopened, ACCOUNT, PASSWORD));
     let renamed = ok(get(&mut service, "Meeting notes"));
     assert_eq!(text(&renamed["revision"]), text(&set["revision"]));
+    assert_eq!(renamed["fixed_page_margins"], true);
+    assert_eq!(
+        renamed["page_margins"],
+        json!({"top": 50.0, "bottom": 60.0, "left": 70.0, "right": 80.0})
+    );
     reopened.stop();
 }
 

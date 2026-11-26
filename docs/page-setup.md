@@ -8,7 +8,9 @@ axis. Landscape swaps the axes once. A layout prints within its stored fixed mar
 when Layout Setup's "Use fixed page margins" is checked, and otherwise within
 the printer's margins, 18 / 40 / 18 / 18 points (top, bottom, left, right), for
 every paper ([portable PDF](portable-pdf.md#supported-layout-and-output-contract), #609).
-Page Setup does not edit margins or layout metadata. A paper choice can leave a
+Page Setup does not edit margins or layout metadata; a layout's fixed
+page margins are Layout Setup's (Printing tab; [desktop
+client](desktop-client.md), "Layout Setup"). A paper choice can leave a
 layout wider than the printable width, which then prints what fits
 ([wide layouts](portable-pdf.md#wide-layouts)); a part taller than the printable
 height refuses output.
