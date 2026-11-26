@@ -2290,7 +2290,7 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   `tests/web_viewer_native.rs` passed on Hyprland's XWayland at scale 1 on
   NVIDIA's driver with the shared-memory choice of
   [#1087](https://github.com/OpenMaker-Dev/openmaker/pull/1087) (without it
-  the page stays blank there, #1085). A native
+  the page stays blank there, [#1085](https://github.com/OpenMaker-Dev/openmaker/issues/1085)). A native
   Wayland backend was studied and prototyped in
   [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323).
 - Every window shows its own views. eframe 0.37 gives out only the root
