@@ -1112,8 +1112,8 @@ pub struct RecordPlan {
     table: u64,
     fields: BTreeMap<u64, PlannedField>,
     evaluation_order: Vec<u64>,
-    /// (auto-entered result, equality key, inequality key) for #297.
-    grouped_self_joins: BTreeSet<(u64, u64, u64)>,
+    /// (auto-entered result, equality key, inequality key, entry mode).
+    grouped_self_joins: BTreeSet<(u64, u64, u64, GroupedAutoEntry)>,
     /// The file's calculation schema with this table's current fields.
     schema: Arc<CalcSchema>,
 }
@@ -1825,6 +1825,45 @@ impl PlannedField {
         const ALLOWED: u32 = CALCULATED | ALWAYS_EVALUATE | 0x80 | 0x100;
         let options = self.options.options & !(INDEX_OPTIONS | BOOKKEEPING_OPTIONS);
         options & CALCULATED != 0 && options & !ALLOWED == 0 && self.generated_uuid()
+    }
+
+    /// The measured replacing Number calculation reads only the first
+    /// peer's value of the very field being entered (auto-entry.md).
+    fn measured_group_flag(&self, (occurrence, read): (u64, u64), field: u64) -> bool {
+        use om_formula::{Decimal, Number, Opcode};
+        if read != field
+            || self.data_type != DataType::Number
+            || self.options.field_kind != 1
+            || self.options.max_repetitions != 1
+            || self.options.options & !(INDEX_OPTIONS | BOOKKEEPING_OPTIONS) != 0xa8
+        {
+            return false;
+        }
+        let Some(Expr::Call {
+            op: Opcode::IF,
+            args,
+        }) = self.expression.as_ref().map(|e| &e.formula.polish)
+        else {
+            return false;
+        };
+        let [Expr::Call {
+            op: Opcode::EQUAL,
+            args,
+        }, Expr::Number(yes), Expr::Number(no)] = args.as_slice()
+        else {
+            return false;
+        };
+        let [Expr::Field(peer), Expr::Number(expected)] = args.as_slice() else {
+            return false;
+        };
+        let zero = Decimal::parse_literal("0").map(Number::Decimal);
+        let one = Decimal::parse_literal("1").map(Number::Decimal);
+        peer.occurrence.id() == Some(occurrence)
+            && peer.field.id() == Some(read)
+            && peer.repetition == 1
+            && Some(yes) == zero.as_ref()
+            && Some(no) == one.as_ref()
+            && Some(expected) == one.as_ref()
     }
 
     /// The value is `Get ( UUID )`, which uniqueness checks as a UUID.
@@ -2541,28 +2580,43 @@ impl RecordPlan {
                     .and_then(Result::ok)
                     .map(CustomMessage::Text)
             };
-            fields.insert(
-                field.id,
-                PlannedField {
-                    name: field.name.clone(),
-                    options,
-                    data_type: field.data_type,
-                    editable,
-                    expression,
-                    auto_enter_self,
-                    global_text_self,
-                    creation_date_with_calculation,
-                    constant,
-                    validation,
-                    message,
-                    range,
-                    list,
-                    serial,
-                    lookup,
-                    unkeyed_index,
-                    furigana,
-                },
-            );
+            let planned = PlannedField {
+                name: field.name.clone(),
+                options,
+                data_type: field.data_type,
+                editable,
+                expression,
+                auto_enter_self,
+                global_text_self,
+                creation_date_with_calculation,
+                constant,
+                validation,
+                message,
+                range,
+                list,
+                serial,
+                lookup,
+                unkeyed_index,
+                furigana,
+            };
+            // The rule evaluator otherwise sees an empty script-variable
+            // map and can turn a missing input into a plausible saved value.
+            if auto_calculation
+                && !(local && planned.auto_entry_file_variable().is_some())
+                && planned
+                    .expression
+                    .as_ref()
+                    .is_some_and(|expression| reads_script_variable(&expression.formula.polish))
+            {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: script variables in this auto-enter calculation are unsupported.",
+                        field.name
+                    ),
+                ));
+            }
+            fields.insert(field.id, planned);
         }
         // A lookup follows the file's relationships from its own table.
         let looked_up: Vec<u64> = fields
@@ -2644,22 +2698,25 @@ impl RecordPlan {
                         global_refs.insert((*occurrence, *read), (target.id, *read));
                         continue;
                     }
-                    let first_auto_enter = own
-                        && !field.stored_calculation()
-                        && !field.options.calculation_replaces_existing()
+                    let grouped = if !own || field.stored_calculation() {
+                        None
+                    } else if field.measured_group_flag((*occurrence, *read), id) {
+                        Some(GroupedAutoEntry::Replace)
+                    } else if !field.options.calculation_replaces_existing()
                         && expression.uses.get(occurrence).is_some_and(|uses| {
                             uses.first && !uses.placed && uses.aggregated.is_empty()
-                        });
-                    let hop = related_hop(
-                        &schema,
-                        &fields,
-                        context,
-                        (*occurrence, *read),
-                        first_auto_enter,
-                    )
-                    .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
-                    if let Some((group, key)) = hop.grouped_keys {
-                        grouped_self_joins.insert((id, group, key));
+                        })
+                    {
+                        Some(GroupedAutoEntry::Keep)
+                    } else {
+                        None
+                    };
+                    let hop = related_hop(&schema, &fields, context, (*occurrence, *read), grouped)
+                        .map_err(|reason| {
+                            DataError::new(format!("Field {}: {reason}", field.name))
+                        })?;
+                    if let Some((group, key, mode)) = hop.grouped_keys {
+                        grouped_self_joins.insert((id, group, key, mode));
                     }
                     if own {
                         matches.extend(hop.match_fields);
@@ -3056,8 +3113,10 @@ impl RecordPlan {
         serials: &BTreeMap<u64, String>,
     ) -> Result<BTreeSet<u64>, DataError> {
         let (row, mut dirty) = self.written(existing, changes, entry)?;
+        let assigned_groups: BTreeSet<_> = self.replacing_groups_assigned(changes).collect();
         if mode == WriteMode::Update
             && dirty.is_empty()
+            && assigned_groups.is_empty()
             && !self.fields.iter().any(|(id, f)| {
                 f.lookup
                     .as_ref()
@@ -3100,6 +3159,7 @@ impl RecordPlan {
                 let keeps = entry.keeps_calculated(changes, *id, uses_self);
                 (field.stored_calculation() || !entry.skip_auto_enter && !keeps)
                     && (mode == WriteMode::Create
+                        || assigned_groups.contains(id)
                         || uses_self && changes.contains_key(id)
                         || expression.dependencies.iter().any(|d| dirty.contains(d)))
                     && (field.stored_calculation()
@@ -3980,14 +4040,29 @@ impl RecordPlan {
             })
     }
 
-    /// Reject stored calculations or Self evaluation outside their measured
-    /// creation contexts before a create or preview reserves IDs or serials.
+    /// Reject record rules outside their measured creation contexts
+    /// before a create or preview reserves record IDs or serials.
     pub fn check_creation_context(
         &self,
         context: &WriteContext,
         entry: Entry,
     ) -> Result<(), DataError> {
         let unsorted = matches!(context.record_number, Some(RecordNumber::LocalNewRecord(_)));
+        if !entry.skip_auto_enter && (!unsorted || context.sequence == WriteSequence::Unmeasured) {
+            if let Some((result, _, _, _)) = self
+                .grouped_self_joins
+                .iter()
+                .find(|(_, _, _, entry)| *entry == GroupedAutoEntry::Replace)
+            {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: replacing grouped auto-entry requires ordinary New Record in an unsorted local window.",
+                        self.fields[result].name
+                    ),
+                ));
+            }
+        }
         if let Some(field) = self.fields.values().find(|field| {
             (!entry.skip_auto_enter || field.stored_calculation())
                 && match field.auto_enter_self {
@@ -4438,6 +4513,24 @@ impl RecordPlan {
             .filter(|id| !other.contains(id))
             .copied()
             .collect()
+    }
+
+    /// A replacing grouped formula with an unset group key reads an empty
+    /// set at New Record, even when the preview cannot read other rows.
+    pub fn preview_creation_fields(
+        &self,
+        supplied: &BTreeMap<u64, Option<String>>,
+    ) -> BTreeSet<u64> {
+        let mut fields = self.preview_fields(false);
+        fields.extend(
+            self.grouped_self_joins
+                .iter()
+                .filter_map(|&(result, group, _, entry)| {
+                    (entry == GroupedAutoEntry::Replace && !supplied.contains_key(&group))
+                        .then_some(result)
+                }),
+        );
+        fields
     }
 
     /// Preview known changed values of `fields` and their calculation dependencies.
@@ -4896,6 +4989,20 @@ impl RecordPlan {
         volatile
     }
 
+    /// Replacing grouped auto-entry follows an explicit group assignment,
+    /// even when the stored group value is the same (auto-entry.md).
+    pub fn replacing_groups_assigned<'a>(
+        &'a self,
+        changes: &'a BTreeMap<u64, Option<String>>,
+    ) -> impl Iterator<Item = u64> + 'a {
+        self.grouped_self_joins
+            .iter()
+            .filter_map(|&(result, group, _, entry)| {
+                (entry == GroupedAutoEntry::Replace && changes.contains_key(&group))
+                    .then_some(result)
+            })
+    }
+
     /// Preserve the measured stored result when evaluation is deferred to
     /// commit. A group set and then cleared is still an assignment, even
     /// if it would appear unchanged in the final row.
@@ -4907,33 +5014,46 @@ impl RecordPlan {
         row: &BTreeMap<u64, String>,
         environment: &RecordEnvironment,
     ) -> Result<(), DataError> {
-        for &(result, group, key) in &self.grouped_self_joins {
+        for &(result, group, key, entry) in &self.grouped_self_joins {
             let single_line = [stored, row].into_iter().all(|values| {
                 [group, key]
                     .into_iter()
                     .all(|id| values.get(&id).is_none_or(|value| single_line_key(value)))
             });
-            let stored_group_empty = stored.get(&group).is_none_or(String::is_empty);
             let group_assigned = changes.contains_key(&group);
-            let keeps_result = stored.get(&result).is_some_and(|value| !value.is_empty())
-                && !changes.contains_key(&result);
-            let safe_without_assignment = !group_assigned
-                && !changes.contains_key(&key)
-                && (stored_group_empty || keeps_result);
-            let measured_assignment = mode == WriteMode::Update
-                && environment.context.sequence == WriteSequence::SingleLocalFieldStep
-                && stored_group_empty
+            let group_nonempty = row.get(&group).is_some_and(|value| !value.is_empty());
+            let key_assigned = changes.contains_key(&key);
+            let single_group_step = environment.context.sequence
+                == WriteSequence::SingleLocalFieldStep
                 && group_assigned
-                && changes.len() == 1
-                && row.get(&group).is_some_and(|value| !value.is_empty());
-            if environment.context.sequence == WriteSequence::Unmeasured
-                || !single_line
-                || !(safe_without_assignment || measured_assignment)
+                && group_nonempty
+                && changes.len() == 1;
+            let allowed = match entry {
+                GroupedAutoEntry::Keep => {
+                    let stored_group_empty = stored.get(&group).is_none_or(String::is_empty);
+                    let keeps_result = stored.get(&result).is_some_and(|value| !value.is_empty())
+                        && !changes.contains_key(&result);
+                    mode == WriteMode::Update && stored_group_empty && single_group_step
+                        || !group_assigned && !key_assigned && (stored_group_empty || keeps_result)
+                }
+                GroupedAutoEntry::Replace if !changes.contains_key(&result) => match mode {
+                    WriteMode::Create => {
+                        // The earlier values in the recorded sequence are all
+                        // replaced by the evaluation with the final match keys.
+                        (!group_assigned || group_nonempty)
+                            && (!key_assigned
+                                || row.get(&key).is_some_and(|value| !value.is_empty()))
+                    }
+                    WriteMode::Update => !key_assigned && (!group_assigned || single_group_step),
+                },
+                GroupedAutoEntry::Replace => false,
+            };
+            if environment.context.sequence == WriteSequence::Unmeasured || !single_line || !allowed
             {
                 return Err(DataError::with_code(
                     error::UNAVAILABLE,
                     format!(
-                        "Field {}: this grouped self-join needs a single local group-key assignment with single-line keys. No values were changed.",
+                        "Field {}: this grouped self-join is unmeasured for this write sequence or its keys. No values were changed.",
                         self.fields[&result].name
                     ),
                 ));
@@ -4975,7 +5095,12 @@ impl RecordPlan {
                 .as_ref()
                 .is_some_and(|lookup| self.fires(*id, lookup, mode, &dirty, changes, entry))
         });
-        if mode == WriteMode::Update && dirty.is_empty() && !fires_lookup {
+        let assigned_groups: BTreeSet<_> = self.replacing_groups_assigned(changes).collect();
+        if mode == WriteMode::Update
+            && dirty.is_empty()
+            && !fires_lookup
+            && assigned_groups.is_empty()
+        {
             return Ok(Computed {
                 row,
                 dirty,
@@ -5168,6 +5293,7 @@ impl RecordPlan {
                     .any(|id| dirty.contains(id) || deferred.contains(id)),
                 None => {
                     mode == WriteMode::Create
+                        || assigned_groups.contains(id)
                         || depends_on_deferred
                         || uses_self && changes.contains_key(id)
                         || expression.dependencies.iter().any(|id| dirty.contains(id))
@@ -5817,24 +5943,43 @@ impl RecordPlan {
                     ),
                 ))
             };
-            let (read_keys, found) = session
-                .related
-                .get(&(context, occurrence))
-                .ok_or_else(unread)?;
+            let empty_group = self
+                .fields
+                .get(&field)
+                .and_then(|field| field.expression.as_ref())
+                .is_some_and(|entry| std::ptr::eq(entry, expression))
+                && self
+                    .grouped_self_joins
+                    .iter()
+                    .any(|&(id, group, _, entry)| {
+                        id == field
+                            && entry == GroupedAutoEntry::Replace
+                            && row.get(&group).is_none_or(String::is_empty)
+                    });
+            let (read_keys, found) = if empty_group {
+                // The equality key is empty, so no peer can participate.
+                (keys.as_slice(), &[][..])
+            } else {
+                let (read_keys, found) = session
+                    .related
+                    .get(&(context, occurrence))
+                    .ok_or_else(unread)?;
+                (read_keys.as_slice(), found.as_slice())
+            };
             let Some(table) = self.schema.table_of(occurrence) else {
                 continue;
             };
             // Read with other keys than the write now leaves: a match field
             // the write computed itself. Only a branch that follows the
             // relationship needs it again.
-            if *read_keys != keys {
+            if read_keys != keys.as_slice() {
                 blocked.insert(occurrence);
                 stale.push(((context, occurrence), keys));
                 continue;
             }
             // A self-join, answered only where the written record's own
             // membership cannot change the result (#1035).
-            if table.id == self.table {
+            if table.id == self.table && !empty_group {
                 let uses = expression
                     .uses
                     .get(&occurrence)
@@ -7146,6 +7291,18 @@ fn walk(expr: &Expr, f: &mut dyn FnMut(&Expr)) {
     }
 }
 
+fn reads_script_variable(expr: &Expr) -> bool {
+    match expr {
+        Expr::Variable(_) => true,
+        // SetVariable reads its value and repetition. Its third argument
+        // is only the destination.
+        Expr::Call { op, args } if *op == om_formula::Opcode::SET_VARIABLE => {
+            args.iter().take(2).any(reads_script_variable)
+        }
+        _ => children(expr).into_iter().any(reads_script_variable),
+    }
+}
+
 /// The direct parts of `expr`, in order.
 fn children(expr: &Expr) -> Vec<&Expr> {
     match expr {
@@ -7384,6 +7541,12 @@ fn analyze_rule(polish: Expr, context: &[u8], usage: FormulaUse) -> Result<Expre
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum GroupedAutoEntry {
+    Keep,
+    Replace,
+}
+
 /// Plan the measured local stored Evaluate forms. The listed fields
 /// trigger recalculation independently of the reads in the evaluated text.
 fn parse_stored_evaluate(
@@ -7527,7 +7690,7 @@ fn compile_stored_evaluate_text(
 struct RelatedWriteHop {
     match_fields: Vec<u64>,
     /// The equality and inequality keys of the measured self-join.
-    grouped_keys: Option<(u64, u64)>,
+    grouped_keys: Option<(u64, u64, GroupedAutoEntry)>,
 }
 
 /// The match fields of this table through which a formula of `table`,
@@ -7537,15 +7700,15 @@ struct RelatedWriteHop {
 /// type, text or number: this table's a stored field, not global, which the
 /// write itself may compute (it is read again with that value, #1035), the
 /// other table's a stored one, auto-entered or not (its stored value is
-/// matched; a serial key, #187). A keep-existing auto-entry can also read
-/// the first row through the grouped unequal self-join when the membership
+/// matched; a serial key, #187). Measured auto-entry may also read the
+/// first row through the grouped unequal self-join when the membership
 /// check in [`RecordPlan::answers_own`] can settle it. Otherwise why not.
 fn related_hop(
     schema: &CalcSchema,
     fields: &BTreeMap<u64, PlannedField>,
     context: u64,
     (occurrence, field): (u64, u64),
-    first_auto_enter: bool,
+    grouped: Option<GroupedAutoEntry>,
 ) -> Result<RelatedWriteHop, &'static str> {
     use crate::host::FieldClass;
     use crate::meta::JoinOp;
@@ -7577,13 +7740,14 @@ fn related_hop(
             "calculations over related fields through more than one relationship are unsupported.",
         );
     };
-    let grouped_unequal = first_auto_enter
-        && schema
+    let grouped = grouped.filter(|_| {
+        schema
             .occurrence(context)
             .is_some_and(|from| from.table == to.table)
-        && grouped_unequal_self_join(hop);
+            && grouped_unequal_self_join(hop)
+    });
     if hop.predicates.is_empty()
-        || (!grouped_unequal && hop.predicates.iter().any(|p| p.op != JoinOp::Equal))
+        || (grouped.is_none() && hop.predicates.iter().any(|p| p.op != JoinOp::Equal))
     {
         return Err(
             "calculations over related fields through other than = predicates are unsupported.",
@@ -7596,7 +7760,7 @@ fn related_hop(
              or by a summary or a value list of field values) are unsupported.",
         );
     }
-    let grouped_keys = if grouped_unequal {
+    let grouped_keys = if let Some(entry) = grouped {
         let group = hop
             .predicates
             .iter()
@@ -7612,7 +7776,15 @@ fn related_hop(
         if !fields.get(&group).is_some_and(PlannedField::given) {
             return Err("the group field of an unequal self-join must be written explicitly.");
         }
-        Some((group, key))
+        if entry == GroupedAutoEntry::Replace
+            && !fields.get(&key).is_some_and(|field| {
+                field.fresh_key()
+                    && field.options.options & !(INDEX_OPTIONS | BOOKKEEPING_OPTIONS) == 0x88
+            })
+        {
+            return Err("the row key of this unequal self-join needs a replacing UUID.");
+        }
+        Some((group, key, entry))
     } else {
         None
     };
@@ -7643,7 +7815,7 @@ fn related_hop(
                  number, stored, not global on this table's side.",
             );
         }
-        if grouped_unequal && ours != Some(ValueType::Text) {
+        if grouped.is_some() && ours != Some(ValueType::Text) {
             return Err("auto-entry through an unequal self-join needs stored text match fields.");
         }
         matches.push(predicate.left);
@@ -10422,6 +10594,65 @@ mod tests {
         .err()
         .unwrap();
         assert_eq!(refused.code, Some(error::UNAVAILABLE));
+    }
+
+    #[test]
+    fn calculated_auto_entry_refuses_unavailable_script_variables() {
+        let table = Table {
+            id: 0x8002,
+            name: "Items".into(),
+            fields: vec![field(8, FieldKind::Normal, DataType::Text, 0, 0x8, 0)],
+        };
+        let mut file = CalcSchema::new("Example", Locale::en_us());
+        file.add_occurrence(0xd0_0002, "Items", table.id);
+        let bare = Expr::Variable("$$Marker".into());
+        let compound = Expr::Call {
+            op: om_formula::Opcode::CONCAT,
+            args: vec![
+                bare.clone(),
+                Expr::Text(om_formula::Text {
+                    value: "-x".into(),
+                    style: None,
+                }),
+            ],
+        };
+        let destination_only = Expr::Call {
+            op: om_formula::Opcode::SET_VARIABLE,
+            args: vec![Expr::Empty, Expr::Empty, Expr::Variable("$Target".into())],
+        };
+        for (formula, local, snapshots_file_variables) in [
+            (bare.clone(), true, Some(true)),
+            (bare, false, None),
+            (compound, true, None),
+            (Expr::Variable("$Marker".into()), true, None),
+            (destination_only, true, Some(false)),
+        ] {
+            let formula = om_formula::polish::encode(&formula);
+            let mut tree = KeyTree::default();
+            let prefix = [
+                KeySegment(&[0x80, 2]),
+                KeySegment(&[3]),
+                KeySegment(&[5]),
+                KeySegment(&[8]),
+                KeySegment(&[5]),
+            ];
+            for (key, bytes) in [(&[4][..], CONTEXT), (&[6][..], formula.as_slice())] {
+                let mut path = prefix.to_vec();
+                path.push(KeySegment(key));
+                tree.insert(&path, om_hbam::slot::ChunkKind::Leaf, Some(bytes))
+                    .unwrap();
+            }
+            let plan = RecordPlan::from_desktop_file_schema(&table, &tree, &file, local);
+            if let Some(expected) = snapshots_file_variables {
+                assert_eq!(plan.unwrap().reads_auto_entry_file_variables(), expected);
+            } else {
+                let refusal = plan
+                    .err()
+                    .expect("script-variable formula should be refused");
+                assert_eq!(refusal.code, Some(error::UNAVAILABLE));
+                assert!(refusal.message.contains("script variables"));
+            }
+        }
     }
 
     /// The two lookups FileMaker Pro 26.0.3 saved and ran (auto-entry.md,
