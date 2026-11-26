@@ -23,6 +23,9 @@ use crate::document::{zoom, DocumentState};
 use crate::session::{Geometry, Session};
 use crate::theme;
 
+mod history;
+pub(crate) use history::DraftEdit;
+
 const PART_STRIP_WIDTH: f32 = 22.0;
 const PASTEBOARD_MARGIN: f32 = 48.0;
 
@@ -379,6 +382,8 @@ pub(crate) struct NewWidth {
 pub(crate) struct CanvasState {
     identity: Option<(String, String, Option<u32>)>,
     geometry: Option<LayoutGeometry>,
+    history: history::History,
+    new_text_editor: Option<egui::Id>,
     selected: Selection,
     scroll_to_selected: bool,
     shown_zoom: zoom::Zoom,
@@ -721,6 +726,7 @@ impl CanvasState {
         from: om_data::layout_placement::Revision,
         to: om_data::layout_placement::Revision,
     ) {
+        self.clear_history();
         let rebase = |revision: &mut Option<om_data::layout_placement::Revision>| {
             if *revision == Some(from) {
                 *revision = Some(to);
@@ -791,13 +797,13 @@ impl CanvasState {
 
     /// Stage one arrow-key move on the current layout. Like a drag, this
     /// refuses the whole selection if any member cannot be moved.
-    pub(crate) fn nudge_selection(&mut self, session: &Session, direction: NudgeDirection) {
+    pub(crate) fn nudge_selection(&mut self, session: &Session, direction: NudgeDirection) -> bool {
         if self.selection_count(session) == 0
             || self.drag.is_some()
             || self.selection_drag.is_some()
             || self.box_from.is_some()
         {
-            return;
+            return false;
         }
         let geometry = self.geometry.as_ref().expect("checked selection");
         let Some(frames) = movable_frames(
@@ -808,12 +814,12 @@ impl CanvasState {
             &self.deleted,
         ) else {
             self.selected.1 = Some(CANNOT_MOVE_SELECTION);
-            return;
+            return false;
         };
         self.selected.1 = None;
         let delta = selection_delta(&frames, direction.delta());
         if delta == (0.0, 0.0) {
-            return;
+            return false;
         }
         move_selection(
             &frames,
@@ -822,6 +828,7 @@ impl CanvasState {
             &mut self.new_fields,
             &mut self.moved,
         );
+        true
     }
 
     pub(crate) fn selection_notice(&self) -> Option<&'static str> {
@@ -988,13 +995,19 @@ impl CanvasState {
         })
     }
 
-    fn synchronize(&mut self, session: &Session) {
+    pub(crate) fn synchronize(&mut self, session: &Session) {
         let geometry = match &session.geometry {
             Geometry::Loaded(geometry) => Some(geometry),
             Geometry::Loading | Geometry::Unavailable => None,
         };
         let moved = !self.matches(session);
         if moved || self.geometry.as_ref() != geometry {
+            self.clear_history();
+            self.drag = None;
+            self.field_drag = None;
+            self.drag_from = None;
+            self.part_drag = None;
+            self.part_resize = None;
             // A new field or button and moved objects belong to their
             // layout; another layout or file drops them.
             if moved {
@@ -1058,7 +1071,6 @@ pub(crate) fn show(
     frozen: bool,
     document: &mut DocumentState,
 ) {
-    state.synchronize(session);
     let incoming = egui::DragAndDrop::payload::<crate::layout_objects::FieldDrag>(ui.ctx())
         .filter(|drag| drag.matches(session, fields));
     ui.painter()
@@ -1099,6 +1111,7 @@ pub(crate) fn show(
                         field_finished: &mut state.field_finished,
                         button: &mut state.new_button,
                         text: &mut state.new_text,
+                        text_editor: &mut state.new_text_editor,
                         portal: &mut state.new_portal,
                         drag_from: &mut state.drag_from,
                         setup: &mut state.button_setup,
@@ -1151,6 +1164,7 @@ pub(crate) fn show(
                     field_finished: &mut false,
                     button: &mut None,
                     text: &mut None,
+                    text_editor: &mut None,
                     portal: &mut None,
                     drag_from: &mut None,
                     setup: &mut false,
@@ -1229,6 +1243,7 @@ struct New<'a> {
     field_finished: &'a mut bool,
     button: &'a mut Option<NewButton>,
     text: &'a mut Option<NewText>,
+    text_editor: &'a mut Option<egui::Id>,
     portal: &'a mut Option<NewPortal>,
     drag_from: &'a mut Option<Pos2>,
     setup: &'a mut bool,
@@ -1884,7 +1899,7 @@ fn draw(
                 }
             }
             if let Some(text) = new.text.as_mut() {
-                draw_new_text(ui, &painter, origin, text, selectable);
+                *new.text_editor = draw_new_text(ui, &painter, origin, text, selectable);
             }
             if let Some(button) = new.button.as_ref() {
                 if draw_new_button(ui, &painter, origin, button, selectable) {
@@ -2377,10 +2392,14 @@ fn retype(
     painter.rect_filled(rect, CornerRadius::ZERO, theme::CURRENT_ROW);
     draw_dashed(painter, rect);
     // At the caption's inset, so the words stay where they were drawn.
+    let id = ui.scope_id().with(("retype", editing.key));
+    if editing.focus {
+        egui::TextEdit::store_state(ui.ctx(), id, egui::text_edit::TextEditState::default());
+    }
     let edit = ui.put(
         rect.shrink2(vec2(5.0, 1.0)),
         egui::TextEdit::singleline(&mut editing.text)
-            .id(ui.scope_id().with(("retype", editing.key)))
+            .id(id)
             .frame(egui::Frame::NONE)
             .char_limit(om_data::layout_placement::MAX_TEXT_CHARS)
             .font(theme::small()),
@@ -2425,20 +2444,24 @@ fn draw_new_text(
     origin: Pos2,
     text: &mut NewText,
     editable: bool,
-) {
+) -> Option<egui::Id> {
     let rect = Rect::from_min_size(
         origin + vec2(text.left as f32, text.top as f32),
         vec2(text.width as f32, text.height as f32),
     );
     if !rect.is_finite() || !rect.is_positive() {
-        return;
+        return None;
     }
     painter.rect_filled(rect, CornerRadius::ZERO, theme::CURRENT_ROW);
     draw_dashed(painter, rect);
+    let id = ui.scope_id().with("new_text");
+    if text.focus {
+        egui::TextEdit::store_state(ui.ctx(), id, egui::text_edit::TextEditState::default());
+    }
     let edit = ui.put(
         rect.shrink2(vec2(3.0, 1.0)),
         egui::TextEdit::singleline(&mut text.text)
-            .id(ui.scope_id().with("new_text"))
+            .id(id)
             .frame(egui::Frame::NONE)
             .interactive(editable)
             .char_limit(om_data::layout_placement::MAX_LABEL_CHARS)
@@ -2449,6 +2472,7 @@ fn draw_new_text(
     if std::mem::take(&mut text.focus) && editable {
         edit.request_focus();
     }
+    Some(edit.id)
 }
 
 /// The new button: a rounded frame with its label, dashed as the new

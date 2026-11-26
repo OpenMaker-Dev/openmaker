@@ -972,6 +972,69 @@ fn name_of(provider: &mut dyn DataProvider, layout: u32, id: i64) -> Option<Stri
     text(&page, id, "Name").map(str::to_owned)
 }
 
+#[test]
+fn a_variable_source_opens_on_first_read_and_keeps_its_file() {
+    use om_data::calc::{eval::Variables, Value};
+    use om_data::host::CalcNeed;
+
+    let folder = Folder::new("variable-source");
+    let root_path = folder.file("Root.fmp12", PASSWORD, |root| {
+        related::reference_with(
+            root,
+            (PEER_ROWS, "Peer rows"),
+            0x8001,
+            "Peer",
+            &[("", "", "$$RelatedPath")],
+        );
+    });
+    folder.file("First.fmp12", PASSWORD, |_| {});
+    folder.file("Second.fmp12", PASSWORD, |_| {});
+    let mut root = clean_client();
+    root.open_local(&local(&root_path, Some((ACCOUNT, PASSWORD))))
+        .unwrap();
+    assert!(root.calc_schema().unwrap().unwrap().is_pending(PEER_ROWS));
+    assert!(root.related_file_warnings().is_empty());
+    assert!(!root.references_peer("First").unwrap());
+
+    let mut variables = Variables::new();
+    variables.set("$$RelatedPath", 1, Value::text("file:First.fmp12"));
+    root.set_file_variables(&variables);
+    assert_eq!(
+        root.local_source_variable("$$RelatedPath"),
+        Some("file:First.fmp12")
+    );
+    let needs = [CalcNeed::Occurrence {
+        occurrence: PEER_ROWS,
+    }];
+    root.calc_data(&needs).unwrap();
+    assert!(
+        root.references_peer("First").unwrap(),
+        "{:?}",
+        root.related_file_warnings()
+    );
+    let first = root
+        .calc_schema()
+        .unwrap()
+        .unwrap()
+        .occurrence(PEER_ROWS)
+        .unwrap()
+        .table;
+
+    variables.set("$$RelatedPath", 1, Value::text("file:Second.fmp12"));
+    root.set_file_variables(&variables);
+    root.calc_data(&needs).unwrap();
+    assert_eq!(
+        root.calc_schema()
+            .unwrap()
+            .unwrap()
+            .occurrence(PEER_ROWS)
+            .unwrap()
+            .table,
+        first
+    );
+    assert!(!root.references_peer("Second").unwrap());
+}
+
 /// One window's family of files on this computer: Root's occurrences show
 /// Peer's table, a script of Root opens Peer, and both write. Each file is
 /// served by one engine whatever opened it, writes go to the file that owns
