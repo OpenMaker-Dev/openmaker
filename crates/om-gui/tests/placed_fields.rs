@@ -1023,10 +1023,19 @@ fn a_web_viewer_drawn_in_layout_mode_is_set_up_and_saved() {
         "Web Viewer Setup for the drawn web viewer",
     );
     ok(&mut app);
-    common::wait_for_label(
-        &mut app,
-        "New web viewer \"https://example.com/?q=\" & Name",
+    let drafted = "New web viewer \"https://example.com/?q=\" & Name";
+    common::wait_for_label(&mut app, drafted);
+    // Setup's OK is a step of the draft's history: Undo drops the set-up
+    // viewer and Redo brings it back (#1076's review).
+    common::open_menu(&mut app, "Edit");
+    common::click(&mut app, "Undo");
+    assert!(app.query_by_label(drafted).is_none());
+    app.key_press_modifiers(
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        egui::Key::Z,
     );
+    app.run_steps(3);
+    common::wait_for_label(&mut app, drafted);
     save_layout(&mut app);
     common::wait_until(&mut app, "the layout saved", |app| {
         assert!(app.state().error().is_none(), "{:?}", app.state().error());

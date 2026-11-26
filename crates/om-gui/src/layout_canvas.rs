@@ -1418,7 +1418,12 @@ fn draw(
                     Sense::click_and_drag(),
                 )
             });
-            if selectable && new.button.is_none() && new.text.is_none() && new.portal.is_none() {
+            if selectable
+                && new.button.is_none()
+                && new.text.is_none()
+                && new.portal.is_none()
+                && new.web_viewer.is_none()
+            {
                 if let Some(payload) = incoming {
                     if let Some(pointer) = pointer
                         .filter(|point| surface.contains(*point) && ui.clip_rect().contains(*point))
@@ -1676,7 +1681,11 @@ fn draw(
                     if drawn && tool == LayoutTool::Portal {
                         *new.portal_setup = true;
                     }
-                    if drawn && tool == LayoutTool::WebViewer {
+                    // Also when the drag ended on an empty frame after drawing
+                    // one: the viewer drawn last waits for its setup.
+                    if tool == LayoutTool::WebViewer
+                        && (drawn || new.web_viewer.as_ref().is_some_and(|v| v.setup.is_none()))
+                    {
                         *new.web_viewer_setup = true;
                     }
                 }

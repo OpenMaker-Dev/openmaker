@@ -202,10 +202,19 @@ pub fn compile_address(
     let expr = om_formula::compile_tokens(&compiled.tokens, &ctx).map_err(|_| {
         Refusal::Invalid("The web address does not compile with its fields qualified.".into())
     })?;
-    Ok((
+    let (formatted, polish) = (
         om_formula::formatted::encode(&compiled.tokens),
         om_formula::polish::encode(&expr),
-    ))
+    );
+    // What the planner would refuse is refused here, before the address is
+    // kept: too long, or a function of the file's.
+    address(&WebViewerPlacement {
+        frame: Rect::default(),
+        flags: 0,
+        formatted: formatted.clone(),
+        polish: polish.clone(),
+    })?;
+    Ok((formatted, polish))
 }
 
 /// The address's expression: its formatted stream (the text Web Viewer

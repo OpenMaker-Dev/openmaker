@@ -1425,8 +1425,10 @@ impl LayoutWorkspace {
             }
             WebViewerSetupAnswer::Done(choice) => {
                 self.web_viewer_setup = None;
+                let before = self.canvas.checkpoint();
                 if let Some(viewer) = self.canvas.new_web_viewer_mut() {
                     viewer.setup = Some(choice);
+                    self.canvas.record_command(before);
                 }
             }
         }
@@ -1839,7 +1841,8 @@ pub(crate) fn layout(
         let frozen = state.saving
             || state.new_button().is_some()
             || state.new_text().is_some()
-            || state.new_portal().is_some();
+            || state.new_portal().is_some()
+            || state.new_web_viewer().is_some();
         if let Some(index) = state.objects.show(
             &mut child,
             session,
