@@ -81,6 +81,15 @@ sorted. The replacing identity and nonreplacing identity both kept 25
 after the write, as did the replacing identity in a new window that
 inherited the sorted found set. Every script step returned 0.
 
+The [unsorted option trial](https://github.com/OpenMaker-Dev/openmaker/issues/1059#issuecomment-7203492423)
+toggled "Do not evaluate if all referenced fields are empty" for the
+replacing Number formula `If ( IsEmpty ( Self ) ; 0 ; Self )`. The two
+closed baselines and written copies stored option words `0x88` (on)
+and `0xa8` (off). Both cases showed 0 at New Record, 25 after an explicit
+assignment, and 0 immediately on clear, with the last value stored.
+Writing an unrelated field left Amount alone. Every step returned 0.
+The off option was unmeasured in a sorted window.
+
 ## Fixed field definition
 
 The definition is at `<base-table>/3/5/<field>/2`. The decoder accepts exactly

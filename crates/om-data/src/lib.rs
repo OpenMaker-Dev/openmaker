@@ -254,6 +254,10 @@ pub struct PendingValues {
     /// Pending results that must fail with error 3 when the preview cannot
     /// evaluate them. Reading a prior stored value would affect the script.
     pub unavailable: std::collections::BTreeSet<u64>,
+    /// Script-assigned Number cells whose supported auto-entry uses the
+    /// proposed value as Self. A script reads the computed value in
+    /// `values` for these cells while the raw assignment is still pending.
+    pub proposed_self: std::collections::BTreeSet<u64>,
 }
 
 /// Record operations supported for one layout's underlying table.

@@ -2398,7 +2398,7 @@ impl RecordPlan {
                     let measured = local
                         && kind == FieldKind::Normal
                         && field.data_type == DataType::Number
-                        && matches!(options, 0x08 | 0x88)
+                        && matches!(options, 0x08 | 0x88 | 0xa8)
                         && formula.dependencies.is_empty()
                         && formula.related.is_empty()
                         && !other_inputs;
@@ -4071,14 +4071,18 @@ impl RecordPlan {
             (!entry.skip_auto_enter || field.stored_calculation())
                 && match field.auto_enter_self {
                     AutoEntrySelf::Unused => false,
-                    AutoEntrySelf::ProposedNumber => !unsorted && !sorted,
+                    AutoEntrySelf::ProposedNumber => {
+                        // The replacing option with the empty-input guard
+                        // off was measured in unsorted New Record only.
+                        !unsorted && (!sorted || field.options.options & ALWAYS_EVALUATE != 0)
+                    }
                     AutoEntrySelf::Unsupported => true,
                 }
         }) {
             return Err(DataError::with_code(
                 error::UNAVAILABLE,
                 format!(
-                    "Field {}: Self requires a supported formula and ordinary local New Record with a known insertion position.",
+                    "Field {}: Self requires a supported formula and local New Record context.",
                     field.name
                 ),
             ));
@@ -9420,10 +9424,15 @@ mod tests {
                 field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
                 field(20, FieldKind::Normal, DataType::Number, 0, 0x88, 0),
                 field(21, FieldKind::Normal, DataType::Number, 0, 0x08, 0),
+                field(22, FieldKind::Normal, DataType::Number, 0, 0xa8, 0),
             ],
         };
         let formula = "If ( IsEmpty ( Self ) ; 0 ; Self + 1 )";
-        let formulas = [(20, 5, formula), (21, 5, formula)];
+        let formulas = [
+            (20, 5, formula),
+            (21, 5, formula),
+            (22, 5, "If ( IsEmpty ( Self ) ; 0 ; Self )"),
+        ];
         let hosted = plan_with(&table, &formulas, &[], Vec::new(), false).unwrap();
         let plan = plan_of(&table, &formulas, &[]).unwrap();
         let entry = Entry::script(false, false);
@@ -9450,17 +9459,29 @@ mod tests {
             .unwrap();
         assert_eq!(
             create,
-            BTreeMap::from([(20, Some("0".into())), (21, Some("0".into()))])
+            BTreeMap::from([
+                (20, Some("0".into())),
+                (21, Some("0".into())),
+                (22, Some("0".into())),
+            ])
         );
-        let propose = BTreeMap::from([(20, Some("25".into())), (21, Some("25".into()))]);
+        let propose = BTreeMap::from([
+            (20, Some("25".into())),
+            (21, Some("25".into())),
+            (22, Some("25".into())),
+        ]);
         let values = plan
             .compute(WriteMode::Create, &empty, &propose, &env, held_create)
             .unwrap();
         assert_eq!(
             values,
-            BTreeMap::from([(20, Some("26".into())), (21, Some("25".into()))])
+            BTreeMap::from([
+                (20, Some("26".into())),
+                (21, Some("25".into())),
+                (22, Some("25".into())),
+            ])
         );
-        let row = BTreeMap::from([(20, "7".into()), (21, "8".into())]);
+        let row = BTreeMap::from([(20, "7".into()), (21, "8".into()), (22, "9".into())]);
         let updated = plan
             .compute(WriteMode::Update, &row, &propose, &env, entry)
             .unwrap();
@@ -9469,7 +9490,7 @@ mod tests {
             .compute(
                 WriteMode::Update,
                 &row,
-                &BTreeMap::from([(20, None), (21, None)]),
+                &BTreeMap::from([(20, None), (21, None), (22, None)]),
                 &env,
                 entry,
             )
@@ -9488,6 +9509,19 @@ mod tests {
             },
             ..environment()
         };
+        let sorted = WriteContext {
+            record_number: Some(RecordNumber::LocalSortedNewRecord {
+                position: 2,
+                after: 1,
+            }),
+            ..WriteContext::default()
+        };
+        assert_eq!(
+            plan.check_creation_context(&sorted, held_create)
+                .unwrap_err()
+                .code,
+            Some(error::UNAVAILABLE)
+        );
         for (plan, env, entry) in [
             (&plan, &unmeasured, held_create),
             (&hosted, &env, held_create),

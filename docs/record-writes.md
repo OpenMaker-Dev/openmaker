@@ -788,10 +788,15 @@ only field input. It reads the proposed value at ordinary New Record in
 an unsorted or sorted local desktop window with a known insertion
 position, or on an explicit write, including an empty value on a clear. A nonempty explicit
 assignment keeps its value when replacement is disabled. This covers
-stored results and new-record previews. During a held edit of an existing
-record, calculations read the entered value until save. Other creation
-paths with auto-entry active and unmeasured Self formulas refuse an
-evaluation with error 3. Unrelated existing-record edits are available.
+stored results and new-record previews. Script calculations read the
+auto-entered result of a pending Set Field before Commit. During typing
+in an existing record, calculations keep reading the entered value
+until save. Other creation paths with auto-entry active and unmeasured
+Self formulas refuse an evaluation with error 3. Unrelated edits are
+available.
+In an unsorted local window, replacing Number auto-entry also accepts
+the option word `0xa8`, with "Do not evaluate if all referenced fields
+are empty" off. That option still refuses sorted creation.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1059)
 
 A local table accepts ordinary record writes to its other fields when a
