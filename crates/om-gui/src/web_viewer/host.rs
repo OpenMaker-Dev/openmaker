@@ -20,9 +20,11 @@ use super::wayland::{HostCommand, TITLE};
 use super::webkit::{Events, Page, Spec};
 use super::Event;
 
-/// How many commands wait for GTK at most, and the longest command line.
-const COMMANDS: usize = 16;
-const MAX_COMMAND: u64 = 64 * 1024 * 1024;
+/// How many commands wait for GTK at most (one more is being read), and the
+/// longest command line: what the app sends never holds more of this
+/// process's memory than two such lines.
+const COMMANDS: usize = 1;
+const MAX_COMMAND: u64 = super::wayland::MAX_COMMAND as u64;
 
 struct Hosted {
     window: gtk::Window,
@@ -55,8 +57,8 @@ pub fn serve() -> ExitCode {
         let mut out = out.lock().unwrap_or_else(|e| e.into_inner());
         let _ = out.write_all(&line).and_then(|()| out.flush());
     });
-    // A few commands wait for GTK at most: while it is busy, the app's
-    // writes wait instead, and the app bounds those.
+    // One command waits for GTK at most: while it is busy, the app's writes
+    // wait instead, and the app bounds those.
     let (commands, received) = sync_channel(COMMANDS);
     std::thread::spawn(move || {
         let mut stdin = std::io::stdin().lock();

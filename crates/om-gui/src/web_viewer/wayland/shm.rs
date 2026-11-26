@@ -45,8 +45,9 @@ impl Buffer {
             usize::try_from(self.height).ok()?,
             usize::try_from(self.stride).ok()?,
         );
+        let (read, _) = self.sizes()?;
         let row = width * 4;
-        let mut bytes = vec![0; stride.checked_mul(height - 1)?.checked_add(row)?];
+        let mut bytes = vec![0; read];
         self.pool
             .file
             .read_exact_at(&mut bytes, u64::try_from(self.offset).ok()?)
@@ -61,6 +62,40 @@ impl Buffer {
         }
         Some(rgba)
     }
+}
+
+impl Buffer {
+    /// The bytes reading the buffer takes from its pool, and the bytes of
+    /// its RGBA copy: what [`Buffer::rgba`] allocates, both at once.
+    pub fn sizes(&self) -> Option<(usize, usize)> {
+        let (width, height, stride) = (
+            usize::try_from(self.width).ok()?,
+            usize::try_from(self.height).ok()?,
+            usize::try_from(self.stride).ok()?,
+        );
+        let row = width.checked_mul(4)?;
+        let read = stride
+            .checked_mul(height.checked_sub(1)?)?
+            .checked_add(row)?;
+        Some((read, row.checked_mul(height)?))
+    }
+}
+
+/// Whether to read `buffer` at all: its sides are within `max_side` (the
+/// app's largest texture), and what reading and converting it allocate,
+/// from the sizes it declares, fits in `budget` beside the `waiting` bytes
+/// of other frames. Nothing is read, mapped or allocated before this says
+/// yes.
+pub(crate) fn admits(buffer: &Buffer, max_side: usize, waiting: usize, budget: usize) -> bool {
+    let sides = [buffer.width, buffer.height]
+        .iter()
+        .all(|side| usize::try_from(*side).is_ok_and(|side| side <= max_side));
+    let fits = buffer.sizes().is_some_and(|(read, converted)| {
+        read.checked_add(converted)
+            .and_then(|bytes| bytes.checked_add(waiting))
+            .is_some_and(|total| total <= budget)
+    });
+    sides && fits
 }
 
 /// The `wl_shm` global's state.
@@ -192,5 +227,47 @@ where
         _: &DisplayHandle,
         _: &mut DataInit<'_, D>,
     ) {
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+    use std::sync::{Arc, Mutex};
+
+    use super::{admits, Buffer, Format, Pool};
+
+    /// A buffer `width` × `height` with `stride`, over a pool of `pool`.
+    fn buffer(pool: Vec<u8>, width: i32, height: i32, stride: i32) -> Buffer {
+        let mut file = tempfile::tempfile().expect("a file");
+        file.write_all(&pool).expect("written");
+        Buffer {
+            pool: Arc::new(Pool {
+                file,
+                size: Mutex::new(i32::try_from(pool.len()).unwrap()),
+            }),
+            offset: 0,
+            width,
+            height,
+            stride,
+            format: Format::Argb8888,
+        }
+    }
+
+    /// A buffer is read only once its declared sizes fit: one larger than
+    /// the app's largest texture, or than the budget beside the frames
+    /// already waiting, is refused from what it declares (its pool here
+    /// holds 8 bytes: reading it would fail, and is never tried).
+    #[test]
+    fn a_buffer_is_admitted_by_its_declared_size_before_any_read() {
+        let huge = buffer(vec![0; 8], 16_384, 16_384, 65_536);
+        assert!(!admits(&huge, 16_384, 0, 256 << 20));
+        let wide = buffer(vec![0; 8], 9_000, 1, 36_000);
+        assert!(!admits(&wide, 8_192, 0, 256 << 20));
+        let small = buffer(vec![1, 2, 3, 4, 5, 6, 7, 8], 2, 1, 8);
+        assert!(admits(&small, 8_192, 0, 16));
+        assert!(!admits(&small, 8_192, 1, 16));
+        // Admitted, it reads as RGBA: B, G, R, A to R, G, B, A.
+        assert_eq!(small.rgba(), Some(vec![3, 2, 1, 4, 7, 6, 5, 8]));
     }
 }

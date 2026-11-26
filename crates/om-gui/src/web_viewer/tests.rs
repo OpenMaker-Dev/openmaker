@@ -14,6 +14,7 @@ struct Recorded {
     commands: Vec<String>,
     events: Vec<Event>,
     frames: Vec<PageFrame>,
+    unavailable: bool,
     started: usize,
 }
 
@@ -76,6 +77,9 @@ impl Backend for Recording {
     }
     fn frames(&mut self) -> Vec<PageFrame> {
         std::mem::take(&mut self.0.borrow_mut().frames)
+    }
+    fn available(&mut self) -> bool {
+        !self.0.borrow().unavailable
     }
     fn input(&mut self, view: u64, input: PageInput) {
         self.0
@@ -308,6 +312,27 @@ fn a_painted_page_gets_the_pointer_input_over_it() {
     assert_eq!(
         commands(&recorded),
         ["input 1 Leave", "release focus to 4194305"]
+    );
+}
+
+/// Once the backend can no longer draw pages (the Wayland backend's page
+/// host ended), Set Web Viewer and Perform JavaScript fail as unavailable
+/// commands, error 3, rather than seem to work.
+#[test]
+fn steps_on_a_backend_that_ended_fail_as_unavailable() {
+    let (mut viewers, recorded) = viewers();
+    let ctx = egui::Context::default();
+    viewers.reconcile(&ctx, &frame(&[placement(Some("about:blank"))], &[]));
+    recorded.borrow_mut().unavailable = true;
+    viewers.command(1, &window(), set_url("https://example.com/"));
+    viewers.command(2, &window(), perform("show", &[]));
+    let answers: Vec<Outcome> = viewers.poll();
+    assert_eq!(
+        answers,
+        [1, 2].map(|prompt| Outcome::Answer {
+            prompt,
+            result: Err(UNAVAILABLE),
+        })
     );
 }
 

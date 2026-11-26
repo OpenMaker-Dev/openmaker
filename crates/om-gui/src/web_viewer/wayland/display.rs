@@ -181,6 +181,8 @@ struct State {
     wake: Box<dyn Fn() + Send>,
     /// The view the pointer is over.
     pointer_view: Option<u64>,
+    /// The buttons the pointer holds down, as the pages heard them.
+    buttons: Vec<u32>,
 }
 
 /// The display's loop. The socket and its private directory go once the
@@ -239,6 +241,7 @@ fn run(
             frames,
             wake,
             pointer_view: None,
+            buttons: Vec::new(),
         };
         Ok((event_loop, state, Rc::new(RefCell::new(display))))
     })();
@@ -358,6 +361,36 @@ impl State {
         }
     }
 
+    /// Let go of every button the pointer holds, and leave its window.
+    fn release_pointer(&mut self) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let time = self.millis();
+        for code in std::mem::take(&mut self.buttons) {
+            pointer.button(
+                self,
+                &ButtonEvent {
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time,
+                    button: code,
+                    state: ButtonState::Released,
+                },
+            );
+        }
+        pointer.motion(
+            self,
+            None,
+            &MotionEvent {
+                location: (0.0, 0.0).into(),
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+            },
+        );
+        pointer.frame(self);
+        self.pointer_view = None;
+    }
+
     fn pointer(&mut self, view: u64, input: PageInput) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
@@ -409,6 +442,11 @@ impl State {
                 let Some(&code) = BUTTONS.get(usize::from(button)) else {
                     return;
                 };
+                if pressed {
+                    self.buttons.push(code);
+                } else {
+                    self.buttons.retain(|held| *held != code);
+                }
                 pointer.button(
                     self,
                     &ButtonEvent {
@@ -494,18 +532,17 @@ impl CompositorHandler for State {
         let view = toplevel.as_ref().and_then(Self::view_of);
         if let (Some(view), Some(data)) = (view, buffer.data::<shm::Buffer>()) {
             let (width, height) = (data.width as usize, data.height as usize);
-            let fits = self.frames.lock().is_ok_and(|slots| {
+            // From the sizes the buffer declares, before anything is read.
+            let admitted = self.frames.lock().is_ok_and(|slots| {
                 let waiting: usize = slots
                     .frames
                     .iter()
                     .filter(|(other, _)| **other != view)
                     .map(|(_, frame)| frame.rgba.len())
                     .sum();
-                width <= slots.max_side
-                    && height <= slots.max_side
-                    && waiting + width * height * 4 <= FRAME_BUDGET
+                shm::admits(data, slots.max_side, waiting, FRAME_BUDGET)
             });
-            if let Some(rgba) = data.rgba().filter(|_| fits) {
+            if let Some(rgba) = admitted.then(|| data.rgba()).flatten() {
                 let frame = Frame {
                     view,
                     width,
@@ -563,8 +600,18 @@ impl XdgShellHandler for State {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        let gone = self
+            .views
+            .iter()
+            .find(|(_, s)| *s == surface.wl_surface())
+            .map(|(view, _)| *view);
         self.toplevels.retain(|t| t != &surface);
         self.views.retain(|_, s| s != surface.wl_surface());
+        // The buttons pressed on a view that goes are let go of, so that
+        // the pointer holds none when it comes to another.
+        if gone.is_some() && gone == self.pointer_view {
+            self.release_pointer();
+        }
     }
 
     fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {

@@ -84,6 +84,33 @@ pub(crate) enum HostCommand {
 const QUEUE: usize = 1024;
 /// The longest text kept of an event other than a bridge message.
 const MAX_TEXT: usize = 4096;
+/// The longest command line the host takes, its newline included: a page's
+/// address or a function's parameters longer than that fail instead.
+pub(crate) const MAX_COMMAND: usize = 16 * 1024 * 1024;
+
+/// `command` as its line, or `None` when that would be longer than
+/// [`MAX_COMMAND`]: it is written into a buffer that refuses to grow past
+/// the cap, so an oversized command is never held whole.
+fn encode(command: &HostCommand) -> Option<Vec<u8>> {
+    struct Capped(Vec<u8>);
+    impl std::io::Write for Capped {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            if self.0.len() + data.len() >= MAX_COMMAND {
+                return Err(std::io::ErrorKind::FileTooLarge.into());
+            }
+            self.0.extend_from_slice(data);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut line = Capped(Vec::new());
+    serde_json::to_writer(&mut line, command).ok()?;
+    line.0.push(b'\n');
+    Some(line.0)
+}
+
 /// The most bytes of commands that may wait for the host (a page's address
 /// or a function's parameters can be long): a host this far behind is
 /// stopped too.
@@ -287,19 +314,20 @@ impl WaylandBackend {
         })
     }
 
-    fn send(&mut self, command: &HostCommand) {
+    /// Send `command`; `false` when it was refused as too long (the host is
+    /// fine, the command fails).
+    fn send(&mut self, command: &HostCommand) -> bool {
+        let Some(line) = encode(command) else {
+            return false;
+        };
         let Some(commands) = self.commands.as_ref() else {
-            return;
+            return true;
         };
-        let Ok(mut line) = serde_json::to_vec(command) else {
-            return;
-        };
-        line.push(b'\n');
         // A host this far behind is not taking its commands.
         let length = line.len();
         if self.in_flight.fetch_add(length, Ordering::SeqCst) + length > COMMAND_BUDGET {
             self.stop();
-            return;
+            return true;
         }
         match commands.try_send(line) {
             Ok(()) => {}
@@ -308,6 +336,7 @@ impl WaylandBackend {
             Err(TrySendError::Full(_)) => self.stop(),
             Err(TrySendError::Disconnected(_)) => self.commands = None,
         }
+        true
     }
 
     /// Whether the host still runs: one that ended is gone, and its views
@@ -372,6 +401,17 @@ impl WaylandBackend {
     }
 }
 
+impl WaylandBackend {
+    /// A load too long to send fails its view's navigation.
+    fn refused(&mut self, view: u64, generation: u64) {
+        self.pending.push(Event::Failed {
+            view,
+            generation,
+            reason: "the page's address is too long".into(),
+        });
+    }
+}
+
 /// Wait for `host` to end, on a thread of its own, killing it after
 /// [`END_TIMEOUT`]: no zombie is left, and the app never waits.
 fn reap(mut host: Child) {
@@ -427,7 +467,7 @@ impl Backend for WaylandBackend {
         if let Some(hosted) = self.views.get_mut(&view) {
             hosted.size = size;
         }
-        self.send(&HostCommand::Create {
+        let sent = self.send(&HostCommand::Create {
             view,
             url: spec.url,
             width: size[0],
@@ -436,6 +476,9 @@ impl Backend for WaylandBackend {
             interactive: spec.interactive,
             scripts: spec.scripts,
         });
+        if !sent {
+            self.refused(view, 0);
+        }
     }
 
     fn place(&mut self, view: u64, geometry: Geometry, _visible: bool) {
@@ -478,11 +521,13 @@ impl Backend for WaylandBackend {
         if let Some(hosted) = self.views.get_mut(&view) {
             hosted.generation = generation;
         }
-        self.send(&HostCommand::Navigate {
+        if !self.send(&HostCommand::Navigate {
             view,
             generation,
             navigation,
-        });
+        }) {
+            self.refused(view, generation);
+        }
     }
 
     fn evaluate(&mut self, view: u64, call: u64, script: String) {
@@ -495,7 +540,14 @@ impl Backend for WaylandBackend {
             });
             return;
         }
-        self.send(&HostCommand::Evaluate { view, call, script });
+        if !self.send(&HostCommand::Evaluate { view, call, script }) {
+            // No result: the call fails.
+            self.pending.push(Event::Evaluated {
+                view,
+                call,
+                result: String::new(),
+            });
+        }
     }
 
     fn destroy(&mut self, view: u64) {
@@ -532,6 +584,10 @@ impl Backend for WaylandBackend {
             .collect()
     }
 
+    fn available(&mut self) -> bool {
+        self.alive()
+    }
+
     fn poll(&mut self) -> Vec<Event> {
         let mut events = std::mem::take(&mut self.pending);
         for event in self.events.try_iter() {
@@ -555,5 +611,25 @@ impl Backend for WaylandBackend {
             }
         }
         events
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{encode, HostCommand, MAX_COMMAND};
+
+    /// A command whose line would pass the cap is refused while it is
+    /// written, never held whole, also when only its escaping passes it (a
+    /// script of quotes half the cap long); one within it is a line.
+    #[test]
+    fn a_command_longer_than_the_cap_is_refused_as_it_is_written() {
+        let quotes = HostCommand::Evaluate {
+            view: 1,
+            call: 1,
+            script: "\"".repeat(MAX_COMMAND / 2),
+        };
+        assert!(encode(&quotes).is_none());
+        let line = encode(&HostCommand::Destroy { view: 1 }).expect("a line");
+        assert!(line.ends_with(b"\n") && line.len() < MAX_COMMAND);
     }
 }

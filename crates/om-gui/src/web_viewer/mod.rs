@@ -44,6 +44,10 @@ use om_layout::WebViewerOptions;
 /// a page still loading, a function that failed; no live web viewer of that
 /// name on the window's layout.
 pub(crate) const INVALID: i32 = 5;
+/// "Command is unavailable": the page's browser went away, with the page
+/// host that drew it [I, OpenMaker's choice; FileMaker's error for a web
+/// viewer whose engine ended is unmeasured].
+pub(crate) const UNAVAILABLE: i32 = 3;
 pub(crate) const OBJECT_MISSING: i32 = 116;
 
 /// How long Perform JavaScript in Web Viewer waits for its function before
@@ -371,6 +375,11 @@ pub(crate) trait Backend {
     /// to `parent`.
     fn release_focus(&mut self, parent: NativeParent);
     fn poll(&mut self) -> Vec<Event>;
+    /// Whether the backend can still carry out commands (the Wayland
+    /// backend's page host has not ended).
+    fn available(&mut self) -> bool {
+        true
+    }
     /// Pointer input over a view's page ([`composited`] backends).
     fn input(&mut self, _view: u64, _input: PageInput) {}
     /// The views' new pictures since the last time ([`composited`]
@@ -1032,7 +1041,18 @@ impl WebViewers {
                 && v.current
         });
         let answer = |result| Outcome::Answer { prompt, result };
-        let Some(view) = view else {
+        let Some(id) = view.map(|v| v.id) else {
+            return Err(command);
+        };
+        // A backend that can no longer draw pages: the step fails as an
+        // unavailable command.
+        if let Some(Ok(backend)) = self.backend.as_mut() {
+            if !backend.available() {
+                self.outcomes.push(answer(Err(UNAVAILABLE)));
+                return Ok(());
+            }
+        }
+        let Some(view) = self.views.iter().find(|v| v.id == id) else {
             return Err(command);
         };
         if view.state == LoadState::Failed {
