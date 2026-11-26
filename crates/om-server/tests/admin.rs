@@ -189,6 +189,7 @@ fn snapshots_follow_clients_through_their_sessions() {
         status: FileStatus::Open,
         clients,
         error: None,
+        read_only: None,
     };
     assert_eq!(handle.files(), [hosted(0)]);
     assert!(handle.clients().is_empty());

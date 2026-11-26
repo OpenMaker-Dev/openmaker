@@ -259,6 +259,9 @@ pub struct Hosted {
     /// store ([`Hosted::writes_refused`]). Set once; hosting the file again
     /// makes a new `Hosted`.
     unknown: std::sync::OnceLock<String>,
+    /// Why the file is served read-only, as its store sets it, read
+    /// without the store's lock ([`Hosted::read_only_cause`]).
+    read_only: Arc<std::sync::OnceLock<crate::store::ReadOnlyCause>>,
     /// Where a failed save is recorded and raised as an alert.
     events: EventLog,
     /// A test's switch that fails one of a script session's reads of the
@@ -442,8 +445,10 @@ impl Hosted {
                 store.set_read_only(crate::store::ReadOnlyCause::Opened);
             }
         }
+        let read_only = store.read_only_published();
         Ok(Hosted {
             id,
+            read_only,
             name: hosted.name.clone(),
             path: hosted.path.clone(),
             at,
@@ -475,16 +480,20 @@ impl Hosted {
         events: &EventLog,
     ) -> Self {
         let derived = stored.derived().clone();
+        let store = Store::placeholder(
+            &hosted.name,
+            derived,
+            crate::store::ReadOnlyCause::StoreEngine,
+        );
+        // The cause, read without the store's lock (`Hosted::read_only_cause`).
+        let read_only = store.read_only_published();
         Hosted {
             id,
+            read_only,
             name: hosted.name.clone(),
             path: hosted.path.clone(),
             at,
-            store: RwLock::new(Store::placeholder(
-                &hosted.name,
-                derived,
-                crate::store::ReadOnlyCause::StoreEngine,
-            )),
+            store: RwLock::new(store),
             stored: Some(stored),
             locks: Mutex::new(LockTable::default()),
             registrations: Mutex::new(Vec::new()),
@@ -671,6 +680,14 @@ impl Hosted {
     /// a write lets go of it. Read without waiting for the store.
     pub fn writes_refused(&self) -> Option<&str> {
         self.unknown.get().map(String::as_str)
+    }
+
+    /// Why the file is served read-only, if it is (`Store::set_read_only`,
+    /// the first cause), read without the store's lock, as
+    /// [`Hosted::writes_refused`] is: for the administrator's list of
+    /// files, which a save holding the store must not hold up.
+    pub fn read_only_cause(&self) -> Option<crate::store::ReadOnlyCause> {
+        self.read_only.get().copied()
     }
 
     /// Whether a request panicked holding the store.
@@ -1981,6 +1998,15 @@ pub struct Slot {
     state: Mutex<SlotState>,
 }
 
+/// A slot as one look saw it ([`Slot::seen`]).
+pub struct SlotSeen {
+    pub status: FileStatus,
+    /// Why the file is closed: its last open failed.
+    pub error: Option<String>,
+    /// The file, while it is served.
+    pub file: Option<Arc<Hosted>>,
+}
+
 #[derive(Debug)]
 struct SlotState {
     status: FileStatus,
@@ -2017,6 +2043,19 @@ impl Slot {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The file's status, why it is closed and the file while it is served,
+    /// from one look at the slot, so that they agree with each other: a
+    /// close that finishes meanwhile is seen whole or not at all (the
+    /// administrator's list of files, `ServerHandle::files`).
+    pub fn seen(&self) -> SlotSeen {
+        let state = self.state();
+        SlotSeen {
+            status: state.status,
+            error: state.error.clone(),
+            file: state.file.clone(),
+        }
     }
 
     /// What state the file is in.
@@ -2336,16 +2375,18 @@ impl Hosting {
     }
 }
 
-/// Load the file `hosted` describes with server id `id`, finishing and
-/// saving first, with `engine`, the deferred field work it records as
-/// pending: a server's files are recovered as they are loaded. An insecure
-/// file is refused, before anything is written, unless `insecure_files`. A
-/// file with anything at its save's copy name (`<file>.omsave`, an earlier
-/// save's leftover or not) is hosted as any file is, and an alert names
-/// the entry: each of its saves fails, the change taken back, until the
-/// administrator removes it; nothing removes it here
-/// (docs/server-storage.md 5). A failed save, that of the deferred work
-/// included, is recorded in `events`.
+/// Load the file `hosted` describes with server id `id` on `engine`. An
+/// insecure file is refused, before anything is written, unless
+/// `insecure_files`. On the file engine ([`load_file`]) the deferred field
+/// work it records as pending is finished and saved first, a file its user
+/// may not write is held read-only, and a file with anything at its save's
+/// copy name (`<file>.omsave`, an earlier save's leftover or not) is hosted
+/// as any file is, and an alert names the entry: each of its saves fails,
+/// the change taken back, until the administrator removes it; nothing
+/// removes it here (docs/server-storage.md 5). A failed save, that of the
+/// deferred work included, is recorded in `events`. The store engine
+/// ([`load_stored`]) never saves to the file it hosts and does none of
+/// this.
 fn load_hosted(
     id: u32,
     hosted: &HostedFile,
@@ -2401,13 +2442,28 @@ fn load_file(
     // this file (#468).
     engine.loaded_from(&loaded, on_disk);
     drop(file);
+    // A file this server's user may not write, or whose folder does not
+    // allow a save's new copy, or whose entry is no longer the file just
+    // read, is held read-only before anything is saved, the deferred work
+    // included: a save would replace it all the same. Decided as it is
+    // hosted, as the other causes are, and only by an engine that saves to
+    // the file it loaded (docs/server-storage.md 5).
+    let saves_to_source = engine.saves_to_source();
+    if saves_to_source {
+        if let Some((cause, why)) = crate::store::save_refused(at, on_disk) {
+            error!("{:?}: {why}; it is served read-only", hosted.name);
+            events.alert(Event::hosted_read_only(&hosted.name, &why));
+            engine.hold_read_only(&loaded, cause);
+        }
+    }
     // Looked at in the file's folder, without following a link; one that
-    // cannot be looked at counts.
-    let copy_in_the_way = !matches!(
-        at.folder()
-            .and_then(|folder| crate::store::copy_beside(&folder, at.name())),
-        Ok(false)
-    );
+    // cannot be looked at counts. Only where the engine saves to it.
+    let copy_in_the_way = saves_to_source
+        && !matches!(
+            at.folder()
+                .and_then(|folder| crate::store::copy_beside(&folder, at.name())),
+            Ok(false)
+        );
     if copy_in_the_way {
         let copy = crate::store::save_copy_path(at.path());
         error!(

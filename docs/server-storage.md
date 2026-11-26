@@ -1416,7 +1416,9 @@ clients and why not, whether it takes no more changes at all, and which
 file on disk the engine last read or saved for it. The engine offers them
 itself (`engine::state`, on `FileEngine`), not through a view or `Store`:
 `read_only(file)` (the first cause: opened read-only, content the writer
-cannot write, deferred work refused), `writes_refused(file)` (a save
+cannot write, deferred work refused, a file the server's user may not
+write or whose folder does not allow a save's new copy),
+`writes_refused(file)` (a save
 whose outcome was unknown) and `file_on_disk(file)` (its device and
 inode). They describe the engine's hold of the file on disk and of its
 clients, not the content of a version. Two versions with the same tree
@@ -1470,6 +1472,69 @@ records, a slot's file on disk for backups (`Slot::saved_file`) and for a close
 (`Slot::finish_close_if_drained`), and the check that no other slot hosts
 the same file (`hosting::hosted_as`). Whether a file is closing, and which
 slot serves it, are the hosting's (`Slot`), as before.
+
+**A file the server may not write.** A save writes a new copy beside the
+file and renames it over the file, which needs write access to the folder
+only, so a file the server's user may not write (mode 444 in a writable
+folder) would be replaced all the same. An engine that saves to the file
+it loaded (the file engine; `EngineRef::saves_to_source`) asks, as it hosts
+a file and before anything is saved (deferred work included), the
+two questions the desktop's host asks as it opens one
+(`store::save_refused`, `local::open_file`), of the file's folder and its
+entry as a save finds them, never through a link and without opening the
+file (so nothing is copied up from a lower layer, no lease is broken and no
+time changes): whether the entry may be read and written
+(`ReadOnlyCause::NotWritable` when refused or on a read-only file system),
+and whether the folder allows the new copy
+(`ReadOnlyCause::FolderNotWritable`), each on Unix by the process's
+effective ids, as the save's writes are checked (`faccessat`, with
+`AT_EACCESS` only when the real and effective ids differ, so that the
+ordinary case needs no `faccessat2`); a file named without a folder is in
+the current folder. The
+entry must first be the regular file just read (its device and inode).
+When it is another file, or a question could not be asked (an `faccessat`
+that answers neither yes nor no, as `ENOSYS` from a kernel before 5.8 when
+the real and effective ids differ), the file is held read-only all the
+same, for a cause that says so (`ReadOnlyCause::Unchecked`), the detail in
+the log and the alert, with no second try. So with differing real and
+effective ids, a kernel without `faccessat2` leaves the check unmade
+(`Unchecked`), and a seccomp profile that refuses it with `EPERM` makes it
+answer "may not" (`NotWritable`): either holds the file read-only. Any of these holds the file
+read-only, with an error in the log, an alert (`Database "<name>" is
+served read-only: <why>.`), the startup event 18 `Opened database "<name>"
+read only.`, and the cause in the Admin Console's list of files, which
+reads it without the store's lock (`Hosted::read_only_cause`), as it reads
+whether a file takes no more changes. It is decided when the file is
+hosted, as the other causes are: a file whose permissions change while it
+is hosted is served as it was hosted until it is closed and opened again
+or the server restarts (a file made unwritable is still replaced by the
+next save; a folder made unwritable fails the next save, as any save that
+cannot write its copy does). On Windows the entry has no identity here, so
+it is not verified to be the file loaded, and only the read-only attributes
+of the file and of its folder are looked at; the access control lists are
+not read ([#851](https://github.com/OpenMaker-Dev/openmaker/issues/851)).
+Serving read-only a file the server's user may not write is what FileMaker
+Server does [O]: FileMaker Server 26.0.3 opened a file of mode 444 owned by
+its user with event 18 `Opened database "<name>" read only.`, listed it
+with status `Normal`, and left its bytes unchanged, where the same file
+writable opened with event 184 (re/server-logs.md 4,
+[#790](https://github.com/OpenMaker-Dev/openmaker/issues/790#issuecomment-7176757453)).
+The store engine never writes its source (section 11): it answers no, so a
+source the server's user may not write raises no alert there, nothing at
+the save's copy name is warned about, and its files keep their own cause
+(`ReadOnlyCause::StoreEngine`), which the list shows the same way. The
+folder cause (`FolderNotWritable`) and the `Unchecked` cause are
+OpenMaker's own, for its own way of saving, a new copy renamed over the
+file. FileMaker Server writes a file in place, and a folder its user may
+not write does not matter to it as it opens the file [O]: FileMaker Server
+26.0.3 opened a writable file in such a folder with event 184 and status
+`Normal`, as it opens any writable file (re/server-logs.md 4); a client's
+change to that file was not tried. The Read-only mark in the Admin
+Console's list is OpenMaker's own too. FileMaker Server also writes the
+`fmapp` extended privilege into a file no account of which has it as it
+opens the file (event 655), and on a file it may not write cannot, says so
+(654) and opens it unshared; OpenMaker does neither
+([#863](https://github.com/OpenMaker-Dev/openmaker/issues/863)).
 
 **Writes to a file hosted read-only.** No request that would change a
 file hosted read-only is answered with the reply of a change that
@@ -2546,9 +2611,9 @@ of the save's new copy. Nothing in OpenMaker removes the entry, or
 anything else at that name: a file it did not create in the same call is
 never unlinked.
 
-- OpenMaker Server hosts a file opened with anything at its save's copy
-  name as it hosts any file, and raises an alert that names the entry's
-  path (`Event::save_copy_in_the_way`; `hosting::load_hosted`,
+- OpenMaker Server's file engine hosts a file opened with anything at its
+  save's copy name as it hosts any file, and raises an alert that names
+  the entry's path (`Event::save_copy_in_the_way`; `hosting::load_file`,
   `store::copy_beside`, which looks in the file's folder without
   following a link, and counts an entry it cannot look at). Every change
   then fails at its save as above, loudly, and that ends by itself when
@@ -2556,7 +2621,9 @@ never unlinked.
   to close and open the file. Deferred field work found as the file is
   opened ends as the recovery rule says: its save fails, the work is
   taken back and the file is served read-only, as its disk holds it
-  (above, "finishing deferred work").
+  (above, "finishing deferred work"). The store engine never saves to the
+  file it hosts (`EngineRef::saves_to_source`, section 11): it has neither
+  the alert nor these save failures.
 - The desktop opens such a file read-only (`ReadOnly::CopyInTheWay`), as
   at #715's head, says why in the window and logs the entry's path. It
   looks with `symlink_metadata` on the path, so an entry it cannot look
