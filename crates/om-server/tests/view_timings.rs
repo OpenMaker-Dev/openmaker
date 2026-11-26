@@ -30,6 +30,11 @@
 //! ```sh
 //! cargo test --release -p om-server --test view_timings -- --ignored --nocapture logins_and_thumbnails
 //! ```
+//!
+//! `engines` hosts a generated file on the server binary on either engine
+//! (`--engine file` or `store`) and times its start, its memory and a
+//! client's reads; its doc has the steps
+//! (docs/performance/store-engine-file.md, "Hosting on the store engine").
 
 #[path = "fixtures/tasks.rs"]
 mod fixture;
@@ -412,4 +417,267 @@ fn logins_and_thumbnails() {
     report_us("thumbnail of Photo, rendered (op96)", rendered);
     session.disconnect().unwrap();
     handle.shutdown(Duration::from_secs(5));
+}
+
+/// The text `export_measurement`'s generated file holds in field `field`
+/// of record `record`.
+fn generated_text(record: u64, field: u64) -> String {
+    format!("{record:012}-{field:02}-")
+        .chars()
+        .cycle()
+        .take(64)
+        .collect()
+}
+
+/// The field `name` of process `pid`'s status, in MB.
+fn process_mb(pid: u32, name: &str) -> f64 {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix(name))
+        .and_then(|v| v.trim().trim_end_matches(" kB").trim().parse::<f64>().ok())
+        .unwrap()
+        / 1024.0
+}
+
+/// A measurement, not a test: the server binary on either engine
+/// (docs/server-storage.md 11) hosting a file `export_measurement`
+/// generates (`OM_TIMING_FILE`, named `Tasks.fmp12`; one table, eight
+/// 64-byte text cells a record). For a release build, one run at a time,
+/// under a memory cap (docs/performance/store-engine-file.md):
+///
+/// ```sh
+/// OM_TIMING_FILE=$PWD/target/m/a/Tasks.fmp12 OM_TIMING_STEP=index \
+///   cargo test --release -p om-server --test view_timings -- --ignored --nocapture engines
+/// ```
+///
+/// The steps: `generate`, a file of `OM_TIMING_RECORDS` records as
+/// `export_measurement` writes it, with the table's record list (which that
+/// file leaves as the fixture's two records) listing every record; `index`, the file hosted by the file engine and found on
+/// Name, which builds Name's value index and stores it in the file, as a
+/// file with indexes is served; `serve`, the file hosted by the engine
+/// `OM_TIMING_ENGINE` (`file` or `store`, its folder `OM_TIMING_STORE`; the
+/// state folder `OM_TIMING_STATE`), the file's folder made read-only first
+/// so that the file engine's save of an index built on demand fails at once
+/// rather than write the whole file. It reports the time from the process's
+/// start to its listening line (the files hosted), its resident memory once
+/// hosted and idle, then the client's times of a find on Name through its
+/// stored index (median of 5), a find on Code whose index is built on
+/// demand (the first, then once more), a sort of every record by Name, and
+/// a download of the table's records `[T, 05]` in pages (op90), and the
+/// process's peak resident memory and its resident memory after them.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "a measurement for release builds; set OM_TIMING_FILE and OM_TIMING_STEP"]
+fn engines() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    fn var(name: &str) -> String {
+        std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"))
+    }
+    let file = PathBuf::from(var("OM_TIMING_FILE"));
+    assert_eq!(file.file_name().unwrap(), fixture::FILE);
+    let folder = file.parent().unwrap().to_path_buf();
+    let step = var("OM_TIMING_STEP");
+    if step == "generate" {
+        // As `export_measurement` generates it, but for the record list.
+        let count: u64 = var("OM_TIMING_RECORDS").parse().unwrap();
+        let mut tree = fixture::tree(&[], true);
+        let list = (1..=count)
+            .map(|id| {
+                let cells = (1..=8)
+                    .map(|f| text_node(&uint_segment(f), &generated_text(id, f)))
+                    .collect();
+                OwnedNode::list(serial::encode(id), cells)
+            })
+            .collect();
+        let table = uint_segment(fixture::TABLE);
+        tree.put(&[&table, &[0x05]], OwnedNode::list(vec![0x05], list));
+        // The table's record list and last id, which that file keeps as
+        // the fixture's (two records), so that finds see every record.
+        let mut ids = RidList::new();
+        for id in 1..=count {
+            ids.insert(id);
+        }
+        tree.put(&[&table, &[0x0d]], ids.to_node(Vec::new()));
+        let mut last = serial::encode(count);
+        last.insert(0, last.len() as u8);
+        tree.put(&[&table, &[0]], OwnedNode::leaf(Vec::new(), last));
+        std::fs::create_dir_all(&folder).unwrap();
+        fixture::write_tree(&file, &tree);
+        println!(
+            "generated {count} records: {:.1} MB",
+            std::fs::metadata(&file).unwrap().len() as f64 / 1e6
+        );
+        return;
+    }
+    let engine = match step.as_str() {
+        "index" => "file".to_string(),
+        "serve" => var("OM_TIMING_ENGINE"),
+        other => panic!("OM_TIMING_STEP={other}: generate, index or serve"),
+    };
+    let state = std::env::var("OM_TIMING_STATE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| folder.with_extension("state"));
+    std::fs::create_dir_all(&state).unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let read_only = |read_only: bool| {
+        let mut permissions = std::fs::metadata(&folder).unwrap().permissions();
+        permissions.set_readonly(read_only);
+        std::fs::set_permissions(&folder, permissions).unwrap();
+    };
+    if step == "serve" {
+        read_only(true);
+    }
+    let mut command = Command::new(env!("CARGO_BIN_EXE_om-server"));
+    command
+        .args(["--bind", &format!("127.0.0.1:{port}"), "--engine", &engine])
+        .arg("--state-dir")
+        .arg(&state);
+    if engine == "store" {
+        command.arg("--store-dir").arg(var("OM_TIMING_STORE"));
+    }
+    /// The server process, killed when dropped, a panic included.
+    struct Running(std::process::Child);
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let started = Instant::now();
+    let mut server = Running(
+        command
+            .arg(&file)
+            .env("RUST_LOG", "info")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let pid = server.0.id();
+    let mut log = BufReader::new(server.0.stderr.take().unwrap());
+    let mut line = String::new();
+    loop {
+        line.clear();
+        assert_ne!(log.read_line(&mut line).unwrap(), 0, "the server ended");
+        if line.contains("imported into the store")
+            || line.contains("held by the store")
+            || line.contains("the store engine")
+        {
+            print!("server: {line}");
+        }
+        if line.contains("listening on") {
+            break;
+        }
+    }
+    let hosted = started.elapsed();
+    // The rest of the log is read, so that the server never waits on it.
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        while log.read_line(&mut line).is_ok_and(|n| n > 0) {
+            line.clear();
+        }
+    });
+    let (mut session, file_id) = server::logged_in(port, "timings");
+    let table = uint_segment(fixture::TABLE);
+    let records = |reply: &om_protocol::QueryReply| find::found(&reply.slots).unwrap().len();
+    let name = format!("=={}", generated_text(123, fixture::NAME));
+    let by_name = finder_program(file_id, fixture::NAME, DataType::Text, &name);
+    if step == "index" {
+        let started = Instant::now();
+        assert_eq!(records(&session.query(&by_name).unwrap()), 1);
+        println!(
+            "Name's index built, stored and saved in {:.1} s",
+            started.elapsed().as_secs_f64()
+        );
+        session.disconnect().unwrap();
+        return;
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    println!(
+        "{engine} engine: hosted {:.2} s after the start; resident {:.0} MB once hosted (peak {:.0} MB)",
+        hosted.as_secs_f64(),
+        process_mb(pid, "VmRSS:"),
+        process_mb(pid, "VmHWM:")
+    );
+    let timed = |run: &mut dyn FnMut()| {
+        let started = Instant::now();
+        run();
+        started.elapsed()
+    };
+    let times = (0..5)
+        .map(|_| {
+            timed(&mut || {
+                assert_eq!(records(&session.query(&by_name).unwrap()), 1);
+            })
+        })
+        .collect();
+    report("find on Name, its index stored", times);
+    let code = format!("=={}", generated_text(456, fixture::CODE));
+    let by_code = finder_program(file_id, fixture::CODE, DataType::Text, &code);
+    let first = timed(&mut || assert_eq!(records(&session.query(&by_code).unwrap()), 1));
+    let again = timed(&mut || assert_eq!(records(&session.query(&by_code).unwrap()), 1));
+    report(
+        "find on Code, its index built on demand: first",
+        vec![first],
+    );
+    report(
+        "find on Code, its index built on demand: again",
+        vec![again],
+    );
+    // SortList of every record by Name (query-program.md 10).
+    let leaf = |key: u8, value: Vec<u8>| OwnedNode::leaf(vec![key], value);
+    let mut spec = vec![0, 0, 0, 1];
+    spec.extend([3, 2, 0x80, 0x01, 2, 1, fixture::NAME as u8, 0, 1]);
+    spec.extend([0; 10]);
+    let mut children = vec![
+        leaf(0x00, vec![14]),
+        OwnedNode::list(vec![0x01], vec![leaf(0xff, Vec::new())]),
+        leaf(0x02, vec![1, 3, 1, 1]),
+        leaf(0x04, file_id.to_be_bytes().to_vec()),
+        leaf(0x05, vec![2, 0x80, 0x01]),
+        leaf(0x0a, spec),
+        leaf(0x0b, vec![2, 0x80, 0x01]),
+    ];
+    children.sort_by(|a, b| a.segment.cmp(&b.segment));
+    let sort = OwnedNode::list(
+        Vec::new(),
+        vec![OwnedNode::list(
+            vec![1],
+            vec![OwnedNode::list(serial::encode(1), children)],
+        )],
+    )
+    .to_wire()
+    .unwrap();
+    // A program past its limits (`om_query::program::limits`) is refused
+    // with the error slot, which is reported rather than failed.
+    let mut refused = false;
+    let sorted = timed(&mut || {
+        let reply = session.query(&sort).unwrap();
+        refused = reply.slots.len() < 64;
+    });
+    let what = match refused {
+        true => "sort of every record by Name, refused (past a program limit)",
+        false => "sort of every record by Name",
+    };
+    report(what, vec![sorted]);
+    let downloaded = timed(&mut || {
+        let reply = session.download(&[&table, &[5]]).unwrap();
+        assert!(reply.slots.len() > 1000);
+    });
+    report("download of [T, 05] in pages (op90)", vec![downloaded]);
+    println!(
+        "{engine} engine: resident {:.0} MB after the reads, peak {:.0} MB",
+        process_mb(pid, "VmRSS:"),
+        process_mb(pid, "VmHWM:")
+    );
+    session.disconnect().unwrap();
+    drop(server);
+    read_only(false);
 }

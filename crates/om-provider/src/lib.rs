@@ -547,6 +547,55 @@ fn checks_typed_global(
             .is_none_or(|(occurrence, _)| !shows_related_file(file, occurrence))
 }
 
+/// The globals of `table` Browse takes typing into, by name: text,
+/// number, date, time and timestamp data globals, which take the session's
+/// value (`take_globals`), their typing checked as it is applied
+/// (`set_typed_global`). One with a rule that cannot be checked so stays
+/// display-only (`checks_typed_global`; while `table`'s `plan`, `None` when
+/// refused, waits for a related file to open, `deferred`, by its own
+/// rules). `file` is the schema the plan is over.
+fn typed_globals(
+    file: &om_data::host::CalcSchema,
+    table: &Table,
+    tree: &KeyTree<'_>,
+    plan: Option<&om_data::rules::RecordPlan>,
+    deferred: bool,
+) -> BTreeSet<String> {
+    let Some(def) = file.table(table.id) else {
+        return BTreeSet::new();
+    };
+    def.fields
+        .values()
+        .filter(|f| {
+            f.global
+                && f.repetitions <= 255
+                && f.class == om_data::host::FieldClass::Data
+                && matches!(
+                    f.value_type,
+                    om_data::calc::ValueType::Text
+                        | om_data::calc::ValueType::Number
+                        | om_data::calc::ValueType::Date
+                        | om_data::calc::ValueType::Time
+                        | om_data::calc::ValueType::Timestamp
+                )
+                && table
+                    .field(f.id)
+                    .and_then(|field| field.decoded_options())
+                    .is_some_and(|options| match plan {
+                        Some(plan) => checks_typed_global(file, plan, &options, f.id, 1),
+                        None if deferred => {
+                            typed_global_options(&options)
+                                && om_data::rules::RecordPlan::offers_global_while_plan_deferred(
+                                    table.id, f.id, &options, tree, file,
+                                )
+                        }
+                        None => false,
+                    })
+        })
+        .map(|f| f.name.clone())
+        .collect()
+}
+
 /// What FileMaker Pro says when the host refuses to open a file because it
 /// blocks new users (error 1638, catalogs/error-codes.csv; network-protocol.md
 /// 5.6.4).
@@ -1982,7 +2031,10 @@ impl NativeProvider {
             return Ok((text.to_owned(), None));
         }
         let plan = self.entry_plan(table)?;
-        let file = self.calc_schema_cached()?;
+        // The plan's own schema: an owning file's typing, routed from the
+        // opened file (`set_typed_globals`), is planned with the opened
+        // file's tables imported, and its list's occurrence is of that one.
+        let file = self.plan_schema()?;
         if !options
             .as_ref()
             .is_some_and(|options| checks_typed_global(&file, &plan, options, field, repetition))
@@ -2000,6 +2052,68 @@ impl NativeProvider {
             .filter(|options| options.validation_not_empty())
             .map(|options| options.max_repetitions.max(1));
         Ok((text, required))
+    }
+
+    /// The related file a global of `table` belongs to, when `table` is one
+    /// of its tables imported here (external.rs); `None` for this file's
+    /// own. Its globals are that file's session values: that file checks
+    /// the field and its own account's access, and keeps the value for its
+    /// own rules ([`Self::keep_globals`] there and here).
+    fn global_owner(&mut self, table: u64) -> Result<Option<external::TableRoute>, DataError> {
+        self.refuse_while_unsettled()?;
+        self.require_open()?;
+        if self.calc_schema_cached()?.table_context(table).is_none() {
+            return Ok(None);
+        }
+        self.external.route(table).map(Some).ok_or_else(|| {
+            DataError::with_code(3, "The related file holding this table is unavailable.")
+        })
+    }
+
+    /// A user's typing `changes` into globals of `table`, each checked
+    /// as typed (`typed_global`) and Not empty over all of them, as the
+    /// texts they store. Nothing is set.
+    fn checked_globals(
+        &mut self,
+        table: u64,
+        changes: &om_data::GlobalChanges,
+    ) -> Result<om_data::GlobalChanges, DataError> {
+        let mut checked = om_data::GlobalChanges::new();
+        let mut required = BTreeMap::new();
+        for (&(field, repetition), text) in changes {
+            let (text, repetitions) = self.typed_global(table, field, repetition, text)?;
+            if let Some(repetitions) = repetitions.filter(|_| text.is_empty()) {
+                required.insert(field, repetitions);
+            }
+            checked.insert((field, repetition), text);
+        }
+        self.check_required_globals(table, &checked, required)?;
+        Ok(checked)
+    }
+
+    /// Keep `changes` to globals of `table` as this session's values,
+    /// never uploaded: this file's calculations read them over the stored
+    /// ones (`calc.globals`) until it is closed, and the desktop window of
+    /// the file the table is of, and its other readers, read them too
+    /// (`set_desktop_globals`, desktop.rs).
+    fn keep_globals(
+        &mut self,
+        table: u64,
+        changes: om_data::GlobalChanges,
+    ) -> Result<(), DataError> {
+        let schema = self.calc_schema_cached()?;
+        self.invalidate_calc_data();
+        self.set_desktop_globals(
+            &schema,
+            table,
+            changes.iter().map(|(&cell, text)| (cell, text.as_str())),
+        );
+        self.calc.globals.extend(
+            changes
+                .into_iter()
+                .map(|((field, repetition), text)| ((table, field, repetition), text)),
+        );
+        Ok(())
     }
 
     /// Check Not empty against the complete proposed global values. Use
@@ -2033,13 +2147,14 @@ impl NativeProvider {
         Ok(())
     }
 
-    /// Move the values of global fields out of a user's edit of the
-    /// layout's record into this session's globals (`set_global`): typing
-    /// into a global field on a layout sets the session's value, as Set
-    /// Field does (Claris "Global fields"). `true` when there were any.
+    /// Move the values of global fields out of a user's edit of a record
+    /// of the layout's table `table` into this session's globals
+    /// (`set_typed_globals`): typing into a global field on a layout sets
+    /// the session's value, as Set Field does (Claris "Global fields"), a
+    /// related file's on a layout of its table. `true` when there were any.
     fn take_globals(
         &mut self,
-        layout_id: u32,
+        table: u64,
         values: &mut om_data::FieldChanges,
     ) -> Result<bool, DataError> {
         if values.is_empty() {
@@ -2049,8 +2164,6 @@ impl NativeProvider {
         let Ok(schema) = self.calc_schema_cached() else {
             return Ok(false);
         };
-        let layout = self.decoded_layout(layout_id)?;
-        let table = self.table_for_layout(&layout)?.id;
         let Some(def) = schema.table(table) else {
             return Ok(false);
         };
@@ -2081,6 +2194,18 @@ impl NativeProvider {
     /// calculated fields.
     fn current_record(&mut self, layout_id: u32, record_id: i64) -> Result<Record, DataError> {
         let layout = self.decoded_layout(layout_id)?;
+        if self
+            .read_table_for_layout(&layout)
+            .is_ok_and(|table| self.external.route(table.id).is_some())
+        {
+            // A related file's record, read on its own connection.
+            let (table, rows) = self.read_record_rows(layout_id, record_id)?;
+            let record = record_page(rows, &table, 1)?
+                .records
+                .pop()
+                .ok_or_else(|| DataError::with_code(101, "This record no longer exists."))?;
+            return self.with_calculations(layout_id, record);
+        }
         let table = self.table_for_layout(&layout)?.clone();
         let record = u64::try_from(record_id).map_err(|_| DataError::new("Invalid record ID."))?;
         let node = self
@@ -3269,7 +3394,7 @@ impl DataProvider for NativeProvider {
             // Planned over the owner's routed plan (#187), as its write is,
             // opening nothing; deferred while a file its rules read waits
             // (`routed_edits`, #1160).
-            let editable = match self.routed_edits(route, &file)? {
+            let (editable, typed) = match self.routed_edits(route, &file)? {
                 related_owner::RoutedEdits::ReadOnly => {
                     return Ok(om_data::RecordCapabilities {
                         editable_fields: Some(BTreeSet::new()),
@@ -3278,19 +3403,42 @@ impl DataProvider for NativeProvider {
                 }
                 // Only the fields Browse writes through the owner
                 // (`routed_browse_field`): a repeating field the owner's
-                // plan offers is not.
-                related_owner::RoutedEdits::Offered(names, table) => Some(
-                    names
-                        .into_iter()
-                        .filter(|name| {
-                            table.fields.iter().any(|field| {
-                                field.name == *name && Self::routed_browse_field(field)
+                // plan offers is not. Its typed globals are the owner's
+                // session values (`set_typed_globals`).
+                related_owner::RoutedEdits::Offered {
+                    fields,
+                    globals,
+                    table,
+                } => (
+                    Some(
+                        fields
+                            .into_iter()
+                            .filter(|name| {
+                                table.fields.iter().any(|field| {
+                                    field.name == *name && Self::routed_browse_field(field)
+                                })
                             })
-                        })
-                        .collect(),
+                            .chain(globals.iter().cloned())
+                            .collect(),
+                    ),
+                    globals,
                 ),
-                related_owner::RoutedEdits::Refused => None,
+                related_owner::RoutedEdits::Refused => (None, BTreeSet::new()),
             };
+            // A typed global's later repetitions are entered as cells of the
+            // record's own related draft (#185), as on a layout of this
+            // file's table: by the layout's occurrence and field id.
+            let repetitions: BTreeSet<u64> = file
+                .table(table.id)
+                .into_iter()
+                .flat_map(|t| t.fields.values())
+                .filter(|f| typed.contains(&f.name))
+                .map(|f| f.id)
+                .collect();
+            let mut related = BTreeMap::new();
+            if !repetitions.is_empty() {
+                related.insert(layout_occurrence(&layout)?, repetitions);
+            }
             return Ok(om_data::RecordCapabilities {
                 prepare_edit: false,
                 // Creation and edits share the owner's field-entry plan.
@@ -3302,9 +3450,14 @@ impl DataProvider for NativeProvider {
                 editable_fields: Some(editable.unwrap_or_default()),
                 // Related records of a layout of another file's table
                 // are not edited in Browse yet.
-                related: BTreeMap::new(),
+                related,
                 refused: BTreeMap::new(),
-                globals: BTreeSet::new(),
+                globals: file
+                    .table(table.id)
+                    .into_iter()
+                    .flat_map(|t| t.fields.values().filter(|f| f.global))
+                    .map(|f| f.name.clone())
+                    .collect(),
             });
         }
         let table = self.table_for_layout(&layout)?;
@@ -3332,41 +3485,7 @@ impl DataProvider for NativeProvider {
             ),
             Err(_) => None,
         };
-        // Text, number, date, time and timestamp data globals take the
-        // session's value (`take_globals`), their typing checked as it is
-        // applied (`set_typed_global`). One with a rule that cannot be
-        // checked so stays display-only (`checks_typed_global`).
-        let globals = file.table(table.id).into_iter().flat_map(|t| {
-            t.fields
-                .values()
-                .filter(|f| {
-                    f.global
-                        && f.repetitions <= 255
-                        && f.class == om_data::host::FieldClass::Data
-                        && matches!(
-                            f.value_type,
-                            om_data::calc::ValueType::Text
-                                | om_data::calc::ValueType::Number
-                                | om_data::calc::ValueType::Date
-                                | om_data::calc::ValueType::Time
-                                | om_data::calc::ValueType::Timestamp
-                        )
-                        && table
-                            .field(f.id)
-                            .and_then(|field| field.decoded_options())
-                            .is_some_and(|options| match &planned {
-                                Ok(plan) => checks_typed_global(&file, plan, &options, f.id, 1),
-                                Err(_) if deferred => {
-                                    typed_global_options(&options)
-                                        && om_data::rules::RecordPlan::offers_global_while_plan_deferred(
-                                            table.id, f.id, &options, &tree, &file,
-                                        )
-                                }
-                                Err(_) => false,
-                            })
-                })
-                .map(|f| f.name.clone())
-        });
+        let globals = typed_globals(&file, table, &tree, planned.as_ref().ok(), deferred);
         let offered = plan.clone().map(|mut fields| {
             fields.extend(globals);
             fields
@@ -3474,6 +3593,9 @@ impl DataProvider for NativeProvider {
             self.require_action(table.id, om_data::host::security::RecordAction::Create)?;
         }
         if self.external.route(table.id).is_some() {
+            // Typed globals are the related file's session values
+            // (`set_typed_globals`), not the new record's.
+            self.take_globals(table.id, &mut values)?;
             // The owner issues the id and stores every value; the caller's
             // window found set takes the new record (`with_new_record_owner`).
             let record = self.with_new_record_owner(table.id, |owner, wire| {
@@ -3488,7 +3610,7 @@ impl DataProvider for NativeProvider {
             })?;
             return self.with_calculations(layout_id, record);
         }
-        self.take_globals(layout_id, &mut values)?;
+        self.take_globals(table.id, &mut values)?;
         let record = if self.in_transaction() {
             self.hold_create(layout_id, values)?
         } else {
@@ -3538,6 +3660,10 @@ impl DataProvider for NativeProvider {
             self.require_action(table.id, om_data::host::security::RecordAction::Edit)?;
         }
         if self.external.route(table.id).is_some() {
+            if self.take_globals(table.id, &mut values)? && values.is_empty() {
+                // Only the related file's globals were typed.
+                return self.current_record(layout_id, record_id);
+            }
             let record = self.with_existing_record_owner(table.id, record_id, |owner, wire| {
                 let (table, plan) = owner.table_plan(wire)?;
                 let changes = Self::writable_values(&table, &plan, &values)?;
@@ -3547,7 +3673,7 @@ impl DataProvider for NativeProvider {
             })?;
             return self.with_calculations(layout_id, record);
         }
-        if self.take_globals(layout_id, &mut values)? && values.is_empty() {
+        if self.take_globals(table.id, &mut values)? && values.is_empty() {
             // Only global values were typed: the record itself is unchanged.
             return self.current_record(layout_id, record_id);
         }
@@ -4113,31 +4239,21 @@ impl DataProvider for NativeProvider {
         table: u64,
         changes: &om_data::GlobalChanges,
     ) -> Result<(), DataError> {
-        let mut checked = om_data::GlobalChanges::new();
-        let mut required = BTreeMap::new();
-        for (&(field, repetition), text) in changes {
-            let (text, repetitions) = self.typed_global(table, field, repetition, text)?;
-            if let Some(repetitions) = repetitions.filter(|_| text.is_empty()) {
-                required.insert(field, repetitions);
-            }
-            checked.insert((field, repetition), text);
+        if changes.is_empty() {
+            return Ok(());
         }
-        self.check_required_globals(table, &checked, required)?;
-        if !checked.is_empty() {
-            let schema = self.calc_schema_cached()?;
-            self.invalidate_calc_data();
-            self.set_desktop_globals(
-                &schema,
-                table,
-                checked.iter().map(|(&cell, text)| (cell, text.as_str())),
-            );
-            self.calc.globals.extend(
-                checked
-                    .into_iter()
-                    .map(|((field, repetition), text)| ((table, field, repetition), text)),
-            );
+        if let Some(route) = self.global_owner(table)? {
+            // Checked by the owning file's own rules, as its Browse checks
+            // them, reading this file's tables meanwhile (`check_entry`).
+            let checked = self.with_owner_reading_root(route, |owner, wire| {
+                let checked = owner.checked_globals(wire, changes)?;
+                owner.keep_globals(wire, checked.clone())?;
+                Ok(checked)
+            })?;
+            return self.keep_globals(table, checked);
         }
-        Ok(())
+        let checked = self.checked_globals(table, changes)?;
+        self.keep_globals(table, checked)
     }
 
     fn enters_typed_globals(&self) -> bool {
@@ -4145,7 +4261,9 @@ impl DataProvider for NativeProvider {
     }
 
     /// The session's own value, never uploaded: calculations read it over
-    /// the stored one until the file is closed.
+    /// the stored one until the file is closed. A global of a related
+    /// file's table, set through any occurrence of it, is that file's
+    /// session value (`global_owner`).
     fn set_global(
         &mut self,
         table: u64,
@@ -4153,13 +4271,16 @@ impl DataProvider for NativeProvider {
         repetition: u32,
         text: &str,
     ) -> Result<(), DataError> {
-        let schema = self.global_write_schema(table, field, repetition)?;
-        self.invalidate_calc_data();
-        self.set_desktop_globals(&schema, table, [((field, repetition), text)]);
-        self.calc
-            .globals
-            .insert((table, field, repetition), text.to_string());
-        Ok(())
+        let change = om_data::GlobalChanges::from([((field, repetition), text.to_owned())]);
+        if let Some(route) = self.global_owner(table)? {
+            self.external.with_owner(route, |owner, wire| {
+                owner.global_write_schema(wire, field, repetition)?;
+                owner.keep_globals(wire, change.clone())
+            })?;
+            return self.keep_globals(table, change);
+        }
+        self.global_write_schema(table, field, repetition)?;
+        self.keep_globals(table, change)
     }
 
     fn use_window(&mut self, window: u32) {

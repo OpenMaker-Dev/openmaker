@@ -404,6 +404,59 @@ impl OpenMakerApp {
         true
     }
 
+    /// Window > Show Window's windows: every open file's, front first, then
+    /// from the most recently in front, hidden ones too, each with its
+    /// title and whether it is hidden. Cards are left out, as the Window
+    /// menu leaves them out, and so is Home's empty window.
+    pub(super) fn show_window_list(&self) -> Vec<(u32, String, bool)> {
+        std::iter::once(&self.w)
+            .chain(self.windows.iter().rev())
+            .filter(|d| d.session.is_some() && d.style.card().is_none())
+            .map(|d| (d.id, self.doc_title(d), d.hidden))
+            .collect()
+    }
+
+    /// Window > Show Window (and the Window menu's list): window `id` comes
+    /// to the front, and is shown if it was hidden, as a file a script
+    /// opened hidden is (a close trigger's too, which leaves the file open
+    /// behind Home, #679). A card is drawn on its document, so the document
+    /// and its cards show together, whichever of them `id` is. The
+    /// scripts' windows are told, so that `WindowNames` and Select Window
+    /// find them shown. Over Home, which no file holds, the window takes
+    /// Home's place rather than opening a window of its own beside it.
+    /// False when it stays behind ([`Self::switch_blocked`]) or there is no
+    /// window `id`.
+    pub(super) fn show_window(&mut self, ctx: &egui::Context, id: u32) -> bool {
+        let home = self.front_doc().session.is_none();
+        if !self.bring_to_front(id) {
+            return false;
+        }
+        // `bring_to_front` keeps the window that was in front last.
+        if home
+            && self.w.session.is_some()
+            && self.windows.last().is_some_and(|d| d.session.is_none())
+        {
+            self.windows.pop();
+        }
+        let chain = self.card_chain(self.base_window(id));
+        let mut shown = Vec::new();
+        for doc in std::iter::once(&mut self.w).chain(self.windows.iter_mut()) {
+            if doc.hidden && chain.contains(&doc.id) {
+                doc.hidden = false;
+                shown.push(doc.id);
+            }
+        }
+        // Also while the file's connection is lost: nothing goes to the
+        // host, and a reconnect keeps the scripts' windows as they were.
+        for window in shown {
+            let request = crate::worker::Request::ShowWindow(window);
+            if let Err(err) = self.worker.send(ctx, self.epoch, self.w.id, request) {
+                self.fail(&err);
+            }
+        }
+        true
+    }
+
     /// Restore the Script Workspace when its file comes back to the front.
     pub(super) fn unpark_workspace(&mut self) {
         self.workspace = self.parked_workspaces.remove(&self.w.file_id);
@@ -801,6 +854,15 @@ impl OpenMakerApp {
                 });
             }
             Reply::Script(ScriptEvent::CloseWindow(id)) => self.remove_window(id),
+            // After any hide a script sent before the worker took the
+            // request, as the scripts have it (`show_window`).
+            Reply::WindowShown(id) => {
+                for doc in std::iter::once(&mut self.w).chain(&mut self.windows) {
+                    if doc.id == id {
+                        doc.hidden = false;
+                    }
+                }
+            }
             // A script that stopped, or closed its file, after its window
             // went: the app's script state ends all the same (else every
             // window's actions would wait behind it), and the front window
@@ -942,6 +1004,18 @@ impl OpenMakerApp {
             crate::session::DEFAULT_PAGE_SIZE,
         );
         session.set_layouts_for(opened.layouts, doc.calcs.schema().map(AsRef::as_ref));
+        // A catalog the provider could not read is said, as for a file
+        // opened from Home (`Reply::Layouts`); the window still opens on
+        // its layout, with empty layout menus outside Layout mode. The
+        // alert waits for any alert up: one script can open several files
+        // before the next frame.
+        match opened.layout_menu {
+            Ok(menu) => session.layout_menu = menu,
+            Err(err) => self.waiting_alerts.push_back(format!(
+                "The layout menus of \"{}\" could not be read. {}",
+                session.target.file, err.message
+            )),
+        }
         // The page setup the file stores, as a file the user opens starts
         // with it (`accept_calc_schema`).
         if let Some(paper) =
