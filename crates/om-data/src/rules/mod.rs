@@ -3349,6 +3349,7 @@ impl RecordPlan {
                 polish: Expr::Field(om_formula::Field::new(occurrence, id, true)),
             }),
             dependencies: BTreeSet::from([id]),
+            evaluate_triggers: None,
             related: BTreeSet::new(),
             whole: BTreeSet::new(),
             uses: BTreeMap::new(),
@@ -8643,6 +8644,98 @@ mod tests {
     /// and on (field 3). Any padding in the definition's key buffers reads
     /// the same; other option bytes or a broken buffer keep the table
     /// read-only, and a write that fires a lookup it did not read fails.
+    #[test]
+    fn stored_literal_evaluate_recalculates_only_for_a_listed_field() {
+        const OCCURRENCE: u64 = 0xd0_0002;
+        let table = Table {
+            id: 0x8002,
+            name: "People".into(),
+            fields: [
+                (1, "Given", FieldKind::Normal, 0),
+                (2, "Family", FieldKind::Normal, 0),
+                (3, "Note", FieldKind::Normal, 0),
+                (4, "Display", FieldKind::Calculation, 0x80000),
+            ]
+            .into_iter()
+            .map(|(id, name, kind, flags)| {
+                let mut field = field(id, kind, DataType::Text, 0, flags, 0);
+                field.name = name.into();
+                field
+            })
+            .collect(),
+        };
+        let file = CalcSchema::new("Example", Locale::en_us());
+        let tree_for = |first| {
+            let formula = Expr::Evaluate {
+                args: vec![
+                    first,
+                    Expr::Field(om_formula::Field::new(OCCURRENCE, 1, false)),
+                    Expr::Field(om_formula::Field::new(OCCURRENCE, 2, false)),
+                ],
+                need_field_ref: 0,
+            };
+            let code = om_formula::polish::encode(&formula);
+            let mut tree = KeyTree::default();
+            let prefix = [
+                KeySegment(&[0x80, 2]),
+                KeySegment(&[3]),
+                KeySegment(&[5]),
+                KeySegment(&[4]),
+                KeySegment(&[5]),
+            ];
+            for (key, value) in [(&[4][..], CONTEXT), (&[6][..], code.as_slice())] {
+                let mut path = prefix.to_vec();
+                path.push(KeySegment(key));
+                tree.insert(&path, om_hbam::slot::ChunkKind::Leaf, Some(value))
+                    .unwrap();
+            }
+            tree
+        };
+        let literal = Expr::Text(om_formula::Text {
+            value: "Given & Char ( 32 ) & Family & Char ( 32 ) & Note".into(),
+            style: None,
+        });
+        let tree = tree_for(literal);
+        let plan = RecordPlan::from_desktop_file_schema(&table, &tree, &file, true).unwrap();
+        let environment = environment();
+        let blank = BTreeMap::new();
+        let created = plan
+            .prepare(WriteMode::Create, &blank, &BTreeMap::new(), &environment)
+            .unwrap();
+        assert!(decoded(&created, 4).is_none());
+
+        let existing =
+            BTreeMap::from([(1, "Pat".into()), (2, "Lee".into()), (4, "Pat Lee ".into())]);
+        let edited = plan
+            .prepare(
+                WriteMode::Update,
+                &existing,
+                &BTreeMap::from([(3, Some("edited".into()))]),
+                &environment,
+            )
+            .unwrap();
+        assert_eq!(edited.changed_fields, [3]);
+
+        let mut existing = existing;
+        existing.insert(3, "edited".into());
+        let recomputed = plan
+            .prepare(
+                WriteMode::Update,
+                &existing,
+                &BTreeMap::from([(2, Some("Kim".into()))]),
+                &environment,
+            )
+            .unwrap();
+        assert_eq!(decoded(&recomputed, 4).as_deref(), Some("Pat Kim edited"));
+
+        assert!(RecordPlan::from_file_schema(&table, &tree, &file).is_err());
+        let dynamic = tree_for(Expr::Field(om_formula::Field::new(OCCURRENCE, 3, false)));
+        let error = RecordPlan::from_desktop_file_schema(&table, &dynamic, &file, true)
+            .err()
+            .unwrap();
+        assert_eq!(error.code, Some(error::UNAVAILABLE));
+    }
+
     #[test]
     fn exact_lookups_copy_the_first_related_value_as_filemaker_pro_did() {
         use crate::host::{FieldDef, JoinOp, JoinPredicate, RelationshipDef};
