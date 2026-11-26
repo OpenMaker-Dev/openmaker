@@ -624,7 +624,10 @@ authoring part tabs or object kind captions.
 - Styled layout labels keep the stored formatting of literal text around
   a merge symbol or field. The replacement takes the styling at its
   opening delimiter. OpenMaker also applies this rule to merge variables
-  and paragraph runs (layout-model.md 8.2).
+  and paragraph runs (layout-model.md 8.2). Explicit uppercase, lowercase, and
+  title-case styles apply to their saved character runs, including resolved
+  symbols.
+  An object-level uppercase style continues to apply to the whole object.
 - Date fields, merge fields and date symbols in Browse can show the
   fixed named month and weekday presets in month-first English (see
   data-format.md). OpenMaker takes names from the file's locale for

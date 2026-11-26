@@ -293,11 +293,36 @@ fn layout_job_with_pitch(
                 }
             });
         let normalized = text[range].replace('\r', "\n");
-        if style.text_transform == Some(3) {
-            job.append(&normalized.to_uppercase(), 0.0, format);
-        } else {
-            job.append(&normalized, 0.0, format);
-        }
+        const CASE_GROUP: u16 = 0x0030;
+        let run_case = character.and_then(|run| {
+            let mask = run.face_mask?;
+            (mask & CASE_GROUP == CASE_GROUP).then_some(run.faces? & CASE_GROUP)
+        });
+        use om_data::calc::text::case::{lower_char, upper_char};
+        let rendered: String = match (style.text_transform, run_case) {
+            (Some(3), _) => normalized.to_uppercase(),
+            (_, Some(0x0010)) => normalized.chars().map(upper_char).collect(),
+            (_, Some(0x0020)) => normalized.chars().map(lower_char).collect(),
+            (_, Some(0x0030)) => {
+                // The measured title style keeps a hyphen or apostrophe
+                // inside its word, unlike the Proper calculation function.
+                let mut starts_word = true;
+                normalized
+                    .chars()
+                    .map(|character| {
+                        let cased = if starts_word {
+                            upper_char(character)
+                        } else {
+                            lower_char(character)
+                        };
+                        starts_word = character.is_whitespace();
+                        cased
+                    })
+                    .collect()
+            }
+            _ => normalized,
+        };
+        job.append(&rendered, 0.0, format);
     }
     // Native narrow date cells fill the row before splitting the year;
     // a slash is not a preferred break in an otherwise numeric date.
@@ -745,6 +770,37 @@ mod tests {
         assert_eq!(job.text, "actual value");
         assert_eq!(job.sections.len(), 1);
         assert_eq!(job.sections[0].format.font_id.size, 10.0);
+    }
+
+    #[test]
+    fn saved_case_styles_transform_only_their_character_runs() {
+        let text = "Start ﬂx MiXeD o'NEIL mAC-sMITH End";
+        let style = |part: &str, faces| {
+            let start = text.find(part).unwrap();
+            StyledRun {
+                range: start..start + part.len(),
+                style: CharacterStyle {
+                    faces: Some(faces),
+                    face_mask: Some(0x0030),
+                    ..Default::default()
+                },
+            }
+        };
+        let rich = StyledText {
+            text: text.into(),
+            character_runs: vec![
+                style("ﬂx", 0x0010),
+                style("MiXeD", 0x0020),
+                style("o'NEIL mAC-sMITH", 0x0030),
+            ],
+            ..Default::default()
+        };
+        let job = layout_job(text, &ResolvedStyle::default(), Some(&rich), 300.0);
+        assert_eq!(job.text, "Start ﬂX mixed O'neil Mac-smith End");
+        assert_eq!(
+            job.sections.last().unwrap().byte_range.end.0,
+            job.text.len()
+        );
     }
 
     #[test]
