@@ -1186,10 +1186,11 @@ pub fn layout_word(
         LayoutWord::ViewFlags => VIEW_FLAGS,
         LayoutWord::MemberFlags => KIND,
     };
-    let value = |node: Option<&OwnedNode>| node.and_then(|n| n.value.as_deref());
+    let own = member.and_then(|m| m.child(&[key]));
+    let entry = index.and_then(|i| i.at(&[&[ENTRIES], &uint_segment(layout), &[key]]));
     om_layout::stored_layout_word(
-        value(member.and_then(|m| m.child(&[key]))),
-        value(index.and_then(|i| i.at(&[&[ENTRIES], &uint_segment(layout), &[key]]))),
+        own.and_then(|n| n.value.as_deref()),
+        entry.and_then(|n| n.value.as_deref()),
     )
 }
 
