@@ -409,6 +409,16 @@ impl PartialEq for WriteFileVariables {
 
 impl Eq for WriteFileVariables {}
 
+/// Local-session Text globals read from other tables by auto-entry.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct OtherGlobalValues(Arc<BTreeMap<(u64, u64), String>>);
+
+impl std::fmt::Debug for OtherGlobalValues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OtherGlobalValues").finish_non_exhaustive()
+    }
+}
+
 /// What the operation making a write knows that its formulas may read
 /// ([`CONTEXT_SELECTORS`]). A value left out refuses a write whose
 /// evaluated formula reads it; it is never answered empty in its place.
@@ -430,6 +440,9 @@ pub struct WriteContext {
     /// The local file's `$$` variables for directly reading a Text
     /// auto-enter value. New Record's preview retains this snapshot.
     pub file_variables: Option<WriteFileVariables>,
+    /// The local session's globals when the write started. A held new
+    /// record reuses its first snapshot through subsequent edits.
+    pub other_globals: Option<OtherGlobalValues>,
 }
 
 impl WriteContext {
@@ -640,7 +653,7 @@ pub struct Lookups {
     /// related.
     related: Arc<RelatedRecords>,
     /// Session globals read by a formula from another table in the file.
-    other_globals: BTreeMap<(u64, u64), String>,
+    other_globals: OtherGlobalValues,
     /// The record the reads were made for ([`Written`]).
     written: Written,
 }
@@ -775,7 +788,7 @@ pub(crate) struct Evaluation {
     related: Arc<RelatedRecords>,
     /// The session's global values ([`RecordEnvironment::globals`]).
     globals: Option<Arc<RecordValues>>,
-    other_globals: BTreeMap<(u64, u64), String>,
+    other_globals: OtherGlobalValues,
     /// `Get ( RecordNumber )` ([`WriteContext::record_number`]).
     record_number: Option<RecordNumber>,
     file_variables: Option<WriteFileVariables>,
@@ -887,7 +900,10 @@ impl RecordEnvironment {
             limits: self.limits,
             related: self.lookups.related.clone(),
             globals: self.globals.clone(),
-            other_globals: self.lookups.other_globals.clone(),
+            other_globals: context
+                .other_globals
+                .clone()
+                .unwrap_or_else(|| self.lookups.other_globals.clone()),
             record_number: context.record_number,
             file_variables: context.file_variables.clone(),
             related_needs: self.related_needs.clone(),
@@ -2934,6 +2950,41 @@ impl RecordPlan {
         reads
     }
 
+    /// Read the local Text globals needed by this plan. An unreadable or
+    /// styled value is omitted so only an evaluation that reads it fails.
+    pub fn read_other_globals(
+        &self,
+        mut read: impl FnMut(u64) -> Option<Arc<RecordValues>>,
+    ) -> Option<OtherGlobalValues> {
+        let mut tables = BTreeMap::<u64, BTreeSet<u64>>::new();
+        for (table, field) in self
+            .fields
+            .values()
+            .flat_map(PlannedField::formulas)
+            .flat_map(|expression| expression.other_globals.iter().copied())
+        {
+            tables.entry(table).or_default().insert(field);
+        }
+        if tables.is_empty() {
+            return None;
+        }
+        let mut texts = BTreeMap::new();
+        for (table, fields) in tables {
+            let Some(values) = read(table) else {
+                continue;
+            };
+            for field in fields {
+                let text = match values.get(field, 1) {
+                    None => String::new(),
+                    Some(Value::Text(value)) if value.is_plain() => value.as_str().to_owned(),
+                    _ => continue,
+                };
+                texts.insert((table, field), text);
+            }
+        }
+        Some(OtherGlobalValues(Arc::new(texts)))
+    }
+
     /// What the lookups `entry`'s write fires copy (auto-entry.md,
     /// Lookups), read from `source`, the host's records: for each lookup
     /// one of whose match fields the write changes, the copied field on the
@@ -2981,36 +3032,9 @@ impl RecordPlan {
         if !self.has_lookups() {
             return Ok(lookups);
         }
-        let mut global_fields = BTreeMap::<u64, BTreeSet<u64>>::new();
-        for (table, field) in self
-            .fields
-            .values()
-            .flat_map(PlannedField::formulas)
-            .flat_map(|expression| expression.other_globals.iter().copied())
-        {
-            global_fields.entry(table).or_default().insert(field);
-        }
-        for (table, fields) in global_fields {
-            let values = source.globals(table).map_err(|error| {
-                DataError::with_code(
-                    error.code(),
-                    "A global field read by auto-entry could not be read. No values were changed.",
-                )
-            })?;
-            for field in fields {
-                let text = match values.get(field, 1) {
-                    None => String::new(),
-                    Some(Value::Text(value)) if value.is_plain() => value.as_str().to_owned(),
-                    _ => {
-                        return Err(DataError::with_code(
-                            error::UNAVAILABLE,
-                            "A global field read by auto-entry is not plain Text.",
-                        ));
-                    }
-                };
-                lookups.other_globals.insert((table, field), text);
-            }
-        }
+        lookups.other_globals = self
+            .read_other_globals(|table| source.globals(table).ok())
+            .unwrap_or_default();
         let (row, dirty) = self.written(existing, changes, entry)?;
         for (id, field) in &self.fields {
             let Some(lookup) = &field.lookup else {
@@ -3482,6 +3506,7 @@ impl RecordPlan {
         for field in &expression.other_globals {
             let text = session
                 .other_globals
+                .0
                 .get(field)
                 .ok_or_else(missing_other_globals)?;
             if !text.is_empty() {
@@ -5248,6 +5273,7 @@ impl RecordPlan {
         for field in &expression.other_globals {
             let text = session
                 .other_globals
+                .0
                 .get(field)
                 .ok_or_else(missing_other_globals)?;
             global_values
@@ -7856,6 +7882,7 @@ mod tests {
             // (#1038).
             record_number: Some(RecordNumber::Window(3)),
             file_variables: None,
+            other_globals: None,
         };
         let created = write(known.clone(), WriteMode::Create).unwrap();
         assert_eq!(

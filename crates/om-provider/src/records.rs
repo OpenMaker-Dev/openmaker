@@ -866,7 +866,16 @@ impl NativeProvider {
     ) -> Result<WriteContext, DataError> {
         use om_data::host::session::selector;
         let reads = plan.context_reads();
-        let mut context = WriteContext::default();
+        let mut context = WriteContext {
+            other_globals: plan.read_other_globals(|table| {
+                self.read_calc_data(&[om_data::host::CalcNeed::Globals { table }])
+                    .ok()?
+                    .globals
+                    .get(&table)
+                    .cloned()
+            }),
+            ..Default::default()
+        };
         if self.local.is_some() && plan.reads_auto_entry_file_variables() {
             context.file_variables = Some(self.external.file_variables());
         }
