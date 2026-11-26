@@ -68,7 +68,7 @@ use crate::transfer::{
     page_limit, DownloadMemory, Owner, Refused, Transfers, Upload, MAX_PRE_LOGIN_UPLOAD, MAX_UPLOAD,
 };
 use crate::uploads::{self, Charge, UploadMemory};
-use crate::writes::{self, Mailboxes};
+use crate::writes::{self, Mailboxes, Taken};
 use om_data::host::security::{RecordAction, SetAccess};
 use om_query::Context as QueryContext;
 
@@ -1457,6 +1457,7 @@ impl Connection {
                         .get(&header.file_id)
                         .filter(|f| f.account.is_some())
                     {
+                        let path = request.path.clone();
                         let release = ReleaseLock {
                             connection: session.connection_id,
                             request,
@@ -1465,6 +1466,11 @@ impl Connection {
                             .engine
                             .submit(&file.hosted, Operation::ReleaseLock(release));
                         outcome.notices.deliver(&file.hosted, &shared.mailboxes);
+                        // The record's lock released, a commit of it is no
+                        // longer the one its failed save interrupted.
+                        if let Some(temp) = session.temp.get_mut(&header.file_id) {
+                            temp.forget_lost(&path);
+                        }
                     }
                     write::echo_header(&header)
                 })
@@ -1511,12 +1517,17 @@ impl Connection {
             code if code == Opcode::KillAllLocks as u8 => write::parse_kill_all_locks_request(txn)
                 .map(|request| {
                     if let Some(file) = session.open.get(&header.file_id) {
+                        let txn = (!request.all).then_some(request.txn);
                         let release = ReleaseLocks {
                             connection: session.connection_id,
                             request,
                         };
                         let operation = Operation::ReleaseLocks(release);
                         shared.engine.submit(&file.hosted, operation);
+                        // As for op62: the transaction's commits start over.
+                        if let Some(temp) = session.temp.get_mut(&header.file_id) {
+                            temp.forget_lost_of(txn);
+                        }
                     }
                     write::echo_header(&header)
                 }),
@@ -4023,6 +4034,7 @@ fn commit(
         .entry(header.file_id)
         .or_insert_with(|| writes::TempArea::new(Charge::none(&shared.upload_memory, client)));
     let (staged, lent) = temp.lend(&list);
+    let lost = temp.lost_named(&list, user.txn);
     // The account's set decides each record's action under the write lock
     // (`writes::refused_action`); a refused commit writes nothing, and fails
     // as one not saved does (FileMaker Pro checks first and reports 200).
@@ -4037,20 +4049,33 @@ fn commit(
         access,
         list,
         staged,
+        lost,
         withheld,
     };
     before_engine_write(shared, &hosted);
     let outcome = shared
         .engine
         .submit(&hosted, Operation::CommitRecords(commit));
+    // The commit's outcome is known here, its save done or taken back (a
+    // panic in the engine is answered too, with another reply): each
+    // record it took that it did not store is recorded as lost, so that
+    // the same commit sent again without it is refused (#839 of
+    // github.com/OpenMaker-Dev/openmaker). No record lent is left neither
+    // staged, stored nor lost.
+    let lost = Taken::Lost { txn: user.txn };
     let committed = match outcome.reply {
         Reply::CommitRecords(committed) => committed,
         other => {
-            temp.settle(lent, Default::default());
+            temp.settle(lent, Default::default(), lost);
             return Err(mismatched(&other));
         }
     };
-    temp.settle(lent, committed.unused);
+    let taken = if committed.result.is_ok() {
+        Taken::Stored
+    } else {
+        lost
+    };
+    temp.settle(lent, committed.unused, taken);
     let reply = match committed.result {
         Ok(()) => {
             outcome.notices.deliver(&hosted, &shared.mailboxes);

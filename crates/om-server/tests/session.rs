@@ -660,9 +660,8 @@ fn start_with_little_upload_memory(file: &fixture::TempFile) -> u16 {
 
 /// Staging past what one client address may hold of the server's upload
 /// memory is refused before any of the upload is staged: committing a
-/// record that the refused upload held is refused too, as it names a record
-/// with nothing staged (#839 of github.com/OpenMaker-Dev/openmaker), and
-/// changes nothing, while the same change staged within the limit commits.
+/// record that the refused upload held changes nothing, while the same
+/// change staged within the limit commits.
 #[test]
 fn refuses_staging_past_what_one_address_may_hold() {
     use om_hbam::slot::uint_segment;
@@ -684,9 +683,10 @@ fn refuses_staging_past_what_one_address_may_hold() {
             session.lock(&path, txn, true).unwrap(),
             om_protocol::write::LockReply::Granted { .. }
         ));
-        let committed = session.commit_records(&table, vec![changed()], txn);
+        session
+            .commit_records(&table, vec![changed()], txn)
+            .unwrap();
         session.kill_all_locks(txn).unwrap();
-        committed
     };
 
     let (mut full, _) = server::logged_in(port, "full");
@@ -696,7 +696,7 @@ fn refuses_staging_past_what_one_address_may_hold() {
     let mut records = vec![record("refused")];
     records.extend((next..next + 16_000).map(|id| OwnedNode::leaf(serial::encode(id), [])));
     assert!(full.upload_records(&table, records).is_err());
-    assert!(commit(&mut full, 0x31).is_err());
+    commit(&mut full, 0x31);
     let names = server::records_of(&mut full, fixture::TABLE);
     assert_eq!(server::cell(&names, 1, fixture::NAME), Some("Write tests"));
 
@@ -705,7 +705,7 @@ fn refuses_staging_past_what_one_address_may_hold() {
     within
         .upload_records(&table, vec![record("staged")])
         .unwrap();
-    commit(&mut within, 0x32).unwrap();
+    commit(&mut within, 0x32);
     let names = server::records_of(&mut within, fixture::TABLE);
     assert_eq!(server::cell(&names, 1, fixture::NAME), Some("staged"));
 }
