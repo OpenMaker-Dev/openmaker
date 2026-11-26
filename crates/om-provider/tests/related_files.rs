@@ -8549,14 +8549,17 @@ fn a_previewed_portal_row_stores_the_values_its_preview_showed() {
 /// file (#43), as a portal row of its table is (#1047). On Root's layout of
 /// Remote Tasks, Related's `Stamp` auto-enters `Get ( UUID )`, `Serial` a
 /// serial number on creation (next 7) and `Number` `Get ( RecordNumber )`:
-/// - The preview shows the UUID, 7 and the window's record number 3. It
-///   writes nothing and reserves the serial once.
+/// - With the window showing record 2 only, the preview shows the UUID, 7
+///   and the window's record number 2. It writes nothing and reserves the
+///   serial once.
 /// - The write naming it, outside a transaction, stores those values in
 ///   Related without reserving again, and the window's found set takes
 ///   the record. The preview is then used up.
 /// - Inside a script's transaction a second preview's held write stores
-///   its values when Commit Transaction commits.
-/// - A preview of Root's own table named there is refused (3).
+///   its values when Commit Transaction commits. One skipping auto-enter
+///   options previews with them, before Related takes part in it.
+/// - A preview of Root's own table named there is refused (3), and so is a
+///   portal row's preview of the same table through another layout.
 #[test]
 fn a_new_record_of_another_files_layout_stores_the_values_its_preview_showed() {
     use om_protocol::Opcode;
@@ -8644,26 +8647,30 @@ fn a_new_record_of_another_files_layout_stores_the_values_its_preview_showed() {
             .collect::<Vec<_>>()
     };
 
+    // The window shows record 2 only.
+    provider
+        .change_found_set(layout, om_data::found::FoundSetChange::Records(vec![2]))
+        .unwrap();
     let (before, serials) = (written(), reserved());
     let preview = provider
-        .preview_new_record(&new("Previewed", 3))
+        .preview_new_record(&new("Previewed", 2))
         .unwrap()
         .expect("the owning file previews the layout's new record");
     let uuid = preview.values[&STAMP].clone().unwrap();
     assert_eq!(uuid.len(), 36, "{uuid}");
     assert_eq!(preview.values[&SERIAL].as_deref(), Some("7"));
-    assert_eq!(preview.values[&NUMBER].as_deref(), Some("3"));
+    assert_eq!(preview.values[&NUMBER].as_deref(), Some("2"));
     assert!(!preview.values.contains_key(&NAME), "the write's own cell");
     assert_eq!(written(), before, "a preview writes nothing");
     assert_eq!(reserved(), serials + 1, "its serial is reserved once");
 
     // Written outside a transaction with what the preview drew.
     let made = provider
-        .write_record(&named(new("Previewed", 3), preview.id))
+        .write_record(&named(new("Previewed", 2), preview.id))
         .unwrap();
     assert_eq!(reserved(), serials + 1, "no second reservation");
-    assert_eq!(stored(made.id), ["Previewed", uuid.as_str(), "7", "3"]);
-    assert_eq!(found(&mut provider), [1, 2, made.id]);
+    assert_eq!(stored(made.id), ["Previewed", uuid.as_str(), "7", "2"]);
+    assert_eq!(found(&mut provider), [2, made.id]);
     // Used up by the write.
     let again = provider.write_record(&named(new("Again", 3), preview.id));
     assert_eq!(again.unwrap_err().code, Some(3));
@@ -8671,18 +8678,43 @@ fn a_new_record_of_another_files_layout_stores_the_values_its_preview_showed() {
     // Held in a script's transaction, stored by its commit.
     provider.begin_transaction(Default::default()).unwrap();
     let second = provider
-        .preview_new_record(&new("Held", 4))
+        .preview_new_record(&new("Held", 3))
         .unwrap()
         .unwrap();
     let second_uuid = second.values[&STAMP].clone().unwrap();
     assert_ne!(second_uuid, uuid);
     assert_eq!(second.values[&SERIAL].as_deref(), Some("8"));
     let held = provider
-        .write_record(&named(new("Held", 4), second.id))
+        .write_record(&named(new("Held", 3), second.id))
         .unwrap();
     provider.commit_transaction(false).unwrap();
     assert_eq!(reserved(), serials + 2);
-    assert_eq!(stored(held.id), ["Held", second_uuid.as_str(), "8", "4"]);
+    assert_eq!(stored(held.id), ["Held", second_uuid.as_str(), "8", "3"]);
+
+    // A script's transaction skipping auto-enter options: the preview,
+    // before Related takes part in the transaction, is computed with them,
+    // as the held write is. No UUID or serial number is entered, and none
+    // is reserved.
+    let skipping = om_data::runtime::TransactionOptions {
+        skip_auto_enter: true,
+        ..Default::default()
+    };
+    provider.begin_transaction(skipping).unwrap();
+    let skipped = provider
+        .preview_new_record(&new("Skipped", 4))
+        .unwrap()
+        .unwrap();
+    assert!(
+        !skipped.values.contains_key(&STAMP) && !skipped.values.contains_key(&SERIAL),
+        "{skipped:?}"
+    );
+    assert_eq!(reserved(), serials + 2, "nothing reserved");
+    let plain = provider
+        .write_record(&named(new("Skipped", 4), skipped.id))
+        .unwrap();
+    provider.commit_transaction(false).unwrap();
+    assert_eq!(reserved(), serials + 2);
+    assert_eq!(stored(plain.id)[..3], ["Skipped", "", ""]);
 
     // A preview of Root's own table is of another record there.
     let own = provider
