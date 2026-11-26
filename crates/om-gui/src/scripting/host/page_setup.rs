@@ -161,19 +161,14 @@ impl WorkerHost<'_> {
                 return;
             }
         };
-        if let Some(bytes) = &stored {
-            match Settings::restored(bytes) {
-                Ok(settings) if same_paper(&settings.paper, paper) => return,
-                Ok(_) => {}
-                Err(reason) => {
-                    log::warn!(
-                        "The file's page setup was kept: OpenMaker cannot read it ({reason})."
-                    );
-                    return;
-                }
+        let value = match plan_save(stored.as_deref(), paper) {
+            Save::Unchanged => return,
+            Save::Keep(reason) => {
+                log::warn!("The file's page setup was kept: OpenMaker cannot read it ({reason}).");
+                return;
             }
-        }
-        let value = paper.common_format();
+            Save::Write(value) => value,
+        };
         match self.p().store_page_format(stored.as_deref(), &value) {
             Ok(true) => self.s.file.page_format_saved = Some(value.to_vec()),
             Ok(false) => {}
@@ -185,16 +180,37 @@ impl WorkerHost<'_> {
     }
 }
 
-/// Whether a stored setup, read back from its f32s, is `paper`: equal, as
-/// a setup read from the file and not edited is, or with the same
-/// orientation, scale and sheet once encoded, the f32 coordinates a page
-/// format holds: the `Comm` chunk through the sheet's bottom edge, its
-/// first 29 bytes (the printable size follows from them). A setup
-/// OpenMaker saved reads back so, and an edit a page format can hold
-/// differs. FileMaker Pro's A4 (595 x 842) is not OpenMaker's (595.28 x
-/// 841.89).
-fn same_paper(stored: &PaperSettings, paper: &PaperSettings) -> bool {
-    stored == paper || stored.common_format()[..29] == paper.common_format()[..29]
+/// What saving `paper` over `stored`, what the file stores, comes to.
+enum Save {
+    /// It would change nothing, and Pro's records stay.
+    Unchanged,
+    /// The file's setup does not read, and is kept: why.
+    Keep(String),
+    /// The `Comm` chunk to write.
+    Write([u8; 37]),
+}
+
+/// A save changes nothing when the file already stores every byte `paper`
+/// encodes to (a setup this session saved), or when `paper` is the file's
+/// own setup, read and not edited, equal to it. Otherwise any byte the
+/// encoder writes may differ, even the printable size alone, which an
+/// edit below the sheet's f32 step changes, and it is written. A setup
+/// read back from its f32s is not compared with a new encoding of it: that
+/// is what tells a small edit apart. FileMaker Pro's A4 (595 x 842) is not
+/// OpenMaker's (595.28 x 841.89).
+fn plan_save(stored: Option<&[u8]>, paper: &PaperSettings) -> Save {
+    let value = paper.common_format();
+    if stored == Some(&value[..]) {
+        return Save::Unchanged;
+    }
+    if let Some(bytes) = stored {
+        match Settings::restored(bytes) {
+            Ok(settings) if settings.paper == *paper => return Save::Unchanged,
+            Ok(_) => {}
+            Err(reason) => return Save::Keep(reason),
+        }
+    }
+    Save::Write(value)
 }
 
 #[cfg(test)]
@@ -202,30 +218,59 @@ mod tests {
     use super::*;
     use om_layout::paper::Orientation;
 
-    /// Each sheet field a save writes tells two setups apart: US Letter and
-    /// US Legal differ only in the sheet's bottom edge. A setup OpenMaker
-    /// saved is the same paper as it reads back, though not equal to it.
+    /// Every byte a save writes tells two setups apart, and a setup that
+    /// would change nothing is not written again.
     #[test]
-    fn a_stored_setup_is_the_same_paper_only_when_its_sheet_is() {
+    fn a_page_setup_is_written_when_any_byte_it_encodes_to_differs() {
+        let written = |stored: Option<&[u8]>, paper: &PaperSettings| match plan_save(stored, paper)
+        {
+            Save::Write(value) => Some(value),
+            Save::Unchanged => None,
+            Save::Keep(reason) => panic!("kept: {reason}"),
+        };
         let letter = PaperSettings::default();
+        let saved = letter.common_format();
+        // US Legal differs from US Letter only in the sheet's bottom edge.
         let legal = PaperSettings {
             height: 1008.0,
             ..letter.clone()
         };
-        assert!(!same_paper(&letter, &legal));
+        assert_eq!(written(Some(&saved), &legal), Some(legal.common_format()));
+        // A width edit too small to move the sheet's right edge in f32
+        // (512 either way) still moves the printable width (494 against
+        // 494.0000305), and is written.
+        let narrow = PaperSettings {
+            width: 530.0,
+            ..letter.clone()
+        };
+        let edited = PaperSettings {
+            width: 530.00002,
+            ..letter.clone()
+        };
+        let (before, after) = (narrow.common_format(), edited.common_format());
+        assert_eq!(before[..29], after[..29]);
+        assert_ne!(before, after);
+        assert_eq!(written(Some(&before), &edited), Some(after));
+        // Unchanged: a setup this session saved, accepted again; and the
+        // file's own setup read and not edited, FileMaker Pro's A4 (#876's
+        // run L), whose 41-point bottom margin OpenMaker would not encode.
         let a4 = PaperSettings {
             width: 595.2756,
             height: 841.8898,
             orientation: Orientation::Landscape,
             scale: 0.5,
         };
-        let back = Settings::restored(&a4.common_format()).unwrap().paper;
-        assert!(back != a4 && same_paper(&back, &a4));
+        assert_eq!(written(Some(&a4.common_format()), &a4), None);
+        let pro: &[u8] = b"Comm\x00\x00\x00\x1d\x00\x3f\x80\x00\x00\xc1\x90\x00\x00\xc1\x90\x00\x00\x44\x10\x40\x00\x44\x4e\x00\x00\x44\x0b\xc0\x00\x44\x43\xc0\x00";
+        let read = Settings::restored(pro).unwrap().paper;
+        assert_ne!(read.common_format()[..], *pro);
+        assert_eq!(written(Some(pro), &read), None);
+        // OpenMaker's A4 is not Pro's.
         let pro_a4 = PaperSettings {
             width: 595.0,
             height: 842.0,
             ..a4.clone()
         };
-        assert!(!same_paper(&pro_a4, &a4));
+        assert!(written(Some(&pro_a4.common_format()), &a4).is_some());
     }
 }
