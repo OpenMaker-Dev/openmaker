@@ -920,6 +920,23 @@ persisted at close. The timing of the counter write before close and
 the result of reverting a newly created record were not measured.
 [O, closed-file readback](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7185027447).
 
+### A calculated global reading another global
+
+FileMaker Pro 26.1.1 on a local file measured global Text `Input` with
+option word `0x00010000` and replacing calculated global Text `Output`
+with word `0x00010088`. Both had one repetition and no validation.
+The calculation read `Input` into one `Let` binding, then returned the
+binding or an empty Text literal.
+
+Set Field on Input updates Output at once, including a same-value
+assignment or a clear. The record stays closed. An edit to a separate
+ordinary field opens the record and keeps both globals. Ordinary unsorted
+New Record re-evaluates Output from the current Input before commit.
+The input stays as it was. The global values appear in the file-global
+cells on close, and an empty output has no stored cell. No row contains
+either global. Each tested step returned 0 with no alert.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1138#issuecomment-7204722907)
+
 ### Self in a calculated global Text auto-entry
 
 [O, FileMaker Pro 26.1.1] A local single-repetition global Text field

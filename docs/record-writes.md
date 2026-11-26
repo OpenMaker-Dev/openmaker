@@ -846,6 +846,17 @@ in memory for the session. See the native
 observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
 and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
 
+A local single-repetition replacing global Text calculation
+(`0x00010088`) can read one plain global Text field of the same
+occurrence (`0x00010000`). Both fields have zero validation flags. The
+supported `Let` returns that binding or empty Text. Scripted Set Field on
+the input updates the output immediately, including same-value writes
+and clears, with no record opened. Ordinary unsorted New Record reads the
+current input and updates the output at creation. Both values belong to
+the session globals. This scope covers scripted assignments and ordinary
+unsorted New Record in the owning local desktop file.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1138#issuecomment-7204722907)
+
 A calculated global Text field with the measured empty-Self default can
 retain its value or append a literal suffix. Ordinary New Record reads
 the current session value. Scripted Set Field reads its assigned text.

@@ -2137,7 +2137,16 @@ impl NativeProvider {
             text,
         )?
         .unwrap_or_else(|| text.to_owned());
-        Ok(om_data::GlobalChanges::from([((field, repetition), value)]))
+        let mut changes = om_data::GlobalChanges::new();
+        if local && repetition == 1 {
+            if let Some(table) = self.catalog.table(table) {
+                changes.extend(om_data::rules::global_text_input_changes(
+                    &schema, table, field, &value,
+                ));
+            }
+        }
+        changes.insert((field, repetition), value);
+        Ok(changes)
     }
 
     /// The text a user's typing `text` into repetition `repetition` of
