@@ -169,6 +169,16 @@ name and user name are distinct variables. The table describes the selected
 variable; it does not establish when creation and modification defaults are
 scheduled, including initialization of modification fields on creation.
 
+FileMaker Pro 26.1.1 allows Creation Time on a Text field and retains the
+option when a Time field is converted to Text. Both Text fields use the
+creation selector `01` and option word `0x00000001`. With a local English
+12-hour file and system locale, New Record stored the same time-of-day
+string as a Time field's stored text, including seconds and the AM/PM
+suffix. An unrelated edit, a later commit, reopen and the Time field's
+24-hour layout display kept that Text value. A 24-hour file or system
+locale remains unmeasured.
+[Native results](https://github.com/OpenMaker-Dev/openmaker/issues/1035#issuecomment-7185794163).
+
 On FileMaker Pro 26.1.1, a local Text field with the calculated
 auto-enter `$$Marker` read the current file's variable at New Record.
 The two Text assignments produced two corresponding stored values. An
@@ -367,6 +377,16 @@ lookups; the values are then read through it:
   data-entry conversion is applied.
 - An empty related value is copied as empty (asset 2's date and time).
 
+A local Text equality check in FileMaker Pro 26.1.1 used a regular Text
+key with calculated auto-enter. A constant formula produced its key and
+copied value at New Record. A formula that read a Text input left the
+new key and copy empty until Set Field supplied the input. With "Do not
+replace existing value" off (option word `0x00000088`), changing the input
+changed the key and copied value at Set Field. With it on
+(`0x00000008`), the original key and copied value stayed. The values
+survived commit and reopen.
+[Native steps and results](https://github.com/OpenMaker-Dev/openmaker/issues/1036#issuecomment-7185794524).
+
 FileMaker Pro 26.1.1, a local two-table Text lookup over an equality
 relationship with "If no exact match: Use" selected
 ([native steps and results](https://github.com/OpenMaker-Dev/openmaker/issues/1020#issuecomment-7185793871)):
@@ -385,8 +405,8 @@ relationship with "If no exact match: Use" selected
 Unmeasured for this option: explicit clear with a blank fallback, a replacing
 `Get ( UUID )` match key, hosting, imports and other field types. More generally,
 copying the next lower or higher value, container fields, Relookup Field
-Contents, and which of several matches an unsorted relationship gives remain
-unmeasured here.
+Contents, which of several matches an unsorted relationship gives, and
+additional scripted and import cases remain unmeasured here.
 
 ## Calculations over related fields
 
@@ -486,6 +506,29 @@ Not measured: an unstored calculation over a related or global field, a
 chain of unstored calculations, a summary of another kind or over a
 sorted found set, and FileMaker Pro's own data entry.
 
+## Creation Date with a calculated auto-entry value
+
+FileMaker Pro 26.1.1 kept both options on one local Date field after
+reopening, in either authoring order. New Record yielded the creation
+date, including with a calculation that yields a different date and
+with replacement enabled. An explicit date assigned before the first
+commit survived reopening. The conditional formula reads its own field
+and returns that value when present. It does not read `Note`, so the
+unchanged date after editing `Note` does not establish re-evaluation.
+Closed copies store option words `0x00000009` (keep an existing value)
+and `0x00000089` (replace), both with Creation Date selector `0x00`
+and a saved calculation member. In a subsequent local run, changing a
+referenced `Start` date after reopening immediately replaced the creation
+date with `Start + 30` when replacement was enabled. With replacement off,
+clearing the target left it empty until a later `Start` edit calculated a
+new date. The latter formula did not read the target itself. The timing
+of a dependency edit before the first commit, the internal evaluation
+order at creation, the always-evaluate option, Prohibit modification and
+hosted behavior remain unmeasured.
+[Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7184309937).
+[Closed-file readback](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7185113183).
+[Post-creation measurements](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7185359635).
+
 ## A new record's own self-join
 
 A new record's auto-entered calculation, reading its own table through a
@@ -569,12 +612,24 @@ committed key already matches is among them, in its creation place, read
 with the values being written (a1x, not a1). Aggregates and the first
 related record read that set.
 
+**Unsorted group join with unequal row keys.** FileMaker Pro 26.1.1
+measured two predicates on the same table: equal Text group keys and
+unequal Text record keys, with no relationship sort. The Time field's
+do-not-replace formula read fields of the first related row directly.
+New Record, setting the date and time, and the first commit left the
+result empty while the group key was empty. After assigning the group
+key on the second and third rows, the result became `0:00:10` and
+`0:00:30` during Set Field. Commit and reopen retained those values.
+The two intervals identify the oldest matching row in this setup. The
+first row retained an empty result after the later rows joined its group.
+[Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7184309703).
+
 Still unmeasured:
-- sorted or non-equality joins, a join on more than one predicate,
+- sorted joins and other non-equality and multi-predicate joins,
   stored calculations and validation, and portal rows created in one
   commit (the transaction case is a script's);
-- the stored witness for an auto-entry configured to keep the value
-  it first enters;
+- other stored outcomes for auto-entry that keeps its first value,
+  including additional writes between the group assignment and commit;
 - whether FileMaker Pro reads the same in a local file for these cases (the
   one-older-match case above agrees). Applying the reading to keys the
   record auto-enters itself is inference.
@@ -597,6 +652,14 @@ that saves without a dialog. Hosted behavior is unmeasured.
 
 ## Get ( RecordNumber )
 
+FileMaker Pro 26.1.1 [measured sorted ordinary New Record](https://github.com/OpenMaker-Dev/openmaker/issues/1011)
+with a stored Number calculation consisting of `Get ( RecordNumber )`.
+When sorted, a new row initially follows the current row. When unsorted,
+it goes at the end. A new window kept the found set, sort and current
+record. The stored value held the insertion position across commit and
+later reordering. The live record number changed from 3 to 2 in one
+sorted case while the stored value remained 3.
+
 **Stored Number calculation.** [O: FileMaker Pro 26.1.1, local disposable
 file, [#1011](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7184565879).]
 FileMaker lets a Number calculation whose entire formula is
@@ -609,9 +672,8 @@ the window position while the stored result stayed as first evaluated. In
 one descending sorted set, New Record produced a stored 2 and window
 position 2. The closed copies held the stored numbers across unrelated
 edits and reopening. All script steps returned 0 with no alerts. Timing
-before the first read and the general sorted insertion rule remain
-unmeasured, as do duplicates, portals and hosted files for this stored
-formula.
+before the first read remains unmeasured, as do duplicates, portals and
+hosted files for this stored formula.
 
 Two cases [O: FileMaker Pro 26.0.3, a local disposable pair made in the
 native UI, #1038, relayed sanitized].
@@ -727,8 +789,20 @@ case on FileMaker Server 26.0.3 followed the same sequence in the open
 session. After reopening, the hosted global was empty again.
 [O, disposable FileMaker Pro runs](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7183655256).
 
-Unknowns include a second New Record with a nonempty global and a
-calculated default configured to keep an existing value.
+A second local run started each variant with an empty global, created
+and committed a record, set the global to `Y`, then created and committed
+another record. The second New Record entered `X` for a constant or a
+replacing calculation, retained `Y` for a calculation with replacement
+off, and entered `2` for the creation serial with an increment of 1.
+All steps returned 0 and the resulting globals survived a local reopen.
+[O, second New Record](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7184310177).
+
+Closed copies read back the serial's next-value member `0c` as `1`
+before creation, `2` after one creation, and `3` after two. The resulting
+records had no cell for the global field. This measures the counter
+persisted at close. The timing of the counter write before close and
+the result of reverting a newly created record were not measured.
+[O, closed-file readback](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7185027447).
 
 ## A stored calculation before the commit
 
