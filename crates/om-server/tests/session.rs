@@ -2447,8 +2447,13 @@ impl Client {
 
     /// [`Client::opened`], logged in as Admin.
     fn logged_in(&self, port: u16) -> (Session, u32) {
+        self.logged_in_as(port, fixture::ACCOUNT, fixture::PASSWORD)
+    }
+
+    /// [`Client::opened`], logged in as `account`.
+    fn logged_in_as(&self, port: u16, account: &str, password: &str) -> (Session, u32) {
         let (mut session, file_id) = self.opened(port);
-        log_in(&mut session);
+        log_in_as(&mut session, account, password);
         (session, file_id)
     }
 
@@ -2463,19 +2468,82 @@ impl Client {
         .unwrap();
         Joiner { transport }
     }
+
+    /// [`Client::transport`], the server seeing it come from `source`,
+    /// another loopback address, as from another computer.
+    #[cfg(target_os = "linux")]
+    fn transport_from(&self, port: u16, source: [u8; 4]) -> Joiner {
+        self.transport(relay_from(port, source))
+    }
+}
+
+/// A port on 127.0.0.1 that relays one connection to the server on `port`
+/// from `source`, as `tests/logins.rs` does.
+#[cfg(target_os = "linux")]
+fn relay_from(port: u16, source: [u8; 4]) -> u16 {
+    use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let relay_port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        let (client, _) = listener.accept().unwrap();
+        let socket =
+            socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+        socket.bind(&SocketAddr::from((source, 0)).into()).unwrap();
+        socket
+            .connect(&SocketAddr::from(([127, 0, 0, 1], port)).into())
+            .unwrap();
+        let server = TcpStream::from(socket);
+        let (to_server, from_client) = (server.try_clone().unwrap(), client.try_clone().unwrap());
+        let up = std::thread::spawn(move || {
+            let _ = std::io::copy(&mut &from_client, &mut &to_server);
+            let _ = to_server.shutdown(Shutdown::Write);
+        });
+        let _ = std::io::copy(&mut &server, &mut &client);
+        let _ = client.shutdown(Shutdown::Write);
+        let _ = up.join();
+    });
+    relay_port
 }
 
 fn log_in(session: &mut Session) {
+    log_in_as(session, fixture::ACCOUNT, fixture::PASSWORD);
+}
+
+fn log_in_as(session: &mut Session, account: &str, password: &str) {
     let environment = LoginEnvironment::for_remote_file("127.0.0.1", fixture::FILE);
     let login = session
-        .login(
-            fixture::ACCOUNT,
-            fixture::PASSWORD,
-            fixture::INTERNAL_CREATION,
-            &environment,
-        )
+        .login(account, password, fixture::INTERNAL_CREATION, &environment)
         .unwrap();
     assert!(login.is_success(), "{login:?}");
+}
+
+/// Set record `record`'s Name to `text` in one commit, under a lock
+/// (write-path.md 3); `Err` with what refused it.
+fn rename(session: &mut Session, record: u64, text: &str, txn: u32) -> Result<(), String> {
+    use om_hbam::{serial, slot::uint_segment, OwnedNode};
+    use om_protocol::write::LockReply;
+    let table = uint_segment(fixture::TABLE);
+    let name = uint_segment(fixture::NAME);
+    let key = serial::encode(record);
+    let path: [&[u8]; 3] = [&table, &[5], &key];
+    match session.lock(&path, txn, true).map_err(|e| e.to_string())? {
+        LockReply::Granted { .. } => {}
+        other => return Err(format!("lock: {other:?}")),
+    }
+    let staged = OwnedNode::list(
+        key.clone(),
+        vec![OwnedNode::leaf(name.clone(), om_scsu::encode_scsu(text))],
+    );
+    let saved = session
+        .upload_records(&table, vec![staged])
+        .and_then(|()| {
+            let changed = OwnedNode::list(key.clone(), vec![OwnedNode::leaf(name.clone(), [])]);
+            session.commit_records(&table, vec![changed], txn)
+        })
+        .map_err(|e| e.to_string());
+    session.kill_all_locks(txn).map_err(|e| e.to_string())?;
+    saved
 }
 
 /// A transport that sends Performs naming a session it did not start, as
@@ -2490,6 +2558,20 @@ impl Joiner {
         let request = om_protocol::build_perform_with_max(id, session, b"", txn, max_return);
         self.transport.send(&request).unwrap();
         self.transport.recv_logical().unwrap()
+    }
+
+    /// Whether the server closed the connection: a GIOP CloseConnection
+    /// or the end of the stream comes next. The server sends it right after
+    /// the reply, so half a second tells.
+    fn closed(&mut self) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        match self
+            .transport
+            .recv_logical_by(deadline, Some(std::time::Duration::from_secs(30)))
+        {
+            Ok(message) => message.get(7) == Some(&5),
+            Err(e) => !e.is_timeout(),
+        }
     }
 
     /// The result of a Perform of `txn` naming `session`, or the reply
@@ -2565,7 +2647,17 @@ fn a_second_transport_of_the_client_reads_from_its_session() {
         build_download_list, parse_download_reply, DownloadListRequest, Resume, DEFAULT_MAX_RETURN,
     };
     let file = with_large_subtree("joined-reads");
-    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+    // The seats are polled with refused reads: as many as it takes.
+    let (port, handle) = server::start_configured_with_handle(&file, |server| {
+        server.with_connection_limits(om_server::ConnectionLimits {
+            join_refusals: om_server::JoinRefusals {
+                per_address: u32::MAX,
+                per_connection: u32::MAX,
+                ..om_server::JoinRefusals::DEFAULT
+            },
+            ..om_server::ConnectionLimits::DEFAULT
+        })
+    });
     let client = Client::new();
     let (mut owner, file_id) = client.logged_in(port);
     let id = owner.identity().connection_id;
@@ -2953,4 +3045,211 @@ fn a_joined_read_during_commits_sees_each_commit_whole() {
     assert!(reading.join().unwrap() > 0);
     let records = server::records_of(&mut owner, fixture::TABLE);
     assert_eq!(server::cell(&records, 2, fixture::NAME), Some("version 19"));
+}
+
+/// The session's own certificate from another address does not join it:
+/// refused as an unknown id, where the same certificate from the session's
+/// address reads.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_second_transport_must_come_from_the_sessions_address() {
+    use om_protocol::{Resume, DEFAULT_MAX_RETURN};
+    let file = fixture::TempFile::new("joined-address", &[], true);
+    let port = server::start(&file);
+    let client = Client::new();
+    let (owner, file_id) = client.logged_in(port);
+    let id = owner.identity().connection_id;
+    let read = download_records(file_id, Resume::start());
+
+    let mut elsewhere = client.transport_from(port, [127, 0, 0, 2]);
+    assert_eq!(
+        elsewhere.raw(2, id, &read, DEFAULT_MAX_RETURN),
+        unknown_connection()
+    );
+    let mut here = client.transport(port);
+    assert!(here.perform(id, &read, DEFAULT_MAX_RETURN).is_ok());
+}
+
+/// Joining needs the certificate's key, not the certificate alone: the
+/// session's certificate presented with another key fails its handshake,
+/// and is answered nothing.
+#[test]
+fn the_handshake_proves_the_key_of_the_sessions_certificate() {
+    use om_protocol::{Resume, DEFAULT_MAX_RETURN};
+    let file = fixture::TempFile::new("joined-key", &[], true);
+    let port = server::start(&file);
+    let (alice, mallory) = (Client::new(), Client::new());
+    let (owner, file_id) = alice.logged_in(port);
+    let id = owner.identity().connection_id;
+    let read = download_records(file_id, Resume::start());
+    let request = om_protocol::build_perform_with_max(2, id, b"", &read, DEFAULT_MAX_RETURN);
+
+    // Alice's certificate, signed for with Mallory's key.
+    let forged = om_session::Transport::connect(
+        "127.0.0.1",
+        port,
+        alice.cert.as_bytes(),
+        mallory.key.as_bytes(),
+    );
+    let answered = forged.ok().and_then(|mut transport| {
+        transport.send(&request).ok()?;
+        transport.recv_logical().ok()
+    });
+    assert!(answered.is_none(), "a forged handshake was answered");
+    assert!(alice
+        .transport(port)
+        .perform(id, &read, DEFAULT_MAX_RETURN)
+        .is_ok());
+}
+
+/// A record a joined read serves withheld is one the session holds empty:
+/// its own connection may not then edit it, even once it may view it, as
+/// after a read of its own (#670). A session that read nothing may.
+#[test]
+fn a_joined_read_withholds_records_from_the_sessions_edits() {
+    use om_hbam::slot::uint_segment;
+    use om_protocol::{Resume, DEFAULT_MAX_RETURN};
+    // Temp's set views Tasks records where Name = "Ship", and edits them.
+    let mut root = fixture::tree(&[], true);
+    fixture::add_custom_clerk(&mut root);
+    let table = uint_segment(fixture::TABLE);
+    let set: [&[u8]; 6] = [&[23], &[2], &[5], &[4], &[5], &table];
+    let records = [&set[..], &[&[2]]].concat();
+    root.put(
+        &records,
+        om_hbam::OwnedNode::leaf(Vec::new(), vec![0x64, 0x03]),
+    );
+    let polish = fixture::calculated_calc("Name = \"Ship\"").polish.unwrap();
+    let limit = [&set[..], &[&[7], &[6]]].concat();
+    root.put(&limit, om_hbam::OwnedNode::leaf(Vec::new(), polish));
+    let file = fixture::TempFile::from_tree("joined-withheld", &root);
+    let port = server::start_configured(&file, |server| server.admitting_custom_sets());
+
+    let temp = Client::new();
+    let (mut own, file_id) = temp.logged_in_as(port, fixture::TEMP, fixture::TEMP_PASSWORD);
+    let id = own.identity().connection_id;
+    // Record 1 ("Write tests") is served without its values.
+    let read = download_records(file_id, Resume::start());
+    assert!(temp
+        .transport(port)
+        .perform(id, &read, DEFAULT_MAX_RETURN)
+        .is_ok());
+    let (mut admin, _) = Client::new().logged_in(port);
+    rename(&mut admin, 1, "Ship", 0x31).unwrap();
+
+    assert!(
+        rename(&mut own, 1, "Temp's", 0x32).is_err(),
+        "an edit of a record the session was served withheld"
+    );
+    let (mut fresh, _) = Client::new().logged_in_as(port, fixture::TEMP, fixture::TEMP_PASSWORD);
+    rename(&mut fresh, 1, "Fresh", 0x33).unwrap();
+    let records = server::records_of(&mut admin, fixture::TABLE);
+    assert_eq!(server::cell(&records, 1, fixture::NAME), Some("Fresh"));
+}
+
+/// Refused reads cost the address they come from: within its allowance a
+/// connection is answered and goes on, and the client's own join still
+/// reads; past it every such read from the address is refused unexamined
+/// and its connection closed, until the address earns one back. Another
+/// address keeps its own.
+#[cfg(target_os = "linux")]
+#[test]
+fn refused_reads_cost_their_address_its_allowance() {
+    use om_protocol::{Resume, DEFAULT_MAX_RETURN};
+    let file = fixture::TempFile::new("joined-allowance", &[], true);
+    let refill = std::time::Duration::from_secs(3);
+    let port = server::start_configured(&file, |server| {
+        server.with_connection_limits(om_server::ConnectionLimits {
+            join_refusals: om_server::JoinRefusals {
+                per_address: 4,
+                refill,
+                per_connection: 16,
+            },
+            ..om_server::ConnectionLimits::DEFAULT
+        })
+    });
+    let alice = Client::new();
+    let (owner, file_id) = alice.logged_in(port);
+    let id = owner.identity().connection_id;
+    let read = download_records(file_id, Resume::start());
+    let unknown = id.wrapping_add(1);
+
+    // Three refusals, then the client's own join: still read.
+    let mut hers = alice.transport(port);
+    for _ in 0..3 {
+        assert_eq!(
+            hers.raw(2, unknown, &read, DEFAULT_MAX_RETURN),
+            unknown_connection()
+        );
+    }
+    assert!(hers.perform(id, &read, DEFAULT_MAX_RETURN).is_ok());
+
+    // The fourth is answered; the fifth, past the allowance, closes.
+    let mut stranger = Client::new().transport(port);
+    assert_eq!(
+        stranger.raw(2, id, &read, DEFAULT_MAX_RETURN),
+        unknown_connection()
+    );
+    assert!(!stranger.closed(), "within the allowance");
+    assert_eq!(
+        stranger.raw(2, id, &read, DEFAULT_MAX_RETURN),
+        unknown_connection()
+    );
+    assert!(stranger.closed(), "past the allowance");
+    // Now even the client's own join from that address is not looked at.
+    assert_eq!(
+        hers.raw(2, id, &read, DEFAULT_MAX_RETURN),
+        unknown_connection()
+    );
+    assert!(hers.closed());
+
+    // Another address has its own allowance.
+    let mut there = Client::new().transport_from(port, [127, 0, 0, 2]);
+    assert_eq!(
+        there.raw(2, id, &read, DEFAULT_MAX_RETURN),
+        unknown_connection()
+    );
+    assert!(!there.closed());
+
+    // Earned back: the client's join reads again.
+    std::thread::sleep(refill + std::time::Duration::from_millis(300));
+    assert!(alice
+        .transport(port)
+        .perform(id, &read, DEFAULT_MAX_RETURN)
+        .is_ok());
+}
+
+/// A connection is closed at its own limit of refused reads, whatever its
+/// address's allowance.
+#[test]
+fn a_connection_is_closed_at_its_limit_of_refused_reads() {
+    use om_protocol::{Resume, DEFAULT_MAX_RETURN};
+    let file = fixture::TempFile::new("joined-connection-limit", &[], true);
+    let port = server::start_configured(&file, |server| {
+        server.with_connection_limits(om_server::ConnectionLimits {
+            join_refusals: om_server::JoinRefusals {
+                per_address: u32::MAX,
+                per_connection: 3,
+                ..om_server::JoinRefusals::DEFAULT
+            },
+            ..om_server::ConnectionLimits::DEFAULT
+        })
+    });
+    let client = Client::new();
+    let (owner, file_id) = client.logged_in(port);
+    let unknown = owner.identity().connection_id.wrapping_add(1);
+    let read = download_records(file_id, Resume::start());
+    let mut guesser = Client::new().transport(port);
+    for _ in 0..2 {
+        assert_eq!(
+            guesser.raw(2, unknown, &read, DEFAULT_MAX_RETURN),
+            unknown_connection()
+        );
+    }
+    assert!(!guesser.closed());
+    assert_eq!(
+        guesser.raw(2, unknown, &read, DEFAULT_MAX_RETURN),
+        unknown_connection()
+    );
+    assert!(guesser.closed());
 }

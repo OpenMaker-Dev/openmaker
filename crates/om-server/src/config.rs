@@ -165,6 +165,48 @@ pub struct ConnectionLimits {
     /// ends, to log out and disconnect before the server ends its session
     /// (`ServerHandle::disconnect_client_with_notice`).
     pub logout_wait: Duration,
+    /// What a refused read on a connection without a session of its own
+    /// costs its client ([`JoinRefusals`]).
+    pub join_refusals: JoinRefusals,
+}
+
+/// What a client meets when it names, on a connection without a session of
+/// its own, a session it may not read from (`crate::joins`, network-protocol.md
+/// 3): each such request is refused, and each refusal is counted against
+/// the connection and against its client's address (an IPv6 /64 counting
+/// as one). An address whose allowance is used up has every such request
+/// refused without being looked at, and each connection refused so is closed
+/// after its answer, as is a connection at its own limit. Guessing a
+/// session's id so costs about one guess every `refill` per address once the
+/// allowance is spent, whatever the client's certificate.
+///
+/// FileMaker Pro met 9 refusals in a row on its second connection, in the
+/// loop OpenMaker Server's refusals caused before #968, and none against
+/// FileMaker Server; an honest client meets one when its session has just
+/// ended. 16 leaves room for that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JoinRefusals {
+    /// Refusals one address may meet at once; 0 refuses every such read.
+    pub per_address: u32,
+    /// How often an address earns one back, up to `per_address`.
+    pub refill: Duration,
+    /// Refusals one connection may meet; at the last it is closed.
+    pub per_connection: u32,
+}
+
+impl JoinRefusals {
+    /// 16 per address, one more every 10 s; 16 per connection.
+    pub const DEFAULT: JoinRefusals = JoinRefusals {
+        per_address: 16,
+        refill: Duration::from_secs(10),
+        per_connection: 16,
+    };
+}
+
+impl Default for JoinRefusals {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 impl ConnectionLimits {
@@ -214,6 +256,7 @@ impl ConnectionLimits {
         upload_memory: 4 << 30,
         download_memory: 2 << 30,
         logout_wait: Duration::from_secs(30),
+        join_refusals: JoinRefusals::DEFAULT,
     };
 }
 

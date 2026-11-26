@@ -77,15 +77,21 @@ Observations (High unless noted):
   (0x1d4e240) returns false for AppType 3, so one application type skips
   verification entirely (Inference Medium: a server/engine context, not the
   interactive client).
-- Client certificate for the engine side: `FMSSLContext::SetContext(ca, key,
-  keypw)` (0x1542ff0) takes a CA file plus key/keypassword. For the interactive
-  client, `DBEngineController::SetSSLContext` (0x194b1b4) passes the regenerated
-  root PEM bundle as CA and empty key/keypw, i.e. no client key is installed by
-  default. `SSL_CTX_use_certificate`/`use_PrivateKey` appear only on the gRPC/tsi
-  path, not the RCFMP client path. Inference (Medium): stock FileMaker Pro does
-  not send a client cert, which is why bare probes without a throwaway cert are
-  rejected; a client-cert story for OpenMaker needs a cert chaining to a CA the
-  server accepts, or the server configured to request-but-not-require.
+- Client certificate. FileMaker Pro presents one on 5003: FileMaker Server
+  requires it (F10), and OpenMaker Server receives an X.509 version 1
+  certificate from FileMaker Pro 26, which `om-server`'s `tls.rs` accepts
+  for that reason [O: FileMaker Pro 26.0.3 against OpenMaker Server,
+  2026-10-28]. Where its key comes from is not traced: for the interactive
+  client `DBEngineController::SetSSLContext` (0x194b1b4) passes the
+  regenerated root PEM bundle as CA with an empty key and key password, and
+  `SSL_CTX_use_certificate`/`use_PrivateKey` appear only on the gRPC/tsi
+  path, so the certificate is set elsewhere (`FMSSLContext::SetContext(ca,
+  key, keypw)`, 0x1542ff0, takes one) [U]. FileMaker Pro 26.1.1 has code
+  both for a certificate tied to the machine's persistent id and for a
+  universal one (5.2, "FileMaker Pro 26.1.1"). Whether each copy's
+  certificate and key are its own (per machine, or per launch) or one every
+  copy carries is not measured; OpenMaker Server's rule for a session's
+  other connections rests on it (section 3).
 - Trust store: `Draco::FMCertificateStore` (Support) builds a PEM store
   (`root.pem`, `server.pem`, `certifiedroot.pem`; strings at DBEngine 0x220120a)
   seeded from the bundled `FileMaker Root Authority` (2013) and `Claris Root
@@ -256,7 +262,12 @@ Open flags `0x00a10000`.
   its `maxreturn` the same as on the first connection (about 1 MiB), and
   its header carries session id 1 and the id of a file the session had
   opened and logged in to 4 s before. Request ids are the connection's
-  own: 2, 4, 6, ...
+  own: 2, 4, 6, ... The header's session id is FileMaker Pro's own and
+  carries nothing a server issued: it was 1 in every request after Open on
+  every connection of both runs (0 in Open requests), against OpenMaker
+  Server too, whose replies hold no such value; the connection key and the
+  Open reply's 64-bit session value appear in no `Perform`. So nothing on
+  the wire but the connection id names the session.
 - The calls: an op92 Download List with flag 1 of an entry of the file's
   image library `[31, 5, x]`, its key list (280 bytes) whole in one
   request, then an op90 of that entry's `SVG ` member, which FileMaker
@@ -297,6 +308,13 @@ Unknowns:
 - whether FileMaker Pro presents the same client certificate on another
   connection, or resumes the first connection's TLS session: the relay
   presented its own certificate to the server and recorded neither;
+- whether that certificate and its key are the copy's own (per machine or
+  per launch) or one every copy carries: FileMaker Pro 26.1.1 holds
+  `GenerateNewKeyAndClientCertRequest` and a persistent id check beside
+  `ReadUniversalClientPemFile` (5.2, "FileMaker Pro 26.1.1"), so both kinds
+  may exist; the run in [#968](https://github.com/OpenMaker-Dev/openmaker/issues/968)
+  against OpenMaker Server, with its log of each connection's certificate,
+  is to tell;
 - which other calls go on another connection when the first is busy:
   locks, commits, scripts, Tickles
   ([#994](https://github.com/OpenMaker-Dev/openmaker/issues/994));
@@ -321,11 +339,25 @@ OpenMaker Server does with them, its own choices throughout (`om-server`'s
   byte (compared by SHA-256), and so proved it holds that certificate's
   private key (section 1; `tls::AnyClientCert` checks the handshake
   signature); it comes from the same IP address; the session is live, has
-  the request's file open and is logged in to it. The connection id alone
-  is not enough: it is 32 random bits, which a client allowed unlimited
-  guesses can find. Whether FileMaker Pro presents the same certificate on
-  both connections, and whether that certificate is its own or one every
-  copy carries, is not measured.
+  the request's file open and is logged in to it. Sessions are found by
+  their own connection's certificate and their id together, so a
+  connection with another certificate finds none, whatever the id.
+- What the rule rests on depends on the certificate. If each copy of a
+  client has its own, joining another session takes that copy's private
+  key. If one certificate is shared, by every copy of a product or by a
+  site's users, it proves nothing between those who share it; what is left
+  is the session's id (32 random bits, in the server's log and the Admin
+  API's client list), the address, and what guessing costs: each refused
+  read on a connection without a session counts against the connection and
+  against its address (an IPv6 /64 as one), 16 each by default
+  (`JoinRefusals`). An address that has met 16 has every such read refused
+  without being looked at, and the connection closed after its answer,
+  until it earns one back every 10 s; a connection is closed at its own
+  16th. A neighbour at the same address so gets a few dozen guesses and
+  then about one every 10 s; one that keeps it up also keeps that
+  address's honest second connections from joining meanwhile (their first
+  connections are untouched). FileMaker Pro met 9 refusals in a row on its
+  second connection in the loop above, none against FileMaker Server.
 - Such a connection reads as the session would at that moment: with the
   account of the session's latest Login, and adding what a privilege set's
   view limits withhold to the session's own record of it. It changes
@@ -337,23 +369,32 @@ OpenMaker Server does with them, its own choices throughout (`om-server`'s
 - Its requests do not keep the session alive, and it is closed after 145 s
   of silence, as a connection without a session (6.2). At most nine
   connections join one session, since FileMaker Pro opens at most 10 to a
-  server (section 2); a tenth is refused until one of them ends. Each is
-  counted at its accept under the server's caps on connections in all and
-  from one address, and none is a client in the administrator's list.
+  server (section 2); a tenth is refused until one of them ends. One
+  connection joins at most four sessions at once (FileMaker Pro keeps one
+  session per server, section 8, and named one live session at a time
+  above), and lets go of what it paged for a session once that session
+  ends. Each connection is counted at its accept under the server's caps on
+  connections in all and from one address, and none is a client in the
+  administrator's list.
 - The server's log gives, for each connection, its address, its TLS
   version, whether the handshake was full or resumed a session, and its
   client certificate's SHA-256; each join, with the session's id and the
   connection that owns it; each read served on a joined connection, with
-  its operation, file and session; each refusal on a connection without
-  a session, with the operation, the id it named and the condition that
-  failed (64 lines at most at once, then one every 10 s, the others
-  counted by condition into the next); and, when a joined connection
-  ends, how many reads of each kind it served. The client's answer is the
-  same for each condition.
+  its operation, file and session, and each refusal on a connection
+  without a session, with the operation, the id it named and the
+  condition that failed (of each, 64 lines at most at once, then one
+  every 10 s, the others counted into the next); and, when a joined
+  connection ends, how many reads of each kind it served. The client's
+  answer is the same for each condition.
 
 Limits. Only the two operations FileMaker Pro was seen sending there are
 served; the same client certificate on both connections is OpenMaker's
-requirement, not yet measured of FileMaker Pro. If, as section 2 suggests, any of its calls can travel on any of
+requirement, not yet measured of FileMaker Pro, and with a shared
+certificate the rule rests on the id, the address and the cost of guessing
+(above). How long a refusal takes differs, for a connection with the
+session owner's certificate, by the tens of nanoseconds a live id's grant
+takes to read; the allowance limits such a connection to a few dozen
+samples. If, as section 2 suggests, any of its calls can travel on any of
 its connections, a lock or a write it sends on a second connection while
 another call is out is still refused, and FileMaker Pro would reconnect as
 before ([#994](https://github.com/OpenMaker-Dev/openmaker/issues/994)). The

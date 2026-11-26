@@ -581,9 +581,12 @@ The connection keeps its entry current:
 Perform Script on Server sessions are not clients (inf); the running scripts
 list shows them. Nor are the connections that joined a session for its
 reads without a Connect of their own (re/network-protocol.md 3): a client
-is one entry however many connections it has. What FileMaker Server's
-Admin Console shows for a client with a second connection is not
-measured.
+is one entry however many connections it has. That holds while each
+client's certificate is its own; where clients share one certificate and
+one address, a joined connection may be another of them, which no list
+shows: the server's log line "joined session ... for its reads" is its
+only trace. What FileMaker Server's Admin Console shows for a client with
+a second connection is not measured.
 
 **Snapshots.** `ServerHandle::overview`, `files` and `clients`:
 

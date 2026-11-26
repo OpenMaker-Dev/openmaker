@@ -298,6 +298,7 @@ impl Server {
     /// The caps on connections and the time limits on each
     /// ([`ConnectionLimits::DEFAULT`] otherwise).
     pub fn with_connection_limits(mut self, limits: ConnectionLimits) -> Self {
+        self.shared.joins.set_limits(limits.join_refusals);
         self.shared.upload_memory.set_limit(limits.upload_memory);
         self.shared
             .download_memory
