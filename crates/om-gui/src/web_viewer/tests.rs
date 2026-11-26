@@ -157,7 +157,8 @@ fn perform(function: &str, parameters: &[&str]) -> Command {
 }
 
 /// A file's object bounds can be anything finite: the view's geometry
-/// stays bounded instead of overflowing (#953's review).
+/// stays bounded instead of overflowing, and no native view is made for
+/// it (#953's review).
 #[test]
 fn a_view_of_hostile_bounds_gets_bounded_geometry() {
     let window = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 600.0));
@@ -168,6 +169,7 @@ fn a_view_of_hostile_bounds_gets_bounded_geometry() {
         geometry.content,
         [-16_777_216, -16_777_216, 33_554_432, 33_554_432]
     );
+    assert!(!geometry.fits(), "no native view is made that large");
 }
 
 #[test]

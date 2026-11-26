@@ -6300,6 +6300,9 @@ fn paint_object_repetition(
                     Some(NO_ACCESS)
                 } else if state.web_viewers.len() >= MAX_WEB_VIEWERS {
                     Some("Web viewer: this window shows too many web viewers.")
+                } else if !crate::web_viewer::fits(to_window(ui, rect), ui.ctx().pixels_per_point())
+                {
+                    Some("Web viewer: too large to show.")
                 } else {
                     state.web_note
                 };

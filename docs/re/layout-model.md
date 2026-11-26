@@ -2267,7 +2267,8 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   its current record, whichever row's page called it (FileMaker's choice
   for either is unmeasured). A window shows at most 32 pages at once
   (OpenMaker's bound: each is a native browser view); further viewers show a
-  note. A web viewer stored inside a portal is painted once, over the
+  note, as does a viewer whose page would be more than 32,767 pixels across
+  or down (OpenMaker's bound: X11 sizes and places windows in 16 bits). A web viewer stored inside a portal is painted once, over the
   portal at its own place, as an object of the layout on the layout's
   record, and the portal's rows skip it (`paint_portal_web_viewers`);
   whether FileMaker stores such a viewer as a portal child at all is
