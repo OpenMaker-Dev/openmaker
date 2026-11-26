@@ -2131,8 +2131,8 @@ at the current draft frames. Merge text shows its stored markers and
 fields show their design names. The editor draws this artwork without
 evaluating record calculations or running document actions. Pasteboard
 objects, unsupported objects and geometry-only providers still use
-outlines and captions. Button icons, panel visibility and design-time
-web viewer placeholders are separate work ([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
+outlines and captions. Button icons and design-time web viewer
+placeholders are separate work ([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
 The scrollable canvas, part tabs, objects and selection handles scale
 together. Placement, movement, resizing and the Inspector use the original
 layout points at every zoom. The toolbar, Objects pane and Inspector keep
