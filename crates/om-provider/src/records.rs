@@ -870,6 +870,9 @@ impl NativeProvider {
         if self.local.is_some() && reads.contains(&selector::CURRENT_TIME_UTC_MILLISECONDS) {
             context.creation_utc_clock = Some(Default::default());
         }
+        if self.local.is_some() && plan.reads_auto_entry_file_variables() {
+            context.file_variables = Some(self.external.file_variables());
+        }
         if let Some(layout) = layout.filter(|_| reads.contains(&selector::LAYOUT_NUMBER)) {
             context.layout = self.layout_number(layout)?;
         }

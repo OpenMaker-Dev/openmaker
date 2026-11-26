@@ -2124,15 +2124,17 @@ apply. The dialog has not been compared with FileMaker Pro's.
 
 Layout mode uses the provider's `LayoutGeometry` at the window zoom.
 When the decoded layout is available, the canvas uses its stored
-background, part colors, text, shapes, fields, button labels and
-standalone library images. These use Browse's static paint routines in
-their normal style,
-at the current draft frames. Merge text shows its stored markers and
-fields show their design names. The editor draws this artwork without
-evaluating record calculations or running document actions. Pasteboard
-objects, unsupported objects and geometry-only providers still use
-outlines and captions. Button icons, panel visibility and design-time
-web viewer placeholders are separate work ([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
+background, part colors, text, shapes, fields, button labels, button
+library icons and standalone library images. These use Browse's static
+paint routines in their normal style at the current draft frames. Button
+icons and labels use the saved placement. Merge text shows its stored
+markers and fields show their design names. The editor draws this artwork
+without evaluating record calculations or running document actions. If an icon
+cannot be resolved, a labeled button keeps its full-width label and an
+image-only button uses the canvas's outline and caption.
+Pasteboard objects, unsupported objects and geometry-only providers still
+use outlines and captions. Panel visibility and design-time web viewer
+placeholders are tracked in [#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019).
 The scrollable canvas, part tabs, objects and selection handles scale
 together. Placement, movement, resizing and the Inspector use the original
 layout points at every zoom. The toolbar, Objects pane and Inspector keep
@@ -2506,9 +2508,16 @@ showing a library image, a field's label or a popover button; only a stored text
 named style and calls out local styling beyond the object's stored
 rotation. Appearance shows known
 normal-state fill, border and text colors and the base font from Browse's
-style cascade. These properties are read-only. Autosizing, names and
-tooltips are unavailable. Layouts without geometry keep the generic field
-view, which is not inspectable as document objects; they cannot be edited.
+style cascade. These properties are read-only. Appearance can show swatches
+for sides that draw no border, and Styles can list names the cascade skips
+([#886](https://github.com/OpenMaker-Dev/openmaker/issues/886)). Autosizing,
+names and tooltips are unavailable. Data Formatting shows OpenMaker's
+read-only summary of the decoded number, date, time or graphic format for
+a stored field whose type is known to the window. Its wording has not been
+compared with FileMaker Pro's Inspector
+([#891](https://github.com/OpenMaker-Dev/openmaker/issues/891)). Layouts
+without geometry keep the generic field view, which is not inspectable as
+document objects; they cannot be edited.
 The revision is the one the window read when it opened the file or after
 its last placement: a layout another client changed since is refused at
 Save Layout, not shown changed before.

@@ -2165,6 +2165,7 @@ impl ServerHost {
             // (#298); other writes' record number is unmeasured.
             record_number: None,
             creation_utc_clock: None,
+            file_variables: None,
         }
     }
 

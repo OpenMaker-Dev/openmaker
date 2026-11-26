@@ -802,6 +802,15 @@ clock reads in hosted writes, validation and stored calculations, are
 outside this support.
 [Native Browse check](https://github.com/OpenMaker-Dev/openmaker/issues/1055).
 
+An ordinary single-repetition Text field in a local file can
+auto-enter a direct `$$` variable read. A Text value comes from the
+owning file's current script variables, and an unset variable gives an
+empty field. OpenMaker keeps the New Record snapshot through its preview
+and commit. That timing is inferred when the variable changes between
+those two steps. Hosted files, compound variable formulas, and non-Text
+variable values are outside this change.
+[FileMaker Pro measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1037#issuecomment-7185794811).
+
 **An auto-entered or validation formula may read an unstored
 calculation** of its own table ([#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); auto-entry.md, "Formulas over
 an unstored calculation or a summary field"). The calculation is
@@ -1743,7 +1752,7 @@ which OpenMaker Server's scripts share) and the client's finds, joins and
 unique scans read those repetitions as empty, never as the cell the key
 would wrap around to. This is OpenMaker's choice; FileMaker's behaviour is
 unmeasured.
-Auto-enter lookups are performed in one form only: the
+Auto-enter lookups are performed for exact matches using the
 exact-match form FileMaker Pro 26.0.3 was seen to save and run
 (auto-entry.md, Lookups; schema-path.md 5.5), with any padding in its key
 buffers: as FileMaker Pro 26 writes it, as the Assets starter solution
@@ -1753,6 +1762,15 @@ FileMaker Server hosts holds (#993). Its option bytes, and the `01` before
 the starting occurrence, must be as FileMaker Pro writes them. It holds:
 - "if no exact match: do not copy", with "don't copy contents if empty"
   on or off;
+- "if no exact match: use" for a Text target, with either empty-copy
+  setting. The stored constant is copied on a miss. A blank fallback
+  (member `0b` absent) clears the target on a miss. If the relationship
+  finds an empty related value, the empty-copy setting decides whether
+  to clear or preserve the target. FileMaker Pro's local Text case was
+  measured ([results](https://github.com/OpenMaker-Dev/openmaker/issues/1020#issuecomment-7185793871)).
+  Its immediate Set Field timing is still outside the commit-time
+  lookup path, and hosted fallback behavior is unmeasured. A fallback
+  with a replacing auto-entered `Get ( UUID )` match key refuses with 3;
 - a stored text, number or date field of one repetition with no other
   auto-entry, copying a stored text, number or date value of one
   repetition (a data field or a stored calculation), a date field only
@@ -1821,7 +1839,7 @@ How OpenMaker performs it:
   unsorted relationship is unmeasured.
 
 Any other lookup keeps its table read-only:
-- the next lower or higher value (#146), or a constant;
+- the next lower or higher value (#146), or a fallback into another field type;
 - any other unknown byte of the definition, or a mix of the two stored
   forms;
 - several relationships;
