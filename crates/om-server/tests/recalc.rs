@@ -1341,32 +1341,34 @@ fn every_write_to_a_file_hosted_read_only_is_refused() {
 }
 
 /// On a file hosted read-only a server script opens no record for editing:
-/// Set Field fails with 3 where the script sees it (script 4 keeps Set
-/// Field's error before its commit), and a script that sets a field and
-/// ends reports 3, never 0 with its edit dropped when the session ends.
-/// So do the other steps that would change the file.
+/// Set Field fails with 6, "File is read-only", where the script sees it,
+/// and its Commit Records has nothing to commit and answers 0, as on
+/// FileMaker Server (script-runtime.md 13.28; script 4 keeps Set Field's
+/// error before its commit). A script that sets a field and ends reports
+/// 6, never 0 with its edit dropped when the session ends. So do the other
+/// steps that would change the file.
 #[test]
 fn a_server_script_opens_no_record_on_a_file_hosted_read_only() {
     let (read_only, _) = tasks_tree_for_writes("recalc-script-read-only", true);
     let (mut client, _) = server::logged_in(server::start(&read_only), "scripter");
     let edit = run_script(&mut client, 4).unwrap();
     assert!(
-        String::from_utf8_lossy(&edit).ends_with("|3|0"),
+        String::from_utf8_lossy(&edit).ends_with("|6|0"),
         "{}",
         String::from_utf8_lossy(&edit)
     );
     let left_open = run_script(&mut client, 6).unwrap();
     assert!(
-        left_open.starts_with(b"3|"),
+        left_open.starts_with(b"6|"),
         "{}",
         String::from_utf8_lossy(&left_open)
     );
     // New Record, Delete Record, Replace Field Contents, Set Next Serial
-    // Value and Import Records: each step 3, and its commit nothing to do.
+    // Value and Import Records: each step 6, and its commit nothing to do.
     for script in [8, 9, 10, 11, 13] {
         let answer = run_script(&mut client, script).unwrap();
         assert!(
-            answer.ends_with(b"|3|0"),
+            answer.ends_with(b"|6|0"),
             "script {script}: {}",
             String::from_utf8_lossy(&answer)
         );

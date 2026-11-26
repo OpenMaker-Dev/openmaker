@@ -2149,6 +2149,43 @@ validation" skips the data-entry-only rule (committed) but not the Always
 one (507). Outside a transaction Commit Records and Go to Record are 507
 and Go to Record stays.
 
+### 13.28 A file hosted read only (2026-11-26)
+
+FileMaker Pro 26.1.1 and FileMaker Server 26.0.3, a relay capture of
+2026-11-26 ([#918](https://github.com/OpenMaker-Dev/openmaker/issues/918)):
+a file the server hosted read only (its event 18, "Opened database ...
+read only") and a writable copy of it as the control. One script, with
+Set Error Capture on, ran Set Field, Commit Records, New Record and Delete
+Record on the current record, read `Get ( LastError )` after each, and
+returned the four. It ran in FileMaker Pro and by Perform Script on Server
+(11.2) (obs):
+
+| Run | Set Field | Commit Records | New Record | Delete Record | The client's error after Perform Script on Server |
+|---|---:|---:|---:|---:|---:|
+| Read only, in FileMaker Pro | 6 | 0 | 6 | 6 | |
+| Read only, on the server | 6 | 0 | 6 | 6 | 0 |
+| Writable, in FileMaker Pro | 0 | 0 | 0 | 0 | |
+| Writable, on the server | 0 | 0 | 0 | 0 | 0 |
+
+- 6 is "File is read-only" (FileMaker Pro's Script Debugger names it so).
+  No alert appeared in any run. The record's value and the record count
+  were unchanged after the read-only runs.
+- Commit Records answers 0 after the refused Set Field: the step opened
+  no record, so there is nothing to commit (inf; 13.2 has Commit Records
+  without a record 0).
+- The Perform Script on Server reply carried error 0 and the result
+  `6|0|6|6` on the file hosted read only (read from the reply on the wire).
+- On the file hosted read only, FileMaker Pro sent no op13, op14, op60,
+  op70 or op71 in the whole session, its script's steps included. In the
+  writable run its script's Set Field took the record's op60 lock, Commit Records sent op14 then op70, New Record
+  sent op71, and Delete Record of that new record, not yet committed,
+  sent nothing.
+- Not measured: the other steps that change a file (Replace Field
+  Contents, Import Records, Duplicate Record, Delete All Records, the
+  Insert steps, Truncate Table, Set Next Serial Value, the account steps),
+  a step that changes the file's design, and a file that becomes read
+  only while a script runs. [I] They answer 6 too.
+
 ## Unknowns
 
 - U1. Client `CheckError`, the FileMaker Pro alert texts and buttons for

@@ -1461,10 +1461,14 @@ submitted answers 800 when the key stayed waiting, which stays queued, or
 the program's own answer when another writer had saved it before),
 op240's edits a save error (810, or 800 when the edit was made and taken
 back) and its Save status 3. In a server script, a step that would open,
-create or delete a record answers 3 where the script sees it, before it
-holds anything for the edit (a container's data, a lock); Set Next Serial
-Value answers 3 before anything is written, and the engine refuses it
-first too, so no save is tried and none fails; a script whose last record
+create or delete a record answers 6, "File is read-only", where the
+script sees it, before it holds anything for the edit (a container's
+data, a lock), and a Commit Records after it has nothing to commit and
+answers 0, as FileMaker Server answers Set Field, New Record, Delete
+Record and Commit Records there (re/script-runtime.md 13.28; 6 for the
+other steps is inferred); Set Next Serial Value and the account steps
+answer 6 before anything is written (inferred), and the engine refuses
+Set Next Serial Value first too, so no save is tried and none fails; a script whose last record
 is not stored when it ends has that commit's error as the run's result,
 never 0 (op30's reply when it waits; one that does not wait answers only
 that the script started). A script sets a global field all the same: its
@@ -4276,12 +4280,15 @@ live test):
 A server script, on a file hosted read-only on either engine, opens no
 record for editing and creates or deletes none: the step that would
 (Set Field, New Record, Delete Record, Replace Field Contents, Import
-Records and the rest that edit records) fails with 3, "Command is
-unavailable", where the script sees it (`ServerHost::require_edit`),
-before it holds anything for the edit (a container's data, a lock). So no
-edit waits for a commit that would be refused later, the explicit Commit
-Records or the one when the session ends. Set Next Serial Value fails
-with 3 before anything is written, on both engines; Set Field on a
+Records and the rest that edit records) fails with 6, "File is
+read-only", where the script sees it (`ServerHost::require_edit`),
+before it holds anything for the edit (a container's data, a lock), as
+FileMaker Server answers Set Field, New Record and Delete Record
+(re/script-runtime.md 13.28; inferred for the rest). So no edit waits for
+a commit that would be refused later, the explicit Commit Records, which
+then answers 0 as on FileMaker Server, or the one when the session ends.
+Set Next Serial Value fails with 6 before anything is written, on both
+engines (inferred); Set Field on a
 global sets it, as its value is the session's and needs no record, lock
 or save (`server_scripts_that_would_write_fail_alike_on_both_engines`).
 A Perform Find on a field without an index builds one: the file engine
@@ -4291,16 +4298,16 @@ fail (on a writable file, a save that fails), the script's result is its
 error, never 0 (`ServerHost::close`; `tests/saves.rs`,
 `a_script_whose_last_record_is_not_stored_reports_the_error`). What the
 engine cannot do yet and still reaches it answers a typed "unavailable",
-FileMaker's error 3 (OpenMaker's choice, as a server script's account step
-answers on a file hosted read-only), and changes nothing
-(`StoreEngine::submit_with`):
+FileMaker's error 3 (OpenMaker's choice), and changes nothing
+(`StoreEngine::submit_with`); a server script's steps meet the script
+host's 6 before they reach it:
 
 | What | Answer |
 |---|---|
-| a server script's step that opens, creates or deletes a record; a script that sets a field and ends | 3, the same on both engines (`server_scripts_that_would_write_fail_alike_on_both_engines`) |
-| a server script's Set Next Serial Value | 3, before anything is written, the same on both engines |
+| a server script's step that opens, creates or deletes a record; a script that sets a field and ends | 6, the same on both engines; a Commit Records after it 0 (`server_scripts_that_would_write_fail_alike_on_both_engines`) |
+| a server script's Set Next Serial Value | 6, before anything is written, the same on both engines (inferred) |
 | a server script's Set Field on a global | done: the session's own value, the same on both engines |
-| a server script's account steps | 3 |
+| a server script's account steps | 6 (inferred) |
 | an authoring edit (op240: a script's steps, a field, a layout and the rest) | refused, status 3, "nothing was changed" |
 | op240 Save | refused, status 3, the file being read-only, as on any file hosted read-only (`authoring_edits_answer_unavailable`) |
 | the Admin Console's close and open of a file | done; the open holds the file again: the same tree when its source digest is the one recorded (the same bytes, also in a file replaced by a copy), imported again when the digest changed (`a_file_opened_again_is_imported_again_once_it_changed`) |

@@ -1463,21 +1463,24 @@ impl ServerHost {
     }
 
     /// [`Self::require_edit_access`], and on a file hosted read-only, on
-    /// either engine, 3 before anything else: no record is opened for editing, created or
-    /// deleted, so that a step that would change one fails where the
-    /// script sees it, rather than at a commit that comes later or at the
-    /// session's end (OpenMaker's choice, as the account steps answer on
-    /// such a file). A step calls it before it holds anything for the edit
-    /// (a container's data, a record's lock).
+    /// either engine, 6, "File is read-only", before anything else: no
+    /// record is opened for editing, created or deleted, so that a step
+    /// that would change one fails where the script sees it, rather than at
+    /// a commit that comes later or at the session's end. FileMaker Server
+    /// answers 6 for Set Field, New Record and Delete Record there, and a
+    /// Commit Records after them has nothing to commit and answers 0
+    /// (script-runtime.md 13.28); the other steps that would change a
+    /// record answer 6 too (inferred). A step calls it before it holds
+    /// anything for the edit (a container's data, a record's lock).
     fn require_edit(&self) -> HostResult {
         self.require_writable_file()?;
         self.require_edit_access()
     }
 
-    /// 3 on a file hosted read-only ([`Self::require_edit`]).
+    /// 6 on a file hosted read-only ([`Self::require_edit`]).
     fn require_writable_file(&self) -> HostResult {
         match self.shared.engine.read_only(&self.hosted) {
-            Some(_) => Err(ErrorCode::UNAVAILABLE.into()),
+            Some(_) => Err(ErrorCode::FILE_READ_ONLY.into()),
             None => Ok(()),
         }
     }
@@ -5359,9 +5362,9 @@ impl FieldSteps for ServerHost {
     /// record commit is. Not once the script is aborted: the step's
     /// calculation may have been stopped, leaving `?`.
     fn set_next_serial_value(&mut self, field: FieldRef, value: Value) -> HostResult {
-        // On a file hosted read-only, 3 first, as the steps that would
-        // change a record answer ([`Self::require_edit`]): nothing is
-        // journaled or saved.
+        // On a file hosted read-only, 6 first, as the steps that would
+        // change a record answer ([`Self::require_edit`]; inferred for this
+        // step): nothing is journaled or saved.
         self.require_writable_file()?;
         // It changes the field's definition: only [Full Access] (inferred;
         // FileMaker Server's answer for the other sets is unmeasured).
@@ -6395,8 +6398,10 @@ impl ServerHost {
     /// released and, when the edit wrote, the other clients are told the
     /// catalog changed, as a client's commit tells them: the release
     /// carries the two notices ([`ReleaseScriptLock`]), the edit none. A
-    /// file the server hosts read-only changes nothing: 3 (OpenMaker's
-    /// choice).
+    /// file the server hosts read-only changes nothing: 6, "File is
+    /// read-only", as the steps that would change a record answer there
+    /// (inferred for the account steps: FileMaker Server's answer is
+    /// unmeasured).
     fn edit_accounts(
         &self,
         step: &str,
@@ -6407,7 +6412,7 @@ impl ServerHost {
                 "{:?}: {step} changed nothing: the file is hosted read-only",
                 self.hosted.name
             );
-            return Err(ErrorCode::UNAVAILABLE.into());
+            return Err(ErrorCode::FILE_READ_ONLY.into());
         }
         // Nothing read as missing for the step reaches an account
         // (`ServerHost::read`).
