@@ -128,6 +128,7 @@ fn placement(address: Option<&str>) -> Placement {
         zoom: 1.0,
         input: Vec::new(),
         hovered: false,
+        focus: None,
     }
 }
 

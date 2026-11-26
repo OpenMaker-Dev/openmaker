@@ -441,10 +441,14 @@ impl State {
         if before == surface {
             return;
         }
-        // The modifier keys it held go up before the focus moves, so that
-        // the keyboard's state never keeps one down.
-        for modifier in std::mem::take(&mut self.held) {
-            self.send_key(modifier, false);
+        // Every key the keyboard holds goes up before the focus moves (the
+        // modifiers, and keys such as Right Shift or AltGr that went as
+        // keys), so that its state never keeps one down.
+        self.held.clear();
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            for key in keyboard.pressed_keys() {
+                self.send_key(key.raw().saturating_sub(8), false);
+            }
         }
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, surface.clone(), SERIAL_COUNTER.next_serial());
@@ -903,12 +907,21 @@ impl Dispatch<ZwpTextInputV3, ()> for State {
                     input.enabled = enabled;
                 }
                 let caret = input.pending_caret.take().filter(|_| input.enabled);
-                if let (Some(rect), Some(view)) = (caret, view) {
-                    if let Ok(mut carets) = state.carets.lock() {
-                        carets.insert(view, rect);
+                // A disabled text input has no caret: the app's input
+                // method goes off.
+                let enabled = input.enabled;
+                if let (Some(view), Ok(mut carets)) = (view, state.carets.lock()) {
+                    match caret {
+                        Some(rect) => {
+                            carets.insert(view, rect);
+                        }
+                        None if !enabled => {
+                            carets.remove(&view);
+                        }
+                        None => {}
                     }
-                    (state.wake)();
                 }
+                (state.wake)();
             }
             zwp_text_input_v3::Request::Destroy => {
                 state.text_inputs.retain(|i| &i.resource != resource);
