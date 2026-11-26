@@ -1168,7 +1168,11 @@ is written by that file (`related_owner.rs`, #1000):
     is paused (the provider's create, update and delete calls,
     [#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)). No step
     of the transaction made them, and the window's OnWindowTransaction
-    would report them before the transaction's outcome.
+    would report them before the transaction's outcome. The Records menu's
+    New Record and Duplicate Record are the exception: they run their
+    steps, which run on top of the paused script, so the record (and a
+    duplicate's container references) is held in the transaction as a
+    script's is. Whether FileMaker holds them so is #411's question.
 - **The window's commit of a record across files** (#1006; it begins with
   `DataProvider::begin_record_commit`, a script's Open Transaction with
   `begin_transaction`). It is saved file by file, related files first and
