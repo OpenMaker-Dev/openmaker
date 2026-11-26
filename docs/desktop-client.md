@@ -2129,7 +2129,9 @@ library icons and standalone library images. These use Browse's static
 paint routines in their normal style at the current draft frames. Button
 icons and labels use the saved placement. Merge text shows its stored
 markers and fields show their design names. The editor draws this artwork
-without evaluating record calculations or running document actions.
+without evaluating record calculations or running document actions. If an icon
+cannot be resolved, a labeled button keeps its full-width label and an
+image-only button uses the canvas's outline and caption.
 Pasteboard objects, unsupported objects and geometry-only providers still
 use outlines and captions. Panel visibility and design-time web viewer
 placeholders are tracked in [#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019).
