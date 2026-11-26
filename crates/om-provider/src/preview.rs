@@ -714,6 +714,7 @@ impl NativeProvider {
                 set: operation.set.clone(),
                 record_number: operation.record_number,
                 prepared: None,
+                single_field_step: false,
             };
             provider.origin_context(&plan, origin)
         };
@@ -900,6 +901,7 @@ impl NativeProvider {
             set,
             record_number: write.record_number,
             prepared: write.prepared,
+            single_field_step: false,
         };
         let context = self.origin_context(&plan, origin)?;
         plan.check_creation_context(&context)?;

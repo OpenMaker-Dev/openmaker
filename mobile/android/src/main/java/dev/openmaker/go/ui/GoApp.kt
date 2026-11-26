@@ -6,7 +6,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -26,6 +29,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import dev.openmaker.go.GoViewModel
 import dev.openmaker.go.SignInRequest
 import dev.openmaker.go.engine.Viewport
@@ -147,9 +151,12 @@ private fun SignInDialog(
     val secret = KeyboardOptions(autoCorrectEnabled = false, keyboardType = KeyboardType.Password)
     AlertDialog(
         onDismissRequest = { if (!request.opening) onCancel() },
+        modifier = Modifier.keepClearOfKeyboard(),
+        properties = TypingDialog,
         title = { Text(request.entry.name) },
         text = {
-            Column {
+            // Scrolls, so the dialog's buttons stay above the keyboard.
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(request.entry.subtitle, style = MaterialTheme.typography.bodyMedium)
                 OutlinedTextField(
                     account,
@@ -205,6 +212,17 @@ private fun SignInDialog(
         dismissButton = { TextButton(onClick = onCancel, enabled = !request.opening) { Text("Cancel") } },
     )
 }
+
+/**
+ * The properties of a dialog with text fields. Android does not resize a
+ * dialog's window for the keyboard, which then covers its buttons (on a
+ * tablet held sideways); with these the dialog keeps clear of it itself
+ * ([keepClearOfKeyboard]).
+ */
+val TypingDialog = DialogProperties(decorFitsSystemWindows = false)
+
+/** Keeps a [TypingDialog] above the keyboard and inside the system bars; its scrolling text shrinks. */
+fun Modifier.keepClearOfKeyboard() = safeDrawingPadding()
 
 @Composable
 fun MessageDialog(message: String, onDismiss: () -> Unit) {

@@ -156,6 +156,22 @@ fn perform(function: &str, parameters: &[&str]) -> Command {
     }
 }
 
+/// A file's object bounds can be anything finite: the view's geometry
+/// stays bounded instead of overflowing, and no native view is made for
+/// it (#953's review).
+#[test]
+fn a_view_of_hostile_bounds_gets_bounded_geometry() {
+    let window = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 600.0));
+    let huge = Rect::from_min_max(pos2(-3e38, -3e38), pos2(3e38, 3e38));
+    let geometry = Geometry::of(huge, window, 2.0, 1.0);
+    assert_eq!(geometry.frame, [0, 0, 1600, 1200]);
+    assert_eq!(
+        geometry.content,
+        [-16_777_216, -16_777_216, 33_554_432, 33_554_432]
+    );
+    assert!(!geometry.fits(), "no native view is made that large");
+}
+
 #[test]
 fn a_view_follows_its_object_until_the_object_is_no_longer_painted() {
     let ctx = egui::Context::default();
@@ -627,6 +643,32 @@ fn messages_and_calls_encode_text_safely() {
         url_for("https://example.com/#top", SCRIPTS),
         "https://example.com/#top"
     );
+}
+
+#[test]
+fn bridge_messages_wait_for_the_app_within_a_bound() {
+    let budget = MessageBudget::default();
+    let prefix = "openmaker-perform-script&s=a&p=";
+    let small = format!("{prefix}x");
+    // Too long or malformed: dropped, with nothing left counted.
+    assert!(!budget.admit(&format!("{prefix}{}", "x".repeat(MAX_MESSAGE))));
+    assert!(!budget.admit("openmaker-perform-script&x=1"));
+    // So many messages wait, and one the app polls makes room for one more.
+    for _ in 0..MESSAGE_ENTRIES {
+        assert!(budget.admit(&small));
+    }
+    assert!(!budget.admit(&small));
+    budget.release(&small);
+    assert!(budget.admit(&small));
+    for _ in 0..MESSAGE_ENTRIES {
+        budget.release(&small);
+    }
+    // So many bytes: two of the longest messages fill the budget.
+    let longest = format!("{prefix}{}", "x".repeat(MAX_MESSAGE - prefix.len()));
+    assert!(budget.admit(&longest) && budget.admit(&longest));
+    assert!(!budget.admit(&small));
+    budget.release(&longest);
+    assert!(budget.admit(&small));
 }
 
 #[test]

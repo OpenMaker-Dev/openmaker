@@ -138,6 +138,7 @@ pub(crate) struct WindowState {
     pub uncommitted: window::Uncommitted,
     pub title: Option<String>,
     pub toolbar: bool,
+    pub toolbar_locked: bool,
     pub menubar: bool,
     /// Set Zoom Level, in percent, and whether the user may change it.
     pub zoom: u16,
@@ -259,6 +260,7 @@ impl Default for WindowState {
             uncommitted: window::Uncommitted::default(),
             title: None,
             toolbar: true,
+            toolbar_locked: false,
             menubar: true,
             zoom: 100,
             zoom_locked: false,

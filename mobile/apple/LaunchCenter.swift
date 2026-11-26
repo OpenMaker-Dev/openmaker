@@ -34,6 +34,59 @@ struct FileEntry: Codable, Hashable, Identifiable {
   var url: URL { Self.directory.appendingPathComponent(name) }
 }
 
+/// A host of the Hosts list: its address and port, and the name it is
+/// listed by, empty for its location. Two hosts are the same host when the
+/// engine says so (`hostKey`: ASCII case and an international name's
+/// punycode form, as DNS compares names).
+struct SavedHost: Codable, Hashable, Identifiable {
+  var address: String
+  var port: UInt16 = 5003
+  var name = ""
+  var id: String { hostKey(address: address, port: port) }
+  /// As the engine takes it.
+  var listed: ListedHost { ListedHost(address: address, port: port, name: name) }
+
+  init(address: String, port: UInt16 = 5003, name: String = "") {
+    self.address = address
+    self.port = port
+    self.name = name
+  }
+
+  init(_ listed: ListedHost) {
+    self.init(address: listed.address, port: listed.port, name: listed.name)
+  }
+  /// The address, with the port when it is not FileMaker's (an IPv6
+  /// address then in brackets).
+  var location: String {
+    if port == 5003 { return address }
+    return address.contains(":") ? "[\(address)]:\(port)" : "\(address):\(port)"
+  }
+  var label: String { name.isEmpty ? location : name }
+
+  func isHost(_ other: SavedHost) -> Bool { id == other.id }
+}
+
+/// A host's file list, as its page shows it.
+private enum Listing {
+  /// Being asked for. Each request is its own: a reply to an older one is
+  /// dropped.
+  case pending(UUID)
+  case listed([FileEntry])
+  case failed(String)
+}
+
+/// Add Host, or Edit Host for the host it replaces: the fields as typed.
+private struct HostEdit: Identifiable {
+  let id = UUID()
+  var replaces: SavedHost?
+  var address = ""
+  var port = "5003"
+  var name = ""
+  var certificate = ""
+  /// The certificate authorities Edit Host showed when it opened.
+  var loaded = ""
+}
+
 @main
 struct GoApp: App {
   var body: some Scene { WindowGroup { LaunchCenter() } }
@@ -59,7 +112,7 @@ private enum SectionTab: String, CaseIterable {
     case .local: return "Import a FileMaker app to open it here."
     case .favorites: return "Star a file to add it here."
     case .recent: return "Opened files appear here."
-    case .hosts: return "Connect to a host to see the files it shares."
+    case .hosts: return "Add a host to see the files it shares."
     }
   }
 }
@@ -71,12 +124,21 @@ struct LaunchCenter: View {
   @State private var local: [FileEntry] = []
   @AppStorage("favorites") private var favoritesData = Data()
   @AppStorage("recent") private var recentData = Data()
-  @AppStorage("lastHost") private var address = ""
-  @AppStorage("lastPort") private var port = "5003"
+  /// The Hosts list; none until it is first saved.
+  @AppStorage("hosts") private var hostsData: Data?
+  /// The one host the Hosts tab remembered before it kept a list: the
+  /// host form's fields as last typed.
+  @AppStorage("lastHost") private var lastHost: String?
+  @AppStorage("lastPort") private var lastPort: String?
   @AppStorage("trustedHostCertificates") private var certificates = Data()
-  @State private var certificate = ""
-  @State private var namedFile = ""
-  @State private var hosted: [FileEntry] = []
+  /// The host whose files the Hosts tab shows, if any.
+  @State private var hostPath: [SavedHost] = []
+  /// Each host's file list, by its address (as typed) and port, while the
+  /// app runs.
+  @State private var listings: [String: Listing] = [:]
+  @State private var hostEdit: HostEdit?
+  @State private var namingFile: SavedHost?
+  @State private var typedFileName = ""
   @State private var signingIn: FileEntry?
   @State private var opened: DocumentModel?
   /// Why the last document stopped, shown once its screen has gone.
@@ -90,6 +152,11 @@ struct LaunchCenter: View {
 
   private var favorites: [FileEntry] { decode(favoritesData) }
   private var recent: [FileEntry] { decode(recentData) }
+  /// The Hosts list, each host once (`distinctHosts`).
+  private var hosts: [SavedHost] {
+    let stored = hostsData.flatMap { try? JSONDecoder().decode([SavedHost].self, from: $0) } ?? []
+    return distinctHosts(hosts: stored.map(\.listed)).map(SavedHost.init)
+  }
   /// Private certificate authorities by host and port.
   private var authorities: [String: String] {
     (try? JSONDecoder().decode([String: String].self, from: certificates)) ?? [:]
@@ -98,25 +165,21 @@ struct LaunchCenter: View {
   var body: some View {
     TabView(selection: $tab) {
       ForEach(SectionTab.allCases, id: \.self) { section in
-        NavigationStack {
-          List {
-            if section == .hosts { hostForm }
-            let entries = files(in: section)
-            ForEach(entries) { file in row(file, in: section) }
-            if entries.isEmpty {
-              Label(section.empty, systemImage: section.icon).foregroundStyle(.secondary)
-            }
-            if section == .local { Button("Import a File…") { importing = true } }
-          }
-          .navigationTitle(section.rawValue)
-          .toolbar {
-            ToolbarItem(placement: .principal) { Text("OpenMaker Go").font(.headline) }
-            ToolbarItem(placement: .primaryAction) {
-              Button {
-                showingSettings = true
-              } label: {
-                Label("Settings", systemImage: "gear")
+        Group {
+          if section == .hosts {
+            hostsTab
+          } else {
+            NavigationStack {
+              List {
+                let entries = files(in: section)
+                ForEach(entries) { file in row(file, in: section) }
+                if entries.isEmpty {
+                  Label(section.empty, systemImage: section.icon).foregroundStyle(.secondary)
+                }
+                if section == .local { Button("Import a File…") { importing = true } }
               }
+              .navigationTitle(section.rawValue)
+              .toolbar { launchCenterToolbar }
             }
           }
         }
@@ -127,13 +190,21 @@ struct LaunchCenter: View {
     .overlay { if busy { ProgressView().padding().background(.regularMaterial, in: Capsule()) } }
     .disabled(busy)
     .onAppear {
+      keepFormerHosts()
       reload()
-      restoreCertificate()
     }
     .onChange(of: phase) { if $0 == .active { reload() } }
-    .onChange(of: address) { _ in hostChanged() }
-    .onChange(of: port) { _ in hostChanged() }
     .onOpenURL { url in importFile(url) }
+    .sheet(item: $hostEdit) { edit in
+      HostEditor(edit: edit) { try commit($0) }
+    }
+    .alert("Open by Name", isPresented: present($namingFile), presenting: namingFile) { host in
+      TextField("File name", text: $typedFileName)
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+      Button("Cancel", role: .cancel) {}
+      Button("Sign In") { openByName(on: host) }
+    }
     .fileImporter(isPresented: $importing, allowedContentTypes: [.fileMakerFile]) { result in
       do { importFile(try result.get()) } catch { self.error = error.goMessage }
     }
@@ -164,24 +235,74 @@ struct LaunchCenter: View {
     }
   }
 
-  private var hostForm: some View {
-    Section("Connect to a host") {
-      TextField("Host name or IP address", text: $address)
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-        .keyboardType(.URL)
-      TextField("Port", text: $port).keyboardType(.numberPad)
-      TextField("File name (optional)", text: $namedFile)
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-      DisclosureGroup("Private certificate authority") {
-        TextField("CA certificate (PEM)", text: $certificate, axis: .vertical)
-          .textInputAutocapitalization(.never)
-          .autocorrectionDisabled()
-          .font(.caption.monospaced())
+  @ToolbarContentBuilder private var launchCenterToolbar: some ToolbarContent {
+    ToolbarItem(placement: .principal) { Text("OpenMaker Go").font(.headline) }
+    ToolbarItem(placement: .primaryAction) {
+      Button {
+        showingSettings = true
+      } label: {
+        Label("Settings", systemImage: "gear")
       }
-      Button(namedFile.isEmpty ? "Browse Host" : "Open File", action: browseHost)
-        .disabled(address.trimmingCharacters(in: .whitespaces).isEmpty)
+    }
+  }
+
+  /// The Hosts list, as FileMaker Go's: a host opens to the files it
+  /// lists, and swiping one (or a long press) edits or removes it.
+  private var hostsTab: some View {
+    NavigationStack(path: $hostPath) {
+      List {
+        ForEach(hosts) { host in
+          NavigationLink(value: host) {
+            Label {
+              VStack(alignment: .leading) {
+                Text(host.label)
+                if !host.name.isEmpty {
+                  Text(host.location).font(.caption).foregroundStyle(.secondary)
+                }
+              }
+            } icon: {
+              Image(systemName: SectionTab.hosts.icon)
+            }
+          }
+          .swipeActions {
+            Button("Remove", role: .destructive) { removeSaved(host) }
+            Button("Edit") { editHost(host) }
+          }
+          .contextMenu {
+            Button("Edit Host…") { editHost(host) }
+            Button("Remove Host", role: .destructive) { removeSaved(host) }
+          }
+        }
+        if hosts.isEmpty {
+          Label(SectionTab.hosts.empty, systemImage: SectionTab.hosts.icon)
+            .foregroundStyle(.secondary)
+          Button("Add Host…") { hostEdit = HostEdit() }
+        }
+      }
+      .navigationTitle(SectionTab.hosts.rawValue)
+      .toolbar {
+        launchCenterToolbar
+        ToolbarItem(placement: .primaryAction) {
+          Button {
+            hostEdit = HostEdit()
+          } label: {
+            Label("Add Host", systemImage: "plus")
+          }
+        }
+      }
+      .navigationDestination(for: SavedHost.self) { host in
+        HostFiles(
+          host: host, listing: listings[key(host)],
+          list: { await listHost(host) },
+          edit: { editHost(host) },
+          openByName: {
+            typedFileName = ""
+            namingFile = host
+          }
+        ) { file in
+          row(file, in: .hosts)
+        }
+      }
     }
   }
 
@@ -193,7 +314,10 @@ struct LaunchCenter: View {
         Label {
           VStack(alignment: .leading) {
             Text(file.name).foregroundStyle(.primary)
-            Text(file.subtitle).font(.caption).foregroundStyle(.secondary)
+            // A host's page lists only its own files.
+            if section != .hosts {
+              Text(file.subtitle).font(.caption).foregroundStyle(.secondary)
+            }
           }
         } icon: {
           Image(systemName: file.local ? "doc" : "network")
@@ -227,7 +351,7 @@ struct LaunchCenter: View {
     case .local: return local
     case .favorites: return favorites
     case .recent: return recent
-    case .hosts: return hosted
+    case .hosts: return []
     }
   }
 
@@ -329,57 +453,115 @@ struct LaunchCenter: View {
 
   private func authority(_ address: String, _ port: UInt16) -> String { "\(address):\(port)" }
 
-  private func hostChanged() {
-    hosted = []
-    restoreCertificate()
+  private func key(_ host: SavedHost) -> String { authority(host.address, host.port) }
+
+  private func storeAuthorities(_ saved: [String: String]) {
+    certificates = (try? JSONEncoder().encode(saved)) ?? Data()
   }
 
-  /// The certificate authority saved for the host and port typed, never
-  /// another host's.
-  private func restoreCertificate() {
-    // Saved under the trimmed address, as browseHost saves it.
-    let name = address.trimmingCharacters(in: .whitespacesAndNewlines)
-    certificate = UInt16(port).flatMap { authorities[authority(name, $0)] } ?? ""
+  /// The certificate authorities Edit Host shows for one host and port
+  /// only, under any spelling of its address (`trustedCertificate`).
+  private func trusted(_ address: String, _ port: UInt16) -> String? {
+    let pem = trustedCertificate(certificates: authorities, address: address, port: port)
+    return pem.isEmpty ? nil : pem
   }
 
-  private func saveCertificate(_ name: String, _ number: UInt16) {
-    var saved = authorities
-    saved[authority(name, number)] = certificate.isEmpty ? nil : certificate
-    certificates = encode(saved)
+  /// A host to connect to, with every certificate authority saved for it,
+  /// or the error saying why they cannot be used (`connectCertificate`).
+  private func endpoint(_ address: String, _ port: UInt16) throws -> Host {
+    Host(
+      address: address, port: port,
+      certificate: try connectCertificate(certificates: authorities, address: address, port: port))
   }
 
-  private func encode(_ authorities: [String: String]) -> Data {
-    (try? JSONEncoder().encode(authorities)) ?? Data()
+  private func storeHosts(_ list: [SavedHost]) {
+    hostsData = (try? JSONEncoder().encode(list)) ?? Data()
+    lastHost = nil
+    lastPort = nil
   }
 
-  private func browseHost() {
-    let name = address.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard let number = UInt16(port), number > 0 else {
-      error = "Enter a port from 1 to 65535."
-      return
+  /// Before the Hosts tab kept a list it had one host form, whose address
+  /// and port were kept as typed, and it kept the certificate authorities
+  /// it was told to trust: a host the form still describes is the list's
+  /// first, followed by those hosts (`formerHosts`).
+  private func keepFormerHosts() {
+    guard hostsData == nil else { return }
+    let list = formerHosts(
+      lastAddress: lastHost ?? "", lastPort: lastPort ?? "5003", certificates: authorities)
+    storeHosts(list.map(SavedHost.init))
+  }
+
+  /// Edit Host, with the certificate authority trusted for the host.
+  private func editHost(_ host: SavedHost) {
+    let certificate = trusted(host.address, host.port) ?? ""
+    hostEdit = HostEdit(
+      replaces: host, address: host.address, port: String(host.port), name: host.name,
+      certificate: certificate, loaded: certificate)
+  }
+
+  /// Save Add Host or Edit Host's `edit` by the engine's rules
+  /// (`saveHost`), or throw what to fix, or that the host was changed in
+  /// another window since the editor opened. A host whose page is shown
+  /// stays shown, at its new address.
+  private func commit(_ edit: HostEdit) throws {
+    let before = hosts
+    let result = try saveHost(
+      saved: SavedHosts(hosts: before.map(\.listed), certificates: authorities),
+      change: HostChange(
+        replaces: edit.replaces?.listed, loaded: edit.loaded, address: edit.address,
+        // As typed: the engine checks its bounds before anything else.
+        port: edit.port, name: edit.name, certificate: edit.certificate))
+    let host = SavedHost(result.host)
+    storeHosts(result.saved.hosts.map(SavedHost.init))
+    storeAuthorities(result.saved.certificates)
+    hostEdit = nil
+    // Its files are listed again: the address, port or certificate
+    // authority they were listed with may have changed.
+    for old in before.filter({ $0.isHost(host) }) + (edit.replaces.map { [$0] } ?? []) {
+      listings[key(old)] = nil
     }
-    // A cleared certificate authority is removed now: a browse that fails
-    // without it must not leave the host trusted through it.
-    if certificate.isEmpty { saveCertificate(name, number) }
-    let fileName = namedFile.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !fileName.isEmpty {
-      saveCertificate(name, number)
-      signingIn = FileEntry(name: fileName, address: name, port: number)
-      return
+    listings[key(host)] = nil
+    if let shown = hostPath.last, edit.replaces?.isHost(shown) == true || shown.isHost(host) {
+      Task { await listHost(host) }
+      hostPath = [host]
     }
-    let host = Host(address: name, port: number, certificate: certificate)
-    busy = true
-    Task {
-      defer { busy = false }
-      do {
-        let names = try await Task.detached { try hostedFiles(host: host) }.value
-        saveCertificate(name, number)
-        hosted = names.map { FileEntry(name: $0, address: name, port: number) }
-        if hosted.isEmpty { error = "This host shares no files." }
-      } catch {
-        self.error = error.goMessage
-      }
+  }
+
+  /// Remove `host` from the list, with the certificate authorities trusted
+  /// for it (`removeHost`).
+  private func removeSaved(_ host: SavedHost) {
+    for old in hosts.filter({ $0.isHost(host) }) + [host] { listings[key(old)] = nil }
+    let result = removeHost(
+      saved: SavedHosts(hosts: hosts.map(\.listed), certificates: authorities), host: host.listed)
+    storeHosts(result.hosts.map(SavedHost.init))
+    storeAuthorities(result.certificates)
+    if hostPath.contains(where: { $0.isHost(host) }) { hostPath = [] }
+  }
+
+  /// Ask `host` for the files it lists. The answer shows on its page; one
+  /// that comes after the host was changed or removed, or asked again, is
+  /// dropped.
+  private func listHost(_ host: SavedHost) async {
+    let id = key(host)
+    let asked = UUID()
+    listings[id] = .pending(asked)
+    let listing: Listing
+    do {
+      let server = try endpoint(host.address, host.port)
+      let names = try await Task.detached { try hostedFiles(host: server) }.value
+      listing = .listed(names.map { FileEntry(name: $0, address: host.address, port: host.port) })
+    } catch {
+      listing = .failed(error.goMessage)
     }
+    guard case .pending(asked)? = listings[id] else { return }
+    listings[id] = listing
+  }
+
+  /// Sign in to a file `host` does not list, by its name (name.fmp12).
+  private func openByName(on host: SavedHost) {
+    let name = typedFileName.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !name.isEmpty else { return }
+    signingIn = FileEntry(name: hostedFileName(name: name), address: host.address, port: host.port)
   }
 
   /// A local file opens as FileMaker Go opens one, signed in by the file's
@@ -406,11 +588,10 @@ struct LaunchCenter: View {
   private func open(_ file: FileEntry, account: String, password: String, license: String)
     async throws
   {
-    let host = Host(
-      address: file.address, port: file.port,
-      certificate: authorities[authority(file.address, file.port)] ?? "")
     let source: Source =
-      file.local ? .local(path: file.url.path) : .hosted(host: host, file: file.name)
+      try file.local
+      ? .local(path: file.url.path)
+      : .hosted(host: endpoint(file.address, file.port), file: file.name)
     let typed = license.trimmingCharacters(in: .whitespacesAndNewlines)
     let local = file.local
     // The canvas sends its own size once it is shown.
@@ -434,6 +615,135 @@ struct LaunchCenter: View {
 
   private func present<T>(_ value: Binding<T?>) -> Binding<Bool> {
     Binding(get: { value.wrappedValue != nil }, set: { if !$0 { value.wrappedValue = nil } })
+  }
+}
+
+/// A host's files, as FileMaker Go's host pages show them: with Search
+/// Files, and pulled down to list them again.
+private struct HostFiles<Row: View>: View {
+  let host: SavedHost
+  let listing: Listing?
+  let list: () async -> Void
+  let edit: () -> Void
+  let openByName: () -> Void
+  @ViewBuilder let row: (FileEntry) -> Row
+  @State private var query = ""
+
+  var body: some View {
+    List {
+      switch listing {
+      case .listed(let files)?:
+        let typed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shown = typed.isEmpty ? files : files.filter { $0.name.localizedCaseInsensitiveContains(typed) }
+        Section {
+          ForEach(shown) { file in row(file) }
+          if shown.isEmpty {
+            Text(files.isEmpty ? "This host lists no files." : "No files match “\(typed)”.")
+              .foregroundStyle(.secondary)
+          }
+        } header: {
+          if !host.name.isEmpty { Text(host.location) }
+        }
+      case .failed(let reason)?:
+        Section {
+          VStack(alignment: .leading, spacing: 4) {
+            Text("The files could not be listed").font(.headline)
+            Text(reason).foregroundStyle(.secondary)
+          }
+          Button("Try Again") { Task { await list() } }
+          Button("Edit Host…", action: edit)
+        }
+      case .pending?, nil:
+        HStack {
+          Spacer()
+          ProgressView()
+          Spacer()
+        }
+        .listRowBackground(Color.clear)
+      }
+    }
+    // Shown at once, not only when the list is pulled down.
+    .searchable(
+      text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search Files")
+    .refreshable { await list() }
+    .navigationTitle(host.label)
+    .toolbar {
+      ToolbarItem(placement: .primaryAction) { Button("Open by Name…", action: openByName) }
+    }
+    .task { if listing == nil { await list() } }
+  }
+}
+
+/// Add Host and Edit Host, after FileMaker Go's Add Host (a host name or IP
+/// address and an optional name), with the port and a private certificate
+/// authority besides.
+private struct HostEditor: View {
+  @State private var edit: HostEdit
+  let save: (HostEdit) throws -> Void
+  @Environment(\.dismiss) private var dismiss
+  @State private var showsCertificate: Bool
+  @State private var error = ""
+
+  init(edit: HostEdit, save: @escaping (HostEdit) throws -> Void) {
+    _edit = State(initialValue: edit)
+    _showsCertificate = State(initialValue: !edit.certificate.isEmpty)
+    self.save = save
+  }
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        // First, where it is seen without scrolling.
+        if !error.isEmpty {
+          Text(error).foregroundStyle(.red)
+        }
+        // Labeled, as a filled field shows no placeholder.
+        Section {
+          Group {
+            LabeledContent("Address") {
+              TextField("Host name or IP address", text: $edit.address)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+            }
+            LabeledContent("Port") {
+              TextField("5003", text: $edit.port).keyboardType(.numberPad)
+            }
+            LabeledContent("Name") {
+              TextField("Optional", text: $edit.name)
+                .onSubmit(submit)
+            }
+          }
+          .multilineTextAlignment(.trailing)
+        } footer: {
+          Text("The Hosts list shows this name instead of the address.")
+        }
+        Section {
+          DisclosureGroup("Private certificate authority", isExpanded: $showsCertificate) {
+            TextField("CA certificate (PEM)", text: $edit.certificate, axis: .vertical)
+              .textInputAutocapitalization(.never)
+              .autocorrectionDisabled()
+              .font(.caption.monospaced())
+          }
+        } footer: {
+          Text("Trusted for this host and port only.")
+        }
+      }
+      .navigationTitle(edit.replaces == nil ? "Add Host" : "Edit Host")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+        ToolbarItem(placement: .confirmationAction) { Button("Save", action: submit) }
+      }
+    }
+  }
+
+  private func submit() {
+    do {
+      try save(edit)
+    } catch {
+      self.error = error.goMessage
+    }
   }
 }
 

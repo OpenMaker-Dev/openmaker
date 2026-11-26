@@ -1047,6 +1047,17 @@ impl NativeProvider {
                     ..context
                 },
             };
+            let mut context = context;
+            // Entry preparation can hold a lock with no cells yet. Any
+            // previous actual write makes the sequence unmeasured.
+            let prior_write = before.is_some_and(
+                |held| !matches!(&held.change, Change::Edit { values, .. } if values.is_empty()),
+            );
+            if prior_write
+                && context.sequence == om_data::rules::WriteSequence::SingleLocalFieldStep
+            {
+                context.sequence = om_data::rules::WriteSequence::Local;
+            }
             let held = Held {
                 script,
                 context,
