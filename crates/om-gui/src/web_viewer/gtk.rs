@@ -72,16 +72,28 @@ pub(crate) struct GtkBackend {
     budget: MessageBudget,
 }
 
-/// WebKitGTK's DMA-BUF renderer shows blank pages on X servers without
-/// DRI3 (Xvfb, VNC, some proprietary drivers). There, unless the
-/// environment says otherwise, turn it off for this process's views. The
-/// variable must be set before any other thread starts.
+/// WebKitGTK's DMA-BUF renderer shows blank pages where its buffers cannot
+/// be shared with the X server. Unless the environment already chooses,
+/// for this process's views:
+///
+/// - on an X server without DRI3 (Xvfb, VNC, some proprietary drivers) the
+///   renderer is turned off;
+/// - where DRI3 hands out a device of NVIDIA's driver, pages go through
+///   shared memory instead (the web process still renders on the GPU): the
+///   renderer cannot allocate its buffers there ("Failed to create GBM
+///   buffer"), nor, without GBM, import them (measured through XWayland,
+///   NVIDIA 615, Arch's WebKitGTK 2.54). Debian's and Ubuntu's WebKitGTK
+///   make a choice of their own on NVIDIA's driver first (a patch of
+///   theirs; docs/re/layout-model.md 9.6).
+///
+/// The variables must be set before any other thread starts.
 pub(crate) fn prepare_environment() {
-    const VARIABLE: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
-    if std::env::var_os(VARIABLE).is_some() {
+    const DISABLE: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
+    const SHARED_MEMORY: &str = "WEBKIT_DMABUF_RENDERER_FORCE_SHM";
+    if std::env::var_os(DISABLE).is_some() || std::env::var_os(SHARED_MEMORY).is_some() {
         return;
     }
-    let Ok((x11, _)) = x11rb::connect(None) else {
+    let Ok((x11, screen)) = x11rb::connect(None) else {
         return;
     };
     let dri3 = x11
@@ -90,8 +102,35 @@ pub(crate) fn prepare_environment() {
         .and_then(|c| c.reply().ok())
         .is_some_and(|r| r.present);
     if !dri3 {
-        std::env::set_var(VARIABLE, "1");
+        std::env::set_var(DISABLE, "1");
+    } else if dri3_driver(&x11, screen).as_deref() == Some("nvidia") {
+        std::env::set_var(SHARED_MEMORY, "1");
     }
+}
+
+/// [`dri3_device_driver`], or `None` when the server's reply makes x11rb
+/// panic: it asserts that a reply brings the file descriptors it announces,
+/// and the X server is another process, which this check must not let end
+/// the app before its first window.
+fn dri3_driver(x11: &RustConnection, screen: usize) -> Option<String> {
+    let asked = std::panic::AssertUnwindSafe(|| dri3_device_driver(x11, screen));
+    std::panic::catch_unwind(asked).ok().flatten()
+}
+
+/// The kernel driver of the device the X server's DRI3 hands out for
+/// `screen` (the `driver` link of its `/sys/dev/char` entry).
+fn dri3_device_driver(x11: &RustConnection, screen: usize) -> Option<String> {
+    use std::os::unix::fs::MetadataExt as _;
+    use x11rb::protocol::dri3::ConnectionExt as _;
+    let root = x11.setup().roots.get(screen)?.root;
+    x11.dri3_query_version(1, 0).ok()?.reply().ok()?;
+    let reply = x11.dri3_open(root, x11rb::NONE).ok()?.reply().ok()?;
+    let rdev = std::fs::File::from(reply.device_fd).metadata().ok()?.rdev();
+    // glibc's encoding of a device number (`major`, `minor`).
+    let major = ((rdev >> 8) & 0xfff) | ((rdev >> 32) & !0xfff);
+    let minor = (rdev & 0xff) | ((rdev >> 12) & !0xff);
+    let driver = std::fs::read_link(format!("/sys/dev/char/{major}:{minor}/device/driver")).ok()?;
+    Some(driver.file_name()?.to_string_lossy().into_owned())
 }
 
 /// The views are X11 child windows, so the app's windows must be X11

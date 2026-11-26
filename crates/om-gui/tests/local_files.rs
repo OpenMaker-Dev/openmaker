@@ -2197,3 +2197,90 @@ fn the_script_workspace_shows_new_steps_of_a_filemaker_written_probe_file() {
         "the probe file is unchanged"
     );
 }
+
+/// A row shown while held has no stored version. Committing the new row
+/// without further edits must refresh that page before the next edit.
+#[test]
+fn a_committed_untouched_new_record_can_be_edited_in_its_window() {
+    use egui::Role;
+    use egui_kittest::kittest::By;
+    use om_hbam::slot::uint_segment;
+    use om_scripts::ScriptStep;
+
+    let folder = Folder::new("untouched-new-record");
+    let mut second = ScriptStep::new(122);
+    second.set_calculation(0, Some(&fixture::calc("\"Item Detail\"")));
+    let scripts = [fixture::script(
+        1,
+        "Start item",
+        vec![second, ScriptStep::new(7)],
+    )];
+    let mut root = fixture::tree(&scripts, true);
+    fixture::add_local_accounts(&mut root);
+    add_name_field(&mut root);
+    fixture::set_field_options(&mut root, fixture::TABLE, fixture::NAME, 4);
+    root.put(
+        &[
+            &uint_segment(fixture::TABLE),
+            &[3],
+            &[5],
+            &uint_segment(fixture::NAME),
+            &[0x0d],
+        ],
+        om_scripts::text_node(&[], "Default"),
+    );
+    fixture::write_tree(&folder.file(), &root);
+
+    let mut app = app();
+    common::open_menu(&mut app, "File");
+    common::click(&mut app, "Open...");
+    choose(&mut app, &folder.file());
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Start item");
+
+    let title = By::new().role(Role::TextInput).label("Name");
+    common::wait_until(&mut app, "the held item in its new window", |a| {
+        a.state().window_name() == "Item Detail"
+            && a.state().is_settled()
+            && a.query_all(title.clone())
+                .any(|field| field.value().as_deref() == Some("Default"))
+    });
+
+    let stored = |value: &str| {
+        let file = om_hbam::HbamFile::open(folder.file()).unwrap();
+        let tree = file.key_tree().unwrap();
+        om_hbam::record::records(&tree, fixture::TABLE)
+            .into_iter()
+            .any(|row| {
+                row.cells
+                    .get(&fixture::NAME)
+                    .and_then(|cell| cell.text())
+                    .and_then(Result::ok)
+                    .as_deref()
+                    == Some(value)
+            })
+    };
+    assert!(!stored("Default"), "the versionless row is still held");
+    common::save_record(&mut app);
+    common::wait_until(&mut app, "the untouched record commit", |a| {
+        a.state().is_settled() && a.state().record_edit_state().is_none() && stored("Default")
+    });
+
+    app.query_all(title.clone())
+        .find(|field| field.value().as_deref() == Some("Default"))
+        .unwrap()
+        .click();
+    app.run_steps(3);
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.event(egui::Event::Text("Edited".into()));
+    common::wait_until(&mut app, "the typed draft", |a| {
+        a.state().record_edit_state() == Some(false)
+    });
+    common::save_record(&mut app);
+    common::wait_until(&mut app, "the post-create save to settle", |a| {
+        a.state().is_settled()
+    });
+    assert!(stored("Edited"), "the next edit must reach the stored row");
+}

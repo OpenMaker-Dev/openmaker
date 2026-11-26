@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use om_data::found::{code, FindRequest, FoundSet, FoundSetChange, SortField};
 use om_data::rules::RecordNumber;
 use om_data::runtime::Mode;
-use om_data::{DataError, DataProvider, Field, FieldChanges, Record, ScriptWrite};
+use om_data::{DataError, DataProvider, Field, FieldChanges, Record, RecordCreation, ScriptWrite};
 
 use super::host::transaction::{missing_related_parent, Staged};
 use super::{ScrollRequest, WindowState, WindowUpdate};
@@ -716,8 +716,7 @@ impl Window {
         Ok(())
     }
 
-    /// Whether the current record has unsaved changes (or is new), its
-    /// related records included.
+    /// Whether the current record or its related records have unsaved edits.
     pub fn is_modified(&self) -> bool {
         let open = &self.state.uncommitted;
         !self.state.drafts.is_empty() || !open.cells.is_empty() || !open.related.is_empty()
@@ -821,6 +820,11 @@ impl Window {
                 self.commit_session(provider, skip_validation)?;
             }
             let new = std::mem::take(&mut self.state.uncommitted.new);
+            if new && session && self.state.record.is_some() {
+                // A page showing the held row has no stored version.
+                // Reload it so the next edit starts with the saved version.
+                self.changed_data();
+            }
             return Ok(self
                 .state
                 .record
@@ -1434,6 +1438,7 @@ impl Window {
             session,
             (values, cells),
             (privilege_set, record_number),
+            RecordCreation::NewRecord,
         )?;
         self.adopt_new_record(provider, made)
     }
@@ -1503,6 +1508,7 @@ impl Window {
         session: bool,
         (values, cells): (FieldChanges, Cells),
         (privilege_set, record_number): (Option<String>, Option<RecordNumber>),
+        creation: RecordCreation,
     ) -> Result<NewRecord, DataError> {
         let revert = |provider: &mut dyn DataProvider, session: bool| {
             if session {
@@ -1526,7 +1532,7 @@ impl Window {
             prepared: None,
             single_field_step: false,
         };
-        let (record, saved) = match provider.write_record(&write) {
+        let (record, saved) = match provider.write_record_with_creation(&write, creation) {
             Ok(record) => (record, !session && !provider.transaction_open()),
             Err(error) => {
                 revert(provider, session);

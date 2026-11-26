@@ -77,8 +77,8 @@ own chrome uses are in [design.md](design.md). Related notes:
   Linux and Windows.
 - The UI font is the bundled Inter (OFL), a cross-platform stand-in for the
   system font with similar metrics. Layout text uses the fonts the host
-  sends; on macOS, System Arial is used when the file asks for it and it is
-  installed, with a bundled open font as the fallback.
+  sends. On macOS, a document's Arial or Helvetica Neue selection uses the
+  installed family when available, with a bundled open font as the fallback.
 
 ## Opening files
 
@@ -621,6 +621,20 @@ from the current record page. Stored anchors resize objects within their
 containers. Record changes keep the user's selected panels. Browse shows no
 authoring part tabs or object kind captions.
 
+- Text objects in Browse draw an edge only when its style resolves to a
+  line. A width and color alone leave the edge hidden.
+- Styled layout labels keep the stored formatting of literal text around
+  a merge symbol or field. The replacement takes the styling at its
+  opening delimiter. OpenMaker also applies this rule to merge variables
+  and paragraph runs (layout-model.md 8.2). Explicit uppercase, lowercase, and
+  title-case styles apply to their saved character runs, including resolved
+  symbols.
+  In OpenMaker an object-level uppercase style continues to apply to the
+  whole object. Its precedence in FileMaker is unmeasured.
+- Date fields, merge fields and date symbols in Browse can show the
+  fixed named month and weekday presets in month-first English (see
+  data-format.md). OpenMaker takes names from the file's locale for
+  those presets. Short System Date is still displayed as entered.
 - A text, number, date, time or timestamp value stored with character
   styles (a chunked value beside a style subtree `ff`, calc-values.md
   implementation notes) shows its text; a nested form the provider cannot
@@ -2165,8 +2179,8 @@ markers and fields show their design names. The editor draws this artwork
 without evaluating record calculations or running document actions. If an icon
 cannot be resolved, a labeled button keeps its full-width label and an
 image-only button uses the canvas's outline and caption.
-Pasteboard objects, unsupported objects and geometry-only providers still
-use outlines and captions. Design-time web viewer placeholders are tracked
+Unsupported objects and geometry-only providers still use outlines and
+captions. Design-time web viewer placeholders are tracked
 in [#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019).
 The scrollable canvas, part tabs, objects and selection handles scale
 together. Placement, movement, resizing and the Inspector use the original
@@ -2174,9 +2188,12 @@ layout points at every zoom. The toolbar, Objects pane and Inspector keep
 their size. The wheel and scroll bars scroll the canvas at every zoom.
 Touch drag to scroll is available at Actual Size.
 
-Objects that cross the layout edge retain their full outline, with artwork
-clipped to the layout. Borderless fields and text have a faint editing
-boundary. FileMaker's boundary display options have not been compared.
+Stored artwork is dimmed on the visible pasteboard to the right of the
+layout. Objects below the last part and behind the part strip still use
+outlines. Borderless fields and text have a faint editing boundary.
+FileMaker Pro 26.1.1 can toggle field and text boundaries separately, and
+its field boundaries include dotted baselines. OpenMaker uses fixed faint
+outlines ([client-ui.md](re/client-ui.md#artwork-and-boundaries)).
 Contents of closed popovers still appear on the canvas
 ([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
 

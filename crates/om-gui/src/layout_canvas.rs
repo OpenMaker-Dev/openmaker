@@ -28,6 +28,8 @@ pub(crate) use history::DraftEdit;
 
 const PART_STRIP_WIDTH: f32 = 22.0;
 const PASTEBOARD_MARGIN: f32 = 48.0;
+// Approximate the contrast of Run C's blue rectangle on the right pasteboard.
+const PASTEBOARD_ARTWORK_OPACITY: f32 = 0.55;
 
 const CANNOT_MOVE_SELECTION: &str = "This selection includes an object OpenMaker cannot move. \
     No objects were moved.";
@@ -1776,14 +1778,15 @@ fn draw(
                 selected.click(index, ui.input(|i| i.modifiers.shift));
             }
 
+            let right_pasteboard =
+                Rect::from_min_max(surface.right_top(), pos2(area.right(), surface.bottom()));
+            let artwork_bounds = surface.union(right_pasteboard);
             let mut artwork = ui.new_child(
                 egui::UiBuilder::new()
                     .id_salt("design_artwork")
-                    .max_rect(surface),
+                    .max_rect(artwork_bounds),
             );
-            // Keep the current draft frame for layout and hit testing, but
-            // keep the paint inside the part strip and the width divider.
-            artwork.set_clip_rect(ui.clip_rect().intersect(surface));
+            artwork.set_clip_rect(ui.clip_rect().intersect(artwork_bounds));
             for (index, object) in geometry.objects.iter().enumerate() {
                 let Some(frame) = shown(object) else {
                     continue;
@@ -1806,7 +1809,7 @@ fn draw(
                     .map(|name| name.find("::").map_or(name, |at| &name[at..]))
                     .unwrap_or(&object.kind_name);
                 let draft_words = texts.words.objects.get(&object.key).map(String::as_str);
-                let painted = surface.intersects(rect)
+                let painted = artwork_bounds.intersects(rect)
                     && design.is_some_and(|design| {
                         design.paint_object(
                             &mut artwork,
@@ -1816,7 +1819,7 @@ fn draw(
                             draft_words,
                         )
                     });
-                if !painted || changed || !surface.contains_rect(rect) {
+                if !painted || changed || !artwork_bounds.contains_rect(rect) {
                     if rect.width() < 1.0 || rect.height() < 1.0 {
                         painter.line_segment([rect.min, rect.max], outline);
                     } else {
@@ -1906,6 +1909,15 @@ fn draw(
                         });
                     }
                 }
+            }
+            if design.is_some() && right_pasteboard.is_positive() {
+                // Fade the finished artwork in one pass. Crossing objects
+                // keep one stacking position, text label and hit target.
+                painter.rect_filled(
+                    right_pasteboard,
+                    CornerRadius::ZERO,
+                    theme::PASTEBOARD.gamma_multiply(1.0 - PASTEBOARD_ARTWORK_OPACITY),
+                );
             }
             let retyped = texts.retyping.as_ref().and_then(|r| {
                 let object = geometry.objects.iter().find(|o| o.key == r.key)?;

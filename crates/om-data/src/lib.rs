@@ -131,6 +131,15 @@ pub struct HostMessage {
     pub server_name: String,
 }
 
+/// The operation creating a record through the desktop's write path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordCreation {
+    /// The window's ordinary New Record command or script step.
+    NewRecord,
+    /// A duplicate, related row, preview, or other write.
+    Other,
+}
+
 /// A script's write of one record (Set Field and the other field steps,
 /// committed by Commit Records or by leaving the record): the rules a
 /// script's writes follow apply, not a user's (`rules::Entry::script`;
@@ -1482,6 +1491,17 @@ pub trait DataProvider: Send {
         }
     }
 
+    /// Write a record with its creation operation, for write rules that
+    /// depend on how the record was created. A provider without those
+    /// rules uses its ordinary write path.
+    fn write_record_with_creation(
+        &mut self,
+        write: &ScriptWrite,
+        _creation: RecordCreation,
+    ) -> Result<Record, DataError> {
+        self.write_record(write)
+    }
+
     /// Set Field's own checks of `text` (the value as the step gives it)
     /// entered into `cell` of `table` (a field's id, or `F * 256 + n`):
     /// the rules FileMaker checks as a value is entered (maximum
@@ -2012,6 +2032,22 @@ pub trait DataProvider: Send {
     /// The file's styled layout for Browse rendering, when available.
     fn render_layout(&mut self, _layout_id: u32) -> Result<Option<RenderLayout>, DataError> {
         Ok(None)
+    }
+
+    /// Capabilities for a layout shown by a script. Merely deciding
+    /// whether a field is editable need not open an unset variable source.
+    fn record_capabilities_for_layout(
+        &mut self,
+        layout_id: u32,
+        _scripted: bool,
+    ) -> Result<RecordCapabilities, DataError> {
+        self.record_capabilities(layout_id)
+    }
+
+    /// Layout metadata needed while a script runs. Related objects can
+    /// wait for an actual read when their variable source has no path.
+    fn render_script_layout(&mut self, layout_id: u32) -> Result<Option<RenderLayout>, DataError> {
+        self.render_layout(layout_id)
     }
 
     /// List hosted files on a server (before opening one). May be empty if the

@@ -1648,6 +1648,16 @@ file. No CSS or font asset is copied into the implementation.
 | text transform (75) | 1 none (`fill-low-shadow-inverted-edit:placeholder`); 3 uppercase (`uppercase-secondary-text`, `separator-uppercase-highlight-buttonbar`) | 2 capitalize, 4 lowercase inferred; no such rule in the inspected installed theme CSS |
 | text vertical align (611) | 0 top (`field`, `small_valigned_top_editbox`); 1 center (`button`, `small_center_aligned_text`); 2 bottom (`small_bottom_aligned_text`, `medium_valigned_btmright_editbox`) | These are zero-based, unlike text-align |
 
+[O, FileMaker Pro 26.1.1] Browse draws no line on a Text object's edge
+when its resolved border style is unset, even with a set width and
+color. A Text object with only its top edge enabled retained red and
+1-point width on all four sides. Only the top had a resolved style
+(solid, 5), and only the top drew. Removing that last style left all
+edges invisible and the Inspector showed None, with the width and color
+still present. A control with all four styles set to solid drew all four
+edges. Other object kinds and modes were not checked.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1091#issuecomment-7191245927)
+
 [O] Where a field's text sits when its style stores no vertical align (611).
 None of the 156 field objects of the six English starters resolves 611 from
 the object, the layout or the theme, components 1 and 3. Their themes carry it
@@ -2029,6 +2039,13 @@ template carries copies of `com.filemaker.theme.universal_touch` and
   and right-to-left text (`direction`, `unicode-bidi`) are part of the model [O].
 - ICU 76 is bundled (Windows `icu*76.dll`, imported by Support) [O].
 
+[O, FileMaker Pro 26.1.1] At Actual Size, a 104 × 22 pt Text object
+using Helvetica Neue 16 pt displays the complete label `Top edge only`.
+A 102 × 22 pt control with the same style displays `All four edges`.
+Both fit on one line. The point sizes and family come from the same
+closed synthetic layout.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1104)
+
 ### 8.1 Stored character-style masks
 
 [O, FileMaker Pro 26.0.3 Mac Support] `CharacterStyle::Read` (0x1f7fdc)
@@ -2056,6 +2073,43 @@ the default style; those slots must not become explicit text overrides.
 A set face-mask bit can explicitly turn a face off. A run that changes only
 bold must inherit the default italic setting; a color-only run must inherit
 the layout's font and point size. Unknown bits and extension bytes remain raw.
+
+[O, FileMaker Pro 26.1.1] With the case-group mask `0x0030`, faces
+`0x0010` display the run in uppercase, `0x0020` in lowercase, and
+`0x0030` in title case. In a mixed Text object those commands changed
+only the selected word and kept its stored spelling. The same uppercase
+run over a complete Account Name symbol changed its display from `Admin`
+to `ADMIN`. Accessibility returned the underlying case.
+[Per-run native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1097#issuecomment-7192063512).
+
+[O, FileMaker Pro 26.1.1] With a format applied to the whole object,
+Uppercase retained `ß`
+and the `ﬂ` ligature, and changed `étude` to `ÉTUDE`. Title Case
+displayed `o'NEIL mACDONALD-sMITH 3RD aLPHA bETA` as
+`O'neil Macdonald-smith 3rd Alpha Beta`: apostrophes and hyphens kept
+their words together.
+[Whole-object native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1097#issuecomment-7193070314).
+Using the same character mappings and word boundaries within a run is
+inferred. Precedence between object and run styles, and title-case breaks
+at quotation marks, parentheses, slashes, and periods remain unmeasured.
+
+### 8.2 Styled merge values
+
+[O, FileMaker Pro 26.1.1, local synthetic file] Browse preserves the
+stored formatting of literal text on either side of an inserted layout
+symbol or merge field. A uniformly styled reference passes its style to
+the replacement. Where the opening delimiters, reference name and
+closing delimiters each had a different color, the entire replacement
+used the opening delimiter's color. Treating other attributes within a
+mixed reference the same way is inferred from this test. In the saved
+split examples, the opening delimiter and name shared a run. The closing
+delimiter kept its separate color through reopening. An empty field
+removed just the replacement, and the suffix kept its styling and line.
+A long field retained its style. Both lines of a two-line field used
+the replacement's style, and the suffix kept its own style on the second
+line. Different paragraph spacing and merge-variable styling were not
+measured.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1030)
 
 ## 9. Rendering stack
 
@@ -2185,9 +2239,22 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   "Automatically encode URL" uses Insert from URL's encoding, and also
   encodes `#` in a `data:` URL. Views are incognito, without developer tools,
   new windows or downloads, and navigate only to http, https, data, blob,
-  file and about URLs. On an X server without DRI3 the process turns off
-  WebKitGTK's DMA-BUF renderer at startup (it draws blank pages there) unless
-  `WEBKIT_DISABLE_DMABUF_RENDERER` is set.
+  file and about URLs. WebKitGTK's DMA-BUF renderer draws blank pages where
+  it cannot share its buffers with the X server, so at startup, unless
+  `WEBKIT_DISABLE_DMABUF_RENDERER` or `WEBKIT_DMABUF_RENDERER_FORCE_SHM` is
+  set, the process turns it off on an X server without DRI3, and has it
+  send pages through shared memory (still rendered on the GPU) where DRI3
+  hands out a device of NVIDIA's driver: there it cannot allocate its
+  buffers, nor, without GBM, import them (measured through XWayland with
+  NVIDIA 615 and Arch's WebKitGTK 2.54; an NVIDIA X server of its own, and
+  other drivers' failures, unmeasured). Debian's and Ubuntu's WebKitGTK
+  packages make a choice of their own on NVIDIA's driver
+  (`disable-nvidia-dmabuf.patch`, from WebKit pull request 18614) before
+  they read the variable. In Ubuntu 24.04's 2.52.6-0ubuntu0.24.04.2 it sends
+  pages through shared memory as well, and honours the variable. In
+  0ubuntu0.24.04.1 it turned the renderer off without shared memory, and
+  Debian bug 1142771 reports that crashing pages that need compositing
+  [reported, unmeasured here].
 - On Linux (`web_viewer/gtk.rs`) the page bridge posts to a script message
   handler of its own, `openmaker` (wry's IPC drops messages from `data:`
   pages, whose URL it cannot parse). WebKit shows a page's message
@@ -2294,16 +2361,48 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   every web viewer shows "Web viewer: unavailable on this display." Builds without the feature stay on native
   Wayland. Through XWayland:
   - **Scale** comes from the X server: XSETTINGS `Xft/DPI`, then the
-    `Xft.dpi` resource, then the monitor's size, unless
-    `WINIT_X11_SCALE_FACTOR` is set. A compositor that gives X clients no
-    scale draws them enlarged (unmeasured here).
-  - **Input** is X11's, with XIM for input methods.
+    `Xft.dpi` resource, then each monitor's size in RandR (winit 0.30: its
+    pixel density over 96 dpi, rounded to twelfths, at least 1), unless
+    `WINIT_X11_SCALE_FACTOR` is set. What a desktop at a higher scale shows
+    depends on its compositor. Measured 2026-11-26 with the mock provider,
+    comparing the same build through XWayland and natively on Wayland
+    (`DISPLAY` unset), by screenshot
+    ([evidence](../evidence/xwayland-scale/README.md)):
+    - **sway 1.12 (wlroots, headless)** gives XWayland the output's logical
+      size (a 1920 × 1080 output is 960 × 540 pixels on 254 × 143 mm at
+      scale 2, 1280 × 720 on 339 × 190 mm at 1.5) and stretches X windows by
+      the output's scale. With no XSETTINGS or `Xft.dpi` the app draws at
+      1, so its windows have the native windows' size but are blurred, at 2
+      and at 1.5. Native Wayland windows are sharp at both, 1.5 included
+      (winit follows fractional scales). [I] Raising
+      `WINIT_X11_SCALE_FACTOR` would only enlarge the stretched window (not
+      tried).
+    - **Hyprland 0.56 with `xwayland:force_zero_scaling`** (Omarchy's
+      default) does not stretch X windows: XWayland has the monitor's
+      pixels (1920 × 1080 on 600 × 340 mm at scale 2 as at 1) and no
+      `Xft.dpi`. At scale 1 the app draws at 1, as natively. At scale 2 it
+      still draws at 1: sharp, but half the size of the native window. [I]
+      `WINIT_X11_SCALE_FACTOR=2` (or an `Xft.dpi` of 192) would give it the
+      desktop's scale (not tried).
+    - WebKitGTK, in the app's process, takes GDK's scale from
+      `GDK_SCALE`, which some desktops set for X11 apps (Omarchy sets 2);
+      its pages then draw at that scale within objects the app draws at 1
+      ([#1086](https://github.com/OpenMaker-Dev/openmaker/issues/1086)).
+  - **Input** is X11's, with XIM for input methods (not measured).
   - **The clipboard** is X selections (arboard), which the compositor shares
     with Wayland applications.
 
   A test runs the real event loop with `WAYLAND_DISPLAY` naming no socket.
-  An XWayland window under a nested compositor was checked by hand, and no
-  Wayland desktop has been tried.
+  `tests/web_viewer_native.rs`, built from
+  [#1087](https://github.com/OpenMaker-Dev/openmaker/pull/1087)'s first
+  revision (its shared-memory choice on NVIDIA's driver; without it the page
+  stays blank there,
+  [#1085](https://github.com/OpenMaker-Dev/openmaker/issues/1085)), passed
+  on Hyprland's XWayland at scale 1 with `GDK_SCALE` unset; with
+  `GDK_SCALE=2` its click on the page misses
+  ([#1086](https://github.com/OpenMaker-Dev/openmaker/issues/1086)). A native
+  Wayland backend was studied and prototyped in
+  [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323).
 - Every window shows its own views. eframe 0.37 gives out only the root
   viewport's native window; another window's viewport is an immediate
   viewport whose X11 window OpenMaker finds from the server

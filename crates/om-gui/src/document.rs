@@ -9,7 +9,7 @@ use egui::{
 };
 use om_data::calc::Value;
 use om_data::choice::{self, ChoiceError, ChoiceTarget, Choices, MenuCommand};
-use om_data::host::layout::ObjectState;
+use om_data::host::layout::{ObjectState, TextSubstitution};
 use om_data::host::NO_RECORD;
 use om_data::{EditRefusal, Field, FieldKind, RecordCapabilities, RenderLayout};
 use om_layout::{Color, Layout, LayoutObject, ObjectKind, ResolvedStyle, TextRun};
@@ -4869,9 +4869,18 @@ fn paint_object_repetition(
         } else {
             1
         };
-    let style = state
+    let mut style = state
         .layout_cache
         .formatted_style(layout, object, conditions, 1, style_state);
+    if !finding && object.kind() == ObjectKind::Text {
+        // Browse draws no Text edge without a line style, even when the
+        // definition retained its width and color (layout-model.md 6.2).
+        for (width, line_style) in style.border_width.iter_mut().zip(style.border_style) {
+            if line_style.is_none() {
+                *width = None;
+            }
+        }
+    }
     if object.kind() == ObjectKind::Line {
         line::paint(ui.painter(), rect, object.flags, &style);
     } else {
@@ -5381,21 +5390,30 @@ fn paint_object_repetition(
         ObjectKind::Text | ObjectKind::Button | ObjectKind::PopoverButton => {
             // "Image only" shows the icon alone and centered (layout-model.md
             // 5.6.1); its stored label stays the button's accessible name.
-            let text = match object.shows_label() {
-                true => object_text(
+            let mut rich = object.rich_text.as_ref().map(Cow::Borrowed);
+            let track_substitutions = rich.as_ref().is_some_and(|rich| {
+                object.merge_source.as_deref().or(object.text.as_deref())
+                    == Some(rich.text.as_str())
+            });
+            let (text, substitutions) = match object.shows_label() {
+                true => object_text_with_substitutions(
                     session,
                     object,
                     (record_index, !finding),
                     calc,
                     &calc_state,
                     portal,
+                    track_substitutions,
                 ),
-                false => String::new(),
+                false => (String::new(), Vec::new()),
             };
             let text_style = state
                 .layout_cache
                 .text_style(layout, object, conditions, style_state);
-            let mut rich = object.rich_text.as_ref().map(std::borrow::Cow::Borrowed);
+            if !substitutions.is_empty() {
+                rich = rich
+                    .map(|data| Cow::Owned(rich_text::substitute(&data, &text, &substitutions)));
+            }
             if !conditions.is_empty() {
                 if let Some(rich) = &mut rich {
                     rich_text::apply_conditional(
@@ -9241,56 +9259,116 @@ fn object_text(
     state: &ObjectState,
     portal: Option<PortalRow>,
 ) -> String {
+    object_text_with_substitutions(
+        session,
+        object,
+        (record_index, values),
+        calc,
+        state,
+        portal,
+        false,
+    )
+    .0
+}
+
+fn object_text_with_substitutions(
+    session: &Session,
+    object: &LayoutObject,
+    (record_index, values): (u64, bool),
+    calc: Option<&Evaluator<'_>>,
+    state: &ObjectState,
+    portal: Option<PortalRow>,
+    track_substitutions: bool,
+) -> (String, Vec<TextSubstitution>) {
     if let Some(label) = &state.label {
-        return label.clone();
+        return (label.clone(), Vec::new());
     }
     let record = session
         .record_at(record_index)
         .and_then(|(_, r)| u64::try_from(r.id).ok());
-    let merged = |text: &str| -> String {
+    let merged = |text: &str, track_substitutions| {
         calc.and_then(|calc| {
-            calc.merge_text_in_portal(text, record, portal, object.data_format.as_ref())
+            calc.merge_text_in_portal(
+                text,
+                record,
+                portal,
+                object.data_format.as_ref(),
+                track_substitutions,
+            )
         })
-        .unwrap_or_else(|| text.to_owned())
+        .unwrap_or_else(|| (text.to_owned(), Vec::new()))
     };
     if object.text_runs.is_empty() {
-        return merged(object.text.as_deref().unwrap_or_default());
+        return merged(
+            object.text.as_deref().unwrap_or_default(),
+            track_substitutions,
+        );
     }
-    object
-        .text_runs
-        .iter()
-        .map(|run| match run {
-            TextRun::Literal(text) => merged(text),
-            TextRun::MergeField(_) if !values => String::new(),
+    let field_value = |name: &str| {
+        if !values {
+            String::new()
+        } else if calc.is_some_and(Evaluator::layout_masked) {
             // A layout whose records the set gives no access shows
             // `<No Access>` for a merge field (#707's reading).
-            TextRun::MergeField(_) if calc.is_some_and(Evaluator::layout_masked) => {
-                NO_ACCESS.to_owned()
+            NO_ACCESS.to_owned()
+        } else {
+            if let (Some(calc), Some(record)) = (calc, record) {
+                if let Some(value) = calc.named_value_in_portal(name, record, portal) {
+                    // A merge field shows its value through the object's
+                    // own data format, as a field object does.
+                    return data_format::display(
+                        &calc.display(&value),
+                        value.value_type(),
+                        object.data_format.as_ref(),
+                        &calc.context(),
+                    )
+                    .into_owned();
+                }
+            }
+            if portal.is_some() {
+                String::new()
+            } else {
+                value_named(session, name, record_index).to_owned()
+            }
+        }
+    };
+    let mut output = String::new();
+    let mut substitutions = Vec::new();
+    let mut fields = object.stored_merge_field_ranges();
+    let mut source = track_substitutions.then_some(0);
+    for run in &object.text_runs {
+        match run {
+            TextRun::Literal(text) => {
+                let (shown, ranges) = merged(text, source.is_some());
+                let start = output.len();
+                output.push_str(&shown);
+                if let Some(source) = &mut source {
+                    substitutions.extend(ranges.into_iter().map(|range| TextSubstitution {
+                        source: (*source + range.source.start)..(*source + range.source.end),
+                        display: (start + range.display.start)..(start + range.display.end),
+                    }));
+                    *source += text.len();
+                }
             }
             TextRun::MergeField(name) => {
-                if let (Some(calc), Some(record)) = (calc, record) {
-                    if let Some(value) = calc.named_value_in_portal(name, record, portal) {
-                        // A merge field shows its value through the
-                        // object's own data format, as a field object
-                        // does (data-format.md) and as Preview and PDF
-                        // already show it (`report::object_text`).
-                        return data_format::display(
-                            &calc.display(&value),
-                            value.value_type(),
-                            object.data_format.as_ref(),
-                            &calc.context(),
-                        )
-                        .into_owned();
+                let start = output.len();
+                output.push_str(&field_value(name));
+                if let Some(expected_start) = source {
+                    if let Some(range) = fields.next().filter(|r| r.start == expected_start) {
+                        source = Some(range.end);
+                        substitutions.push(TextSubstitution {
+                            source: range,
+                            display: start..output.len(),
+                        });
+                    } else {
+                        source = None;
+                        substitutions.clear();
                     }
                 }
-                if portal.is_some() {
-                    String::new()
-                } else {
-                    value_named(session, name, record_index).to_owned()
-                }
             }
-        })
-        .collect()
+        }
+    }
+    (output, substitutions)
 }
 
 /// An object's style for `component` in `state`, with the conditional

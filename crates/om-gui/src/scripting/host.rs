@@ -590,7 +590,12 @@ impl<'a> WorkerHost<'a> {
     /// The window's layout as rendered (triggers, field objects).
     fn render(&mut self, id: u32) -> Option<Arc<om_data::RenderLayout>> {
         if !self.s.file.rendered.contains_key(&id) {
-            let render = self.p().render_layout(id).ok().flatten().map(Arc::new);
+            let render = self
+                .p()
+                .render_script_layout(id)
+                .ok()
+                .flatten()
+                .map(Arc::new);
             self.s.file.rendered.insert(id, render);
         }
         // Rendering can bind a pending related table. Adopt that schema
@@ -2081,6 +2086,7 @@ impl<'a> WorkerHost<'a> {
                 session,
                 (values, cells),
                 (privilege_set, record_number),
+                om_data::RecordCreation::Other,
             )
         };
         let made = match made {
