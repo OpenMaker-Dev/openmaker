@@ -19,6 +19,7 @@ uniffi::setup_scaffolding!();
 mod accessibility;
 mod document;
 mod frame;
+mod hosts;
 mod input;
 mod state;
 mod surface;
@@ -26,6 +27,10 @@ mod surface;
 pub use accessibility::{Element, ElementKind};
 pub use document::{Document, DocumentObserver};
 pub use frame::{Batch, Frame, FrameTimings, TextureUpdate, TextureWrap};
+pub use hosts::{
+    connect_certificate, distinct_hosts, former_hosts, host_key, remove_host, save_host,
+    trusted_certificate, HostChange, HostSaved, ListedHost, SavedHosts,
+};
 pub use input::{Command, Input, Key};
 pub use state::{Caret, DocumentMode, DocumentState, Menu, MenuRow, MenuRowKind};
 
@@ -150,6 +155,8 @@ fn provider(host: Option<&Host>) -> Result<NativeProvider, GoError> {
         if host.address.trim().is_empty() || host.port == 0 {
             return Err(GoError::failed("Enter a host name and port."));
         }
+        // Past the bounds a host is refused, never cut short (`hosts`).
+        hosts::check_bundle(&host.certificate)?;
         config.additional_ca_pem = host.certificate.as_bytes().to_vec();
         // Saved for this host and port: a file a script opens elsewhere is
         // not verified against it.
@@ -158,6 +165,31 @@ fn provider(host: Option<&Host>) -> Result<NativeProvider, GoError> {
             .with_ca_scope(host.address.trim(), host.port));
     }
     Ok(NativeProvider::new(config).with_related_on_demand(true))
+}
+
+/// A host as Add Host takes it, or what to fix ([`GoError::Failed`]): the
+/// address and port are checked as the desktop's Add Host checks them
+/// (`om_gui::host_address`) and the address given in the form it is
+/// connected as (`hosts`); the certificate authority, kept as given, must be
+/// empty or certificates alone, within bounds.
+#[uniffi::export]
+pub fn check_host(address: String, port: String, certificate: String) -> Result<Host, GoError> {
+    let (address, port) = om_gui::host_address(&address, &port).map_err(GoError::failed)?;
+    let address = hosts::canonical_address(&address)
+        .ok_or_else(|| GoError::failed("Enter a valid host name or IP address."))?;
+    hosts::readable(&certificate)?;
+    Ok(Host {
+        address,
+        port,
+        certificate,
+    })
+}
+
+/// A file name typed to open on a host, as the host lists it: with the
+/// `.fmp12` extension, which the name may leave out.
+#[uniffi::export]
+pub fn hosted_file_name(name: String) -> String {
+    om_data::file_refs::hosted_name(name.trim())
 }
 
 /// The files `host` publishes. Blocks while it asks the host.
