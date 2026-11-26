@@ -364,7 +364,7 @@ impl NativeProvider {
         compute: impl Fn(&RecordPlan, &RecordEnvironment) -> Result<T, DataError>,
     ) -> Result<T, DataError> {
         if reserve && mode == WriteMode::Create {
-            plan.check_creation_context(&environment.context)?;
+            plan.check_creation_context(&environment.context, entry)?;
         }
         // Each run but the last downloads one header or one member's data
         // the runs before did not: two per member the record names.

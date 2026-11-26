@@ -63,6 +63,15 @@ itself, or a dependency cycle involving different fields, is outside this
 inference and remains refused. Native timing and the named-reference
 substitution have not been measured for this slice.
 
+FileMaker Pro 26.1.1 [measured the `Self` token](https://github.com/OpenMaker-Dev/openmaker/issues/1059)
+in a local Number field. A formula with an empty branch returning 0 stores
+0 at New Record and after an explicit clear. With replacement enabled,
+`Self + 1` in the nonempty branch stores 26 after Set Field of 25. With
+replacement disabled the same assignment stores 25. An unrelated edit
+keeps the value. The result is visible immediately and survives commit.
+Inferred: `Self` reads the proposed field value. Hosted files and other
+field types were not measured.
+
 ## Fixed field definition
 
 The definition is at `<base-table>/3/5/<field>/2`. The decoder accepts exactly

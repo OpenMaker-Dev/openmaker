@@ -307,6 +307,9 @@ pub struct Entry<'a> {
     /// where an auto-entered value would replace an existing one (oracle
     /// x02).
     pub keep_written: bool,
+    /// Import mappings keep their assigned value even for a replacing
+    /// Number auto-entry formula that reads its proposed value with Self.
+    pub imported: bool,
     /// Cells this import maps when `changes` also contains earlier staged
     /// values. By default all cells in `changes` are explicitly set.
     pub mapped_cells: Option<&'a BTreeSet<u64>>,
@@ -320,6 +323,7 @@ impl Entry<'_> {
             skip_data_entry_validation,
             skip_auto_enter,
             keep_written: false,
+            imported: false,
             mapped_cells: None,
         }
     }
@@ -335,6 +339,7 @@ impl Entry<'_> {
             skip_data_entry_validation: true,
             skip_auto_enter: !auto_enter,
             keep_written: true,
+            imported: true,
             mapped_cells: None,
         }
     }
@@ -343,6 +348,15 @@ impl Entry<'_> {
     /// as written ([`Entry::keep_written`]).
     fn keeps(&self, changes: &BTreeMap<u64, Option<String>>, cell: u64) -> bool {
         self.keep_written && self.sets(changes, cell)
+    }
+
+    fn keeps_calculated(
+        &self,
+        changes: &BTreeMap<u64, Option<String>>,
+        cell: u64,
+        auto_enter_self: bool,
+    ) -> bool {
+        self.keeps(changes, cell) && (!auto_enter_self || self.imported)
     }
 
     fn sets(&self, changes: &BTreeMap<u64, Option<String>>, cell: u64) -> bool {
@@ -1104,6 +1118,13 @@ pub struct RecordPlan {
     schema: Arc<CalcSchema>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AutoEntrySelf {
+    Unused,
+    ProposedNumber,
+    Unsupported,
+}
+
 struct PlannedField {
     name: String,
     options: FieldOptions,
@@ -1111,6 +1132,8 @@ struct PlannedField {
     editable: bool,
     /// A stored calculation or an auto-enter calculation.
     expression: Option<Expression>,
+    /// How this formula uses the field's proposed value.
+    auto_enter_self: AutoEntrySelf,
     /// This local global's auto-entry reads Self.
     global_text_self: GlobalTextSelf,
     /// Creation Date supplies the value on create. The calculation's
@@ -2286,6 +2309,36 @@ impl RecordPlan {
             } else {
                 None
             };
+            let mut auto_enter_self = AutoEntrySelf::Unused;
+            if let Some(formula) = expression.as_ref().filter(|_| !global) {
+                let mut uses_self = false;
+                let mut other_inputs = false;
+                walk(&formula.formula.polish, &mut |node| match node {
+                    Expr::Call {
+                        op: om_formula::Opcode::SELF,
+                        ..
+                    } => uses_self = true,
+                    Expr::Get(_) | Expr::Variable(_) | Expr::CustomCall { .. } => {
+                        other_inputs = true
+                    }
+                    _ => {}
+                });
+                let options = options.options & !(INDEX_OPTIONS | BOOKKEEPING_OPTIONS);
+                if uses_self {
+                    let measured = local
+                        && kind == FieldKind::Normal
+                        && field.data_type == DataType::Number
+                        && matches!(options, 0x08 | 0x88)
+                        && formula.dependencies.is_empty()
+                        && formula.related.is_empty()
+                        && !other_inputs;
+                    auto_enter_self = if measured {
+                        AutoEntrySelf::ProposedNumber
+                    } else {
+                        AutoEntrySelf::Unsupported
+                    };
+                }
+            }
             let global_text_self = if auto_enters_global {
                 expression
                     .as_ref()
@@ -2465,6 +2518,7 @@ impl RecordPlan {
                     data_type: field.data_type,
                     editable,
                     expression,
+                    auto_enter_self,
                     global_text_self,
                     creation_date_with_calculation,
                     constant,
@@ -3011,8 +3065,11 @@ impl RecordPlan {
                 .as_ref()
                 .is_some_and(|lookup| self.fires(*id, lookup, mode, &dirty, changes, entry));
             let expression = field.expression.as_ref().is_some_and(|expression| {
-                (field.stored_calculation() || !entry.skip_auto_enter && !entry.keeps(changes, *id))
+                let uses_self = field.auto_enter_self != AutoEntrySelf::Unused;
+                let keeps = entry.keeps_calculated(changes, *id, uses_self);
+                (field.stored_calculation() || !entry.skip_auto_enter && !keeps)
                     && (mode == WriteMode::Create
+                        || uses_self && changes.contains_key(id)
                         || expression.dependencies.iter().any(|d| dirty.contains(d)))
                     && (field.stored_calculation()
                         || field.options.calculation_replaces_existing()
@@ -3851,9 +3908,31 @@ impl RecordPlan {
             })
     }
 
-    /// Reject an unsupported stored record position before a create or
-    /// preview reserves an ID or a serial number.
-    pub fn check_creation_context(&self, context: &WriteContext) -> Result<(), DataError> {
+    /// Reject an unsupported stored record position or Self evaluation
+    /// before a create or preview reserves an ID or a serial number.
+    pub fn check_creation_context(
+        &self,
+        context: &WriteContext,
+        entry: Entry,
+    ) -> Result<(), DataError> {
+        if let Some(field) = self.fields.values().find(|field| {
+            (!entry.skip_auto_enter || field.stored_calculation())
+                && match field.auto_enter_self {
+                    AutoEntrySelf::Unused => false,
+                    AutoEntrySelf::ProposedNumber => {
+                        !matches!(context.record_number, Some(RecordNumber::LocalNewRecord(_)))
+                    }
+                    AutoEntrySelf::Unsupported => true,
+                }
+        }) {
+            return Err(DataError::with_code(
+                error::UNAVAILABLE,
+                format!(
+                    "Field {}: Self requires a supported formula and unsorted local New Record.",
+                    field.name
+                ),
+            ));
+        }
         if matches!(
             context.record_number,
             Some(RecordNumber::LocalNewRecord(_) | RecordNumber::LocalSortedNewRecord { .. })
@@ -4798,7 +4877,7 @@ impl RecordPlan {
         preview: Option<&BTreeSet<u64>>,
     ) -> Result<Computed, DataError> {
         if mode == WriteMode::Create {
-            self.check_creation_context(&environment.context)?;
+            self.check_creation_context(&environment.context, entry)?;
         }
         let validate = preview.is_none();
         let mut deferred = BTreeSet::new();
@@ -4974,8 +5053,9 @@ impl RecordPlan {
                 continue;
             };
             let combined_create = field.creation_date_with_calculation && mode == WriteMode::Create;
-            if !field.stored_calculation()
-                && (entry.skip_auto_enter || (entry.keeps(changes, *id) && !combined_create))
+            let uses_self = field.auto_enter_self != AutoEntrySelf::Unused;
+            let keeps = entry.keeps_calculated(changes, *id, uses_self);
+            if !field.stored_calculation() && (entry.skip_auto_enter || (keeps && !combined_create))
             {
                 continue;
             }
@@ -5005,6 +5085,7 @@ impl RecordPlan {
                 .any(|id| deferred.contains(id));
             let should_evaluate = mode == WriteMode::Create
                 || depends_on_deferred
+                || uses_self && changes.contains_key(id)
                 || expression.dependencies.iter().any(|id| dirty.contains(id));
             let can_replace = field.stored_calculation()
                 || field.options.calculation_replaces_existing()
@@ -5037,6 +5118,12 @@ impl RecordPlan {
             if depends_on_deferred {
                 deferred.insert(*id);
                 continue;
+            }
+            if field.auto_enter_self == AutoEntrySelf::Unsupported {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!("Field {}: unsupported auto-entry using Self.", field.name),
+                ));
             }
             if field.creation_date_with_calculation {
                 if !validate {
@@ -5925,17 +6012,29 @@ impl RecordPlan {
             .table(self.table)
             .and_then(|t| t.fields.get(&id));
         let result_type = def.map(|d| d.value_type);
+        let self_value = self.auto_enters_proposed_self(id).then(|| {
+            let cx = Ctx::new(&self.schema.locale, session.today());
+            let proposed = row.get(&id).map_or("", String::as_str);
+            stored_value(proposed, ValueType::Number, &cx)
+        });
         let repetition = InRepetition::Calculation(repetition);
         self.run(
             id,
             expression,
             row,
             session,
-            None,
+            self_value,
             result_type,
             repetition,
             remaining,
         )
+    }
+
+    /// Whether a new-record preview may replace the supplied value of this cell.
+    pub fn auto_enters_proposed_self(&self, cell: u64) -> bool {
+        self.fields
+            .get(&cell)
+            .is_some_and(|field| field.auto_enter_self == AutoEntrySelf::ProposedNumber)
     }
 
     /// Whether repetition `repetition` of field `id` passes its validation
@@ -8865,6 +8964,136 @@ mod tests {
         let filled = create(&plan, &[(1, "a")]).unwrap();
         assert_eq!(decoded(&filled, 20).as_deref(), Some("xa"));
         assert_eq!(decoded(&filled, 21).as_deref(), Some("ya"));
+    }
+
+    #[test]
+    fn a_local_number_auto_entry_reads_the_proposed_self() {
+        let table = Table {
+            id: 0x8002,
+            name: "Items".into(),
+            fields: vec![
+                field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(20, FieldKind::Normal, DataType::Number, 0, 0x88, 0),
+                field(21, FieldKind::Normal, DataType::Number, 0, 0x08, 0),
+            ],
+        };
+        let formula = "If ( IsEmpty ( Self ) ; 0 ; Self + 1 )";
+        let formulas = [(20, 5, formula), (21, 5, formula)];
+        let hosted = plan_with(&table, &formulas, &[], Vec::new(), false).unwrap();
+        let plan = plan_of(&table, &formulas, &[]).unwrap();
+        let entry = Entry::script(false, false);
+        let held_create = Entry {
+            keep_written: true,
+            ..entry
+        };
+        let env = RecordEnvironment {
+            context: WriteContext {
+                record_number: Some(RecordNumber::LocalNewRecord(1)),
+                ..WriteContext::default()
+            },
+            ..environment()
+        };
+        let empty = BTreeMap::new();
+        let create = plan
+            .compute(
+                WriteMode::Create,
+                &empty,
+                &BTreeMap::new(),
+                &env,
+                held_create,
+            )
+            .unwrap();
+        assert_eq!(
+            create,
+            BTreeMap::from([(20, Some("0".into())), (21, Some("0".into()))])
+        );
+        let propose = BTreeMap::from([(20, Some("25".into())), (21, Some("25".into()))]);
+        let values = plan
+            .compute(WriteMode::Create, &empty, &propose, &env, held_create)
+            .unwrap();
+        assert_eq!(
+            values,
+            BTreeMap::from([(20, Some("26".into())), (21, Some("25".into()))])
+        );
+        let row = BTreeMap::from([(20, "7".into()), (21, "8".into())]);
+        let updated = plan
+            .compute(WriteMode::Update, &row, &propose, &env, entry)
+            .unwrap();
+        assert_eq!(updated, values);
+        let cleared = plan
+            .compute(
+                WriteMode::Update,
+                &row,
+                &BTreeMap::from([(20, None), (21, None)]),
+                &env,
+                entry,
+            )
+            .unwrap();
+        assert_eq!(cleared, create);
+        let note = BTreeMap::from([(1, Some("unrelated".into()))]);
+        assert_eq!(
+            plan.compute(WriteMode::Update, &row, &note, &env, entry)
+                .unwrap(),
+            note
+        );
+        let unmeasured = RecordEnvironment {
+            context: WriteContext {
+                record_number: Some(RecordNumber::Window(1)),
+                ..WriteContext::default()
+            },
+            ..environment()
+        };
+        for (plan, env, entry) in [
+            (&plan, &unmeasured, held_create),
+            (&hosted, &env, held_create),
+            (&plan, &unmeasured, Entry::import(true)),
+        ] {
+            assert_eq!(
+                plan.compute(WriteMode::Create, &empty, &propose, env, entry)
+                    .unwrap_err()
+                    .code,
+                Some(error::UNAVAILABLE)
+            );
+        }
+        assert_eq!(
+            plan.compute(
+                WriteMode::Create,
+                &empty,
+                &propose,
+                &unmeasured,
+                Entry::import(false)
+            )
+            .unwrap(),
+            propose
+        );
+
+        let text_table = Table {
+            fields: vec![
+                field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(20, FieldKind::Normal, DataType::Text, 0, 0x88, 0),
+            ],
+            ..table
+        };
+        let unmeasured_self = plan_of(&text_table, &[(20, 5, "Trim ( Self )")], &[]).unwrap();
+        assert_eq!(
+            unmeasured_self
+                .compute(WriteMode::Update, &row, &note, &env, entry)
+                .unwrap(),
+            note
+        );
+        assert_eq!(
+            unmeasured_self
+                .compute(
+                    WriteMode::Update,
+                    &row,
+                    &BTreeMap::from([(20, Some(" proposed ".into()))]),
+                    &env,
+                    entry
+                )
+                .unwrap_err()
+                .code,
+            Some(error::UNAVAILABLE)
+        );
     }
 
     #[test]
