@@ -1563,8 +1563,20 @@ the same nonce, session value, file id and bool [O]. On the writable file
 FileMaker Pro sent Open once. Why it opens again is not known. The Login
 that follows derives its key from the nonce (4.3); the two replies carry
 the same one, so the captures cannot tell which reply's nonce FileMaker
-Pro keeps. What FileMaker Server answers to another Open of a file the
-session has open (handle 0, or a value it did not give) is unmeasured.
+Pro keeps. FileMaker Pro 26.1.1 did the same against FileMaker Server
+26.0.3 (a relay capture of 2026-11-26): two Opens on one connection
+before its one Login, the bool 1 in both replies [O].
+
+So one case is observed: a second Open of a file whose first reply said
+read only, before any Login on it, carrying that reply's session value,
+on the same connection. Every other Open of a file the session has open
+is unmeasured on FileMaker Server: a writable file, an Open after a
+Login, a handle of 0 or of a value the server did not give, a file that
+became read only after its first reply. OpenMaker Server repeats the
+first reply as it was for the observed case alone, and answers every
+other Open of an open file as it always did: it ends what the session
+held in the file (its Login, locks and staged records) and gives a fresh
+nonce and session value.
 
 **Back channel and padding.** The three Open replies' back channels were
 `fe 01` and 2, 1 and 2 more bytes: the CPU report with its random tail

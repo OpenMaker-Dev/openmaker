@@ -366,6 +366,11 @@ struct OpenFile {
     /// The session value sent in the Open reply, which FileMaker Pro sends
     /// back when it opens the file again (`open`).
     session_value: u64,
+    /// What the Open reply said: the file is hosted read-only.
+    read_only: bool,
+    /// FileMaker Pro's second Open gets the reply again (`open`): it said
+    /// read-only, and no Login has been accepted on the file since.
+    repeatable: bool,
     /// The file's account this session logged in as, as it was at the
     /// Login. FileMaker keeps a client's privileges until it opens the file
     /// again, whatever changes its account or privilege set meanwhile
@@ -1782,7 +1787,7 @@ const FILE_LIST_NAME: u8 = 0x10;
 
 /// op78 Open (spec 5.6.4): a fresh per-file nonce and session value, and
 /// whether the file is hosted read only; FileMaker Pro's second Open of a
-/// file hosted read only gets the first reply again.
+/// file hosted read only, before its Login, gets the first reply again.
 fn open(
     shared: &Shared,
     peer: &str,
@@ -1823,28 +1828,35 @@ fn open(
         // FileMaker Pro opens a file hosted read only a second time at
         // once, before its Login, with the first reply's session value as
         // its handle, and FileMaker Server answers it the first reply again,
-        // the nonce the Login uses included (spec 5.6.4): so does this
-        // server, for the same hosting of the file, and the file stays open
-        // as it is. Any other Open of a file the session has open starts it
-        // anew (what FileMaker Server does then is unmeasured).
-        if let Some(open) = session.open.get(&hosted.id).filter(|open| {
-            request.file_handle != 0
+        // the nonce the Login uses included (spec 5.6.4). So does this
+        // server, for that pair alone: the first reply said read-only, no
+        // Login has been accepted on the file since, the request carries
+        // that reply's session value, and it is the same hosting of the
+        // file. The repeat is the first reply as it was, and the file stays
+        // open as it is. Any other Open of a file the session has open ends
+        // what the session held in it and starts it anew, as before (what
+        // FileMaker Server does then is unmeasured).
+        let repeat = session.open.get(&hosted.id).is_some_and(|open| {
+            open.repeatable
+                && request.file_handle != 0
                 && request.file_handle == open.session_value
                 && Arc::ptr_eq(&open.hosted, hosted)
-        }) {
-            return (hosted.clone(), open.nonce, open.session_value, true);
+        });
+        if repeat {
+            return (hosted.clone(), true);
         }
         if session.open.contains_key(&hosted.id) {
             clear_file_session(shared, session, hosted.id);
         }
-        let nonce = u32::from_be_bytes(shared.random());
-        let session_value = u64::from_be_bytes(shared.random());
         session.open.insert(
             hosted.id,
             OpenFile {
                 hosted: hosted.clone(),
-                nonce,
-                session_value,
+                nonce: u32::from_be_bytes(shared.random()),
+                session_value: u64::from_be_bytes(shared.random()),
+                // Asked of the engine below, outside the slot's lock.
+                read_only: false,
+                repeatable: false,
                 account: None,
                 close: CloseStep::None,
                 withheld: Default::default(),
@@ -1853,9 +1865,9 @@ fn open(
         shared
             .clients
             .opened(session.connection_id, hosted.id, &hosted.name);
-        (hosted.clone(), nonce, session_value, false)
+        (hosted.clone(), false)
     });
-    let (hosted, nonce, session_value, again) = match admitted {
+    let (hosted, again) = match admitted {
         Ok(hosted) => hosted,
         Err(status) => {
             info!(
@@ -1866,6 +1878,19 @@ fn open(
             return Ok(OpenReply::error_result(OPEN_FILE_MISSING, None));
         }
     };
+    let Some(file) = session.open.get_mut(&hosted.id) else {
+        return Ok(OpenReply::error_result(OPEN_FILE_MISSING, None));
+    };
+    if !again {
+        // Whatever holds it read only, as FileMaker Server tells FileMaker
+        // Pro, which then refuses each change itself and sends none (spec
+        // 5.6.4). A file that becomes read only later is not announced:
+        // its writes are refused where they would be stored, and a repeat
+        // of this reply says what it said.
+        file.read_only = shared.engine.read_only(&hosted).is_some();
+        file.repeatable = file.read_only;
+    }
+    let (nonce, session_value, read_only) = (file.nonce, file.session_value, file.read_only);
     let again = if again { " again" } else { "" };
     info!(
         "{peer}: opened {:?}{again} as file {}",
@@ -1875,11 +1900,7 @@ fn open(
         status: 0,
         server_message: shared.identity.name.clone(),
         file_nonce: nonce,
-        // Whatever holds it read only, as FileMaker Server tells FileMaker
-        // Pro, which then refuses each change itself and sends none (spec
-        // 5.6.4). A file that becomes read only later is not announced:
-        // its writes are refused where they would be stored.
-        read_only: shared.engine.read_only(&hosted).is_some(),
+        read_only,
         file_id: hosted.id,
         // The values FileMaker Server 26 sends; their meaning is not
         // established. The flags word was 0x00810000 in later captures.
@@ -2117,6 +2138,8 @@ fn login(
             ));
             file.withheld.lock().expect("withheld records lock").clear();
             file.account = Some(account);
+            // From now on an Open of the file starts it anew (`open`).
+            file.repeatable = false;
             if shared.local {
                 // Deferred work the local file holds is finished and saved
                 // now that an account it admits has logged in.

@@ -1432,11 +1432,15 @@ Server says it (re/network-protocol.md 5.6.4). FileMaker Pro then refuses
 each change itself and sends none (re/write-path.md 1.6), and OpenMaker's
 desktop client refuses them as for a read-only local file
 ([desktop-client.md](desktop-client.md), "Hosts and their files"). Its
-second Open of such a file, which carries the first reply's session value,
-is answered with the first reply again, nonce included, and changes
-nothing in the session, as FileMaker Server answers it; any other Open of
-a file the session has open starts it anew (FileMaker Server's answer
-there is unmeasured). A file that becomes read-only after a client opened
+second Open of such a file, before any Login on it and carrying the first
+reply's session value, is answered with the first reply as it was, nonce
+and read-only bit included, and changes nothing in the session, as
+FileMaker Server answers it (`OpenFile::repeatable`: the first reply said
+read-only, and no Login has been accepted since). Any other Open of a
+file the session has open (a writable file, an Open after a Login, another
+handle, a file that became read-only after its first reply) ends what the
+session held in the file, its Login, locks and staged records, and starts
+it anew, as before (FileMaker Server's answer there is unmeasured). A file that becomes read-only after a client opened
 it is not announced to that client: the Open reply is the only place the
 protocol is known to say it, so the client's writes meet the refusals
 below. No lock is refused for it: FileMaker Server granted the one lock
