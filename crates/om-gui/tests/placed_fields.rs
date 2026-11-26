@@ -1769,9 +1769,9 @@ fn delete_layout_asks_then_shows_the_next_layout() {
 }
 
 /// Layouts > Layout Setup... renames the layout, turns two General options
-/// over and makes List view available with the operation `om-author`'s
-/// `layout_setup` uses (`DataProvider::set_layout_setup`); the layout menu
-/// shows the new name.
+/// over, makes List view available and prints within fixed page margins
+/// with the operations `om-author`'s `layout_setup` uses
+/// (`DataProvider::set_layout_setup`); the layout menu shows the new name.
 #[test]
 fn layout_setup_renames_the_layout_and_sets_its_views_and_options() {
     let alias = serial::decode(&uint_segment(OCCURRENCE)).unwrap();
@@ -1825,6 +1825,17 @@ fn layout_setup_renames_the_layout_and_sets_its_views_and_options() {
     common::click(&mut app, "Views");
     common::click(&mut app, "List View");
     shot(&mut app, "82-views", "Layout Setup's Views tab");
+    // Printing: the box on, and the left margin typed; the others stay as
+    // shown (re/layout-model.md 4.2).
+    common::click(&mut app, "Printing");
+    common::click(&mut app, "Use fixed page margins");
+    app.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Left")
+        .click();
+    app.run_steps(2);
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.input_mut().events.push(egui::Event::Text("70".into()));
+    app.run_steps(3);
+    shot(&mut app, "83-printing", "Layout Setup's Printing tab");
     common::click(&mut app, "OK");
     common::wait_until(&mut app, "the renamed layout", |app| {
         assert!(app.state().error().is_none(), "{:?}", app.state().error());
@@ -1838,7 +1849,13 @@ fn layout_setup_renames_the_layout_and_sets_its_views_and_options() {
         Some("Task Board")
     );
     let flags = member.child(&[0xf1]).and_then(|n| n.value.clone());
-    assert_eq!(flags, Some(0x00f3_8809_u64.to_be_bytes().to_vec()));
+    assert_eq!(flags, Some(0x00f3_8849_u64.to_be_bytes().to_vec()));
+    let def = om_data::layout_placement::definition(&member).unwrap();
+    let margins = def.custom_margins.unwrap();
+    assert_eq!(
+        (margins.top, margins.left, margins.bottom, margins.right),
+        (36.0, 70.0, 36.0, 36.0)
+    );
 }
 
 /// A double click on a stored text in Layout mode types into it; the words

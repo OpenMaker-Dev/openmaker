@@ -966,11 +966,39 @@ fn page_setup_menu_toolbar_round_trip_changes_preview_without_record_writes() {
         Some(session_paper())
     );
 
+    // At 50% a page holds twice as much of the layout each way, on the
+    // same sheet, and Preview starts over at page one.
+    click(&mut app, "Page Setup");
+    wait(&mut app, |a| a.script.prompt.is_some());
+    app.get_by_label("Scale").click();
+    app.run_steps(2);
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.event(egui::Event::Text("50".into()));
+    app.run_steps(3);
+    shot(&mut app, "page-setup-scale-dialog");
+    click(&mut app, "OK");
+    wait(&mut app, |a| !a.script_running());
+    let session = app.state().w.session.as_ref().unwrap();
+    assert_eq!(
+        session.paper,
+        Some(om_layout::paper::PaperSettings {
+            scale: 0.5,
+            ..session_paper()
+        })
+    );
+    assert_eq!(session.preview_position(), Some((0, 2)));
+    let plan = session.report_plan().unwrap().unwrap();
+    assert_eq!(plan.paper.sheet(), (841.8898, 595.2756));
+    assert!((plan.paper.width - 2.0 * 841.8898).abs() < 0.01);
+    shot(&mut app, "page-setup-a4-landscape-50");
+    assert!(!events().iter().any(|e| e.ends_with(":write")));
+
     fn session_paper() -> om_layout::paper::PaperSettings {
         om_layout::paper::PaperSettings {
             width: 595.2756,
             height: 841.8898,
             orientation: om_layout::paper::Orientation::Landscape,
+            scale: 1.0,
         }
     }
 }

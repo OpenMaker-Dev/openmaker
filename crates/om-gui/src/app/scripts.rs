@@ -2660,9 +2660,29 @@ impl OpenMakerApp {
         {
             return;
         }
+        // So does the app's own alert (a pause's message, a waiting
+        // alert): Escape dismisses it, as Return does, while Command-period
+        // still stops the script (#859). Only a new press of Escape stops
+        // it: the repeats of a held Escape that dismissed an alert do not.
+        let alert = self.error.is_some();
         let abort = ctx.input_mut(|input| {
-            input.consume_key(egui::Modifiers::NONE, Key::Escape)
-                || input.consume_key(egui::Modifiers::COMMAND, Key::Period)
+            let mut escape = false;
+            if !alert {
+                input.events.retain(|event| match event {
+                    egui::Event::Key {
+                        key: Key::Escape,
+                        pressed: true,
+                        repeat,
+                        modifiers,
+                        ..
+                    } if modifiers.matches_logically(egui::Modifiers::NONE) => {
+                        escape |= !repeat;
+                        false
+                    }
+                    _ => true,
+                });
+            }
+            escape || input.consume_key(egui::Modifiers::COMMAND, Key::Period)
         });
         if !abort {
             return;

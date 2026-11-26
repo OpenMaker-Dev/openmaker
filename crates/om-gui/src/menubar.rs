@@ -42,6 +42,9 @@ pub(crate) struct MenuContext<'a> {
     /// The file's windows (id, title, name), front first: the Window
     /// menu's list, with a check at this window (`window`).
     pub windows: &'a [(u32, String, String)],
+    /// Window > Show Window's windows (id, title, hidden), every open
+    /// file's, hidden ones too.
+    pub show_windows: &'a [(u32, String, bool)],
     pub window: u32,
     pub scripts: &'a om_data::ScriptCatalog,
     /// Whether `scripts` is the file's catalog as read: until it is, the
@@ -1224,7 +1227,33 @@ fn window_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut
         // As the step does: a window like this one, named after it.
         actions.push(Action::Step(crate::app::steps::NEW_WINDOW, 0));
     }
-    pending_submenu(rows, "Show Window");
+    // Every window, a hidden one in parentheses: choosing it shows it
+    // (Claris documents Show Window > window name for a hidden window;
+    // the rest is inferred, client-ui.md). With Home in front it is the
+    // way to a file a script opened hidden (#679).
+    rows.submenu(
+        "Show Window",
+        !context.show_windows.is_empty(),
+        // A script can open many files hidden: the list scrolls, as File
+        // > Favorites' does, so none is out of reach.
+        &mut |rows| {
+            rows.scrolled(&mut |rows| {
+                for (id, title, hidden) in context.show_windows {
+                    let this = context.open() && *id == context.window;
+                    let label = if *hidden {
+                        format!("({title})")
+                    } else {
+                        title.clone()
+                    };
+                    if rows.keyed_item(&format!("window {id}"), &label, None, this, true)
+                        && (!this || *hidden)
+                    {
+                        actions.push(Action::SelectWindow(*id));
+                    }
+                }
+            });
+        },
+    );
     pending(rows, "Hide Window", None);
     if rows.item("Minimize Window", Some(shortcuts::MINIMIZE), false, true) {
         actions.push(Action::Minimize);

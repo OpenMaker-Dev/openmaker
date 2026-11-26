@@ -974,6 +974,28 @@ impl om_query::Source for FindSource<'_> {
         Ok(crate::engine::View::subtree(&self.view, path, NO_LIMIT)?)
     }
 
+    /// The node alone, read through the view.
+    fn head(&self, path: &[&[u8]]) -> om_hbam::Result<Option<om_query::Head>> {
+        Ok(
+            crate::engine::View::node(&self.view, path)?.map(|head| om_query::Head {
+                list: head.list,
+                value: head.value.map(Cow::into_owned),
+            }),
+        )
+    }
+
+    /// Listed through the view a page at a time (a field's index, which a
+    /// find reads an entry at a time).
+    fn children(&self, path: &[&[u8]]) -> om_hbam::Result<Option<om_query::Children<'_>>> {
+        crate::connection::ViewListing::of(&self.view, path)
+    }
+
+    /// The record list's entries as the view lists them, never held as a
+    /// tree.
+    fn record_ids(&self, table: &[u8]) -> om_hbam::Result<om_hbam::RidList> {
+        crate::connection::listed_record_ids(&self.view, table)
+    }
+
     fn index_on_demand(
         &self,
         table: &[u8],
@@ -1214,16 +1236,31 @@ impl ServerHost {
         result
     }
 
-    /// [`Self::read`], with the engine's derived state of the same reading,
-    /// for work done once the reading is let go.
-    fn read_with_derived<T: PartialEq + std::fmt::Debug>(
+    /// [`Self::read`] for a find (`Reading::serve_find`).
+    pub(super) fn read_find<T: PartialEq + std::fmt::Debug>(
+        &self,
+        read: impl FnMut(Read<'_>) -> Result<T, ReadError>,
+    ) -> Result<T, ReadError> {
+        let result = self
+            .reads
+            .begin(&self.hosted)
+            .and_then(|()| self.shared.engine.read(&self.hosted).serve_find(read));
+        if let Err(error) = &result {
+            self.note_failed_read(error);
+        }
+        result
+    }
+
+    /// [`Self::read_find`], with the engine's derived state of the same
+    /// reading, for work done once the reading is let go.
+    fn read_find_with_derived<T: PartialEq + std::fmt::Debug>(
         &self,
         read: impl FnMut(Read<'_>) -> Result<T, ReadError>,
     ) -> Result<(T, crate::derived::Derived), ReadError> {
         let result = self.reads.begin(&self.hosted).and_then(|()| {
             let reading = self.shared.engine.read(&self.hosted);
             let derived = reading.read().derived.clone();
-            Ok((reading.serve(read)?, derived))
+            Ok((reading.serve_find(read)?, derived))
         });
         if let Err(error) = &result {
             self.note_failed_read(error);
@@ -3449,7 +3486,7 @@ impl ServerHost {
         // catalog `[T, 03]` and its derived state.
         let t = uint_segment(table);
         let built = crate::engine::Waiting::default();
-        let ran = self.read_with_derived(|read| {
+        let ran = self.read_find_with_derived(|read| {
             let source = FindSource::over(read.view, read.derived, &built);
             let outcome = om_query::execute(&source, &program, &context);
             source.failed()?;
@@ -3557,7 +3594,7 @@ impl ServerHost {
             connection_key: None,
         };
         let built = crate::engine::Waiting::default();
-        let ran = self.read(|read| {
+        let ran = self.read_find(|read| {
             let source = FindSource::over(read.view, read.derived, &built);
             let outcome = om_query::execute(&source, &program, &context);
             source.failed()?;

@@ -50,7 +50,7 @@ use om_data::calc::{Container, Value, ValueType};
 use om_data::host::{CalcSchema, FieldClass};
 use om_data::runtime::{ErrorCode, FieldRef, HostError, HostResult, InsertFile, InsertKind};
 
-use super::{data_error, files, Mode, WorkerHost, FIELD_LOCKED};
+use super::{data_error, files, note_failure, Mode, WorkerHost, FIELD_LOCKED};
 use crate::scripting::{Answer, ContainerFileDialog, Prompt};
 
 /// The largest file an Insert step reads (OpenMaker's limit: the data is
@@ -272,8 +272,7 @@ impl WorkerHost<'_> {
             .record_capabilities(layout)
             .map_err(|e| self.failed(e))?;
         if !capabilities.can_edit_related(field.occurrence, field.field) {
-            self.s.failure =
-                Some("This related record cannot be changed on this connection.".into());
+            note_failure("This related record cannot be changed on this connection.".into());
             return Err(ErrorCode(FIELD_LOCKED).into());
         }
         let path = if request.paths.is_empty() {
@@ -546,7 +545,7 @@ impl WorkerHost<'_> {
             .record_capabilities(layout)
             .map_err(|e| self.failed(e))?;
         if !capabilities.update {
-            self.s.failure = Some("This record cannot be changed on this connection.".into());
+            note_failure("This record cannot be changed on this connection.".into());
             return Err(ErrorCode(FIELD_LOCKED).into());
         }
         Ok(name)
@@ -677,7 +676,7 @@ impl WorkerHost<'_> {
         }
         let now = self.dialog_context(context.field, &context.name).ok();
         if now.as_ref() != Some(context) {
-            self.s.failure = Some(
+            note_failure(
                 "The window, record or field changed while the file was being chosen; \
                  nothing was changed."
                     .into(),

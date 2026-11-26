@@ -587,6 +587,87 @@ fn usable_width(width: f64) -> bool {
     width.is_finite() && (1.0..=MAX_COORDINATE).contains(&width)
 }
 
+/// The widest fixed page margin, in points: the largest paper's side
+/// (`om_layout::paper::PaperSettings::validate`). OpenMaker's bound;
+/// FileMaker Pro's is unmeasured.
+pub const MAX_MARGIN: f64 = 14_400.0;
+
+/// Layout Setup's fixed page margins for a layout (insets in points: top,
+/// left, bottom, right in [`Rect`]'s fields), set on the layout shown at
+/// revision `expected` ([`crate::DataProvider::set_layout_margins`]).
+/// "Use fixed page margins" is a bit of the layout's flags, set by Layout
+/// Setup's own operation (`layout_catalog::printing`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayoutMarginsChange {
+    pub layout: u32,
+    pub expected: Revision,
+    pub margins: Rect,
+}
+
+/// Whether `margins` are fixed page margins a layout may store: each 0 to
+/// [`MAX_MARGIN`] points. That they leave room on the paper is checked when
+/// the layout prints, on its paper (`om_layout::paper`).
+fn usable_margins(margins: &Rect) -> bool {
+    [margins.top, margins.left, margins.bottom, margins.right]
+        .iter()
+        .all(|v| v.is_finite() && (0.0..=MAX_MARGIN).contains(v))
+}
+
+/// The layout `member` with its fixed page margins
+/// (`LayoutDef.customMargins`, layout-model.md 4.1, 4.2) set to `margins`,
+/// every other key and byte of its definition kept as stored
+/// (`om_layout::encode::with_custom_margins`), without the stamp. FileMaker
+/// Pro's Layout Setup rewrites the stored rectangle in place, top, left,
+/// bottom and right [O: #609's copies]; it also recomputes
+/// `printColumnWidth`, which OpenMaker leaves as stored, as the starter
+/// layouts keep 0 beside their 36-point margins.
+pub fn plan_margins(
+    member: &OwnedNode,
+    margins: &Rect,
+) -> Result<crate::layout_objects::Planned, Refusal> {
+    if !usable_margins(margins) {
+        return Err(Refusal::Invalid(format!(
+            "A fixed page margin is 0 to {MAX_MARGIN} points."
+        )));
+    }
+    definition(member)?;
+    let stored = member
+        .child(&[DEFINITION])
+        .and_then(|d| d.assembled())
+        .ok_or_else(|| Refusal::Unsupported("The layout has no definition (LayoutDef).".into()))?;
+    let def = om_layout::encode::with_custom_margins(&stored, margins).ok_or_else(|| {
+        Refusal::Unsupported(
+            "The layout's definition holds its page margins in a form OpenMaker does not change."
+                .into(),
+        )
+    })?;
+    let mut next = member.clone();
+    next.set_child(stored_value(&[DEFINITION], &def));
+    Ok(crate::layout_objects::Planned {
+        member: next,
+        changes: vec![(
+            "[02]".into(),
+            format!(
+                "LayoutDef customMargins top {} left {} bottom {} right {}",
+                margins.top, margins.left, margins.bottom, margins.right
+            ),
+        )],
+    })
+}
+
+/// Whether layout `member` stores `margins` as its fixed page margins
+/// already: a request whose answer was lost. Margins a request could not
+/// set are never held already.
+pub fn already_margins(member: &OwnedNode, margins: &Rect) -> bool {
+    usable_margins(margins)
+        && definition(member).is_ok_and(|def| {
+            def.custom_margins.as_ref().is_some_and(|m| {
+                (m.top, m.left, m.bottom, m.right)
+                    == (margins.top, margins.left, margins.bottom, margins.right)
+            })
+        })
+}
+
 /// A layout's parts, in key order.
 pub fn parts(member: &OwnedNode) -> Result<Vec<Part>, Refusal> {
     let Some(parts) = member.child(&[PARTS]) else {
@@ -2600,6 +2681,40 @@ mod tests {
         assert!(!already_width(&stored, wide));
         for width in [0.0, -1.0, f64::NAN, MAX_COORDINATE + 1.0] {
             assert!(plan_width(&member, width).is_err(), "{width}");
+        }
+    }
+
+    /// Fixed page margins replace the definition's `customMargins` and keep
+    /// its other fields; margins out of range are refused, and never taken
+    /// for ones set already.
+    #[test]
+    fn fixed_page_margins_replace_only_the_definitions_margins() {
+        let member = layout();
+        let margins = Rect {
+            top: 50.0,
+            left: 70.0,
+            bottom: 60.0,
+            right: 80.0,
+            ..Default::default()
+        };
+        let set = plan_margins(&member, &margins).unwrap();
+        let (before, after) = (
+            definition(&member).unwrap(),
+            definition(&set.member).unwrap(),
+        );
+        assert_eq!(after.custom_margins.as_ref().unwrap().right, 80.0);
+        assert_eq!(
+            (after.base_width, after.table_alias_key),
+            (before.base_width, before.table_alias_key)
+        );
+        assert!(already_margins(&set.member, &margins) && !already_margins(&member, &margins));
+        for bad in [-1.0, f64::NAN, MAX_MARGIN + 1.0] {
+            let margins = Rect {
+                left: bad,
+                ..margins.clone()
+            };
+            assert!(plan_margins(&member, &margins).is_err(), "{bad}");
+            assert!(!already_margins(&set.member, &margins));
         }
     }
 

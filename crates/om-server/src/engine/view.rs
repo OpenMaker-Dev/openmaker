@@ -137,11 +137,6 @@ pub struct Step<'v> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     Forward,
-    #[allow(
-        dead_code,
-        reason = "part of a view's reads (docs/server-storage.md 5); no reader moved onto views \
-                  lists backward yet"
-    )]
     Backward,
 }
 
@@ -153,7 +148,8 @@ pub enum ReadError {
     /// file engine never answers this.
     Unreadable { path: Vec<Vec<u8>>, why: String },
     /// The subtree at `path`, asked for whole, takes more memory than the
-    /// caller's limit ([`View::subtree`]).
+    /// caller's limit ([`View::subtree`]), or more nodes or bytes of work
+    /// than the counter `limit` it passed ([`View::subtree_within`]).
     TooLarge { path: Vec<Vec<u8>>, limit: usize },
 }
 
@@ -226,6 +222,24 @@ pub trait View {
         max: usize,
         out: &mut Vec<Child<'v>>,
     ) -> Result<bool, ReadError>;
+
+    /// The subtree at `path` for a reader that counts it as work, nodes and
+    /// the bytes of their segments and values, as
+    /// `om_query::program::Size::of_tree` counts them: a find's index entry
+    /// (`om_query::Listing::entry`). A view that builds what it gives
+    /// refuses, with [`ReadError::TooLarge`], a subtree past either of
+    /// `work`'s counters before it builds the first node past it, so that it
+    /// refuses exactly what the reader's count would; a view that lends
+    /// gives it as it holds it, unchecked, and the reader counts it. By
+    /// default [`View::subtree`] with no limit.
+    fn subtree_within(
+        &self,
+        path: &[&[u8]],
+        work: om_query::program::Size,
+    ) -> Result<Option<Cow<'_, OwnedNode>>, ReadError> {
+        let _ = work;
+        self.subtree(path, NO_LIMIT)
+    }
 
     /// [`View::children_page`], each child with its subtree, refused as
     /// [`View::subtree`] refuses when one takes more than `limit`.
@@ -303,8 +317,12 @@ impl<'v> Noted<'v> {
         }
     }
 
+    /// Keep `read`'s error, if it failed. A subtree refused at the
+    /// caller's own limit ([`ReadError::TooLarge`]) is no failed read: the
+    /// caller asked within it and answers the refusal itself (a find's
+    /// index entry past its work, `om_query::Listing::entry`).
     fn note<T>(&self, read: Result<T, ReadError>) -> Result<T, ReadError> {
-        if let Err(error) = &read {
+        if let Err(error @ ReadError::Unreadable { .. }) = &read {
             self.failed
                 .borrow_mut()
                 .get_or_insert_with(|| error.clone());
@@ -328,6 +346,14 @@ impl View for Noted<'_> {
         limit: usize,
     ) -> Result<Option<Cow<'_, OwnedNode>>, ReadError> {
         self.note(self.inner.subtree(path, limit))
+    }
+
+    fn subtree_within(
+        &self,
+        path: &[&[u8]],
+        work: om_query::program::Size,
+    ) -> Result<Option<Cow<'_, OwnedNode>>, ReadError> {
+        self.note(self.inner.subtree_within(path, work))
     }
 
     fn children_page<'a>(

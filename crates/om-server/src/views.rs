@@ -28,7 +28,7 @@ use om_hbam::slot::uint_segment;
 use om_hbam::OwnedNode;
 
 use crate::derived::Derived;
-use crate::engine::{Read, ReadError, NO_LIMIT};
+use crate::engine::{Head, Read, ReadError, NO_LIMIT};
 use crate::modcount::MOD_COUNT;
 
 /// Under a table `[T]`: its indexes, its records and its global values.
@@ -175,11 +175,103 @@ impl ViewFilter {
         }))
     }
 
+    /// A filter whose account may view each table's records as `limits`
+    /// says (`None`: none of them), and not the cells `hidden` names, for
+    /// tests that need no set.
+    #[cfg(test)]
+    pub(crate) fn of(
+        limits: impl IntoIterator<Item = (Vec<u8>, Option<RecordLimit>)>,
+        hidden: HiddenFields,
+    ) -> Self {
+        Self {
+            limits: limits.into_iter().collect(),
+            hidden,
+            environment: crate::recalc::record_environment("test", crate::recalc::random_uuid()),
+            withheld: RefCell::default(),
+        }
+    }
+
     /// Whether the account may not read all of base table `table`: a view
     /// limit, no view at all, or a field without access. Its indexes and
     /// container library are withheld.
     pub(crate) fn limits(&self, table: &[u8]) -> bool {
         self.limits.contains_key(table) || self.hidden.contains_key(table)
+    }
+
+    /// Whether [`ViewFilter::filter`] can change the node at `path` or
+    /// anything below it: the root, the file's own library and a
+    /// view-limited table. Elsewhere the session reads the file as it is.
+    pub(crate) fn filters(&self, path: &[&[u8]]) -> bool {
+        match path {
+            [] | [[LIBRARY], ..] => true,
+            [table, ..] => self.limits(table),
+        }
+    }
+
+    /// Whether [`ViewFilter::filter`] answers `None` at `path` whatever the
+    /// file holds there: below the file's own library, and below a
+    /// view-limited table's indexes and container library. A reader asks
+    /// this before reading the node, which may be a whole index.
+    pub(crate) fn withholds(&self, path: &[&[u8]]) -> bool {
+        match path {
+            [[LIBRARY], _, ..] => true,
+            [table, [INDEXES] | [LIBRARY], _, ..] => self.limits(table),
+            _ => false,
+        }
+    }
+
+    /// What [`ViewFilter::filter`] would leave of the node at `path` whose
+    /// head is `head`, as its head, without reading the node's subtree:
+    /// `None` where the filter answers `None`, the head without its value
+    /// where it empties the node, and the head as it is where it removes or
+    /// withholds children only (a node with children is a pushed list in
+    /// either engine, so it stays one). At or below a record of a
+    /// view-limited table, as the filter does, the record is read to
+    /// evaluate the limit ([`ViewFilter::viewable`]); nothing else is read.
+    ///
+    /// A record is noted withheld ([`Withheld`]) when the session is served
+    /// that record without its values: a read of the record, or of anything
+    /// below it, whose limit is false, a head read of the record included
+    /// (its own node is what it is served). A head read of the records
+    /// list, the table or the root serves no record and notes none, where
+    /// the whole read the filter makes notes each record it withholds.
+    /// OpenMaker's choice: the note guards an edit of a record whose client
+    /// holds it without its values (#670), and a head serves none.
+    pub(crate) fn head<'h>(
+        &self,
+        read: Read<'_>,
+        path: &[&[u8]],
+        head: Head<'h>,
+    ) -> Result<Option<Head<'h>>, ReadError> {
+        let emptied = |head: Head<'h>| Head {
+            list: head.list,
+            value: None,
+        };
+        Ok(match path {
+            [] => Some(head),
+            [[LIBRARY]] => Some(emptied(head)),
+            [[LIBRARY], ..] => None,
+            [table, rest @ ..] if self.limits(table) => match rest {
+                [[INDEXES]] | [[LIBRARY]] => Some(emptied(head)),
+                [[INDEXES], ..] | [[LIBRARY], ..] => None,
+                [[RECORDS], record] => {
+                    if !self.viewable(read, table, record)? {
+                        self.note(table, record);
+                    }
+                    Some(head)
+                }
+                [[RECORDS], record, field, ..] => {
+                    let viewable = self.viewable(read, table, record)?;
+                    if !viewable {
+                        self.note(table, record);
+                    }
+                    (viewable && !self.hides(table, field)).then_some(head)
+                }
+                [[GLOBALS], field, ..] => (!self.hides(table, field)).then_some(head),
+                _ => Some(head),
+            },
+            _ => Some(head),
+        })
     }
 
     /// Whether field `field` of `table` (their keys) is hidden.

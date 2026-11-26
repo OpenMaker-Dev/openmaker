@@ -37,14 +37,29 @@ own chrome uses are in [design.md](design.md). Related notes:
   to the front. Elsewhere, and in the GUI tests, which run without a native
   window, the menu bar is drawn inside each window. The window title is the
   platform's own.
-- The app menu is named OpenMaker. On macOS the client runs from the build
-  with no app bundle, so its executable carries an Info.plist (`build.rs`)
-  whose `CFBundleName` the menu bar shows; without it the menu bar would
-  show the executable's name. The Dock and Command-Tab still show `om-gui`:
-  LaunchServices names an unbundled process after its file
-  ([#821](https://github.com/OpenMaker-Dev/openmaker/issues/821)). Their
-  icon is OpenMaker's logo ([assets/README.md](assets/README.md)), which
-  eframe sets once the app runs. Every window carries the logo as its
+- The Window menu's New Window runs the step. Show Window lists every open
+  file's windows but cards, front first, a hidden one in parentheses, and
+  scrolls when they do not fit; choosing one brings it to the front, shown
+  with its cards if it was hidden (`OpenMakerApp::show_window`, which the
+  list at the menu's end also runs), and tells the scripts' windows so,
+  also while the file's connection is lost. FileMaker documents only that
+  Show Window shows a hidden window by name; the rest is inferred, and
+  reduced menus leave Show Window enabled (OpenMaker's choice, unmeasured:
+  [#878](https://github.com/OpenMaker-Dev/openmaker/issues/878)).
+  Hide Window, Tile, Cascade and Bring All To Front are disabled
+  ([#54](https://github.com/OpenMaker-Dev/openmaker/issues/54)).
+- The app menu is named OpenMaker. On macOS, `tools/package-macos.sh`
+  puts the client in an app bundle, `OpenMaker.app`
+  ([development.md](development.md#app-bundle-for-macos)), whose Info.plist
+  names it OpenMaker in the menu bar, the Dock, Command-Tab and Finder. Run
+  from the build with no bundle, its executable carries an Info.plist of
+  its own (`build.rs`) whose `CFBundleName` the menu bar shows, but the Dock
+  and Command-Tab show `om-gui`: LaunchServices names an unbundled process
+  after its file
+  ([#821](https://github.com/OpenMaker-Dev/openmaker/issues/821)). The
+  Dock's icon is OpenMaker's logo ([assets/README.md](assets/README.md)):
+  the bundle's, and once the app runs the one eframe sets, with or without
+  a bundle. Every window carries the logo as its
   window icon: Windows shows it in title bars, and eframe also makes it
   the first window's large taskbar icon (other windows' taskbar icons are
   unchecked); X11 window managers that draw window icons show it. Wayland
@@ -169,9 +184,13 @@ unmeasured:
   veto or a refused save stops it. With another file open, hidden ones
   included, a layout with unsaved changes, or a lost connection with
   unsaved record changes, nothing closes and an alert says why ("Other
-  files are open. Close them first.", the Save Layout or Revert Layout
-  alert, or Reconnect or File > Close). FileMaker shows Home in a window
-  of its own and closes nothing.
+  files are open. Close them first: Window > Show Window lists them,
+  hidden ones too.", the Save Layout or Revert Layout alert, or Reconnect
+  or File > Close). FileMaker shows Home in a window of its own and closes
+  nothing, so it has no such alert: the wording is OpenMaker's. A file a
+  script opened hidden (a close trigger's too) stays open behind Home once
+  the visible file closes; Window > Show Window shows it in Home's place,
+  and File > Close then closes it.
 - A local file's location is its path, without FileMaker's `/Volumes/`
   prefix on macOS. A hosted file's location adds its port when that is not
   5003.
@@ -2498,12 +2517,23 @@ Setup button (Layout mode, design access) open FileMaker Pro's Layout Setup
 dialog over the layout the window shows, its controls where Pro's places
 them (re/client-ui.md, "Layout Setup"). OK sets the Layout Name, "Include
 in layout menus", the General tab's five checkboxes, the views available
-and the default view with the
+and the default view, and the Printing tab's "Use fixed page margins" and
+its Top, Bottom, Left and Right margins, with the
 operation `om-author`'s `layout_setup` uses (`DataProvider::set_layout_setup`;
 [authoring](authoring.md), "Layout Setup"); every window of the file then
-reads its layouts again. The General tab's Show records from and Menu Set
-show the layout's values and are not offered, nor are Reset Quick Find,
-the Printing and Script Triggers tabs or Manage Layouts' Edit. It is refused while the layout has unsaved
+reads its layouts again. The margins are edited in points (OpenMaker's
+choice: Pro's fields show the ruler's units), and are sent only when
+they or the box changed, with the setup in one commit. With the box off
+they are not offered and show the printer's, 18 / 40 / 18 / 18, as Pro's
+do (re/layout-model.md 4.2). On a layout printing in columns neither the
+box nor the margins are offered: Pro works the columns' width out from
+them, which OpenMaker does not. The General
+tab's Show records from and Menu Set, and the Printing tab's "Print in N
+columns", show the layout's values and are not offered. The column order
+and Facing Pages are not offered and show no state, since where FileMaker
+stores them is unknown
+([#948](https://github.com/OpenMaker-Dev/openmaker/issues/948)). Nor are
+Reset Quick Find, the Script Triggers tab or Manage Layouts' Edit offered. It is refused while the layout has unsaved
 changes, as New and Duplicate Layout are.
 
 **Part Setup.** Layouts > Part Setup... (Layout mode, design access) opens
