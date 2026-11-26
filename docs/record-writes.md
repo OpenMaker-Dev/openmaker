@@ -1168,6 +1168,11 @@ record's place in what the rules read:
   key with replacing `Get ( UUID )` (`0xa0000088`, no validation).
   Related creation uses the copied global as the match value. Direct New
   Record on the related table still evaluates its UUID default.
+  A separate first-match case with that UUID key and no stored Position
+  supports the value-indexed Number default
+  `If ( IsEmpty ( Self ) ; 0 ; Self )` (`0x80000008`, no validation).
+  The related draft shows 0 on creation and keeps a nonempty assignment
+  made before Commit.
   The parent's record is already stored and otherwise unedited. The
   matching key and position are checked again at save.
   The same field definition refuses writes
