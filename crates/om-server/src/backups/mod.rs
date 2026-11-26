@@ -1081,31 +1081,70 @@ pub(crate) fn check_folder(_shared: &Shared, _folder: &Path) -> Result<(), Strin
 /// so that a backup never holds a file that is closing or closed. The run
 /// holds what it takes until it ends, as a script does, so a close waits
 /// for it. For a folder, every file's folder is resolved before any file is
-/// taken: a path that takes long to resolve, on a mount that does not
-/// answer, keeps no file chosen before it from closing.
-pub(crate) fn chosen(shared: &Shared, files: &BackupFiles) -> Vec<Arc<Hosted>> {
+/// taken ([`in_folder`], then [`take_matched`]): a path that takes long to
+/// resolve, on a mount that does not answer, keeps no file chosen before it
+/// from closing. A file in the folder that was served when the choice
+/// began and is closed before it is taken fails the choice, with the
+/// reason: a run without it would count as a backup of the folder, and
+/// its retention could remove the last backup that held the file
+/// (OpenMaker's choice; FileMaker Server's is unmeasured).
+pub(crate) fn chosen(shared: &Shared, files: &BackupFiles) -> Result<Vec<Arc<Hosted>>, String> {
     let slots = shared.hosting.slots();
     match files {
-        BackupFiles::All => slots
+        BackupFiles::All => Ok(slots
             .iter()
             .filter_map(|slot| slot.admit(Arc::clone).ok())
-            .collect(),
-        BackupFiles::File(name) => shared.hosting.by_name(name).into_iter().collect(),
+            .collect()),
+        BackupFiles::File(name) => Ok(shared.hosting.by_name(name).into_iter().collect()),
         BackupFiles::Folder(folder) => {
             let Ok(folder) = std::fs::canonicalize(folder) else {
-                return Vec::new();
+                return Ok(Vec::new());
             };
-            // Resolved first, taking nothing; then taken.
-            let inside: Vec<&crate::hosting::Slot> = slots
-                .iter()
-                .filter(|slot| real_folder(&slot.path).is_ok_and(|real| real.starts_with(&folder)))
-                .collect();
-            inside
-                .into_iter()
-                .filter_map(|slot| slot.admit(Arc::clone).ok())
-                .collect()
+            take_matched(&in_folder(slots, &folder))
         }
     }
+}
+
+/// The first pass of a folder backup's choice: the slots whose file lies
+/// in `folder` (resolved, links followed), each with whether its file was
+/// served (open or paused) before its path was resolved. Nothing is taken.
+fn in_folder<'s>(
+    slots: &'s [crate::hosting::Slot],
+    folder: &Path,
+) -> Vec<(&'s crate::hosting::Slot, bool)> {
+    slots
+        .iter()
+        .filter_map(|slot| {
+            let served = matches!(
+                slot.status(),
+                crate::admin::FileStatus::Open | crate::admin::FileStatus::Paused
+            );
+            real_folder(&slot.path)
+                .is_ok_and(|real| real.starts_with(folder))
+                .then_some((slot, served))
+        })
+        .collect()
+}
+
+/// The second pass: take the files [`in_folder`] matched. One that was
+/// served then and cannot be taken now was closed while the backup was
+/// choosing its files, and fails the choice (what was taken goes back);
+/// one that was not served then is left out, as a closed file is.
+fn take_matched(matched: &[(&crate::hosting::Slot, bool)]) -> Result<Vec<Arc<Hosted>>, String> {
+    let mut taken = Vec::with_capacity(matched.len());
+    for &(slot, served) in matched {
+        match slot.admit(Arc::clone) {
+            Ok(file) => taken.push(file),
+            Err(_) if served => {
+                return Err(format!(
+                    "{:?} closed while the backup was choosing its files; nothing was copied",
+                    slot.name
+                ))
+            }
+            Err(_) => {}
+        }
+    }
+    Ok(taken)
 }
 
 /// The folder that holds the file at `path`, links resolved.
@@ -1185,7 +1224,20 @@ pub(crate) fn run(
             },
         );
     };
-    let files = chosen(shared, &task.files);
+    // A choice that failed copies nothing and removes nothing: an
+    // incomplete set never counts as a backup.
+    let files = match chosen(shared, &task.files) {
+        Ok(files) => files,
+        Err(message) => {
+            return failed(
+                false,
+                Failure::Failed {
+                    code: UNOPENABLE,
+                    message,
+                },
+            )
+        }
+    };
     if files.is_empty() {
         return failed(
             false,
@@ -1805,4 +1857,46 @@ fn back_up_container_data(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::HostedFile;
+    use crate::hosting::{FileClose, Hosting};
+    use crate::scripts::fixture;
+
+    /// A folder backup's choice fails when a file it matched while the file
+    /// was served cannot be taken by the time it takes the files, and leaves
+    /// out a file that was no longer served when it began (#1006's review):
+    /// the two passes, with the file's close begun between them.
+    #[test]
+    fn a_file_closed_while_a_folder_backup_chooses_fails_the_choice() {
+        let disk = fixture::TempFile::new("backup-choice", &[], true);
+        let hosted = HostedFile {
+            name: fixture::FILE.into(),
+            path: disk.0.clone(),
+        };
+        let hbam = om_hbam::HbamFile::open(&disk.0).unwrap();
+        let hosting = Hosting::local(&hosted, &hbam, None, false).unwrap();
+        let folder = std::fs::canonicalize(disk.0.parent().unwrap()).unwrap();
+        let matched = in_folder(hosting.slots(), &folder);
+        assert_eq!(matched.len(), 1);
+        assert!(matched[0].1, "served when the choice began");
+        hosting.slots()[0]
+            .start_close(FileClose {
+                text: String::new(),
+                started: Instant::now(),
+                grace: Duration::ZERO,
+            })
+            .unwrap();
+        let error = take_matched(&matched).unwrap_err();
+        assert!(
+            error.contains("closed while the backup was choosing its files"),
+            "{error}"
+        );
+        // Closing already when the choice began: left out, as on main.
+        let taken = take_matched(&in_folder(hosting.slots(), &folder)).unwrap();
+        assert!(taken.is_empty());
+    }
 }

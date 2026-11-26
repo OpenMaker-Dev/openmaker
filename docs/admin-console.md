@@ -1301,7 +1301,14 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
   it ends, so a file's close waits for a backup under way: the close does
   not cancel it (inf). A backup of one folder resolves every hosted file's
   folder before it takes any file, so a path on a mount that does not
-  answer keeps no file it chose from closing. A run that waits for another
+  answer keeps no file it chose from closing. A file in the folder that was
+  open or paused when the backup began choosing and is closed before it is
+  taken fails the run, with a message naming the file, before anything is
+  copied or any old backup removed: a run without it would count as a
+  complete backup of the folder, and its retention could remove the last
+  backup that held the file. OpenMaker's choice, so that an incomplete set
+  never counts as a backup; what FileMaker Server's backup does with a file
+  that closes under it is unmeasured. A run that waits for another
   backup to finish copying already holds its files, so a close of one waits
   for both ([#1079](https://github.com/OpenMaker-Dev/openmaker/issues/1079)).
   Every file the server was given stays protected
