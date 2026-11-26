@@ -36,12 +36,14 @@ use om_data::choice::{self as value_choice, ChoiceError, ChoiceTarget, Unavailab
 use om_data::field_catalog::{self, NewField, Refusal, ScalarType};
 use om_data::host::{CalcSchema, LayoutKind};
 use om_data::layout_catalog;
+use om_data::layout_move;
 use om_data::layout_objects::{self, ObjectFrame};
 use om_data::layout_placement::{self, Label, Placement};
 use om_data::security_catalog::{AccountKind, RecordAccess, EDITING_UNSUPPORTED};
 use om_data::value_lists::{CatalogList, FieldSource, ListSource, OccurrenceSource};
 use om_data::{
-    DataProvider, DatabaseSchema, FieldKind, SchemaField, SchemaFieldKind, Script, ScriptKind,
+    DataProvider, DatabaseSchema, FieldKind, GeomRect, SchemaField, SchemaFieldKind, Script,
+    ScriptKind,
 };
 use om_hbam::design_paths::{self, is_stamp, Kind, Revision};
 use om_hbam::slot::uint_segment;
@@ -57,9 +59,10 @@ use crate::api::{
     ChooseParams, Command, CompletionParams, CreateFieldParams, CreateFileParams,
     CreateLayoutParams, DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, EditParams,
     ErrorKind, FieldControlParams, FieldParams, FieldType, FrameParams, InspectParams,
-    LayoutParams, LayoutSetupParams, LayoutWidthParams, ObjectFramesParams, OtherParams, Part,
-    PartOptionsParams, PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlacementParams,
-    RunScriptParams, ScriptParams, TextParams, ValueListParams, ValueListValuesParams, API_VERSION,
+    LayoutParams, LayoutSetupParams, LayoutWidthParams, MoveObjectsParams, ObjectFramesParams,
+    OtherParams, Part, PartOptionsParams, PlaceFieldParams, PlacePortalParams, PlaceTextParams,
+    PlacementParams, RunScriptParams, ScriptParams, TextParams, ValueListParams,
+    ValueListValuesParams, API_VERSION,
 };
 use crate::catalog::{self, CommandSpec, Grant, Needs};
 use crate::refs::{self, reference};
@@ -550,6 +553,27 @@ fn frame_json(frame: &Rect) -> Value {
     })
 }
 
+fn layout_edit_refusal(refusal: layout_placement::Refusal) -> AuthorError {
+    let kind = match refusal {
+        layout_placement::Refusal::Invalid(_) => ErrorKind::InvalidRequest,
+        layout_placement::Refusal::Unsupported(_) => ErrorKind::Unsupported,
+    };
+    AuthorError::new(kind, refusal.to_string())
+}
+
+fn object_frame_conflict(layout: &str, current: &Revision, expected: &Revision) -> AuthorError {
+    AuthorError::new(
+        ErrorKind::Conflict,
+        format!(
+            "{layout} changed since the revision the objects were moved on; nothing was written."
+        ),
+    )
+    .with_details(json!({
+        "current_revision": revision_text(current),
+        "expected_revision": revision_text(expected),
+    }))
+}
+
 fn rect(frame: &FrameParams) -> Rect {
     Rect {
         top: frame.top,
@@ -705,6 +729,7 @@ impl Service {
             Command::CreateLayout(params) => self.create_layout(params),
             Command::SetObjectFrames(params) => self.set_object_frames(params),
             Command::ArrangeObjects(params) => self.arrange_objects(params),
+            Command::MoveObjects(params) => self.move_objects(params),
             Command::DeleteObjects(params) => self.delete_objects(params),
             Command::PlaceText(params) => self.place_text(params),
             Command::PlacePortal(params) => self.place_portal(params),
@@ -2116,12 +2141,7 @@ impl Service {
 }
 
 impl Service {
-    /// Move or resize objects of a layout (`om_data::layout_objects`)
-    /// through the host's authoring extension, then read the layout back
-    /// over a new connection.
-    /// Arrange's Align, Distribute or Resize To on objects of a layout: the
-    /// frames `om_data::layout_arrange` gives them from their stored
-    /// frames, written as `set_object_frames` writes frames.
+    /// Arrange objects relative to one another through the guarded frame writer.
     fn arrange_objects(&mut self, params: &ArrangeObjectsParams) -> Result<Value, AuthorError> {
         use om_data::layout_arrange::{arrange, Arrangement};
         let arrangement = Arrangement::from_id(&params.arrangement).ok_or_else(|| {
@@ -2146,28 +2166,104 @@ impl Service {
             ));
         }
         let expected = parse_revision(&params.expected_revision)?;
-        let file = self.file();
         let layout = self.load_layout(&LayoutParams {
             layout: params.layout.clone(),
             layout_name: params.layout_name.clone(),
         })?;
         let layout_ref = self.layout_ref(layout.id);
-        let refused = |refusal: layout_placement::Refusal| {
-            let kind = match refusal {
-                layout_placement::Refusal::Invalid(_) => ErrorKind::InvalidRequest,
-                layout_placement::Refusal::Unsupported(_) => ErrorKind::Unsupported,
-            };
-            AuthorError::new(kind, refusal.to_string())
-        };
-        let (_, store) = layout_placement::stored_objects(&layout.member).map_err(refused)?;
+        let frames = self.movable_layout_frames(&layout, &params.objects)?;
+        let changed = arrange(&frames, arrangement).map_err(layout_edit_refusal)?;
+        if changed.is_empty() {
+            // Arranged so already: at the expected revision nothing is to
+            // change; at another, as after a request whose answer was lost,
+            // the objects are as asked (set_object_frames' already_applied).
+            return Ok(json!({
+                "status": if expected == layout.revision { "unchanged" } else { "already_applied" },
+                "layout": layout_ref,
+                "arrangement": arrangement.id(),
+                "revision": revision_text(&layout.revision),
+            }));
+        }
+        let mut result =
+            self.write_object_frames(layout.id, &changed, &params.expected_revision)?;
+        if let Some(fields) = result.as_object_mut() {
+            fields.insert("arrangement".into(), json!(arrangement.id()));
+        }
+        Ok(result)
+    }
+
+    fn move_objects(&mut self, params: &MoveObjectsParams) -> Result<Value, AuthorError> {
+        let max = layout_objects::MAX_FRAMES;
+        if !(1..=max).contains(&params.objects.len()) {
+            return Err(AuthorError::new(
+                ErrorKind::InvalidRequest,
+                format!("A request moves 1 to {max} objects."),
+            ));
+        }
+        let expected = parse_revision(&params.expected_revision)?;
+        let layout = self.load_layout(&LayoutParams {
+            layout: params.layout.clone(),
+            layout_name: params.layout_name.clone(),
+        })?;
+        let layout_ref = self.layout_ref(layout.id);
+        // A retry with an old base must not compute the relative offset
+        // again from frames that may already include the first move.
+        if expected != layout.revision {
+            return Err(object_frame_conflict(
+                &layout_ref,
+                &layout.revision,
+                &expected,
+            ));
+        }
+        let mut objects = self.movable_layout_frames(&layout, &params.objects)?;
+        let plan = layout_move::plan(
+            objects.iter().map(|object| GeomRect {
+                top: object.frame.top,
+                left: object.frame.left,
+                bottom: object.frame.bottom,
+                right: object.frame.right,
+            }),
+            layout_move::Delta {
+                dx: params.dx,
+                dy: params.dy,
+            },
+        )
+        .map_err(layout_edit_refusal)?;
+        if plan.delta == layout_move::Delta::default() {
+            return Ok(json!({
+                "status": "unchanged",
+                "layout": layout_ref,
+                "revision": revision_text(&layout.revision),
+            }));
+        }
+        for (object, frame) in objects.iter_mut().zip(plan.frames) {
+            object.frame.top = frame.top;
+            object.frame.left = frame.left;
+            object.frame.bottom = frame.bottom;
+            object.frame.right = frame.right;
+        }
+        let id = layout.id;
+        drop(layout);
+        self.write_object_frames(id, &objects, &params.expected_revision)
+    }
+
+    fn movable_layout_frames(
+        &self,
+        layout: &LoadedLayout,
+        objects: &[String],
+    ) -> Result<Vec<ObjectFrame>, AuthorError> {
+        let file = self.file();
+        let layout_ref = self.layout_ref(layout.id);
+        let (_, store) =
+            layout_placement::stored_objects(&layout.member).map_err(layout_edit_refusal)?;
         let decoded = layout_placement::decode(&layout.member).ok_or_else(|| {
             AuthorError::new(
                 ErrorKind::Unsupported,
                 format!("OpenMaker cannot read {layout_ref}'s objects."),
             )
         })?;
-        let mut frames = Vec::with_capacity(params.objects.len());
-        for object in &params.objects {
+        let mut frames = Vec::with_capacity(objects.len());
+        for object in objects {
             let (on, key) = refs::layout_object_id(object, &file)?;
             let stored = decoded.objects.get(key).filter(|_| on == layout.id);
             let Some(bounds) = stored.and_then(|o| o.bounds.clone()) else {
@@ -2184,31 +2280,28 @@ impl Service {
             }
             // Every object, the ones that stay included: one that cannot be
             // moved must not anchor the others.
-            layout_objects::movable(&store, key).map_err(refused)?;
+            layout_objects::movable(&store, key).map_err(layout_edit_refusal)?;
             frames.push(ObjectFrame {
                 object: key,
                 frame: bounds,
             });
         }
-        let changed = arrange(&frames, arrangement).map_err(refused)?;
-        if changed.is_empty() {
-            // Arranged so already: at the expected revision nothing is to
-            // change; at another, as after a request whose answer was lost,
-            // the objects are as asked (set_object_frames' already_applied).
-            return Ok(json!({
-                "status": if expected == layout.revision { "unchanged" } else { "already_applied" },
-                "layout": layout_ref,
-                "arrangement": arrangement.id(),
-                "revision": revision_text(&layout.revision),
-            }));
-        }
-        let mut result = self.set_object_frames(&ObjectFramesParams {
-            layout: Some(layout_ref.clone()),
+        Ok(frames)
+    }
+
+    fn write_object_frames(
+        &mut self,
+        layout: u64,
+        frames: &[ObjectFrame],
+        expected_revision: &str,
+    ) -> Result<Value, AuthorError> {
+        self.set_object_frames(&ObjectFramesParams {
+            layout: Some(self.layout_ref(layout)),
             layout_name: None,
-            objects: changed
+            objects: frames
                 .iter()
                 .map(|f| crate::api::ObjectFrameParams {
-                    object: self.object_ref(layout.id, f.object),
+                    object: self.object_ref(layout, f.object),
                     frame: FrameParams {
                         left: f.frame.left,
                         top: f.frame.top,
@@ -2217,12 +2310,8 @@ impl Service {
                     },
                 })
                 .collect(),
-            expected_revision: params.expected_revision.clone(),
-        })?;
-        if let Some(fields) = result.as_object_mut() {
-            fields.insert("arrangement".into(), json!(arrangement.id()));
-        }
-        Ok(result)
+            expected_revision: expected_revision.into(),
+        })
     }
 
     fn set_object_frames(&mut self, params: &ObjectFramesParams) -> Result<Value, AuthorError> {
@@ -2261,25 +2350,13 @@ impl Service {
                     "revision": revision_text(&layout.revision),
                 }));
             }
-            return Err(AuthorError::new(
-                ErrorKind::Conflict,
-                format!(
-                    "{layout_ref} changed since the revision the objects were moved on; \
-                     nothing was written."
-                ),
-            )
-            .with_details(json!({
-                "current_revision": revision_text(&layout.revision),
-                "expected_revision": revision_text(&expected),
-            })));
+            return Err(object_frame_conflict(
+                &layout_ref,
+                &layout.revision,
+                &expected,
+            ));
         }
-        layout_objects::plan(&layout.member, &frames).map_err(|refusal| {
-            let kind = match refusal {
-                layout_placement::Refusal::Invalid(_) => ErrorKind::InvalidRequest,
-                layout_placement::Refusal::Unsupported(_) => ErrorKind::Unsupported,
-            };
-            AuthorError::new(kind, refusal.to_string())
-        })?;
+        layout_objects::plan(&layout.member, &frames).map_err(layout_edit_refusal)?;
         Self::require_grant(&mut layout.opened, &catalog::SET_OBJECT_FRAMES)?;
         let edges = |r: &Rect| [r.top, r.left, r.bottom, r.right];
         let framed = layout.opened.set_object_frames(wire::SetObjectFrames {
