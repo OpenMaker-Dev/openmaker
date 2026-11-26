@@ -439,9 +439,12 @@ impl NativeProvider {
     /// [`DataProvider::import_record`] of a row into imported table
     /// `table`, on a layout of it: the owning file imports it as its own
     /// Import Records would, under its own account's access and rules, and
-    /// the window's found set takes a new record. Inside the opened file's
-    /// transaction the owner holds it in its part, as a script's write
-    /// there (#1006).
+    /// the window's found set takes a new record. The layout is none of the
+    /// owner's, so a rule reading its number has it unknown, as for the
+    /// owner's other writes from this file. Inside a transaction it is
+    /// refused (3, `with_new_record_owner`): a row held there would be
+    /// missing from the found set later rows match against, and its rules
+    /// would read this file's records as stored, not as held.
     pub(crate) fn import_routed(
         &mut self,
         table: u64,
@@ -457,24 +460,6 @@ impl NativeProvider {
             owner.require_action(wire, action)?;
             owner.import_table_record(wire, None, record, cells, auto_enter)
         };
-        if self.in_transaction() {
-            let result = self.with_owner_transaction(table, record, import);
-            self.collect_attachment_part(table);
-            let (id, wire) = result?;
-            let new = record.is_none()
-                || i64::try_from(id).is_ok_and(|id| self.related_reserved(table, id));
-            self.owner_transaction.held.push(HeldRecord {
-                table,
-                wire,
-                record: id,
-                deleted: false,
-                new,
-            });
-            if record.is_none() {
-                self.found_add(table, id);
-            }
-            return Ok(id);
-        }
         // The owner's record, as `with_new_record_owner` takes one: only its
         // id is read.
         let as_record = |id: u64| -> Result<Record, DataError> {

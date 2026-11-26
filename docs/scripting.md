@@ -347,9 +347,12 @@ Writes to the layout's related records in other tables and Browse entry of
 repeating fields remain refused on these layouts
 ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). Import Records
 on such a layout imports into its table through the owning file, as that
-file's own Import Records would: a new row's record joins the window's found
-set, and inside a script's transaction the owning file holds the row until
-Commit Transaction. A global of
+file's own Import Records would, and a new row's record joins the window's
+found set. The layout is none of the owning file's, so an auto-entry
+reading `Get ( LayoutNumber )` has no number there and refuses the row, as
+for the owning file's other writes from this file. Inside a script's
+transaction the import is refused (3) for now
+([#933](https://github.com/OpenMaker-Dev/openmaker/issues/933)). A global of
 another file's table, set by Set Field from any layout or typed on such a
 layout, is that file's session value (record-writes.md, "A related file's
 globals"). The owning file

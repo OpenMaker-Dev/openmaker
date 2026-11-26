@@ -1953,9 +1953,8 @@ fn a_related_files_globals_are_its_session_values() {
 /// Import Records on a layout of another file's table imports into that
 /// table (#43): the owning file creates a new row's record, with its own
 /// auto-entry, and updates an existing one, and the window's found set takes
-/// the new record. Inside a script's transaction the owner holds the row in
-/// its part until Commit Transaction. Root's table of the same ids is
-/// untouched.
+/// the new record. Inside a script's transaction it is refused (3) before
+/// anything is sent. Root's table of the same ids is untouched.
 #[test]
 fn imported_layout_import_records_go_to_the_owning_file() {
     let mut files = files();
@@ -1989,6 +1988,9 @@ fn imported_layout_import_records_go_to_the_owning_file() {
     };
     let row = |id, name: &str, creator: &str| (id, name.to_owned(), creator.to_owned());
     let root = rows(ROOT);
+    provider
+        .change_found_set(layout, om_data::found::FoundSetChange::Records(vec![2]))
+        .unwrap();
 
     // A new row, and an update of record 1.
     let new = provider
@@ -2011,20 +2013,23 @@ fn imported_layout_import_records_go_to_the_owning_file() {
             .unwrap(),
         1
     );
-    assert_eq!(ids(&mut provider), [1, 2, 3]);
+    assert_eq!(ids(&mut provider), [2, 3]);
     let stored = rows(RELATED);
     assert_eq!(stored[0].1, "Updated");
     assert_eq!(stored[2], row(3, "Imported", ACCOUNT));
 
-    // Held in the owner's part of a script's transaction until it commits.
+    // Refused inside a script's transaction, before any request.
     provider.begin_transaction(Default::default()).unwrap();
-    let held = provider
-        .import_record(layout, None, &[(NAME, Some("Held".into()))].into(), true)
-        .unwrap();
+    let before = host.captures.transactions().len();
+    for record in [None, Some(1)] {
+        let error = provider
+            .import_record(layout, record, &[(NAME, Some("Held".into()))].into(), true)
+            .unwrap_err();
+        assert_eq!(error.code, Some(3), "{error}");
+    }
+    assert_eq!(host.captures.transactions().len(), before);
+    provider.revert_transaction().unwrap();
     assert_eq!(rows(RELATED).len(), 3);
-    provider.commit_transaction(false).unwrap();
-    assert_eq!(rows(RELATED)[3], row(held, "Held", ACCOUNT));
-    assert_eq!(ids(&mut provider), [1, 2, 3, held]);
     assert_eq!(rows(ROOT), root);
 }
 
