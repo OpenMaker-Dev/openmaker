@@ -2006,6 +2006,8 @@ pub struct SlotSeen {
     pub error: Option<String>,
     /// Why the served file is read-only ([`Hosted::read_only_cause`]).
     pub read_only: Option<crate::store::ReadOnlyCause>,
+    /// The slot's revision then ([`Slot::revision`]).
+    pub revision: u64,
 }
 
 #[derive(Debug)]
@@ -2019,6 +2021,9 @@ struct SlotState {
     closing: Option<FileClose>,
     /// Why the file is closed: its last open failed.
     error: Option<String>,
+    /// How many times the served file has changed: a reopen that loads
+    /// serves a new load of the file, a close that finishes serves none.
+    revision: u64,
 }
 
 impl Slot {
@@ -2034,6 +2039,7 @@ impl Slot {
                 closed_file: None,
                 closing: None,
                 error: None,
+                revision: 0,
             }),
         }
     }
@@ -2066,7 +2072,17 @@ impl Slot {
                 .clone()
                 .or_else(|| file.and_then(|file| file.writes_refused().map(str::to_owned))),
             read_only: file.and_then(Hosted::read_only_cause),
+            revision: state.revision,
         }
+    }
+
+    /// Which load of the file the slot serves, if any: a number that
+    /// changes whenever the served file does (a reopen that loads, a close
+    /// that finishes). Two looks with the same revision saw the same load,
+    /// or none, served: for a reader that reads something of the file
+    /// between them with nothing held (the size, in `ServerHandle::files`).
+    pub fn revision(&self) -> u64 {
+        self.state().revision
     }
 
     /// What state the file is in.
@@ -2164,6 +2180,7 @@ impl Slot {
             .take()
             .and_then(|file| engine.file_on_disk(&file));
         state.closing = None;
+        state.revision += 1;
         true
     }
 
@@ -2299,6 +2316,7 @@ impl Hosting {
                 state.file = Some(hosted);
                 state.closed_file = None;
                 state.error = None;
+                state.revision += 1;
                 Ok(())
             }
             Err(e) => {
