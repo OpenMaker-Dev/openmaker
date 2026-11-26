@@ -1835,13 +1835,31 @@ impl NativeProvider {
         auto_enter: bool,
     ) -> Result<u64, DataError> {
         self.require_open()?;
+        let layout = self.decoded_layout(layout_id)?;
+        let table = self.table_for_layout(&layout)?.id;
+        self.import_table_record(table, Some(layout_id), record, cells, auto_enter)
+    }
+
+    /// [`Self::import_native_record`] into base table `table`, through
+    /// `layout` of this file, or none: a layout of the opened file, which
+    /// imports into this file's table through it as its owner (#43), is no
+    /// layout of this file.
+    pub(crate) fn import_table_record(
+        &mut self,
+        table: u64,
+        layout: Option<u32>,
+        record: Option<i64>,
+        cells: &BTreeMap<u64, Option<String>>,
+        auto_enter: bool,
+    ) -> Result<u64, DataError> {
+        self.require_open()?;
         if self.in_transaction() {
-            return self.hold_import(layout_id, record, cells, auto_enter);
+            return self.hold_import(table, layout, record, cells, auto_enter);
         }
-        let (table, plan) = self.record_plan(layout_id)?;
+        let (table, plan) = self.table_plan(table)?;
         let entry = Entry::import(auto_enter);
         // An import may be a script's step: its set is not known.
-        let context = self.write_context(&plan, Some(layout_id), CurrentSet::Step(None))?;
+        let context = self.write_context(&plan, layout, CurrentSet::Step(None))?;
         let environment = self.rule_environment(table.id, &plan, context)?;
         let txn = self.new_transaction();
         let result = match record {

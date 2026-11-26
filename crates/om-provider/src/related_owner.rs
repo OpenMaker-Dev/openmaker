@@ -436,6 +436,69 @@ impl NativeProvider {
         Ok(record)
     }
 
+    /// [`DataProvider::import_record`] of a row into imported table
+    /// `table`, on a layout of it: the owning file imports it as its own
+    /// Import Records would, under its own account's access and rules, and
+    /// the window's found set takes a new record. Inside the opened file's
+    /// transaction the owner holds it in its part, as a script's write
+    /// there (#1006).
+    pub(crate) fn import_routed(
+        &mut self,
+        table: u64,
+        record: Option<i64>,
+        cells: &BTreeMap<u64, Option<String>>,
+        auto_enter: bool,
+    ) -> Result<u64, DataError> {
+        let import = |owner: &mut NativeProvider, wire| {
+            let action = match record {
+                Some(_) => RecordAction::Edit,
+                None => RecordAction::Create,
+            };
+            owner.require_action(wire, action)?;
+            owner.import_table_record(wire, None, record, cells, auto_enter)
+        };
+        if self.in_transaction() {
+            let result = self.with_owner_transaction(table, record, import);
+            self.collect_attachment_part(table);
+            let (id, wire) = result?;
+            let new = record.is_none()
+                || i64::try_from(id).is_ok_and(|id| self.related_reserved(table, id));
+            self.owner_transaction.held.push(HeldRecord {
+                table,
+                wire,
+                record: id,
+                deleted: false,
+                new,
+            });
+            if record.is_none() {
+                self.found_add(table, id);
+            }
+            return Ok(id);
+        }
+        // The owner's record, as `with_new_record_owner` takes one: only its
+        // id is read.
+        let as_record = |id: u64| -> Result<Record, DataError> {
+            Ok(Record {
+                id: i64::try_from(id).map_err(|_| DataError::new("Invalid record ID."))?,
+                values: Vec::new(),
+            })
+        };
+        let id = match record {
+            None => self.with_new_record_owner(table, |owner, wire| {
+                import(owner, wire).and_then(as_record)
+            })?,
+            Some(id) => self.with_existing_record_owner(table, id, |owner, wire| {
+                import(owner, wire).and_then(as_record)
+            })?,
+        }
+        .id;
+        let id = u64::try_from(id).map_err(|_| DataError::new("Invalid record ID."))?;
+        if record.is_some() {
+            self.calc.page.invalidate_record(table, id);
+        }
+        Ok(id)
+    }
+
     /// [`DataProvider::delete_related_record`] of a record of imported
     /// table `table` (module docs).
     pub(crate) fn delete_routed_related(
