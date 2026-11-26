@@ -68,7 +68,7 @@ environment variables:
 | `OPENMAKER_PROVIDER=mock` | Use the mock provider |
 | `OPENMAKER_CLIENT_CERT`, `OPENMAKER_CLIENT_KEY` | PEM client identity (default: an in-memory one is generated) |
 | `OPENMAKER_CA_CERT` | Extra trusted certificate: a private CA's, or a server's self-signed one |
-| `WEBKIT_DISABLE_DMABUF_RENDERER` | Overrides OpenMaker's choice for web viewers on X servers without DRI3 (Xvfb, VNC) |
+| `WEBKIT_DISABLE_DMABUF_RENDERER`, `WEBKIT_DMABUF_RENDERER_FORCE_SHM` | Either one overrides OpenMaker's choice for web viewers' rendering: WebKitGTK's DMA-BUF renderer off on X servers without DRI3 (Xvfb, VNC), pages through shared memory on NVIDIA's driver |
 | `WINIT_X11_SCALE_FACTOR` | The windows' scale on X11 (winit's), also for a web-viewer build on a Wayland session, which runs through XWayland |
 | `OPENMAKER_PDF_WORKER` | The PDF worker executable to use instead of the one beside the program (above) |
 | `OPENMAKER_USER_NAME` | `Get ( UserName )` and the session name, whatever Settings' User Name says |
