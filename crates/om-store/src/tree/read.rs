@@ -771,21 +771,24 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
     }
 
     /// Goes to the first item within the starting bound, as
-    /// [`Cursor::position`] does, from the pages the cursor holds: the leaf
-    /// it is in when the item lies inside it (an item of the leaf on either
-    /// side of it), otherwise the pages from the root down as long as each
-    /// would choose the child it holds, descending anew only below the
-    /// first that would not. Each choice is the one `position` makes, so
-    /// the item found is the same, and the pages kept are not read again.
+    /// [`Cursor::position`] does, from the pages the cursor holds: from the
+    /// root down, each held page is asked the choice `position` would make
+    /// for the bound (no page is read), and the cursor descends anew only
+    /// below the first whose choice is not the child it holds; when none
+    /// is, its leaf is the one a descent reaches. So every choice is the
+    /// one `position` makes and the item found is the same, on any tree,
+    /// even one whose pages are out of order with their separators (review
+    /// of #938: a leaf whose own items straddle the bound is no proof that
+    /// the descent reaches it), and the pages kept are not read again.
     fn reposition(&mut self) -> Result<bool> {
         let forward = self.direction == Direction::Forward;
         let bound = if forward { &self.lo } else { &self.hi };
         if matches!(bound, Bound::Unbounded) {
             return self.position();
         }
-        let Some((leaf, _)) = self.stack.last() else {
+        if self.stack.is_empty() {
             return self.position();
-        };
+        }
         let pages = &self.tree.pages;
         // How many of the leaf's items lie before the bound, as `position`
         // counts them at its leaf.
@@ -794,17 +797,6 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
             Bound::Excluded(k) => pages.items_below(page, k, forward),
             Bound::Unbounded => Ok(0),
         };
-        let n = below(leaf)?;
-        if n > 0 && n < leaf.count() {
-            // An item of the leaf lies on each side of the bound: the
-            // descent from the root reaches this leaf.
-            let at = if forward { n } else { n - 1 };
-            if let Some(last) = self.stack.last_mut() {
-                last.1 = at;
-            }
-            self.edge = Edge::First;
-            return Ok(true);
-        }
         // The deepest page from the root whose choice of child is the one
         // the cursor holds.
         let choice = |page: &Page| match bound {
@@ -829,6 +821,7 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
             None => {
                 // The same leaf as the descent from the root would reach.
                 let (leaf, _) = self.stack.pop().expect("a stack with a leaf");
+                let n = below(&leaf)?;
                 (leaf, n)
             }
             Some(want) => {
@@ -1537,6 +1530,82 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Review of #938 (#767): a tree whose pages each pass their own checks
+    /// although they are out of order across pages, as `tree::built`
+    /// writes them: a first leaf `a, z`, a second `n, o`, the separator `m`
+    /// between them. A cursor that holds the first leaf and seeks `n`, as a
+    /// listing seeks its next child, gives what a cursor from the root
+    /// gives, in both directions, though the leaf's own items straddle the
+    /// bound; and with the separator at `a`, a listing gives the children
+    /// that seeking each from the root gives. On such a tree an item can
+    /// come before the bound it was sought from and a listing need not end
+    /// ([#998](https://github.com/OpenMaker-Dev/openmaker/issues/998)), so
+    /// the first items are compared.
+    #[test]
+    fn a_seek_from_a_held_leaf_gives_what_the_root_gives_on_a_tree_out_of_order() {
+        let store = MemStore::new(Numbering::Sequential);
+        let item = |s: &[u8]| (KIND_VALUE, key_of_segment(s), vec![7; 10]);
+        let tree_with = |separator: &[u8]| {
+            let separator = key_of_segment(separator);
+            let leaves = [vec![item(b"a"), item(b"z")], vec![item(b"n"), item(b"o")]];
+            crate::tree::built::tree(&store, &leaves, &[separator.as_slice()]).root
+        };
+        let first = |cursor: &mut Cursor<'_, '_, MemStore>| -> Vec<Vec<u8>> {
+            cursor
+                .take(4)
+                .map(|i| i.unwrap().key.into_bytes())
+                .collect()
+        };
+        let tree = Tree::open(&store, tree_with(b"m")).unwrap();
+        assert_eq!(tree.height(), 2);
+        let n = key_of_segment(b"n");
+        for direction in [Direction::Forward, Direction::Backward] {
+            for bound in [Bound::Included(n.clone()), Bound::Excluded(n.clone())] {
+                // In the first leaf: at `a` forward, at `z` backward.
+                let mut held = tree.range(Bound::Unbounded, Bound::Unbounded, direction);
+                let (steps, at) = match direction {
+                    Direction::Forward => (1, b"a"),
+                    Direction::Backward => (3, b"z"),
+                };
+                let last = (&mut held).take(steps).last().unwrap().unwrap();
+                assert_eq!(last.key.as_bytes(), key_of_segment(at));
+                held.seek(bound.clone());
+                let from_held = first(&mut held);
+                let start = bound.as_ref().map(Vec::as_slice);
+                let (lo, hi) = match direction {
+                    Direction::Forward => (start, Bound::Unbounded),
+                    Direction::Backward => (Bound::Unbounded, start),
+                };
+                let from_root = first(&mut tree.range(lo, hi, direction));
+                assert_eq!(from_held, from_root, "{direction:?} {bound:?}");
+            }
+        }
+        // A listing: each child sought from where the one before was found,
+        // against each sought from the root, as a listing did before #767.
+        let tree = Tree::open(&store, tree_with(b"a")).unwrap();
+        let root: [&[u8]; 0] = [];
+        let listed: Vec<Vec<u8>> = tree
+            .children(&root, Bound::Unbounded, Direction::Forward)
+            .take(4)
+            .map(|child| child.unwrap().0)
+            .collect();
+        let mut sought = Vec::new();
+        let mut from = Bound::Unbounded;
+        while sought.len() < 4 {
+            let start = from.as_ref().map(Vec::as_slice);
+            let Some(item) = tree
+                .range(start, Bound::Unbounded, Direction::Forward)
+                .next()
+            else {
+                break;
+            };
+            let key = item.unwrap().key.into_bytes();
+            sought.push(key::decode_last(&key).unwrap());
+            from = Bound::Included(key::subtree_end(&key).unwrap());
+        }
+        assert_eq!(listed, sought);
     }
 
     /// Review of #769, rule 3: the far edge's comparison reads nothing, so
