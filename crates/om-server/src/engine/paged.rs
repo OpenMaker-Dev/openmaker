@@ -172,21 +172,39 @@ impl<'s, S: PageStore + ?Sized> PagedView<'s, S> {
         &self,
         tree: &Tree<'s, S>,
         path: &[&[u8]],
-        limit: usize,
+        limit: Limit,
     ) -> Result<Option<OwnedNode>, ReadError> {
         let base = path.len();
-        let too_large = || ReadError::TooLarge {
+        let too_large = |limit| ReadError::TooLarge {
             path: owned_path(path),
             limit,
         };
         // Below what the tree will take, counted as the nodes come, so that
-        // a large subtree is refused before it is read whole.
+        // a large subtree is refused before it is read whole; or the work it
+        // is, counted as its reader counts it, refused before the first node
+        // past either counter is kept.
         let mut least = size_of::<OwnedNode>();
+        let mut counted = om_query::program::Size::default();
+        let mut count = |segment: &[u8], value: &[u8]| -> Result<(), ReadError> {
+            let Limit::Work(work) = limit else {
+                return Ok(());
+            };
+            counted.nodes += 1;
+            counted.bytes += segment.len() + value.len();
+            if counted.nodes > work.nodes {
+                return Err(too_large(work.nodes));
+            }
+            if counted.bytes > work.bytes {
+                return Err(too_large(work.bytes));
+            }
+            Ok(())
+        };
         let mut stack: Vec<OwnedNode> = Vec::new();
         let mut items = tree.walk(path);
         if path.is_empty() {
             // The root is the file's list itself: no key, no value, never
             // written as a push (as `om_hbam::KeyTree` makes it).
+            count(&[], &[])?;
             stack.push(OwnedNode::default());
         } else {
             match items.next_lent(|key, node| (key_depth(key), node)) {
@@ -197,6 +215,7 @@ impl<'s, S: PageStore + ?Sized> PagedView<'s, S> {
                         return Err(orphan(path));
                     }
                     let segment = exact(path[base - 1].to_vec());
+                    count(&segment, node.value())?;
                     least += segment.len() + node.value().len();
                     stack.push(owned(segment, node));
                 }
@@ -215,9 +234,12 @@ impl<'s, S: PageStore + ?Sized> PagedView<'s, S> {
             while stack.len() > below {
                 finish(&mut stack);
             }
+            count(&segment, node.value())?;
             least += size_of::<OwnedNode>() + segment.len() + node.value().len();
-            if limit != NO_LIMIT && least > limit {
-                return Err(too_large());
+            if let Limit::Memory(memory) = limit {
+                if memory != NO_LIMIT && least > memory {
+                    return Err(too_large(memory));
+                }
             }
             stack.push(owned(segment, node));
         }
@@ -226,11 +248,22 @@ impl<'s, S: PageStore + ?Sized> PagedView<'s, S> {
         }
         let mut node = stack.pop().unwrap_or_default();
         node.children = exact(std::mem::take(&mut node.children));
-        if limit != NO_LIMIT && om_hbam::tree::memory_within(&node, limit).is_none() {
-            return Err(too_large());
+        if let Limit::Memory(memory) = limit {
+            if memory != NO_LIMIT && om_hbam::tree::memory_within(&node, memory).is_none() {
+                return Err(too_large(memory));
+            }
         }
         Ok(Some(node))
     }
+}
+
+/// What a subtree's build may take: memory, as `om_hbam::tree::memory`
+/// counts it ([`View::subtree`]); or work, as its reader counts it
+/// ([`View::subtree_within`]).
+#[derive(Clone, Copy)]
+enum Limit {
+    Memory(usize),
+    Work(om_query::program::Size),
 }
 
 /// The last node on `stack`, made a child of the one below it.
@@ -371,7 +404,22 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
         limit: usize,
     ) -> Result<Option<Cow<'_, OwnedNode>>, ReadError> {
         let tree = self.tree(path)?;
-        Ok(self.build(&tree, path, limit)?.map(Cow::Owned))
+        Ok(self
+            .build(&tree, path, Limit::Memory(limit))?
+            .map(Cow::Owned))
+    }
+
+    /// Built as [`View::subtree`] builds it, each node counted as its reader
+    /// counts it before it is kept, and refused at the first past either
+    /// counter: a find's index entry past the work its program has left is
+    /// never built whole.
+    fn subtree_within(
+        &self,
+        path: &[&[u8]],
+        work: om_query::program::Size,
+    ) -> Result<Option<Cow<'_, OwnedNode>>, ReadError> {
+        let tree = self.tree(path)?;
+        Ok(self.build(&tree, path, Limit::Work(work))?.map(Cow::Owned))
     }
 
     fn children_page<'v>(
@@ -422,7 +470,7 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
             };
             let mut child_path = path.to_vec();
             child_path.push(&segment);
-            match self.build(&tree, &child_path, limit) {
+            match self.build(&tree, &child_path, Limit::Memory(limit)) {
                 Ok(Some(node)) => out.push(Cow::Owned(node)),
                 Ok(None) => return Err(orphan(&child_path)),
                 // A subtree past the limit fails the page, as the file

@@ -2,11 +2,243 @@
 //! memory and changes as clients write.
 
 use std::borrow::Cow;
+use std::ops::Bound;
 
 use om_hbam::{Catalog, HbamFile, OwnedNode, RidList};
 
+use crate::program::Size;
+
 /// Key of a table's record-id list.
 const RECORD_IDS: u8 = 13;
+
+/// Which way a listing goes: in increasing key order, or in decreasing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    Forward,
+    Backward,
+}
+
+/// A node's children listed a page at a time by key, in key order, from a
+/// bound (`[T, 01, F, kind]`'s entries: query-program.md 7.1), each read
+/// with what is below it only when asked for by its key, so that a reader
+/// holds only the entries it takes: a lookup that misses, and the keys a
+/// scan passes, read no entry's records.
+pub trait Listing {
+    /// Up to `max` children's keys onto `out`, nothing below them: forward,
+    /// those at or after an included `from` (after an excluded one, from
+    /// the first when unbounded), in strictly increasing order; backward,
+    /// those at or before it (before an excluded one, from the last when
+    /// unbounded), in strictly decreasing order. Whether more may follow
+    /// the last one given: a listing may give fewer than `max` and still
+    /// have more, but gives at least one while any is left.
+    fn keys<'a>(
+        &'a self,
+        from: Bound<&[u8]>,
+        direction: Direction,
+        max: usize,
+        out: &mut Vec<Cow<'a, [u8]>>,
+    ) -> om_hbam::Result<bool>;
+
+    /// The child under `key` and everything below it (an index entry and
+    /// its RID list), `None` when there is none. `limit` is what the reader
+    /// may still read ([`Size`], nodes and the bytes of their segments and
+    /// values, as [`Size::of_tree`] counts a subtree; or
+    /// [`Size::UNLIMITED`]): a listing that builds the entry counts each
+    /// node so and refuses with [`om_hbam::Error::TooLarge`] before it keeps
+    /// the first past either counter, never more or less than the reader's
+    /// count would refuse; one that lends it may give it unchecked, for the
+    /// reader to count.
+    fn entry<'a>(&'a self, key: &[u8], limit: Size) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>>;
+}
+
+/// A listing that gave a key out of the order every listing keeps (or
+/// outside the bound it was asked from): the source is broken, and its
+/// reader fails rather than read on.
+pub(crate) fn out_of_order() -> om_hbam::Error {
+    om_hbam::Error::KeyOrder {
+        path: "an index's listing".into(),
+    }
+}
+
+/// A listing that broke its contract otherwise ([`Listing`]): a page with
+/// no key that says more follow, which would end a read early unnoticed, a
+/// page with more keys than asked for, or a key listed without an entry.
+pub(crate) fn broken(reason: &'static str) -> om_hbam::Error {
+    om_hbam::Error::BadValue {
+        path: "an index's listing".into(),
+        reason,
+    }
+}
+
+/// Whether `keys`, a page a listing gave from `start`, are each past it in
+/// `direction` (at or past it when included) and in strictly increasing
+/// order (decreasing backward).
+pub(crate) fn page_in_order(
+    keys: &[Cow<'_, [u8]>],
+    start: Bound<&[u8]>,
+    direction: Direction,
+) -> bool {
+    let mut before: Option<&[u8]> = None;
+    keys.iter().all(|key| {
+        let in_order = match direction {
+            Direction::Forward => after(key, start) && before.is_none_or(|b| **key > *b),
+            Direction::Backward => before_bound(key, start) && before.is_none_or(|b| **key < *b),
+        };
+        before = Some(key);
+        in_order
+    })
+}
+
+/// Whether `key` lies at or after `low` (after it, excluded).
+fn after(key: &[u8], low: Bound<&[u8]>) -> bool {
+    match low {
+        Bound::Included(b) => key >= b,
+        Bound::Excluded(b) => key > b,
+        Bound::Unbounded => true,
+    }
+}
+
+/// Whether `key` lies at or before `high` (before it, excluded).
+fn before_bound(key: &[u8], high: Bound<&[u8]>) -> bool {
+    match high {
+        Bound::Included(b) => key <= b,
+        Bound::Excluded(b) => key < b,
+        Bound::Unbounded => true,
+    }
+}
+
+/// A listing of a node held whole that gives at most `cap` keys a page,
+/// so that a test's scans cross pages.
+#[cfg(test)]
+pub(crate) struct Capped<'n> {
+    pub node: &'n OwnedNode,
+    pub cap: usize,
+}
+
+#[cfg(test)]
+impl Listing for Capped<'_> {
+    fn keys<'a>(
+        &'a self,
+        from: Bound<&[u8]>,
+        direction: Direction,
+        max: usize,
+        out: &mut Vec<Cow<'a, [u8]>>,
+    ) -> om_hbam::Result<bool> {
+        let mut page = Vec::new();
+        let more = node_keys(self.node, from, direction, self.cap, &mut page);
+        let more = more || page.len() > max;
+        out.extend(page.into_iter().take(max));
+        Ok(more)
+    }
+
+    fn entry<'a>(
+        &'a self,
+        key: &[u8],
+        _limit: Size,
+    ) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
+        Ok(node_entry(self.node, key))
+    }
+}
+
+/// A node's children as a source gives them ([`Source::children`]).
+pub enum Children<'s> {
+    /// The node read whole, its children in the order the source keeps
+    /// them, which a reader checks.
+    Whole(Cow<'s, OwnedNode>),
+    /// Listed a page at a time, in key order ([`Listing`]).
+    Listed(Box<dyn Listing + 's>),
+}
+
+/// A listing of the children of a node held whole, which are in strictly
+/// increasing key order (as a file or a host keeps them): what an index
+/// held in memory is read through where a listing is asked for.
+pub struct NodeListing<'n>(pub &'n OwnedNode);
+
+impl Listing for NodeListing<'_> {
+    fn keys<'a>(
+        &'a self,
+        from: Bound<&[u8]>,
+        direction: Direction,
+        max: usize,
+        out: &mut Vec<Cow<'a, [u8]>>,
+    ) -> om_hbam::Result<bool> {
+        Ok(node_keys(self.0, from, direction, max, out))
+    }
+
+    fn entry<'a>(
+        &'a self,
+        key: &[u8],
+        _limit: Size,
+    ) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
+        Ok(node_entry(self.0, key))
+    }
+}
+
+/// [`Listing::keys`] over the children of `node`, which are in order.
+pub(crate) fn node_keys<'n>(
+    node: &'n OwnedNode,
+    from: Bound<&[u8]>,
+    direction: Direction,
+    max: usize,
+    out: &mut Vec<Cow<'n, [u8]>>,
+) -> bool {
+    let children = &node.children;
+    let at = |key: &[u8], after: bool| {
+        children.partition_point(|c| match after {
+            true => c.segment.as_slice() <= key,
+            false => c.segment.as_slice() < key,
+        })
+    };
+    let key = |c: &'n OwnedNode| Cow::Borrowed(c.segment.as_slice());
+    match direction {
+        Direction::Forward => {
+            let start = match from {
+                Bound::Included(k) => at(k, false),
+                Bound::Excluded(k) => at(k, true),
+                Bound::Unbounded => 0,
+            };
+            let rest = &children[start..];
+            out.extend(rest.iter().take(max).map(key));
+            rest.len() > max
+        }
+        Direction::Backward => {
+            let end = match from {
+                Bound::Included(k) => at(k, true),
+                Bound::Excluded(k) => at(k, false),
+                Bound::Unbounded => children.len(),
+            };
+            let rest = &children[..end];
+            out.extend(rest.iter().rev().take(max).map(key));
+            rest.len() > max
+        }
+    }
+}
+
+/// [`Listing::entry`] over the children of `node`, which are in order.
+pub(crate) fn node_entry<'n>(node: &'n OwnedNode, key: &[u8]) -> Option<Cow<'n, OwnedNode>> {
+    node.children
+        .binary_search_by(|c| c.segment.as_slice().cmp(key))
+        .ok()
+        .map(|at| Cow::Borrowed(&node.children[at]))
+}
+
+/// A node without its children: whether it has any (or is a list without
+/// them, `push`), and its own value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Head {
+    pub list: bool,
+    pub value: Option<Vec<u8>>,
+}
+
+impl Head {
+    /// The head of `node`.
+    pub fn of(node: &OwnedNode) -> Self {
+        Self {
+            list: node.push || !node.children.is_empty(),
+            value: node.value.clone(),
+        }
+    }
+}
 
 /// The data a program runs against.
 pub trait Source {
@@ -15,6 +247,25 @@ pub trait Source {
 
     /// The node at `path`, if present.
     fn node(&self, path: &[&[u8]]) -> om_hbam::Result<Option<Cow<'_, OwnedNode>>>;
+
+    /// The node at `path` without its children, `None` when there is no
+    /// such node: what NodeExists and GetKey read (spec 8.5), which a
+    /// source that can read a node alone answers without what is below it
+    /// (a field's index, under a path a client names). By default
+    /// [`Source::node`]'s, whole.
+    fn head(&self, path: &[&[u8]]) -> om_hbam::Result<Option<Head>> {
+        Ok(self.node(path)?.map(|node| Head::of(&node)))
+    }
+
+    /// The children of the node at `path`, `None` when there is no such
+    /// node: a field's index (`[T, 01, F, kind]`) is read so. A source that
+    /// can list a node's children a page at a time in key order gives them
+    /// listed ([`Children::Listed`]), so that a program reads only the
+    /// entries it asks for and never holds the index whole; by default the
+    /// node is [`Source::node`]'s, whole.
+    fn children(&self, path: &[&[u8]]) -> om_hbam::Result<Option<Children<'_>>> {
+        Ok(self.node(path)?.map(Children::Whole))
+    }
 
     /// Every record id of base table `table`: its record-id list `[T, 0d]`
     /// decoded (query-program.md 7.1), empty when the table has none. A

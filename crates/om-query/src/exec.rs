@@ -2,15 +2,16 @@
 //! `docs/re/query-program.md` 3, 6).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::{Bound, Range, RangeBounds};
+use std::ops::{Bound, RangeBounds};
 
 use om_hbam::{serial, slot::be_uint, DataType, OwnedNode, RidList};
 
-use crate::index::{Index, Indexes, VALUE_INDEX, WORD_INDEX};
+use crate::index::{Index, Indexes, Span, VALUE_INDEX, WORD_INDEX};
 use crate::keys::TextKeys;
 use crate::program::{
     decode_path, leaf, opcode, take_key_string, Budget, Instruction, Program, Size, Work,
 };
+use crate::source::Direction;
 use crate::{QueryError, Source};
 
 /// Who is running the program, for the per-instruction checks (spec 2.4).
@@ -409,22 +410,18 @@ fn exists_in_index(
     };
     let work = program.work();
     let index = indexes.finder_index(work, &table, &field, VALUE_INDEX)?;
-    // The client's keys in index order, each looked up from where the last
-    // one was: the index and the keys are walked together.
+    // The client's keys in index order, each looked up once, from where the
+    // last one was: the index and the keys are walked together.
     keys.sort_unstable();
     keys.dedup();
     let mut exists = false;
-    let mut from = 0;
+    let mut lookups = index.lookups();
     for key in keys {
-        match index.find_from(from, key, work)? {
-            Ok(at) => {
-                if !index.records(at, work)?.and_not(&excluded).is_empty() {
-                    exists = true;
-                    break;
-                }
-                from = at + 1;
+        if let Some(entry) = lookups.get(key, work)? {
+            if !entry.records(work)?.and_not(&excluded).is_empty() {
+                exists = true;
+                break;
             }
-            Err(at) => from = at,
         }
     }
     set_bool(program, &dest, exists)
@@ -434,6 +431,8 @@ fn exists_in_index(
 /// hosted file. NodeExists answers whether it exists; GetKey returns the
 /// value stored there (nothing for a missing path; a node, for which
 /// FileMaker Server returns an opaque position, also yields nothing here).
+/// Either reads the node alone, never what is below it ([`Source::head`]):
+/// a path may name a field's whole index.
 fn file_node(
     program: &mut Program,
     indexes: &mut Indexes<'_>,
@@ -442,13 +441,11 @@ fn file_node(
     let path = instruction.required_spot(leaf::SRC)?;
     let dest = instruction.required_spot(leaf::DEST)?;
     let segments: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
-    let node = indexes.source().node(&segments)?;
+    let head = indexes.source().head(&segments)?;
     if instruction.opcode == opcode::NODE_EXISTS {
-        set_bool(program, &dest, node.is_some())
+        set_bool(program, &dest, head.is_some())
     } else {
-        let value = node
-            .filter(|n| !n.push && n.children.is_empty())
-            .and_then(|n| n.value.clone());
+        let value = head.filter(|h| !h.list).and_then(|h| h.value);
         let children = value
             .map(|v| vec![OwnedNode::leaf(vec![0x00], v)])
             .unwrap_or_default();
@@ -721,7 +718,9 @@ impl Finder {
             kind::INDEX_RANGE => {
                 let index = indexes.finder_index(work, table, &self.field, index_kind)?;
                 let mut found = RidList::new();
-                index.add_records(index.range(self.range(), work)?, &mut found, work)?;
+                for entry in index.scan(self.range(), Direction::Forward, work)? {
+                    found |= &entry?.records(work)?;
+                }
                 found
             }
             kind::ROW_ID_MATCH | kind::NOT_ROW_ID_MATCH => {
@@ -759,11 +758,12 @@ impl Finder {
             kind::FIND_DUPLICATES => {
                 let index = indexes.finder_index(work, table, &self.field, index_kind)?;
                 let mut found = RidList::new();
-                for at in 0..index.len() {
-                    if index.key(at) == EMPTY_TEXT_KEY {
+                for entry in index.entries(work) {
+                    let entry = entry?;
+                    if entry.key() == EMPTY_TEXT_KEY {
                         continue;
                     }
-                    let records = index.records(at, work)?;
+                    let records = entry.records(work)?;
                     if records.len() > 1 {
                         found |= &records;
                     }
@@ -777,8 +777,8 @@ impl Finder {
 
 /// The records under `key` in `index`; none when it does not hold the key.
 fn key_records(index: &Index<'_>, key: &[u8], work: &Work) -> Result<RidList, QueryError> {
-    match index.find(key, work)? {
-        Some(at) => index.records(at, work),
+    match index.get(key, work)? {
+        Some(entry) => entry.records(work),
         None => Ok(RidList::new()),
     }
 }
@@ -1004,19 +1004,17 @@ fn projected_keys(
     // Every key of the index but the empty value's: inverting the index
     // reads all of it.
     let index = indexes.index(work, table, field, VALUE_INDEX)?;
-    let keys: Vec<usize> = (0..index.len())
-        .filter(|&at| index.key(at) != EMPTY_TEXT_KEY)
-        .collect();
-    if keys.is_empty() {
-        return Ok(Vec::new());
-    }
-    if !same_type {
-        return Err(QueryError::Unimplemented("projection to another data type"));
-    }
     let mut out = Vec::new();
-    for at in keys {
-        let key = index.key(at).to_vec();
-        let holders = index.records(at, work)?;
+    for entry in index.entries(work) {
+        let entry = entry?;
+        if entry.key() == EMPTY_TEXT_KEY {
+            continue;
+        }
+        if !same_type {
+            return Err(QueryError::Unimplemented("projection to another data type"));
+        }
+        let key = entry.key().to_vec();
+        let holders = entry.records(work)?;
         out.extend(holders.and(records).iter().map(|id| (id, key.clone())));
     }
     Ok(out)
@@ -1135,12 +1133,17 @@ fn create_value_list(
     let work = program.work();
     let index = indexes.index(work, &table, &field, VALUE_INDEX)?;
     let mut matches: Vec<(Vec<u8>, u64)> = Vec::new();
-    for at in index.prefixed(&prefix, work)? {
-        if index.key(at) == EMPTY_TEXT_KEY {
+    let from = (Bound::Included(prefix.as_slice()), Bound::Unbounded);
+    for entry in index.scan(from, Direction::Forward, work)? {
+        let entry = entry?;
+        if !entry.key().starts_with(&prefix) {
+            break;
+        }
+        if entry.key() == EMPTY_TEXT_KEY {
             continue;
         }
-        if let Some(id) = index.records(at, work)?.iter().next() {
-            matches.push((index.key(at).to_vec(), id));
+        if let Some(id) = entry.records(work)?.iter().next() {
+            matches.push((entry.key().to_vec(), id));
         }
     }
     let mut entries = Vec::new();
@@ -1232,51 +1235,56 @@ impl Predicate {
         })
     }
 
-    /// The positions of the index keys that relate by this predicate to at
-    /// least one of a source row's `keys`, found by binary search: one
-    /// position per matching key for `=`, one range otherwise, since a key
-    /// below some source key is below the greatest, and so on (spec 9.2).
-    /// No keys on either side relate nothing; a predicate type this engine
-    /// does not know fails only then, as when it compared keys one by one.
-    fn related(
+    /// The entries of `index` that relate by this predicate to at least one
+    /// of a source row's `keys`: the entry of each matching key for `=`, as
+    /// its lookup found it; one range otherwise, since a key below some
+    /// source key is below the greatest, and so on (spec 9.2). No keys on
+    /// either side relate nothing; a predicate type this engine does not
+    /// know fails only then, as when it compared keys one by one.
+    fn related<'i>(
         &self,
-        index: &Index<'_>,
+        index: &'i Index<'_>,
         keys: &[&[u8]],
         work: &Work,
-    ) -> Result<Vec<Range<usize>>, QueryError> {
+    ) -> Result<Vec<Span<'i>>, QueryError> {
         let (Some(least), Some(greatest)) = (keys.iter().min(), keys.iter().max()) else {
             return Ok(Vec::new());
         };
-        if index.is_empty() {
+        let Some(lowest) = index.first(work)? else {
             return Ok(Vec::new());
-        }
+        };
         // An empty value relates to nothing, an inequality and `≠` included
         // (file-metadata.md 4): the empty value's entry `01`, the lowest key
         // an index can hold, is left out of every range.
-        let first = usize::from(index.key(0) == EMPTY_TEXT_KEY);
-        let all = first..index.len();
         let above_empty = Bound::Excluded(EMPTY_TEXT_KEY);
-        let unbounded = Bound::Unbounded;
+        let all_from = match lowest.key() == EMPTY_TEXT_KEY {
+            true => Bound::Excluded(&lowest),
+            false => Bound::Unbounded,
+        };
+        let range = |range| index.span(range, work);
         Ok(match self.kind {
             pred::EQ => {
                 let mut found = Vec::new();
-                for key in keys {
-                    if let Some(at) = index.find(key, work)? {
-                        found.push(at..at + 1);
+                for k in keys {
+                    if let Some(entry) = index.get(k, work)? {
+                        found.push(entry.span());
                     }
                 }
                 found
             }
             // Every key differs from one of two different source keys.
-            pred::NE if least != greatest => vec![all],
-            pred::NE => match index.find(least, work)? {
-                Some(at) => vec![first..at, at + 1..index.len()],
-                None => vec![all],
+            pred::NE if least != greatest => vec![index.between(all_from, Bound::Unbounded)],
+            pred::NE => match index.get(least, work)? {
+                Some(entry) => vec![
+                    index.between(all_from, Bound::Excluded(&entry)),
+                    index.between(Bound::Excluded(&entry), Bound::Unbounded),
+                ],
+                None => vec![index.between(all_from, Bound::Unbounded)],
             },
-            pred::LT => vec![index.range((above_empty, Bound::Excluded(greatest)), work)?],
-            pred::LE => vec![index.range((above_empty, Bound::Included(greatest)), work)?],
-            pred::GT => vec![index.range((Bound::Excluded(least), unbounded), work)?],
-            pred::GE => vec![index.range((Bound::Included(least), unbounded), work)?],
+            pred::LT => vec![range((above_empty, Bound::Excluded(greatest)))?],
+            pred::LE => vec![range((above_empty, Bound::Included(greatest)))?],
+            pred::GT => vec![range((Bound::Excluded(least), Bound::Unbounded))?],
+            pred::GE => vec![range((Bound::Included(least), Bound::Unbounded))?],
             other => return Err(QueryError::Unsupported("join predicate", other)),
         })
     }
@@ -1342,8 +1350,8 @@ fn lookup_value(
             all.clone()
         } else {
             let index = indexes.index(work, &table, &predicate.a, VALUE_INDEX)?;
-            let ranges = predicate.related(index, &keys, work)?;
-            records_at(index, ranges, work)?
+            let spans = predicate.related(index, &keys, work)?;
+            index.records_in(spans, work)?
         };
         let both = match &so_far {
             Some(earlier) => earlier.and(&matches),
@@ -1360,15 +1368,17 @@ fn lookup_value(
             return Err(QueryError::NoRecords);
         }
         let index = indexes.index(work, &table, &predicate.a, VALUE_INDEX)?;
-        let positions: Box<dyn Iterator<Item = usize>> = if higher {
-            let above = index.range((Bound::Excluded(key), Bound::Unbounded), work)?;
-            Box::new(above)
-        } else {
-            let below = index.range((Bound::Unbounded, Bound::Excluded(key)), work)?;
-            Box::new(below.rev())
+        // The keys above the row's, from the next one up, or below it, from
+        // the next one down.
+        let (range, direction) = match higher {
+            true => ((Bound::Excluded(key), Bound::Unbounded), Direction::Forward),
+            false => (
+                (Bound::Unbounded, Bound::Excluded(key)),
+                Direction::Backward,
+            ),
         };
-        for at in positions {
-            let records = index.records(at, work)?;
+        for entry in index.scan(range, direction, work)? {
+            let records = entry?.records(work)?;
             let candidates = match &so_far {
                 Some(earlier) => records.and(earlier),
                 None => records,
@@ -1398,33 +1408,6 @@ fn source_keys<'r>(row: &'r OwnedNode, field: &[u8]) -> Vec<&'r [u8]> {
     row.child(field)
         .map(|keys| keys.children.iter().map(|k| k.segment.as_slice()).collect())
         .unwrap_or_default()
-}
-
-/// Positions as ascending, disjoint ranges, so each entry is read once.
-fn merged(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
-    ranges.retain(|r| !r.is_empty());
-    ranges.sort_unstable_by_key(|r| r.start);
-    let mut out: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
-    for range in ranges {
-        match out.last_mut() {
-            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
-            _ => out.push(range),
-        }
-    }
-    out
-}
-
-/// The records under the index entries at `ranges`, each entry read once.
-fn records_at(
-    index: &Index<'_>,
-    ranges: Vec<Range<usize>>,
-    work: &Work,
-) -> Result<RidList, QueryError> {
-    let mut found = RidList::new();
-    for range in merged(ranges) {
-        index.add_records(range, &mut found, work)?;
-    }
-    Ok(found)
 }
 
 /// JoinProjection (op 12, spec 3.1): the target-table records related to any
@@ -1486,7 +1469,7 @@ fn join_projection(
                     let keys = source_keys(row, &predicate.b);
                     related.extend(predicate.related(index, &keys, work)?);
                 }
-                Some(records_at(index, related, work)?)
+                Some(index.records_in(related, work)?)
             }
             _ => {
                 let mut found = RidList::new();
@@ -1495,7 +1478,7 @@ fn join_projection(
                     for (predicate, index) in keyed.iter().zip(&targets) {
                         let keys = source_keys(row, &predicate.b);
                         let related = predicate.related(index, &keys, work)?;
-                        let matches = records_at(index, related, work)?;
+                        let matches = index.records_in(related, work)?;
                         row_matches = Some(match row_matches {
                             Some(so_far) => so_far.and(&matches),
                             None => matches,
@@ -1802,6 +1785,9 @@ mod tests {
         root: OwnedNode,
         /// Field 1's definition bytes (none by default).
         definition: Vec<u8>,
+        /// With a cap, a node whose children are in order is listed, that
+        /// many children a page ([`Source::children`]); held whole without.
+        page: Option<usize>,
     }
 
     impl Indexed {
@@ -1821,7 +1807,13 @@ mod tests {
             Self {
                 root,
                 definition: Vec::new(),
+                page: None,
             }
+        }
+
+        /// The source with its indexes listed `cap` entries a page.
+        fn paged(self, page: Option<usize>) -> Self {
+            Self { page, ..self }
         }
 
         /// Field 1 defined with `repetitions` and its index in `language`.
@@ -1861,6 +1853,22 @@ mod tests {
 
         fn node(&self, path: &[&[u8]]) -> om_hbam::Result<Option<std::borrow::Cow<'_, OwnedNode>>> {
             Ok(self.root.at(path).map(std::borrow::Cow::Borrowed))
+        }
+
+        fn children(&self, path: &[&[u8]]) -> om_hbam::Result<Option<crate::Children<'_>>> {
+            let Some(node) = self.root.at(path) else {
+                return Ok(None);
+            };
+            let in_order = node
+                .children
+                .windows(2)
+                .all(|w| w[0].segment < w[1].segment);
+            Ok(Some(match self.page {
+                Some(cap) if in_order => {
+                    crate::Children::Listed(Box::new(crate::source::Capped { node, cap }))
+                }
+                _ => crate::Children::Whole(std::borrow::Cow::Borrowed(node)),
+            }))
         }
     }
 
@@ -2511,9 +2519,110 @@ mod tests {
         assert_eq!(project(&source, 3), [padded]);
     }
 
+    /// The program-level counterpart of the index's own comparison
+    /// (`index::tests`): over generated indexes of field 1, with the cut
+    /// keys' entry, keys of the longest an index holds and entries without
+    /// records among them now and then, every finder kind, ExistsInIndex,
+    /// JoinProjection by each predicate, LookupValue either way, value
+    /// lists with and without a prefix, Projection (of the index, and to
+    /// another type) and SortList either way answer the same, slot for
+    /// slot or error for error, from the index held whole and from it
+    /// listed one to four keys a page.
+    #[test]
+    fn listed_indexes_answer_every_program_as_whole_ones() {
+        fn numbers(seed: u64) -> impl FnMut() -> u64 {
+            let mut state = seed;
+            move || {
+                state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+                let mut z = state;
+                z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                z ^ (z >> 31)
+            }
+        }
+        // Short keys from a few bytes, so that keys share prefixes, and now
+        // and then one of the longest an index holds (219 bytes) or one
+        // byte shorter.
+        fn key(next: &mut dyn FnMut() -> u64) -> Vec<u8> {
+            const BYTES: [u8; 6] = [0x01, 0x02, 0x10, 0x20, 0x7f, 0xfe];
+            let len = match next() % 16 {
+                0 => om_collate::INDEX_KEY_LIMIT - (next() % 2) as usize,
+                n => 1 + n as usize % 3,
+            };
+            (0..len).map(|_| BYTES[(next() % 6) as usize]).collect()
+        }
+        let mut programs_run = 0;
+        for seed in 0..120 {
+            let mut next = numbers(seed);
+            let mut keys = std::collections::BTreeSet::new();
+            for _ in 0..next() % 24 {
+                keys.insert(key(&mut next));
+            }
+            if next() % 4 == 0 {
+                keys.insert(om_collate::TOO_LONG_KEY.to_vec());
+            }
+            // Now and then an entry without records.
+            let entries: Vec<OwnedNode> = keys
+                .iter()
+                .map(|k| {
+                    let ids: Vec<u64> = (0..next() % 4).map(|_| 1 + next() % 20).collect();
+                    entry(k, &ids)
+                })
+                .collect();
+            let keys: Vec<Vec<u8>> = keys.into_iter().collect();
+            // Field 1 indexed in English, so that a projection reads its
+            // index.
+            let whole = Indexed::new(20, entries.clone()).defined(21, 1);
+            let listed = Indexed::new(20, entries)
+                .defined(21, 1)
+                .paged(Some(1 + (next() % 4) as usize));
+            let pick = |next: &mut dyn FnMut() -> u64| match keys.is_empty() || next() % 3 == 0 {
+                true => key(next),
+                false => keys[(next() % keys.len() as u64) as usize].clone(),
+            };
+            let mut programs = vec![
+                find_program(&[finder(7, 0, 1, &[], &[])]),
+                sort_program(None, false),
+                sort_program(None, true),
+            ];
+            for _ in 0..8 {
+                let (a, b) = (pick(&mut next), pick(&mut next));
+                let options = [0, INCLUDE_BEGIN, INCLUDE_END, INCLUDE_BEGIN | INCLUDE_END]
+                    [(a.len() + b.len()) % 4];
+                programs.push(find_program(&[finder(0, 0, 1, &a, &[])]));
+                programs.push(find_program(&[finder(1, 0, 1, &a, &[])]));
+                programs.push(find_program(&[finder(2, options, 1, &a, &b)]));
+                programs.push(find_program(&[finder(2, options, 1, &[], &b)]));
+                programs.push(exists_program(1, &[&a, &b], &[]));
+                for predicate in [pred::EQ, pred::NE, pred::LT, pred::LE, pred::GT, pred::GE] {
+                    programs.push(join_program(&[&[&a], &[&b]], &[(predicate, 1)]));
+                    programs.push(join_program(&[&[&a, &b]], &[(predicate, 1)]));
+                    for higher in [false, true] {
+                        programs.push(lookup_program(&a, predicate, higher));
+                    }
+                }
+                programs.push(value_list_program(None));
+                programs.push(value_list_program(Some(&b[..b.len().min(200)])));
+                let some: Vec<u64> = (0..next() % 8).map(|_| 1 + next() % 22).collect();
+                programs.push(projection_program(&some, [1, 21]));
+                programs.push(projection_program(&some, [2, 0]));
+                programs.push(sort_program(Some(&some), a.len() % 2 == 0));
+            }
+            for program in &programs {
+                let expected = format!("{:?}", result(&whole, program, Budget::DEFAULT));
+                let got = format!("{:?}", result(&listed, program, Budget::DEFAULT));
+                assert_eq!(got, expected, "seed {seed}");
+                programs_run += 1;
+            }
+        }
+        assert!(programs_run > 10_000, "{programs_run}");
+    }
+
     #[test]
     fn index_lookups_answer_at_the_edges() {
-        check_lookups(&Indexed::new(6, lookup_index()));
+        for page in [None, Some(1), Some(2), Some(256)] {
+            check_lookups(&Indexed::new(6, lookup_index()).paged(page));
+        }
     }
 
     /// #306: an index whose keys are out of order or repeated (no file or
@@ -2660,5 +2769,470 @@ mod tests {
             outcome.slots,
             [0x80, 0x06, 0x00, 0x03, 0x02, 0xff, 0xff, 0x40]
         );
+    }
+
+    /// SortList (op 14, spec 10) of table `80 01` by field 1, ascending or
+    /// descending: every record, or `items`.
+    fn sort_program(items: Option<&[u64]>, descending: bool) -> Vec<u8> {
+        let spec = [
+            &[0, 0, 0, 1][..],
+            &[3, 2, 0x80, 0x01, 2, 1, 1, 0, 1, 0, 0, 0, 0, 0],
+            &[u8::from(descending), 0, 0, 0, 0],
+        ]
+        .concat();
+        let rows = match items {
+            None => OwnedNode::leaf(vec![0xff], Vec::new()),
+            Some(items) => OwnedNode::list(
+                vec![0x05],
+                items.iter().copied().collect::<RidList>().entries(),
+            ),
+        };
+        instructions(vec![instruction(
+            1,
+            opcode::SORT_LIST,
+            vec![
+                OwnedNode::list(vec![leaf::SRC], vec![rows]),
+                OwnedNode::leaf(vec![leaf::DEST], vec![1, 3, 1, 1]),
+                OwnedNode::leaf(vec![leaf::TABLE], vec![2, 0x80, 0x01]),
+                OwnedNode::leaf(vec![leaf::OPERAND1], spec),
+                OwnedNode::leaf(vec![leaf::OPERAND2], vec![2, 0x80, 0x01]),
+            ],
+        )])
+    }
+
+    /// Projection (op 11, spec 9.1) of `records` by field 1, requested as
+    /// `request` (its type and language).
+    fn projection_program(records: &[u64], request: [u8; 2]) -> Vec<u8> {
+        let leaves = vec![
+            OwnedNode::leaf(vec![leaf::SRC], vec![1, 2, 1, 1]),
+            OwnedNode::leaf(vec![leaf::PROJ_LIST], vec![1, 2, 1, 2]),
+        ];
+        let records = records.iter().copied().collect::<RidList>().entries();
+        let fields = vec![OwnedNode::leaf(vec![1], request.to_vec())];
+        lookup(opcode::PROJECTION, leaves, [records, fields])
+    }
+
+    /// LookupValue (op 17, spec 8.6) of a row whose field 9 holds `key`, by
+    /// `predicate` on field 1, to the next lower or higher value.
+    fn lookup_program(key: &[u8], predicate: u8, higher: bool) -> Vec<u8> {
+        let rows = vec![OwnedNode::list(
+            serial::encode(1),
+            vec![OwnedNode::list(vec![9], uploaded(&[key]))],
+        )];
+        let mut leaves = vec![
+            OwnedNode::leaf(vec![leaf::SRC], vec![1, 2, 1, 1]),
+            OwnedNode::leaf(vec![leaf::DEL_LIST], vec![1, 2, 1, 2]),
+        ];
+        if higher {
+            leaves.push(OwnedNode::leaf(vec![leaf::LOOKUP_HIGHER], vec![1, 1]));
+        }
+        let predicates = numbered(vec![vec![predicate, 2, 1, 1, 2, 1, 9]]);
+        lookup(opcode::LOOKUP, leaves, [rows, predicates])
+    }
+
+    /// CreateValueListEx (spec 8.7) of field 1: every value, or at most
+    /// three that start with `prefix`.
+    fn value_list_program(prefix: Option<&[u8]>) -> Vec<u8> {
+        let mut leaves = vec![OwnedNode::leaf(vec![leaf::FIELD_KEY], vec![1, 1])];
+        if let Some(prefix) = prefix {
+            let mut value = vec![prefix.len() as u8];
+            value.extend(prefix);
+            leaves.push(OwnedNode::leaf(vec![leaf::VALUE_PREFIX], value));
+            leaves.push(OwnedNode::leaf(
+                vec![leaf::MAX_VALUES],
+                3u32.to_be_bytes().to_vec(),
+            ));
+        }
+        lookup(opcode::CREATE_VALUE_LIST_EX, leaves, [vec![], vec![]])
+    }
+
+    /// A key of the longest an index holds (`om_collate::INDEX_KEY_LIMIT`).
+    fn longest_key() -> Vec<u8> {
+        [&[0x30][..], &[0x31; 218]].concat()
+    }
+
+    /// Field 1's index for [`counted_programs`]: the empty value, keys
+    /// that share prefixes, an entry without records, a key of the
+    /// longest an index holds, an entry of many records, and the cut keys'
+    /// entry.
+    fn counted_index() -> Vec<OwnedNode> {
+        vec![
+            entry(&[0x01], &[1, 2]),
+            entry(&[0x10], &[3]),
+            entry(&[0x10, 0x01], &[]),
+            entry(&[0x10, 0x20], &[4, 5, 6]),
+            entry(&[0x20], &[7]),
+            entry(&[0x20, 0x10], &[8, 9]),
+            entry(&longest_key(), &[10]),
+            entry(&[0x40], &(11..=20).collect::<Vec<u64>>()),
+            entry(&[0x50], &[21]),
+            entry(&[0x50, 0x50], &[22, 23]),
+            entry(&[0x60], &[3, 24]),
+            entry(&om_collate::TOO_LONG_KEY, &[25]),
+        ]
+    }
+
+    /// A program of each instruction that reads an index, each way it
+    /// reads one, over [`counted_index`].
+    fn counted_programs() -> Vec<(&'static str, Vec<u8>)> {
+        let both = INCLUDE_BEGIN | INCLUDE_END;
+        let long = longest_key();
+        let all: Vec<u64> = (1..=25).collect();
+        vec![
+            (
+                "finder: a key",
+                find_program(&[finder(0, 0, 1, &[0x20], &[])]),
+            ),
+            (
+                "finder: a key missing",
+                find_program(&[finder(0, 0, 1, &[0x25], &[])]),
+            ),
+            (
+                "finder: not a key",
+                find_program(&[finder(1, 0, 1, &[0x40], &[])]),
+            ),
+            (
+                "finder: a range",
+                find_program(&[finder(2, both, 1, &[0x10], &[0x40])]),
+            ),
+            (
+                "finder: up to a key",
+                find_program(&[finder(2, INCLUDE_END, 1, &[], &[0x20, 0x10])]),
+            ),
+            (
+                "finder: duplicates",
+                find_program(&[finder(7, 0, 1, &[], &[])]),
+            ),
+            (
+                "exists: keys missing, then a key",
+                exists_program(1, &[&[0x05], &[0x15], &[0x50]], &[]),
+            ),
+            (
+                "exists: keys missing",
+                exists_program(1, &[&[0x11], &[0x12], &[0x13], &[0x41]], &[]),
+            ),
+            (
+                "exists: a key whose records are excluded",
+                exists_program(1, &[&[0x10], &[0x60]], &[3]),
+            ),
+            (
+                "join =",
+                join_program(&[&[&[0x20]], &[&[0x40]], &[&[0x45]]], &[(pred::EQ, 1)]),
+            ),
+            (
+                "join =, a key of two rows",
+                join_program(&[&[&[0x50], &[0x60]], &[&[0x50]]], &[(pred::EQ, 1)]),
+            ),
+            (
+                "join ≠ a key",
+                join_program(&[&[&[0x20]]], &[(pred::NE, 1)]),
+            ),
+            (
+                "join ≠ the lowest key",
+                join_program(&[&[&[0x01]]], &[(pred::NE, 1)]),
+            ),
+            (
+                "join ≠ two keys",
+                join_program(&[&[&[0x20], &[0x50]]], &[(pred::NE, 1)]),
+            ),
+            ("join <", join_program(&[&[&[0x40]]], &[(pred::LT, 1)])),
+            ("join ≤", join_program(&[&[&[0x40]]], &[(pred::LE, 1)])),
+            ("join >", join_program(&[&[&[0x20]]], &[(pred::GT, 1)])),
+            ("join ≥", join_program(&[&[&[0x20]]], &[(pred::GE, 1)])),
+            (
+                "join = and ≥",
+                join_program(&[&[&[0x40]], &[&[0x50]]], &[(pred::EQ, 1), (pred::GE, 1)]),
+            ),
+            ("lookup: lower", lookup_program(&[0x45], pred::EQ, false)),
+            ("lookup: higher", lookup_program(&[0x45], pred::EQ, true)),
+            ("lookup: a key", lookup_program(&[0x40], pred::EQ, true)),
+            ("value list", value_list_program(None)),
+            ("value list: a prefix", value_list_program(Some(&[0x10]))),
+            (
+                "value list: the longest key's prefix",
+                value_list_program(Some(&long[..100])),
+            ),
+            ("projection", projection_program(&all, [1, 21])),
+            (
+                "projection to another type",
+                projection_program(&all, [2, 0]),
+            ),
+            ("sort: up", sort_program(None, false)),
+            ("sort: down", sort_program(None, true)),
+            (
+                "sort: some records",
+                sort_program(Some(&[2, 9, 22, 24, 30]), false),
+            ),
+        ]
+    }
+
+    /// The work `program` counts against `source`: the least work limit it
+    /// runs within, in nodes and in bytes.
+    fn charged(source: &dyn Source, program: &[u8]) -> Size {
+        let fits = |work: Size| {
+            let budget = Budget {
+                work,
+                ..Budget::DEFAULT
+            };
+            !matches!(
+                result(source, program, budget),
+                Err(QueryError::Limit("work"))
+            )
+        };
+        let least = |limit: &dyn Fn(usize) -> Size| {
+            let (mut low, mut high) = (0, 1 << 32);
+            assert!(fits(limit(high)));
+            while low < high {
+                let mid = (low + high) / 2;
+                match fits(limit(mid)) {
+                    true => high = mid,
+                    false => low = mid + 1,
+                }
+            }
+            low
+        };
+        Size {
+            nodes: least(&|nodes| Size {
+                nodes,
+                bytes: usize::MAX / 2,
+            }),
+            bytes: least(&|bytes| Size {
+                nodes: usize::MAX / 2,
+                bytes,
+            }),
+        }
+    }
+
+    /// LookupValue (op 17, spec 8.6) of a row whose field 9 holds `key`, by
+    /// `predicates` in turn, each on field `field`, to the next lower or
+    /// higher value.
+    fn lookup_on(field: u8, key: &[u8], predicates: &[u8], higher: bool) -> Vec<u8> {
+        let rows = vec![OwnedNode::list(
+            serial::encode(1),
+            vec![OwnedNode::list(vec![9], uploaded(&[key]))],
+        )];
+        let mut leaves = vec![
+            OwnedNode::leaf(vec![leaf::SRC], vec![1, 2, 1, 1]),
+            OwnedNode::leaf(vec![leaf::DEL_LIST], vec![1, 2, 1, 2]),
+        ];
+        if higher {
+            leaves.push(OwnedNode::leaf(vec![leaf::LOOKUP_HIGHER], vec![1, 1]));
+        }
+        let predicates = numbered(
+            predicates
+                .iter()
+                .map(|&p| vec![p, 2, 1, field, 2, 1, 9])
+                .collect(),
+        );
+        lookup(opcode::LOOKUP, leaves, [rows, predicates])
+    }
+
+    /// CreateValueListEx (spec 8.7) of field `field`: every value.
+    fn value_list_on(field: u8) -> Vec<u8> {
+        let leaves = vec![OwnedNode::leaf(vec![leaf::FIELD_KEY], vec![1, field])];
+        lookup(opcode::CREATE_VALUE_LIST_EX, leaves, [vec![], vec![]])
+    }
+
+    /// A finder of the word index (scope 0) of field 1.
+    fn word_finder(kind: u8, options: u8, begin: &[u8], end: &[u8]) -> Vec<u8> {
+        let mut bytes = finder(kind, options, 1, begin, end);
+        bytes[1] = 0;
+        bytes
+    }
+
+    /// [`counted_index`] as field 1's value index, and its word index: the
+    /// source [`counted_programs`] and [`more_counted_programs`] read.
+    /// Field 2's index has no keys, and field 3 has none.
+    fn counted_source() -> Indexed {
+        let mut source = Indexed::new(30, counted_index()).defined(21, 1);
+        let words = vec![
+            entry(&[0x20], &[7, 8]),
+            entry(&[0x30], &[9, 10]),
+            entry(&[0x50], &[21, 22]),
+        ];
+        source.root.put(
+            &[&[0x80, 0x01], &[1], &[1], &[1]],
+            OwnedNode::list(Vec::new(), words),
+        );
+        source
+    }
+
+    /// More programs over [`counted_source`]: other range and prefix forms,
+    /// the word index, LookupValue by two predicates, and each instruction
+    /// over a field whose index has no keys (2) and one without an index (3).
+    fn more_counted_programs() -> Vec<(String, Vec<u8>)> {
+        let both = INCLUDE_BEGIN | INCLUDE_END;
+        let mut programs: Vec<(String, Vec<u8>)> = vec![
+            (
+                "finder: a range, its bounds excluded".into(),
+                find_program(&[finder(2, 0, 1, &[0x10], &[0x40])]),
+            ),
+            (
+                "finder: from a key on".into(),
+                find_program(&[finder(2, INCLUDE_BEGIN, 1, &[0x20], &[])]),
+            ),
+            (
+                "finder: after a key".into(),
+                find_program(&[finder(2, 0, 1, &[0x20], &[])]),
+            ),
+            (
+                "finder: a word".into(),
+                find_program(&[word_finder(0, 0, &[0x30], &[])]),
+            ),
+            (
+                "finder: a range of words".into(),
+                find_program(&[word_finder(2, both, &[0x10], &[0x40])]),
+            ),
+            (
+                "finder: duplicate words".into(),
+                find_program(&[word_finder(7, 0, &[], &[])]),
+            ),
+            (
+                "lookup: = then <, lower".into(),
+                lookup_on(1, &[0x40], &[pred::EQ, pred::LT], false),
+            ),
+            (
+                "lookup: = then ≥, higher".into(),
+                lookup_on(1, &[0x45], &[pred::GE, pred::EQ], true),
+            ),
+            (
+                "value list: a prefix no key has".into(),
+                value_list_program(Some(&[0x35])),
+            ),
+            (
+                "value list: the empty prefix".into(),
+                value_list_program(Some(&[])),
+            ),
+        ];
+        for (field, what) in [(2u8, "no keys"), (3, "no index")] {
+            let f = |name: &str| format!("{name}, field {field} ({what})");
+            programs.extend([
+                (
+                    f("finder: a key"),
+                    find_program(&[finder(0, 0, field, &[0x20], &[])]),
+                ),
+                (
+                    f("finder: not a key"),
+                    find_program(&[finder(1, 0, field, &[0x20], &[])]),
+                ),
+                (
+                    f("finder: a range"),
+                    find_program(&[finder(2, both, field, &[0x10], &[0x40])]),
+                ),
+                (
+                    f("finder: duplicates"),
+                    find_program(&[finder(7, 0, field, &[], &[])]),
+                ),
+                (f("exists"), exists_program(field, &[&[0x05], &[0x20]], &[])),
+                (
+                    f("join ="),
+                    join_program(&[&[&[0x20]], &[&[0x40]]], &[(pred::EQ, field)]),
+                ),
+                (
+                    f("join ≠"),
+                    join_program(&[&[&[0x20]]], &[(pred::NE, field)]),
+                ),
+                (
+                    f("join <"),
+                    join_program(&[&[&[0x40]]], &[(pred::LT, field)]),
+                ),
+                (f("lookup"), lookup_on(field, &[0x45], &[pred::EQ], false)),
+                (f("value list"), value_list_on(field)),
+            ]);
+        }
+        programs
+    }
+
+    /// What each of [`counted_programs`] and [`more_counted_programs`]
+    /// counted against [`counted_source`] before an index could be listed:
+    /// the work limit (nodes, bytes) each ran within at `085f2cdc1`, the
+    /// commit before, by these programs on that code.
+    const COUNTED_BEFORE_LISTINGS: [(&str, usize, usize); 60] = [
+        ("finder: a key", 24, 266),
+        ("finder: a key missing", 21, 263),
+        ("finder: not a key", 25, 282),
+        ("finder: a range", 39, 516),
+        ("finder: up to a key", 37, 295),
+        ("finder: duplicates", 37, 527),
+        ("exists: keys missing, then a key", 33, 247),
+        ("exists: keys missing", 34, 246),
+        ("exists: a key whose records are excluded", 32, 253),
+        ("join =", 43, 269),
+        ("join =, a key of two rows", 41, 267),
+        ("join ≠ a key", 42, 514),
+        ("join ≠ the lowest key", 44, 516),
+        ("join ≠ two keys", 41, 517),
+        ("join <", 40, 495),
+        ("join ≤", 42, 501),
+        ("join >", 40, 503),
+        ("join ≥", 42, 505),
+        ("join = and ≥", 64, 310),
+        ("lookup: lower", 37, 261),
+        ("lookup: higher", 35, 257),
+        ("lookup: a key", 29, 261),
+        ("value list", 43, 819),
+        ("value list: a prefix", 29, 279),
+        ("value list: the longest key's prefix", 25, 695),
+        ("projection", 104, 800),
+        ("projection to another type", 16, 245),
+        ("sort: up", 82, 1878),
+        ("sort: down", 82, 1998),
+        ("sort: some records", 59, 628),
+        ("finder: a range, its bounds excluded", 35, 508),
+        ("finder: from a key on", 39, 518),
+        ("finder: after a key", 37, 516),
+        ("finder: a word", 13, 42),
+        ("finder: a range of words", 17, 50),
+        ("finder: duplicate words", 15, 52),
+        ("lookup: = then <, lower", 69, 752),
+        ("lookup: = then ≥, higher", 49, 281),
+        ("value list: a prefix no key has", 23, 247),
+        ("value list: the empty prefix", 43, 539),
+        ("finder: a key, field 2 (no keys)", 6, 28),
+        ("finder: not a key, field 2 (no keys)", 8, 41),
+        ("finder: a range, field 2 (no keys)", 7, 30),
+        ("finder: duplicates, field 2 (no keys)", 5, 26),
+        ("exists, field 2 (no keys)", 9, 9),
+        ("join =, field 2 (no keys)", 11, 18),
+        ("join ≠, field 2 (no keys)", 8, 15),
+        ("join <, field 2 (no keys)", 8, 15),
+        ("lookup, field 2 (no keys)", 11, 16),
+        ("value list, field 2 (no keys)", 6, 12),
+        ("finder: a key, field 3 (no index)", 6, 28),
+        ("finder: not a key, field 3 (no index)", 8, 41),
+        ("finder: a range, field 3 (no index)", 7, 30),
+        ("finder: duplicates, field 3 (no index)", 5, 26),
+        ("exists, field 3 (no index)", 9, 9),
+        ("join =, field 3 (no index)", 11, 18),
+        ("join ≠, field 3 (no index)", 8, 15),
+        ("join <, field 3 (no index)", 8, 15),
+        ("lookup, field 3 (no index)", 11, 16),
+        ("value list, field 3 (no index)", 6, 12),
+    ];
+
+    /// An index held whole counts the work it counted before an index could
+    /// be listed, instruction for instruction: reading the index, its
+    /// lookups, ranges, walks and the entries read, an index with no keys
+    /// and a field without one included, so that a program that ran within
+    /// its limit still does, and one that did not still fails. Not covered:
+    /// an index read as if sorted (out of order or with a key repeated, which
+    /// `an_unsorted_index_reads_as_sorted` checks for answers only), the
+    /// repetition scope's finders, a cartesian predicate, LookupValue by
+    /// three predicates or more, a value list cut at its most values, and an
+    /// index built on demand.
+    #[test]
+    fn whole_indexes_count_what_they_counted_before_listings() {
+        let source = counted_source();
+        let programs: Vec<(String, Vec<u8>)> = counted_programs()
+            .into_iter()
+            .map(|(name, program)| (name.to_string(), program))
+            .chain(more_counted_programs())
+            .collect();
+        assert_eq!(programs.len(), COUNTED_BEFORE_LISTINGS.len());
+        for ((name, program), (named, nodes, bytes)) in programs.iter().zip(COUNTED_BEFORE_LISTINGS)
+        {
+            assert_eq!(name, named);
+            assert_eq!(charged(&source, program), Size { nodes, bytes }, "{name}");
+        }
     }
 }

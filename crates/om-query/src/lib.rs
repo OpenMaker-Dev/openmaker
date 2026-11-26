@@ -39,10 +39,11 @@ mod matching;
 pub mod program;
 mod sort;
 mod source;
+pub mod upkeep;
 
 pub use exec::{execute, execute_parsed, Context, Outcome, Write};
 pub use program::{Instruction, Program};
-pub use source::Source;
+pub use source::{Children, Direction, Head, Listing, NodeListing, Source};
 
 /// Why a program could not run. [`QueryError::code`] is the FileMaker error
 /// the reply's error slot carries (spec 11.2).
