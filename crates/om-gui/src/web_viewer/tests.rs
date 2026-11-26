@@ -303,7 +303,7 @@ fn a_painted_page_gets_the_pointer_input_over_it() {
     };
     let over = Placement {
         hovered: true,
-        input: vec![press],
+        input: vec![press.clone()],
         ..page.clone()
     };
     let mut pressed = frame(std::slice::from_ref(&over), &[]);
@@ -353,6 +353,80 @@ fn steps_on_a_backend_that_ended_fail_as_unavailable() {
             result: Err(UNAVAILABLE),
         }]
     );
+}
+
+/// A page a press gave the keyboard takes the window's keys, as event
+/// codes with the modifiers held, and its input method's text; egui's Copy
+/// is Ctrl+C again; nothing of it is left for the window's own widgets.
+#[test]
+fn a_painted_page_with_the_keyboard_takes_the_window_keys() {
+    let (mut viewers, recorded) = viewers();
+    let ctx = egui::Context::default();
+    let page = placement(Some("about:blank"));
+    viewers.reconcile(&ctx, &frame(std::slice::from_ref(&page), &[]));
+    let pressed = Placement {
+        hovered: true,
+        input: vec![PageInput::Button {
+            x: 1.0,
+            y: 1.0,
+            button: 0,
+            pressed: true,
+        }],
+        ..page.clone()
+    };
+    viewers.reconcile(&ctx, &frame(std::slice::from_ref(&pressed), &[]));
+    commands(&recorded);
+    let shift = egui::Modifiers::SHIFT;
+    let events = vec![
+        egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: Some(egui::Key::A),
+            pressed: true,
+            repeat: false,
+            modifiers: shift,
+        },
+        egui::Event::Text("A".into()),
+        egui::Event::Ime(egui::ImeEvent::Commit("日本".into())),
+        egui::Event::Copy,
+    ];
+    let mut left = None;
+    let mut output = ctx.run_ui(
+        egui::RawInput {
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            assert!(viewers.take_keys(ui.ctx(), 1));
+            left = Some(ui.input(|i| i.events.len()));
+        },
+    );
+    output.textures_delta.clear();
+    assert_eq!(left, Some(0));
+    let held = |held: &[u32]| format!("{held:?}");
+    assert_eq!(
+        commands(&recorded),
+        [
+            format!(
+                "input 1 Key {{ code: 30, pressed: true, held: {} }}",
+                held(&[42])
+            ),
+            "input 1 Commit(\"日本\")".to_owned(),
+            format!(
+                "input 1 Key {{ code: 46, pressed: true, held: {} }}",
+                held(&[29])
+            ),
+            format!(
+                "input 1 Key {{ code: 46, pressed: false, held: {} }}",
+                held(&[29])
+            ),
+            format!(
+                "input 1 Key {{ code: 42, pressed: false, held: {} }}",
+                held(&[])
+            ),
+        ]
+    );
+    // Another window's frame takes nothing.
+    assert!(!viewers.take_keys(&ctx, 2));
 }
 
 /// A painted page's newest frame is what Browse paints, until its view

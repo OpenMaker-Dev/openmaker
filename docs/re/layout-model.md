@@ -2419,12 +2419,29 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
     viewer, menus, popovers and dialogs draw over the page, where the X11
     backend's views hide instead. A window needs no native window of its own
     for its pages.
-  - **Input.** The pointer's moves, buttons and wheel over an interactive
-    viewer go to the page; nothing egui draws above it gets them. A press
-    gives the page the keyboard's focus, and scrolling over the page scrolls
-    it, not the layout. Keys, input methods, the page's menus and pop-ups
-    (shown nowhere yet, and closed by the next press), its cursor shapes and
-    the clipboard do not reach it yet.
+  - **Pointer.** The pointer's moves, buttons and wheel over an interactive
+    viewer go to the page; nothing egui draws above it gets them.
+    Scrolling over the page scrolls it, not the layout.
+  - **Keyboard.** A press in the page gives it the keyboard, and takes
+    egui's focus from any field; a press elsewhere in the window takes the
+    keyboard back. While the page has it, the window's keys go to the page
+    before anything else in the window sees them: its shortcuts and Tab
+    too, as with the X11 backend, where the page's own window takes them.
+    - **Keymap.** Keys go as Linux key codes with the modifier keys held.
+      On a Wayland session the page's keymap is the session's: a connection
+      of the app's own reads the compositor's keyboard keymap
+      (`wayland/keymap.rs`). Elsewhere it is xkb's default.
+    - **Edit keys.** egui's Copy, Cut and Paste reach the page as Ctrl+C,
+      X and V, in the page's own clipboard for now.
+    - **Input methods.** The input method's text goes to the page through
+      `zwp_text_input_v3`: its preedit, shown in the page as it is
+      composed, and its commit. The input method's window is placed by the
+      caret the page reports.
+    - **Order.** Keys in the same frame as a click reach the page before
+      the click.
+  - **Not yet.** The page's menus and pop-ups (shown nowhere yet, and closed
+    by the next press), its cursor shapes and the system clipboard do not
+    reach it.
   - **The host is another process.** Both ways are bounded. A command
     line longer than 16 MiB (a page's address, a function's parameters) is
     refused as it is written, and that load or call fails; the Set Web
@@ -2442,7 +2459,9 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323)'s study.
   `tests/web_viewer_composited.rs` runs it in the real app under Xvfb: a
   page painted in its object with no child window, a text object above
-  the viewer drawn over it, and a real click reaching the page's bridge.
+  the viewer drawn over it, a real click reaching the page's bridge, and
+  real keys typed in the page's text box. An input method, and the
+  session's keymap, were not tried (Xvfb has neither).
 - On Linux the X11 backend's views can only be children of X11 windows, so a build with
   the feature puts its windows on winit's X11 backend whenever an X server
   answers at startup (`om_gui::native_options`). On a Wayland session, where

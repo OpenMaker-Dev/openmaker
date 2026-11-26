@@ -13,6 +13,7 @@
 //! are (`WebViewers::poll`), and a host that ends fails its views.
 
 mod display;
+mod keymap;
 mod shm;
 
 use std::collections::HashMap;
@@ -27,7 +28,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 pub(crate) use display::TITLE;
-use display::{FrameSlots, Frames, PageDisplay, Request};
+use display::{Carets, FrameSlots, Frames, PageDisplay, Request};
 
 use super::{
     Backend, Event, Geometry, MessageBudget, NativeParent, Navigation, PageFrame, PageInput,
@@ -153,8 +154,10 @@ pub(crate) struct WaylandBackend {
     in_flight: Arc<AtomicUsize>,
     host: Option<Child>,
     events: Receiver<Option<Event>>,
-    /// Each view's newest frame, which the display replaces.
+    /// Each view's newest frame, which the display replaces, and its
+    /// text caret.
     frames: Frames,
+    carets: Carets,
     views: HashMap<u64, Hosted>,
     /// Events the backend makes itself, for commands a host that ended
     /// cannot carry out.
@@ -226,9 +229,11 @@ impl WaylandBackend {
             frames: HashMap::new(),
             max_side: usize::try_from(max_side).unwrap_or(usize::MAX),
         }));
+        let carets = Carets::default();
         let wake = ctx.clone();
         let display = PageDisplay::start(
             Arc::clone(&frames),
+            Arc::clone(&carets),
             Box::new(move || wake.request_repaint()),
             scale,
         )
@@ -252,6 +257,8 @@ impl WaylandBackend {
                 eprintln!("openmaker: web viewers: {}: {error}", program.display());
                 Unavailable::Platform
             })?;
+        // Keys mean in a page what they mean in the app.
+        keymap::follow(display.sender());
         let (Some(mut stdin), Some(stdout)) = (host.stdin.take(), host.stdout.take()) else {
             reap(host);
             return Err(Unavailable::Platform);
@@ -318,6 +325,7 @@ impl WaylandBackend {
             host: Some(host),
             events,
             frames,
+            carets,
             views: HashMap::new(),
             pending: Vec::new(),
             scale,
@@ -610,6 +618,9 @@ impl Backend for WaylandBackend {
         if let Ok(mut slots) = self.frames.lock() {
             slots.frames.remove(&view);
         }
+        if let Ok(mut carets) = self.carets.lock() {
+            carets.remove(&view);
+        }
         self.follow_scale();
         let _ = self.send(&HostCommand::Destroy { view });
     }
@@ -641,6 +652,14 @@ impl Backend for WaylandBackend {
 
     fn available(&mut self) -> bool {
         self.alive()
+    }
+
+    fn caret(&self, view: u64) -> Option<egui::Rect> {
+        let [x, y, width, height] = *self.carets.lock().ok()?.get(&view)?;
+        Some(egui::Rect::from_min_size(
+            egui::pos2(x as f32, y as f32),
+            egui::vec2(width.max(1) as f32, height.max(1) as f32),
+        ))
     }
 
     fn poll(&mut self) -> Vec<Event> {

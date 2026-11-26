@@ -8,8 +8,11 @@
 //!
 //! It offers what GTK needs to draw (`wl_compositor`, `wl_shm`, `xdg_wm_base`,
 //! a `wl_output` whose scale is the app's), a seat with a pointer and a
-//! keyboard, and data devices; no DMA-BUF, so WebKitGTK draws its pages in
-//! shared memory (its web process still renders them on the GPU).
+//! keyboard, data devices, and `zwp_text_input_v3` of its own, whose input
+//! method is the app's (winit's, through egui); no DMA-BUF, so WebKitGTK
+//! draws its pages in shared memory (its web process still renders them on
+//! the GPU). The keyboard's keymap is the session's when the app has it
+//! (`keymap.rs`), xkb's default otherwise.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -19,14 +22,19 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use smithay::backend::input::KeyState;
 use smithay::backend::input::{Axis, AxisSource, ButtonState};
-use smithay::input::keyboard::XkbConfig;
+use smithay::input::keyboard::{FilterResult, Keycode, XkbConfig};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, CursorImageStatus, MotionEvent};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{channel, EventLoop, Interest, LoopSignal, PostAction};
+use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::{
+    zwp_text_input_manager_v3::{self, ZwpTextInputManagerV3},
+    zwp_text_input_v3::{self, ZwpTextInputV3},
+};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
@@ -35,7 +43,10 @@ use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_shm::WlShm;
 use smithay::reexports::wayland_server::protocol::wl_shm_pool::WlShmPool;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::reexports::wayland_server::{Client, Display, ListeningSocket, Resource};
+use smithay::reexports::wayland_server::{
+    Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, ListeningSocket, New,
+    Resource,
+};
 use smithay::utils::{Serial, Transform, SERIAL_COUNTER};
 use smithay::wayland::compositor::{
     with_states, BufferAssignment, CompositorClientState, CompositorHandler, CompositorState,
@@ -74,7 +85,13 @@ pub(crate) enum Request {
     Focus(Option<u64>),
     /// The scale the app draws at (`wl_output` scales are whole numbers).
     Scale(i32),
+    /// The session's keymap, in xkb's text format.
+    Keymap(String),
 }
+
+/// Where each view's text caret is, in its points (x, y, width, height), as
+/// its page last said: the input method's window goes beside it.
+pub(crate) type Carets = Arc<std::sync::Mutex<HashMap<u64, [i32; 4]>>>;
 
 /// Each view's newest picture, which the display replaces as views commit
 /// and the app takes when it draws: a slot per view, not a queue, so a
@@ -111,7 +128,12 @@ pub(crate) struct PageDisplay {
 impl PageDisplay {
     /// Start the display, putting frames in `frames` and calling `wake`
     /// after each.
-    pub fn start(frames: Frames, wake: Box<dyn Fn() + Send>, scale: i32) -> Result<Self, String> {
+    pub fn start(
+        frames: Frames,
+        carets: Carets,
+        wake: Box<dyn Fn() + Send>,
+        scale: i32,
+    ) -> Result<Self, String> {
         let directory = tempfile::Builder::new()
             .prefix("openmaker-pages-")
             .tempdir_in(
@@ -125,7 +147,17 @@ impl PageDisplay {
         let socket_directory = (listener, directory);
         std::thread::Builder::new()
             .name("openmaker-page-display".into())
-            .spawn(move || run(socket_directory, request_rx, frames, wake, scale, ready_tx))
+            .spawn(move || {
+                run(
+                    socket_directory,
+                    request_rx,
+                    frames,
+                    carets,
+                    wake,
+                    scale,
+                    ready_tx,
+                )
+            })
             .map_err(|e| e.to_string())?;
         let signal = ready_rx
             .recv_timeout(Duration::from_secs(5))
@@ -144,6 +176,11 @@ impl PageDisplay {
 
     pub fn send(&self, request: Request) {
         let _ = self.requests.send(request);
+    }
+
+    /// Where requests go, for another thread (the keymap's).
+    pub fn sender(&self) -> channel::Sender<Request> {
+        self.requests.clone()
     }
 }
 
@@ -179,13 +216,28 @@ struct State {
     callbacks: Vec<WlCallback>,
     frames: Frames,
     wake: Box<dyn Fn() + Send>,
-    /// The view the pointer is over.
+    carets: Carets,
+    /// The view the pointer is over, and the one with the keyboard.
     pointer_view: Option<u64>,
+    keyboard_view: Option<u64>,
     /// The buttons the pointer holds down, as the pages heard them, and
     /// the view the first of them was pressed on, which has them until the
     /// last goes up (the pointer's grab), wherever the pointer is.
     buttons: Vec<u32>,
     pressed_on: Option<u64>,
+    /// The modifier keys the keyboard holds down, as the page heard them.
+    held: Vec<u32>,
+    text_inputs: Vec<TextInput>,
+}
+
+/// A `zwp_text_input_v3`: whether its client enabled it, how many commits
+/// it made (the serial `done` answers with), and its caret.
+struct TextInput {
+    resource: ZwpTextInputV3,
+    enabled: bool,
+    pending_enable: Option<bool>,
+    pending_caret: Option<[i32; 4]>,
+    commits: u32,
 }
 
 /// The display's loop. The socket and its private directory go once the
@@ -194,6 +246,7 @@ fn run(
     (listener, directory): (ListeningSocket, tempfile::TempDir),
     requests: channel::Channel<Request>,
     frames: Frames,
+    carets: Carets,
     wake: Box<dyn Fn() + Send>,
     scale: i32,
     ready: Sender<Result<LoopSignal, String>>,
@@ -211,6 +264,7 @@ fn run(
         let compositor = CompositorState::new::<State>(&dh);
         let xdg = XdgShellState::new::<State>(&dh);
         dh.create_global::<State, WlShm, ()>(1, ());
+        dh.create_global::<State, ZwpTextInputManagerV3, ()>(1, ());
         let mut seat_state = SeatState::new();
         let data_device = DataDeviceState::new::<State>(&dh);
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
@@ -246,6 +300,10 @@ fn run(
             pointer_view: None,
             buttons: Vec::new(),
             pressed_on: None,
+            carets,
+            keyboard_view: None,
+            held: Vec::new(),
+            text_inputs: Vec::new(),
         };
         Ok((event_loop, state, Rc::new(RefCell::new(display))))
     })();
@@ -354,14 +412,118 @@ impl State {
 
     fn request(&mut self, request: Request) {
         match request {
-            Request::Pointer { view, input } => self.pointer(view, input),
-            Request::Focus(view) => {
-                let surface = view.and_then(|v| self.views.get(&v).cloned());
+            Request::Pointer { view, input } => match input {
+                PageInput::Key {
+                    code,
+                    pressed,
+                    held,
+                } => self.key(view, code, pressed, &held),
+                PageInput::Preedit(text) => self.compose(view, Some(text), None),
+                PageInput::Commit(text) => self.compose(view, None, Some(text)),
+                input => self.pointer(view, input),
+            },
+            Request::Focus(view) => self.focus(view),
+            Request::Scale(scale) => set_scale(&self.output, scale),
+            Request::Keymap(keymap) => {
                 if let Some(keyboard) = self.seat.get_keyboard() {
-                    keyboard.set_focus(self, surface, SERIAL_COUNTER.next_serial());
+                    if let Err(error) = keyboard.set_keymap_from_string(self, keymap) {
+                        eprintln!("openmaker: web viewers: the session's keymap: {error:?}");
+                    }
                 }
             }
-            Request::Scale(scale) => set_scale(&self.output, scale),
+        }
+    }
+
+    /// Give the keyboard, and the text input, to `view`'s window or none.
+    fn focus(&mut self, view: Option<u64>) {
+        let surface = view.and_then(|v| self.views.get(&v).cloned());
+        let before = self.keyboard_view.and_then(|v| self.views.get(&v).cloned());
+        if before == surface {
+            return;
+        }
+        // The keys it held go up with the focus (smithay sends them).
+        self.held.clear();
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.set_focus(self, surface.clone(), SERIAL_COUNTER.next_serial());
+        }
+        for input in &self.text_inputs {
+            if let Some(before) = &before {
+                input.resource.leave(before);
+            }
+            if let Some(surface) = &surface {
+                input.resource.enter(surface);
+            }
+        }
+        self.keyboard_view = surface.and(view);
+    }
+
+    /// Send a key to `view`, which gets the keyboard if it had not, the
+    /// modifier keys first, as `held` has them.
+    fn key(&mut self, view: u64, code: u32, pressed: bool, held: &[u32]) {
+        if self.keyboard_view != Some(view) {
+            self.focus(Some(view));
+        }
+        if self.keyboard_view != Some(view) {
+            return;
+        }
+        let modifiers = [
+            crate::web_viewer::keys::SHIFT,
+            crate::web_viewer::keys::CONTROL,
+            crate::web_viewer::keys::ALT,
+            crate::web_viewer::keys::SUPER,
+        ];
+        for modifier in modifiers {
+            let down = held.contains(&modifier);
+            if down != self.held.contains(&modifier) {
+                self.send_key(modifier, down);
+                if down {
+                    self.held.push(modifier);
+                } else {
+                    self.held.retain(|m| *m != modifier);
+                }
+            }
+        }
+        if !modifiers.contains(&code) {
+            self.send_key(code, pressed);
+        }
+    }
+
+    fn send_key(&mut self, code: u32, pressed: bool) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let time = self.millis();
+        keyboard.input::<(), _>(
+            self,
+            // xkb's keycodes are the input event codes plus 8.
+            Keycode::new(code + 8),
+            if pressed {
+                KeyState::Pressed
+            } else {
+                KeyState::Released
+            },
+            SERIAL_COUNTER.next_serial(),
+            time,
+            |_, _, _| FilterResult::Forward,
+        );
+    }
+
+    /// An input method's text for `view`'s enabled text inputs: what it is
+    /// composing, or what it finished.
+    fn compose(&mut self, view: u64, preedit: Option<String>, commit: Option<String>) {
+        if self.keyboard_view != Some(view) {
+            return;
+        }
+        for input in self.text_inputs.iter().filter(|i| i.enabled) {
+            let preedit = preedit.clone().filter(|t| !t.is_empty());
+            let end = preedit
+                .as_ref()
+                .map_or(0, |t| i32::try_from(t.len()).unwrap_or(i32::MAX));
+            input.resource.preedit_string(preedit, end, end);
+            if let Some(text) = &commit {
+                input.resource.commit_string(Some(text.clone()));
+            }
+            input.resource.done(input.commits);
         }
     }
 
@@ -472,6 +634,7 @@ impl State {
                     },
                 );
             }
+            PageInput::Key { .. } | PageInput::Preedit(_) | PageInput::Commit(_) => return,
             PageInput::Wheel { x, y, dx, dy } => {
                 motion(self, x, y);
                 let mut frame = AxisFrame::new(time).source(AxisSource::Continuous);
@@ -657,3 +820,93 @@ smithay::reexports::wayland_server::delegate_global_dispatch!(State: [WlShm: ()]
 smithay::reexports::wayland_server::delegate_dispatch!(State: [WlShm: ()] => Shm);
 smithay::reexports::wayland_server::delegate_dispatch!(State: [WlShmPool: Arc<shm::Pool>] => Shm);
 smithay::reexports::wayland_server::delegate_dispatch!(State: [WlBuffer: shm::Buffer] => Shm);
+
+impl GlobalDispatch<ZwpTextInputManagerV3, ()> for State {
+    fn bind(
+        _: &mut Self,
+        _: &DisplayHandle,
+        _: &Client,
+        resource: New<ZwpTextInputManagerV3>,
+        _: &(),
+        init: &mut DataInit<'_, Self>,
+    ) {
+        init.init(resource, ());
+    }
+}
+
+impl Dispatch<ZwpTextInputManagerV3, ()> for State {
+    fn request(
+        state: &mut Self,
+        _: &Client,
+        _: &ZwpTextInputManagerV3,
+        request: zwp_text_input_manager_v3::Request,
+        _: &(),
+        _: &DisplayHandle,
+        init: &mut DataInit<'_, Self>,
+    ) {
+        if let zwp_text_input_manager_v3::Request::GetTextInput { id, .. } = request {
+            let resource = init.init(id, ());
+            // One made while a window has the keyboard hears so.
+            if let Some(surface) = state.keyboard_view.and_then(|v| state.views.get(&v)) {
+                if surface.id().same_client_as(&resource.id()) {
+                    resource.enter(surface);
+                }
+            }
+            state.text_inputs.push(TextInput {
+                resource,
+                enabled: false,
+                pending_enable: None,
+                pending_caret: None,
+                commits: 0,
+            });
+        }
+    }
+}
+
+impl Dispatch<ZwpTextInputV3, ()> for State {
+    fn request(
+        state: &mut Self,
+        _: &Client,
+        resource: &ZwpTextInputV3,
+        request: zwp_text_input_v3::Request,
+        _: &(),
+        _: &DisplayHandle,
+        _: &mut DataInit<'_, Self>,
+    ) {
+        let view = state.keyboard_view;
+        let Some(input) = state
+            .text_inputs
+            .iter_mut()
+            .find(|i| &i.resource == resource)
+        else {
+            return;
+        };
+        match request {
+            zwp_text_input_v3::Request::Enable => input.pending_enable = Some(true),
+            zwp_text_input_v3::Request::Disable => input.pending_enable = Some(false),
+            zwp_text_input_v3::Request::SetCursorRectangle {
+                x,
+                y,
+                width,
+                height,
+            } => input.pending_caret = Some([x, y, width, height]),
+            zwp_text_input_v3::Request::Commit => {
+                input.commits = input.commits.wrapping_add(1);
+                if let Some(enabled) = input.pending_enable.take() {
+                    input.enabled = enabled;
+                }
+                let caret = input.pending_caret.take().filter(|_| input.enabled);
+                if let (Some(rect), Some(view)) = (caret, view) {
+                    if let Ok(mut carets) = state.carets.lock() {
+                        carets.insert(view, rect);
+                    }
+                    (state.wake)();
+                }
+            }
+            zwp_text_input_v3::Request::Destroy => {
+                state.text_inputs.retain(|i| &i.resource != resource);
+            }
+            _ => {}
+        }
+    }
+}

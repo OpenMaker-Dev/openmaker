@@ -174,6 +174,10 @@ impl OpenMakerApp {
         self.viewport_layer = ui.layer_id();
         let chain = self.card_chain(id);
         let top = *chain.last().expect("one window");
+        // A painted web viewer page with the keyboard takes the frame's
+        // keys before the window's shortcuts and fields see them; only the
+        // window in front (not under a card) has them.
+        self.web.take_keys(ui.ctx(), top);
         let dialog = self.blocking_dialog(id);
         if !embedded
             && dialog.is_none()
