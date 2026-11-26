@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use gtk::glib;
 use gtk::prelude::*;
-use javascriptcore::ValueExt as _;
+use javascriptcore::{ContextExt as _, ValueExt as _};
 use webkit2gtk::{UserContentManagerExt as _, WebViewExt as _};
 use wry::dpi::{PhysicalPosition, PhysicalSize};
 use wry::{WebView, WebViewBuilder, WebViewBuilderExtUnix, WebViewExtUnix};
@@ -34,7 +34,7 @@ use x11rb::wrapper::ConnectionExt as _;
 
 use super::{
     allowed, Backend, Event, Geometry, MessageBudget, NativeParent, Navigation, Unavailable,
-    ViewSpec, BRIDGE,
+    ViewSpec, BRIDGE, MAX_MESSAGE,
 };
 
 enum Command {
@@ -575,14 +575,20 @@ impl State {
                 .ok_or_else(|| "the page has no content manager".to_owned())?;
             // WebKit has already copied the message into this process; one
             // that is not text, too long, malformed or beyond the budget
-            // goes no further.
+            // goes no further. Its length comes first, so that one too long
+            // is not copied again.
             let budget = self.budget.clone();
             manager.connect_script_message_received(Some(HANDLER), move |_, message| {
                 let Some(value) = message.js_value().filter(|v| v.is_string()) else {
                     return;
                 };
+                let Some(units) = utf16_length(&value).filter(|&units| units <= MAX_MESSAGE) else {
+                    return;
+                };
                 let body = value.to_str();
-                if budget.admit(&body) {
+                // The bridge posts ASCII (`encodeURIComponent`'s): text that
+                // is not, or that the copy cut short at a NUL, is dropped.
+                if body.len() == units && body.is_ascii() && budget.admit(&body) {
                     messages.send(Event::Message {
                         view,
                         body: body.into(),
@@ -660,6 +666,18 @@ fn place(x11: &RustConnection, hosted: &mut Hosted, geometry: Geometry, visible:
         }
         hosted.shown = shown;
     }
+}
+
+/// A JavaScript string's length in UTF-16 code units, which is at most its
+/// length in UTF-8 bytes, read in JavaScript without copying the string.
+fn utf16_length(value: &javascriptcore::Value) -> Option<usize> {
+    let length = value
+        .context()?
+        .evaluate("(function (text) { return text.length; })")?;
+    let units = length
+        .function_callv(std::slice::from_ref(value))?
+        .to_double();
+    (units.is_finite() && units >= 0.0).then_some(units as usize)
 }
 
 fn clamp_i16(v: i32) -> i16 {
