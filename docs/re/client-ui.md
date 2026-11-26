@@ -149,6 +149,17 @@ Then Title again. The cycle repeated over 22 more Tabs, and the hidden tab panel
 
 **Contact List, List view.** Tab goes First Name, Last Name, Company, the row's Details button, the row's photo container, then First Name of the same row. It never moves to another record.
 
+**Edit boxes excluded from the order.** In a local synthetic Form layout
+on FileMaker Pro 26.1.1, three ordinary edit boxes remained clickable
+with a two-panel tab control as the only saved stop. Tab and Shift-Tab
+from an excluded edit box focused the selected panel and kept the field's
+change pending. Typing with that panel focused changed no field. Another
+Tab left the panel focused. Clicking the Body background committed the
+edited fields. With the three fields included and the control excluded,
+Tab advanced through the fields, preserving their pending changes until
+the background click. Portal and List view cases were not measured.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/253).
+
 **Tasks starter, Task Details** (a local copy, the research thread on #848, 09:34Z):
 - **Find mode.** From the Task criterion, Tab went Due Date, Category, Priority, Status, Completion Date, Assignee Name, Assignee Email, the attachment portal's Description, then the main Description. That is the same field order as Browse for the fields both show. Buttons, portal controls included, were stops between some of them. After the main Description, Tab reached the Tasks navigation button, then wrapped to Task. The request was not performed.
 - **Table view**, turned on for Task Details in Layout Setup on the copy, since the starter disables it. From the first record's Task cell, Tab moved across the same row through its focusable cells, passing over empty related-field columns. From the last cell it returned to Task in the same row. It never entered the next record, and the record indicator stayed `1 of 3`.
