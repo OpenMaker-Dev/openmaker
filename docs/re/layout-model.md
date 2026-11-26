@@ -2201,6 +2201,12 @@ Storage [O, 2026-11-02]:
   `om-layout` decodes it as `ObjectCalcs::web_address`; `tests/web_viewers.rs`
   checks the shipped template.
 
+[O, FileMaker Pro 26.1.1, macOS] With Automatically encode URL off,
+a calculated `data:text/html,` address containing literal HTML and a
+CSS color with a raw `#` displayed the styled text after the hash.
+Data URL fragments, other media types and base64 were outside that
+comparison. [Native check](https://github.com/OpenMaker-Dev/openmaker/issues/1129#issuecomment-7202980493)
+
 OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
 
 - Browse evaluates the address on the current record in Form view and on
@@ -2271,8 +2277,11 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   load only when it commits and when it finishes, so each frame also looks
   at the page's `loading`: a navigation is loading from when it starts,
   and one that fails before committing ends a quarter of a second after it
-  stops loading. An address Foundation cannot read as a URL shows a blank
-  page [I, OpenMaker's choice; wry would panic on it]. Every window shows
+  stops loading. Before handing a `data:text/html,` address whose
+  payload starts with literal markup to Foundation, OpenMaker escapes
+  raw hashes so they stay in the HTML even when auto-encoding is off.
+  An address Foundation cannot read as a URL shows a blank page
+  [I, OpenMaker's choice; wry would panic on it]. Every window shows
   its own pages: another window's AppKit window is found as
   `web_viewer/viewports.rs` says (below). `tests/web_viewer_native.rs`
   runs on macOS too, with the window's mouse events given to the view under
