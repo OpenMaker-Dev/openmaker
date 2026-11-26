@@ -12,6 +12,7 @@ mod external;
 mod found;
 mod library;
 mod local;
+mod page_setup;
 mod preview;
 mod privileges;
 mod records;
@@ -3150,6 +3151,14 @@ impl NativeProvider {
 impl DataProvider for NativeProvider {
     fn supports_local_files(&self) -> bool {
         true
+    }
+
+    fn store_page_format(
+        &mut self,
+        expected: Option<&[u8]>,
+        value: &[u8],
+    ) -> Result<bool, DataError> {
+        self.store_file_page_format(expected, value)
     }
 
     fn open_local_asking(

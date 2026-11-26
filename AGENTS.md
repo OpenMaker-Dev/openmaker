@@ -131,6 +131,9 @@ cargo test -p <crates you touched>                         # while iterating
 xvfb-run -a cargo test --locked --workspace --no-fail-fast # before a pull request
 ```
 
+A pull request that touches `om-server` also builds it in release, with no
+`warning:` in the output ([development.md](docs/development.md#checks)).
+
 - **UI changes:** look at the screens and keep before/after images for the
   pull request.
 - **OpenMaker Go:** the apps draw `om-gui`'s window, so a change there can

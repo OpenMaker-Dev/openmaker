@@ -538,6 +538,81 @@ fn damaged_files_are_refused_unchanged() {
         .unwrap();
 }
 
+/// A page setup accepted in Page Setup is kept in a file on this computer,
+/// as FileMaker Pro keeps it at the OK (#112). `[2, 87]` then holds the one
+/// `Comm` chunk, stored chunked as Pro stores it: child `00` the length,
+/// then the piece (file-format.md 3.8; Pro read such a file whole), and
+/// the file opens with it. What the file stores is replaced only when it is
+/// what the caller read, and holds only records FileMaker Pro makes again;
+/// otherwise it is kept (AGENTS.md rule 5).
+#[test]
+fn a_page_setup_is_kept_in_the_local_file_as_filemaker_pro_stores_it() {
+    use om_layout::paper::{Orientation, PaperSettings};
+    let folder = Folder::new("page-setup");
+    let path = folder.tasks(None);
+    let value = PaperSettings {
+        width: 595.2756,
+        height: 841.8898,
+        orientation: Orientation::Landscape,
+        scale: 0.5,
+    }
+    .common_format();
+    let stored = |path: &Path| {
+        let file = om_hbam::HbamFile::open(path).unwrap();
+        let tree = file.key_tree().unwrap();
+        tree.node(&[&[2], &[0x87]]).map(|node| {
+            let parts: Vec<(Vec<u8>, Option<Vec<u8>>)> = node
+                .children
+                .iter()
+                .map(|child| (child.segment.0.to_vec(), child.value.map(<[u8]>::to_vec)))
+                .collect();
+            parts
+        })
+    };
+    assert_eq!(stored(&path), None);
+
+    let mut provider = opened(&path);
+    assert!(provider.store_page_format(None, &value).unwrap());
+    // The file now stores a setup: one saved over "none" again is refused.
+    let changed = provider.store_page_format(None, &value).unwrap_err();
+    assert_eq!(changed.code, Some(301), "{changed:?}");
+    provider.close();
+    assert_eq!(
+        stored(&path),
+        Some(vec![
+            (vec![0], Some(37u32.to_be_bytes().to_vec())),
+            (vec![1], Some(value.to_vec())),
+        ])
+    );
+    let mut reopened = opened(&path);
+    let schema = reopened.calc_schema().unwrap().unwrap();
+    assert_eq!(schema.page_format.as_deref(), Some(&value[..]));
+    reopened.close();
+
+    // Kept: a record FileMaker Pro does not make from `Comm` beside it,
+    // and a value that does not read (declared larger than 1 MiB).
+    let mut unknown = value.to_vec();
+    unknown.extend_from_slice(b"W_XX\x00\x00\x00\x01\x07");
+    let mut unreadable = om_data::meta::page_format_node(&value).unwrap();
+    unreadable.children[0].value = Some((2u32 << 20).to_be_bytes().to_vec());
+    for (name, node, expected) in [
+        (
+            "unknown.fmp12",
+            om_data::meta::page_format_node(&unknown).unwrap(),
+            Some(&unknown[..]),
+        ),
+        ("unreadable.fmp12", unreadable, None),
+    ] {
+        let path = folder.file(name, PASSWORD, |root| root.put(&[&[2], &[0x87]], node));
+        let before = stored(&path);
+        let mut provider = opened(&path);
+        let kept = provider.store_page_format(expected, &value).unwrap_err();
+        assert_eq!(kept.code, Some(3), "{name}: {kept:?}");
+        provider.close();
+        assert_eq!(stored(&path), before, "{name}");
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn a_file_it_may_not_write_opens_read_only_and_refuses_every_change() {

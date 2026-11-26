@@ -2489,9 +2489,12 @@ look is OpenMaker's.
 Limits: a stored object cannot be moved between parts or restyled;
 groups, portals, tab and slide controls, popovers and button bars and the
 objects inside them do not move and cannot be deleted, nor can objects
-showing a library image, a field's label or a popover button; only a stored text of one line of plain text can be retyped; and the Text tool places one line of plain text in the theme's text style, with no character styles. The Field, Text, Button and Portal tools place objects; the other tool buttons only select a tool. The provider exposes no
-object styles, autosizing, names or tooltips, so the Inspector does not
-show them, and the other property and arrangement controls stay disabled. Layouts without geometry keep the generic field
+showing a library image, a field's label or a popover button; only a stored text of one line of plain text can be retyped; and the Text tool places one line of plain text in the theme's text style, with no character styles. The Field, Text, Button and Portal tools place objects; the other tool buttons only select a tool. For a stored object, the Inspector shows its
+named style and calls out local styling beyond the object's stored
+rotation. Appearance shows known
+normal-state fill, border and text colors and the base font from Browse's
+style cascade. These properties are read-only. Autosizing, names and
+tooltips are unavailable. Layouts without geometry keep the generic field
 view, which is not inspectable as document objects; they cannot be edited.
 The revision is the one the window read when it opened the file or after
 its last placement: a layout another client changed since is refused at
