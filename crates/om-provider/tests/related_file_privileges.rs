@@ -262,6 +262,7 @@ fn related_read_only_rights_do_not_inherit_roots_edit_permission() {
         privilege_set: None,
         record_number: None,
         prepared: None,
+        single_field_step: false,
     };
     let denied = root.write_record(&write).unwrap_err();
     assert_eq!(

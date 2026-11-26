@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use crate::calcs::ObjectCalcs;
 use crate::style::ObjectStyle;
-use crate::wire::{push_varints, Fields, Merged, RawField, Result, Value};
+use crate::wire::{push_varints, Fields, Merged, RawField, RawValue, Result, Value};
 
 /// `FMLayoutPB.Rect`: edges in points (layout-model.md 3).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -770,6 +770,31 @@ impl LayoutObject {
         ObjectKind::from_type(self.object_type)
     }
 
+    /// The measured Show navigation dots option (layout-model.md §5.3).
+    /// Leave the type-specific data intact for the layout writer.
+    pub fn shows_slide_dots(&self) -> bool {
+        if self.kind() != ObjectKind::SlideControl {
+            return false;
+        }
+        let mut flags = None;
+        for message in self.other.iter().filter(|field| field.number == 19) {
+            let RawValue::Bytes(bytes) = &message.value else {
+                continue;
+            };
+            for field in Fields::new(bytes, "DotLayoutObject") {
+                match field {
+                    Ok(field) => {
+                        if let (1, Value::Varint(value)) = (field.number, field.value) {
+                            flags = u32::try_from(value).ok();
+                        }
+                    }
+                    Err(_) => return false,
+                }
+            }
+        }
+        flags.is_some_and(|value| value & 1 == 0)
+    }
+
     /// The object's Slide up option, with its modifiers; `None` without it.
     /// The modifiers mean nothing on their own: FMEngine's slide record
     /// reads them only with [`sliding::UP`] (layout-model.md 5.8).
@@ -894,12 +919,25 @@ impl LayoutObject {
         self.merge_source.as_deref().or(self.text.as_deref())
     }
 
+    /// Byte ranges of the original control tokens in stored layout text.
+    /// The resolved names in `text_runs` can have different byte lengths.
+    pub fn stored_merge_field_ranges(&self) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+        crate::merge_field_ranges(self.merge_text().unwrap_or_default())
+    }
+
     /// Resolve already identified merge references using exact schema names.
     pub fn resolve_merge_fields(&mut self, names: &[String]) {
         let Some(text) = self.merge_text().map(str::to_owned) else {
             return;
         };
         self.text_runs = crate::split_merge_text(&text, names);
+        if self
+            .text_runs
+            .iter()
+            .any(|run| matches!(run, TextRun::MergeField(_)))
+        {
+            self.merge_source = Some(text);
+        }
         self.text = Some(
             self.text_runs
                 .iter()
@@ -1053,6 +1091,15 @@ impl ObjectStore {
 mod tests {
     use super::*;
     use crate::wire::RawValue;
+
+    #[test]
+    fn slide_navigation_reads_the_saved_visibility_bit() {
+        // DotLayoutObject.flags from the two native synthetic controls.
+        let on = LayoutObject::decode(&[0x08, 0x10, 0x9a, 0x01, 0x02, 0x08, 0x00]).unwrap();
+        let off = LayoutObject::decode(&[0x08, 0x10, 0x9a, 0x01, 0x02, 0x08, 0x01]).unwrap();
+        assert!(on.shows_slide_dots());
+        assert!(!off.shows_slide_dots());
+    }
 
     #[test]
     fn field_entry_reads_each_modes_bit_pair() {

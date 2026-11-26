@@ -33,6 +33,15 @@ come from the fmp12 file (see `layout-model.md`), not from the application.
 
 ## Status toolbar (Browse), left to right
 
+In FileMaker Pro 26.1.1, Show/Hide Toolbars [Hide] removes both the
+status toolbar and the layout bar. The same step in OnFirstWindowOpen
+gives the same view as running it after open. Lock disables View >
+Status Toolbar and its Option-Command-S shortcut whether the bars are
+shown or hidden. A Show with Lock off restores manual control, even if
+the bars were already shown. The native steps all returned LastError 0.
+Toggle with Lock and new-window inheritance were not measured.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1040#issuecomment-7188552787)
+
 1. **Record navigation group**, captioned **Records** (caption centered under
    the group):
    - Previous / Next chevrons (thin gray, ~16 px tall) separated by a hairline.
@@ -139,6 +148,17 @@ Then Title again. The cycle repeated over 22 more Tabs, and the hidden tab panel
 - **With a pop-up menu's list open** and an item highlighted, Tab leaves the list open, chooses nothing and does not move the focus. Escape dismisses the list.
 
 **Contact List, List view.** Tab goes First Name, Last Name, Company, the row's Details button, the row's photo container, then First Name of the same row. It never moves to another record.
+
+**Edit boxes excluded from the order.** In a local synthetic Form layout
+on FileMaker Pro 26.1.1, three ordinary edit boxes remained clickable
+with a two-panel tab control as the only saved stop. Tab and Shift-Tab
+from an excluded edit box focused the selected panel and kept the field's
+change pending. Typing with that panel focused changed no field. Another
+Tab left the panel focused. Clicking the Body background committed the
+edited fields. With the three fields included and the control excluded,
+Tab advanced through the fields, preserving their pending changes until
+the background click. Portal and List view cases were not measured.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/253).
 
 **Tasks starter, Task Details** (a local copy, the research thread on #848, 09:34Z):
 - **Find mode.** From the Task criterion, Tab went Due Date, Category, Priority, Status, Completion Date, Assignee Name, Assignee Email, the attachment portal's Description, then the main Description. That is the same field order as Browse for the fields both show. Buttons, portal controls included, were stops between some of them. After the main Description, Tab reached the Tasks navigation button, then wrapped to Task. The request was not performed.
@@ -438,6 +458,43 @@ move is stored.
 **Unknowns:** Which nested objects Select All and a layout-level box select,
 how they treat locked objects, and whether a modifier changes the arrow
 step. These gestures were not observed in a running FileMaker Pro window.
+
+### Artwork and boundaries
+
+[O] FileMaker Pro 26.1.1, Minimalist theme, Actual Size and Sample Data
+off. On a synthetic Form layout with a 40 pt Header and 480 pt Body, text
+showed stored merge markers and edit boxes showed their field names. View
+> Show > Text Boundaries drew faint outlines around borderless text.
+Field Boundaries drew darker outlines and dotted baselines on the edit
+boxes. Each disappeared with its respective option off.
+
+[O] In a 400 pt-wide duplicate, a 120 × 35 pt solid blue, borderless
+rectangle at (335, 45) kept its fill on both sides of the width divider.
+The 65 pt inside the layout was blue and the 55 pt on the pasteboard was
+dimmed. The captures are retained privately under the synthetic Client
+Card comparison ([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
+
+**Unknowns:** the exact dimming formula, other kinds of artwork, and
+whether the same effect applies below the last part.
+
+### Front panels
+
+The [panel selection help](https://help.claris.com/en/pro-help/content/objects-on-panel-controls.html)
+describes one front panel in Layout mode. Clicking another tab or slide dot
+brings that panel to the front. It also describes selecting objects across
+panels with Shift, and selecting all panels and their objects with a box
+that surrounds a whole control. The panels have their own stacking order.
+The [tab control help](https://help.claris.com/en/pro-help/content/changing-tab-control.html)
+says a tab control keeps the previously displayed tab when entering Layout
+mode. The [slide control help](https://help.claris.com/en/pro-help/content/changing-slide-control.html)
+identifies the leftmost slide as the default.
+
+**Unknowns:** whether selecting an object in the Objects pane switches its
+containing panel or changes the current selection. The [Objects pane
+help](https://help.claris.com/en/pro-help/content/working-with-layout-objects.html)
+describes the object list and its temporary hiding tools, including that
+the pane cannot hide or reorder panels. These behaviors were not measured
+in a running FileMaker Pro window.
 
 ## Layout mode: Align, Distribute and Resize To
 

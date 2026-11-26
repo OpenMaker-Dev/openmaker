@@ -5,7 +5,7 @@
 //! script in the window that owns the view, only while that window still
 //! shows the view's layout in Browse.
 
-use super::{Mode, OpenMakerApp, ViewMode};
+use super::{Mode, OpenMakerApp};
 use crate::scripting::{Answer, Start};
 use crate::web_viewer::{self, Command, NativeParent, Outcome, Unavailable, ViewKey, WindowFrame};
 
@@ -19,16 +19,16 @@ impl OpenMakerApp {
     }
 
     /// Reconcile the web viewers the window painted this frame with their
-    /// views, after everything egui draws over the document was drawn.
+    /// views, after everything egui draws over the document was drawn. In
+    /// Browse's Table view only the parts its Table View Properties
+    /// include paint any (`document::show_table`).
     pub(super) fn reconcile_web_viewers(
         &mut self,
         ctx: &egui::Context,
         parent: Result<NativeParent, Unavailable>,
     ) {
-        let browse = self.w.mode == Mode::Browse
-            && self.w.view != ViewMode::Table
-            && !self.w.hidden
-            && self.w.connection_lost.is_none();
+        let browse =
+            self.w.mode == Mode::Browse && !self.w.hidden && self.w.connection_lost.is_none();
         let layout = self
             .w
             .session

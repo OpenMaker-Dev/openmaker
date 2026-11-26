@@ -1496,7 +1496,10 @@ templates).
 - **Global values [O].** A table's global fields are stored once at
   `[T, 08, F]` (repetitions as above [I]). Styled text, there and in
   records, is a chunked value (`0` header, `1..n` pieces) beside a style
-  subtree `ff`; the client reads the pieces and drops the styles.
+  subtree `ff`; the client reads the pieces and drops the styles. A global
+  from another table in the same file is available without a matching
+  related record or a relationship. The value belongs to the session.
+  [Claris global-field documentation](https://help.claris.com/en/pro-help/content/global-fields.html).
 - **Summary definitions [O, I].** Field key `09`: byte 0 the kind (1 Total
   and 3 Count, the only kinds in the corpus), at offset 8 the summarized
   field as a key string `02 01 <id>`; the other bytes are not decoded. The

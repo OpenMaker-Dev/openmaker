@@ -410,9 +410,10 @@ read (section 6.12); the file engine never answers it.
 What a read returns borrows the view (`Cow<'v, _>` for `&'v self`): it
 never outlives the view, and a reader that keeps something past the view
 copies it. The file engine lends its tree, so it copies nothing a reader
-does not ask to own; an engine that reads pages gives owned values and
-holds a page only while a call reads it, never for as long as the view
-lives.
+does not ask to own; an engine that reads pages gives owned values, and
+between calls holds no more than its version's root page and the pages
+from it to one leaf, where its last listing or subtree read stood, never
+what it has returned.
 
 A reader takes a reading of a file (`FileEngine::read(file) ->
 engine::Reading`), which holds one version for as long as the reader
@@ -823,7 +824,9 @@ op70's staged records travel in it: the session's temporary area lends
 them (`writes::TempArea::lend`) and takes back those the commit did not
 take. A commit that was not stored has still taken the records it reached,
 as before the interface: the file is put back, the staged edits are gone,
-and the client uploads them again to retry. op88's container data is read
+and the client uploads them again to retry; the same op70 sent again
+without them is refused, the uploads it took being kept as lost ("Writes
+to a file hosted read-only", below). op88's container data is read
 from the upload before its operation, within the memory the client may
 hold (`--upload-memory-mib`), and travels in it, or, when it is not valid
 binary data, why not; the request keeps the charge until `submit` returns.
@@ -1142,10 +1145,20 @@ Nothing of its write side is built.
   file, through the roots a pin hands over, or a store in memory. Every
   page it reads is checked by the hash its parent holds; one that does
   not read or check fails the read that reached it with
-  `ReadError::Unreadable`, naming the path read, and is never data. Each
-  call opens the version again from its root (the page store's cache
-  answers) and holds a page only while it reads it; what it returns is
-  owned. It answers every call as the file engine's view of the same
+  `ReadError::Unreadable`, naming the path read, and is never data. It
+  holds its version's root page, read and checked when it opens, and the
+  pages from the root to the leaf where its last listing or subtree read
+  stood (`om_store::tree::Place`): the next is sought from there rather
+  than from the root, below the deepest page that is on the way to both,
+  so that an index entry read at a key a listing has just given, and the
+  listing's next page, read none of the pages on the way again
+  ([#767](https://github.com/OpenMaker-Dev/openmaker/issues/767)).
+  After a page of children that is the first child's place, where a
+  reader of their entries starts; after a subtree, where its walk ended,
+  at the next key. Each choice is the one a descent from the root makes,
+  so a place changes no answer and no error. Every other page is read
+  when a call needs it (the page store's cache answers); what it returns
+  is owned. It answers every call as the file engine's view of the same
   file does, page for page: the same children and walk steps in a page,
   the same "more may follow" (a full page of children looks one child
   further to say), and subtrees built with exactly as many places as
@@ -1582,10 +1595,25 @@ submitted answers 800 when the key stayed waiting, which stays queued, or
 the program's own answer when another writer had saved it before),
 op240's edits a save error (810, or 800 when the edit was made and taken
 back) and its Save status 3. In a server script, a step that would open,
-create or delete a record answers 3 where the script sees it, before it
-holds anything for the edit (a container's data, a lock); Set Next Serial
-Value answers 3 before anything is written, and the engine refuses it
-first too, so no save is tried and none fails; a script whose last record
+create or delete a record answers 6, "File is read-only", where the
+script sees it, before it holds anything for the edit (a container's
+data, a lock), and a Commit Records after it has nothing to commit and
+answers 0, as FileMaker Server answers Set Field, New Record, Delete
+Record and Commit Records there (re/script-runtime.md 13.28; 6 for the
+other supported steps that reach the check, Relookup among them, is
+inferred). Every step the server implements that would change the file
+answers 6 there, whether or not it enforces the table's rules, which
+matter only once it would write: FileMaker Server's measured answer. A
+step it does not implement as written answers 3, as on a writable file,
+before the 6: Insert File, an import from a source or with options it
+does not import (`import_request`); that is OpenMaker's own answer, and
+FileMaker Server's is unmeasured. Set Next Serial Value and the account
+steps answer 6 before anything is written (inferred), and the engine
+refuses Set Next Serial Value first too, so no save is tried and none
+fails. A file that
+becomes read-only between a script's steps is not measured: a commit then
+fails with the save's error, New Record with 301 from its id reservation,
+Set Next Serial Value with 6; a script whose last record
 is not stored when it ends has that commit's error as the run's result,
 never 0 (op30's reply when it waits; one that does not wait answers only
 that the script started). A script sets a global field all the same: its
@@ -1612,12 +1640,79 @@ id was not issued or that a record already has, an entry in the edit form
 for a record the file does not hold (deleted, or never created: only an
 entry marked new creates a record; OpenMaker's choice, write-path.md 3.4,
 [#840](https://github.com/OpenMaker-Dev/openmaker/issues/840)), a staged
-record whose modification count is not one. FileMaker Server half-writes a record
-another lock user holds and answers done (write-path.md 3.4); OpenMaker
-refuses. A record the list names with nothing staged for it, and the
-deletion of one that is not there, ask for nothing. op73 for a path that
-is not one table fails too; op73 refused for the session still answers
-its empty reply
+record whose modification count is not one, a record whose upload an
+earlier commit of the same transaction took and could not save, and a
+new record named with nothing uploaded for it (below). FileMaker Server
+half-writes a record another lock user holds and answers done
+(write-path.md 3.4); OpenMaker refuses.
+
+A record the list names in the edit form with nothing staged for it, and
+the deletion of one that is not there, ask for nothing: the commit is
+answered done with nothing stored for that entry, and the log says
+`commit of record … skipped: nothing is staged for it` (before
+[#839](https://github.com/OpenMaker-Dev/openmaker/issues/839) was fixed,
+`commit of record … that was never uploaded`). Two such entries
+are refused instead, with the whole commit, nothing written and its
+staged records left staged
+([#839](https://github.com/OpenMaker-Dev/openmaker/issues/839)):
+
+- A record whose upload a commit of this connection took and did not
+  store: its save failed and was taken back, or the engine gave no
+  commit's answer, and the upload went with it. Answered done, the same
+  commit sent again would report as stored what is not, which FileMaker
+  Pro's user then believes. The connection's temporary area keeps such a
+  record's path with the commit's transaction (`writes::TempArea`),
+  recorded once the commit's outcome is known, so that each record the
+  commit was lent ends up staged again, stored, or kept there; a commit of
+  that transaction naming it with nothing staged is refused. The record is
+  forgotten only:
+  - when it is uploaded again (op14), in any transaction;
+  - when the transaction is given up: op65 for it, or the op65 that
+    releases all of the connection's locks;
+  - when a commit of that transaction naming it for deletion is saved;
+  - with the session (the file closed, logout, the session's end).
+
+  op65 forgets whether or not the transaction held a lock: it is the
+  client giving the transaction up (FileMaker Pro sends it when its user
+  leaves the record, and starts the next change in a new transaction,
+  write-path.md 1.1, 4.4), so no commit of it is to come that the lost
+  upload was part of. An op62 forgets nothing, whoever sends it and
+  whatever it releases: it speaks of one lock, a commit may store a record
+  its transaction never locked, and every mistake in forgetting gives back
+  the "done" a lost upload must not get, where refusing too long only asks
+  the client to upload the record again. The price: after a failed save of
+  a record, a later commit of that record in the same transaction with
+  nothing uploaded is refused until the record is uploaded again or the
+  transaction is given up, even if the client unlocked it meanwhile; no
+  client is known to send one (OpenMaker's choice). A deletion by another
+  session forgets nothing: the refusal stays true.
+  Each entry is charged to the client's upload memory, at most what its
+  record was.
+- A record marked new (`01`) with nothing uploaded: a record is asked for
+  and nothing makes one, so done cannot be true, and a staged edit in the
+  same commit would be stored without it. OpenMaker's choice; what
+  FileMaker Server answers is unmeasured
+  ([#1008](https://github.com/OpenMaker-Dev/openmaker/issues/1008)).
+
+Only these are refused, because an entry in the edit form with nothing
+uploaded might come from a stock client, and answered done it says
+nothing false (nothing changed): what FileMaker Server answers such an
+entry is unmeasured, and so is what FileMaker Pro sends when it has locked
+a record and leaves it without a change (the Open Record/Request script
+step and then Commit Records; a character typed and deleted, then the
+record left; Revert Record)
+([#1008](https://github.com/OpenMaker-Dev/openmaker/issues/1008)). The
+capture of FileMaker Pro 26.0.3 against FileMaker Server 26.0.3 written out
+request by request
+([#829](https://github.com/OpenMaker-Dev/openmaker/issues/829#issuecomment-7183624871))
+shows five op70, each the request directly after an op14, over a field
+edit, New Record, Replace Field Contents over the found set, Import
+Records, and a script's Set Field and Commit Records, and nothing else.
+A record whose upload a failed save took has no FileMaker counterpart to
+measure: the failure is OpenMaker's own.
+
+op73 for a path that is not one table fails too; op73 refused for the
+session still answers its empty reply
 ([#801](https://github.com/OpenMaker-Dev/openmaker/issues/801)).
 
 A continuation whose cursor the connection does not hold (never issued,
@@ -2213,7 +2308,8 @@ save's outcome ("Failed saves", below):
 - op70: its commit. A save that fails takes the commit back and its
   records stay locked; the staged records the commit did not reach go
   back to the session's temporary area, as when it is refused (those it
-  reached are gone, and the client uploads them again);
+  reached are gone, and the client uploads them again; the op70 sent again
+  without them, in its transaction, is refused, its uploads kept as lost);
 - a client's op71: the new last issued id, before the ids are answered
   (#927); on a read-only file the save fails. A failed save takes back
   the reservation and the locks it took. A server script's op71 saves
@@ -4408,12 +4504,18 @@ live test):
 A server script, on a file hosted read-only on either engine, opens no
 record for editing and creates or deletes none: the step that would
 (Set Field, New Record, Delete Record, Replace Field Contents, Import
-Records and the rest that edit records) fails with 3, "Command is
-unavailable", where the script sees it (`ServerHost::require_edit`),
-before it holds anything for the edit (a container's data, a lock). So no
-edit waits for a commit that would be refused later, the explicit Commit
-Records or the one when the session ends. Set Next Serial Value fails
-with 3 before anything is written, on both engines; Set Field on a
+Records and the rest that edit records) fails with 6, "File is
+read-only", where the script sees it (`ServerHost::require_edit`),
+before it holds anything for the edit (a container's data, a lock), as
+FileMaker Server answers Set Field, New Record and Delete Record
+(re/script-runtime.md 13.28; inferred for the rest), also into a table
+whose rules the server does not enforce. A step it does not implement as
+written (Insert File, an import from a folder) answers 3 as on a
+writable file, before the 6 (section 5). So no edit waits for
+a commit that would be refused later, the explicit Commit Records, which
+then answers 0 as on FileMaker Server, or the one when the session ends.
+Set Next Serial Value fails with 6 before anything is written, on both
+engines (inferred); Set Field on a
 global sets it, as its value is the session's and needs no record, lock
 or save (`server_scripts_that_would_write_fail_alike_on_both_engines`).
 A Perform Find on a field without an index builds one: the file engine
@@ -4423,16 +4525,16 @@ fail (on a writable file, a save that fails), the script's result is its
 error, never 0 (`ServerHost::close`; `tests/saves.rs`,
 `a_script_whose_last_record_is_not_stored_reports_the_error`). What the
 engine cannot do yet and still reaches it answers a typed "unavailable",
-FileMaker's error 3 (OpenMaker's choice, as a server script's account step
-answers on a file hosted read-only), and changes nothing
-(`StoreEngine::submit_with`):
+FileMaker's error 3 (OpenMaker's choice), and changes nothing
+(`StoreEngine::submit_with`); a server script's steps meet the script
+host's 6 before they reach it:
 
 | What | Answer |
 |---|---|
-| a server script's step that opens, creates or deletes a record; a script that sets a field and ends | 3, the same on both engines (`server_scripts_that_would_write_fail_alike_on_both_engines`) |
-| a server script's Set Next Serial Value | 3, before anything is written, the same on both engines |
+| a server script's step that opens, creates or deletes a record; a script that sets a field and ends | 6, the same on both engines; a Commit Records after it 0 (`server_scripts_that_would_write_fail_alike_on_both_engines`), whatever the table's rules; 3 for a step the server does not implement as written, on any file (section 5) |
+| a server script's Set Next Serial Value | 6, before anything is written, the same on both engines (inferred) |
 | a server script's Set Field on a global | done: the session's own value, the same on both engines |
-| a server script's account steps | 3 |
+| a server script's account steps | 6 (inferred) |
 | an authoring edit (op240: a script's steps, a field, a layout and the rest) | refused, status 3, "nothing was changed" |
 | op240 Save | refused, status 3, the file being read-only, as on any file hosted read-only (`authoring_edits_answer_unavailable`) |
 | the Admin Console's close and open of a file | done; the open holds the file again: the same tree when its source digest is the one recorded (the same bytes, also in a file replaced by a copy), imported again when the digest changed (`a_file_opened_again_is_imported_again_once_it_changed`) |

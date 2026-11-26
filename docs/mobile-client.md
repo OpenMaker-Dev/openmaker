@@ -19,11 +19,59 @@ desktop. What FileMaker Go does is in [go-client.md](re/go-client.md).
   FileMaker Pro's type identifier, `com.filemaker.doc.fmp12`, read from
   FileMaker Pro 26.1.1 for macOS; FileMaker Go's own declaration is not
   documented). Local edits go to that copy.
-- **Hosts** takes a host name or address and a port (5003), lists the
-  files the host shares or opens one by name. A private certificate
-  authority (PEM) can be saved for a host and port; it is used for that
-  host only. The certificate is verified as the desktop client verifies
-  it.
+- **Hosts** lists the saved hosts, by name or by address (with the port
+  when it is not 5003), as FileMaker Go's Hosts tab does. Add Host (+)
+  takes a host name or IP address, a port (5003; go-client.md records
+  only the name or address) and an optional name, checked as the
+  desktop's Add Host checks them (`om_gui::host_address`). A host opens to the files it
+  lists, with a search box, and pulled down (or Refresh on Android) lists
+  them again; Open by Name opens a file it does not list (`.fmp12` may be
+  left out). Swiping a host (iOS), or its menu or a long press, edits or
+  removes it; removing forgets only the saved entry, its certificate
+  authority and the certificate permitted for it. Before the Hosts tab had a list it kept one host and the
+  certificate authorities it was given: that host and those hosts make
+  up the list. Local hosts (Bonjour) are not listed. A private
+  certificate authority (PEM certificates and nothing else, at most 16
+  of them in 64 KiB; other text is refused) can be saved for a host and
+  port, and is used for that host only. A host is saved, connected to
+  and trusted under one form of its address: an IP address as written
+  canonically, else a name as UTS #46 maps it to ASCII (punycode, lower
+  case; full-width digits become ASCII ones, as browsers map them), so
+  two entries are the same host only when they are to the network too;
+  an address that maps to nothing is refused. Those the old Hosts tab
+  saved under several spellings of one address are all used, each
+  certificate once, leaving out any certificate that does not read, and
+  Edit Host shows them all. A save never removes one the editor did not
+  show: Add Host, or editing a host onto another saved host, adds the
+  ones already saved there. A host moved to another address or port keeps the
+  certificate authority Edit Host shows (clear it there to drop it):
+  what was saved under its own spelling and what was typed; what was
+  kept under other spellings of its old address stays there. A save never
+  drops, cuts short or rewrites a saved certificate authority it cannot
+  carry whole: when the result would pass the bounds, or one it would
+  replace does not read whole, it saves nothing and says why (Remove Host
+  drops them). Connecting uses every authority saved for the host or
+  none: it refuses a host whose authorities are past the bounds, or that
+  has a saved value too long to read, rather than use the rest. Edit Host
+  refuses to save when its host was changed, moved or removed, or its
+  authorities changed, after it opened (in another window). The apps take all of
+  this from the engine (`mobile/core/src/hosts.rs`). The certificate is
+  verified as the desktop client verifies it.
+- **A certificate that cannot be verified** (self-signed, from an
+  authority the device does not trust, expired, not naming the address,
+  or X.509 version 1, as FileMaker Server's default certificate is) is
+  asked about when listing a host's files or opening a file there, as
+  FileMaker Go asks (go-client.md): the reason, the certificate's subject,
+  issuer, validity and SHA-256 fingerprint, with Don't Connect, Connect
+  and Always Permit. Connect accepts that certificate for that host and
+  port until the app quits; Always Permit saves its fingerprint for them,
+  which Edit Host shows and can forget. Only that certificate is
+  accepted: its handshake signature is checked with its own key, and
+  another certificate from the same host asks again, saying it changed.
+  Its names and dates are not checked once permitted. FileMaker's own
+  permit is kept by host name alone (network-protocol.md); this one is
+  OpenMaker's stricter choice. A host that does not encrypt cannot be
+  reached at all. A certificate that verifies connects without asking.
 - **Favorites** and **Recent** keep references to local and hosted files;
   opening one signs in again. Rows can be removed, and a local file
   deleted after a confirmation.

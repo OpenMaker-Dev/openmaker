@@ -5,8 +5,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use om_data::found::{code, FindRequest, FoundSet, FoundSetChange, SortField};
+use om_data::rules::RecordNumber;
 use om_data::runtime::Mode;
-use om_data::{DataError, DataProvider, Field, FieldChanges, Record, ScriptWrite};
+use om_data::{DataError, DataProvider, Field, FieldChanges, Record, RecordCreation, ScriptWrite};
 
 use super::host::transaction::{missing_related_parent, Staged};
 use super::{ScrollRequest, WindowState, WindowUpdate};
@@ -129,6 +130,8 @@ pub(crate) struct Uncommitted {
     /// The cells scripts set, repetitions too (first repetitions are also
     /// drafts by name, which the UI shows).
     pub cells: Cells,
+    /// Exactly one script step set a field in an otherwise clean edit.
+    pub single_field_step: bool,
     /// Related records changed, created or deleted through the record.
     pub related: Vec<RelatedDraft>,
     /// New Record made the record: Revert Record removes it. The fields
@@ -153,12 +156,16 @@ pub(crate) struct Uncommitted {
     /// The new record's place in the found set when it was made, which
     /// its auto-entered `Get ( RecordNumber )` was given: its later
     /// writes before its commit give it again, as the value is entered
-    /// when the record is made (Duplicate Record, #526). `None` when it
-    /// is not known (New Record, #298).
-    pub record_number: Option<u64>,
+    /// when the record is made (Duplicate Record, #526, and ordinary
+    /// local New Record, #1011). `None` when the position is unknown.
+    pub record_number: Option<RecordNumber>,
 }
 
 impl Uncommitted {
+    pub(super) fn single_script_field(&self, cells: &Cells, typed: &BTreeSet<u64>) -> bool {
+        self.single_field_step && typed.is_empty() && cells.len() == 1 && self.related.is_empty()
+    }
+
     /// The place in [`Self::related`] of the draft `key` names, while it
     /// is there.
     pub fn draft_index(&self, key: DraftKey) -> Option<usize> {
@@ -215,7 +222,7 @@ pub(crate) struct NewRecord {
     saved: bool,
     /// Its place in the found set when it was made, if known
     /// ([`Uncommitted::record_number`]).
-    record_number: Option<u64>,
+    record_number: Option<RecordNumber>,
 }
 
 /// What [`Window::commit`] writes with, as its caller gave it.
@@ -624,6 +631,8 @@ impl Window {
         }
         if let Some(name) = name {
             self.set(provider, name, text.clone())?;
+        } else {
+            self.state.uncommitted.single_field_step = false;
         }
         self.state
             .uncommitted
@@ -684,14 +693,27 @@ impl Window {
         let Some((fields, record)) = self.current(provider)? else {
             return Err(DataError::with_code(101, "There is no current record."));
         };
-        let Some(i) = fields.iter().position(|f| f.name == field) else {
+        let Some(index) = fields.iter().position(|f| f.name == field) else {
             return Err(DataError::with_code(
                 102,
                 format!("The table has no field named {field:?}."),
             ));
         };
-        let stored = record.values.get(i).cloned().flatten().unwrap_or_default();
-        if stored == text && !self.state.drafts.contains_key(field) {
+        let same_value = record
+            .values
+            .get(index)
+            .and_then(Option::as_deref)
+            .unwrap_or_default()
+            == text;
+        let open = &self.state.uncommitted;
+        let single_field_step = !open.new
+            && self.state.drafts.is_empty()
+            && open.cells.is_empty()
+            && open.related.is_empty();
+        if same_value && !self.state.drafts.contains_key(field) {
+            // Set Field still supplies its cell to the commit. It can
+            // trigger entry rules without opening a draft for the text.
+            self.state.uncommitted.single_field_step = single_field_step;
             return Ok(());
         }
         self.prepare_edit(
@@ -699,6 +721,7 @@ impl Window {
             BTreeSet::new(),
             [field.to_owned()].into_iter().collect(),
         )?;
+        self.state.uncommitted.single_field_step = single_field_step;
         self.state
             .drafts
             .insert(field.to_owned(), (!text.is_empty()).then_some(text));
@@ -706,8 +729,7 @@ impl Window {
         Ok(())
     }
 
-    /// Whether the current record has unsaved changes (or is new), its
-    /// related records included.
+    /// Whether the current record or its related records have unsaved edits.
     pub fn is_modified(&self) -> bool {
         let open = &self.state.uncommitted;
         !self.state.drafts.is_empty() || !open.cells.is_empty() || !open.related.is_empty()
@@ -811,6 +833,11 @@ impl Window {
                 self.commit_session(provider, skip_validation)?;
             }
             let new = std::mem::take(&mut self.state.uncommitted.new);
+            if new && session && self.state.record.is_some() {
+                // A page showing the held row has no stored version.
+                // Reload it so the next edit starts with the saved version.
+                self.changed_data();
+            }
             return Ok(self
                 .state
                 .record
@@ -901,6 +928,7 @@ impl Window {
             let pinned = own
                 .and_then(|draft| draft.version.map(|version| (draft.table, version)))
                 .filter(|(table, version)| provider.retain_related_record(*table, id, *version));
+            let single_field_step = open.single_script_field(&cells, &typed);
             let result = provider.write_record(&ScriptWrite {
                 layout,
                 table: None,
@@ -914,6 +942,7 @@ impl Window {
                 // auto-entered Get ( RecordNumber ) was given then (#526).
                 record_number: open.new.then_some(open.record_number).flatten(),
                 prepared: None,
+                single_field_step,
             });
             if let Some((table, _)) = pinned {
                 provider.release_related_record(table, id);
@@ -980,13 +1009,17 @@ impl Window {
                 typed: draft.typed.clone(),
                 skip_validation,
                 privilege_set: privilege_set.clone(),
-                record_number: record_numbers.get(&index).copied(),
+                record_number: record_numbers
+                    .get(&index)
+                    .copied()
+                    .map(RecordNumber::Window),
                 // Its preview's values went into the record it holds.
                 prepared: draft
                     .prepared
                     .as_ref()
                     .filter(|_| reserved.is_none())
                     .map(|prepared| prepared.id),
+                single_field_step: false,
             };
             let mut written = provider.write_record(&write);
             if write.prepared.is_some()
@@ -1282,6 +1315,7 @@ impl Window {
         }
         self.record = None;
         self.state.record = None;
+        self.state.record_version = None;
         self.state.drafts.clear();
         self.stray_session |= self.state.uncommitted.session;
         self.state.uncommitted = Uncommitted::default();
@@ -1402,9 +1436,58 @@ impl Window {
         privilege_set: Option<String>,
     ) -> Result<(), DataError> {
         let session = self.open_new_record(provider);
-        let made =
-            self.make_new_record(provider, session, (values, cells), (privilege_set, None))?;
+        let record_number = if session
+            && !cfg!(any(target_os = "ios", target_os = "android"))
+            && provider.local_path().is_some()
+        {
+            self.next_local_new_record(provider)
+        } else {
+            None
+        };
+        let made = self.make_new_record(
+            provider,
+            session,
+            (values, cells),
+            (privilege_set, record_number),
+            RecordCreation::NewRecord,
+        )?;
         self.adopt_new_record(provider, made)
+    }
+
+    /// An unsorted window appends a new record to its current found set.
+    /// Its position is unknown when the provider cannot read that set or
+    /// keeps it sorted.
+    pub(super) fn next_unsorted_record_number(
+        &self,
+        provider: &mut dyn DataProvider,
+    ) -> Option<u64> {
+        let layout = self.state.layout?;
+        let (_, found) = provider.records_with_summary(layout, 0, 0, &[]).ok()?;
+        let found = found.filter(|found| !found.sorted)?;
+        found.found.checked_add(1)
+    }
+
+    fn next_local_new_record(&self, provider: &mut dyn DataProvider) -> Option<RecordNumber> {
+        let layout = self.state.layout?;
+        let (_, found) = provider.records_with_summary(layout, 0, 0, &[]).ok()?;
+        let found = found?;
+        if !found.sorted || found.found == 0 {
+            return found.found.checked_add(1).map(RecordNumber::LocalNewRecord);
+        }
+        if self.state.index >= found.found {
+            return None;
+        }
+        let page = provider
+            .records_with_calculations(layout, self.state.index, ONE, &[])
+            .ok()?;
+        let current = page.records.first()?.id;
+        if self.state.record.is_some_and(|id| id != current) {
+            return None;
+        }
+        Some(RecordNumber::LocalSortedNewRecord {
+            position: self.state.index.checked_add(2)?,
+            after: u64::try_from(current).ok()?,
+        })
     }
 
     /// Open the record session a new record is held in, as FileMaker Pro
@@ -1435,7 +1518,8 @@ impl Window {
         provider: &mut dyn DataProvider,
         session: bool,
         (values, cells): (FieldChanges, Cells),
-        (privilege_set, record_number): (Option<String>, Option<u64>),
+        (privilege_set, record_number): (Option<String>, Option<RecordNumber>),
+        creation: RecordCreation,
     ) -> Result<NewRecord, DataError> {
         let revert = |provider: &mut dyn DataProvider, session: bool| {
             if session {
@@ -1457,8 +1541,9 @@ impl Window {
             privilege_set,
             record_number,
             prepared: None,
+            single_field_step: false,
         };
-        let (record, saved) = match provider.write_record(&write) {
+        let (record, saved) = match provider.write_record_with_creation(&write, creation) {
             Ok(record) => (record, !session && !provider.transaction_open()),
             Err(error) => {
                 revert(provider, session);
@@ -1769,6 +1854,31 @@ impl Window {
 mod scroll_tests {
     use super::*;
     use om_data::runtime::{ErrorCode, HostError};
+
+    #[test]
+    fn a_new_record_drops_the_previous_records_edit_version() {
+        let mut provider = om_data::mock::MockProvider::new();
+        provider
+            .open(&om_data::Connection {
+                host: "records.test.invalid".into(),
+                port: 5003,
+                file: "Records.fmp12".into(),
+                account: "Admin".into(),
+                password: String::new(),
+            })
+            .unwrap();
+        let mut window = Window::default();
+        window.set_layout(1, Some(0x8002));
+        window.state.record = Some(1);
+        window.state.record_version = Some(12);
+
+        window
+            .new_record(&mut provider, FieldChanges::new(), Cells::new(), None)
+            .unwrap();
+
+        assert!(window.state.record.is_some_and(|id| id != 1));
+        assert_eq!(window.state.record_version, None);
+    }
 
     /// The last sort order is kept per table in a window, as FileMaker Pro
     /// keeps it (#840's reading: Tasks by Task descending and Assignees by

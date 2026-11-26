@@ -8,10 +8,58 @@ use egui::{
     text::{Galley, LayoutJob},
     Align, Color32, FontData, FontId, Stroke, TextFormat,
 };
+use om_data::host::layout::TextSubstitution;
 use om_layout::{CharacterStyle, Color, ResolvedStyle, StyledText};
 use skrifa::MetadataProvider;
 
 use crate::theme;
+
+/// Keep stored runs on literal text. A replacement uses the style at its
+/// opening delimiter, so boundaries inside it move to the end of the
+/// displayed value (layout-model.md 8.2).
+pub(super) fn substitute(
+    rich: &StyledText,
+    shown: &str,
+    substitutions: &[TextSubstitution],
+) -> StyledText {
+    fn boundary(at: usize, substitutions: &[TextSubstitution]) -> usize {
+        let passed = substitutions.partition_point(|s| s.source.end <= at);
+        if let Some(s) = substitutions.get(passed).filter(|s| s.source.start < at) {
+            return s.display.end;
+        }
+        if passed == 0 {
+            at
+        } else {
+            let last = &substitutions[passed - 1];
+            last.display.end + (at - last.source.end)
+        }
+    }
+
+    fn runs<T: Clone>(
+        runs: &[om_layout::StyledRun<T>],
+        source: &str,
+        display: &str,
+        substitutions: &[TextSubstitution],
+    ) -> Vec<om_layout::StyledRun<T>> {
+        runs.iter()
+            .filter_map(|run| {
+                source.get(run.range.clone())?;
+                let start = boundary(run.range.start, substitutions);
+                let end = boundary(run.range.end, substitutions);
+                (start < end && display.get(start..end).is_some()).then(|| om_layout::StyledRun {
+                    range: start..end,
+                    style: run.style.clone(),
+                })
+            })
+            .collect()
+    }
+
+    StyledText {
+        text: shown.to_owned(),
+        character_runs: runs(&rich.character_runs, &rich.text, shown, substitutions),
+        paragraph_runs: runs(&rich.paragraph_runs, &rich.text, shown, substitutions),
+    }
+}
 
 /// Calculation values keep their own styles as text is sliced or replaced.
 /// Convert those runs rather than borrowing a layout label's unrelated runs.
@@ -245,11 +293,36 @@ fn layout_job_with_pitch(
                 }
             });
         let normalized = text[range].replace('\r', "\n");
-        if style.text_transform == Some(3) {
-            job.append(&normalized.to_uppercase(), 0.0, format);
-        } else {
-            job.append(&normalized, 0.0, format);
-        }
+        const CASE_GROUP: u16 = 0x0030;
+        let run_case = character.and_then(|run| {
+            let mask = run.face_mask?;
+            (mask & CASE_GROUP == CASE_GROUP).then_some(run.faces? & CASE_GROUP)
+        });
+        use om_data::calc::text::case::{lower_char, upper_char};
+        let rendered: String = match (style.text_transform, run_case) {
+            (Some(3), _) => normalized.to_uppercase(),
+            (_, Some(0x0010)) => normalized.chars().map(upper_char).collect(),
+            (_, Some(0x0020)) => normalized.chars().map(lower_char).collect(),
+            (_, Some(0x0030)) => {
+                // The whole-object title style keeps hyphens and apostrophes
+                // within words. Reusing that rule for runs is inferred.
+                let mut starts_word = true;
+                normalized
+                    .chars()
+                    .map(|character| {
+                        let cased = if starts_word {
+                            upper_char(character)
+                        } else {
+                            lower_char(character)
+                        };
+                        starts_word = character.is_whitespace();
+                        cased
+                    })
+                    .collect()
+            }
+            _ => normalized,
+        };
+        job.append(&rendered, 0.0, format);
     }
     // Native narrow date cells fill the row before splitting the year;
     // a slash is not a preferred break in an otherwise numeric date.
@@ -700,6 +773,37 @@ mod tests {
     }
 
     #[test]
+    fn saved_case_styles_transform_only_their_character_runs() {
+        let text = "Start ﬂx MiXeD o'NEIL mAC-sMITH End";
+        let style = |part: &str, faces| {
+            let start = text.find(part).unwrap();
+            StyledRun {
+                range: start..start + part.len(),
+                style: CharacterStyle {
+                    faces: Some(faces),
+                    face_mask: Some(0x0030),
+                    ..Default::default()
+                },
+            }
+        };
+        let rich = StyledText {
+            text: text.into(),
+            character_runs: vec![
+                style("ﬂx", 0x0010),
+                style("MiXeD", 0x0020),
+                style("o'NEIL mAC-sMITH", 0x0030),
+            ],
+            ..Default::default()
+        };
+        let job = layout_job(text, &ResolvedStyle::default(), Some(&rich), 300.0);
+        assert_eq!(job.text, "Start ﬂX mixed O'neil Mac-smith End");
+        assert_eq!(
+            job.sections.last().unwrap().byte_range.end.0,
+            job.text.len()
+        );
+    }
+
+    #[test]
     fn transforms_rebuild_section_ranges_after_unicode_expansion() {
         let style = ResolvedStyle {
             text_transform: Some(3),
@@ -731,6 +835,71 @@ mod tests {
         assert_eq!(job.sections[0].format.font_id.size, 14.0);
         assert_eq!(job.sections[1].format.font_id.size, 8.0);
         assert_eq!(job.sections[1].format.color, Color32::RED);
+    }
+
+    #[test]
+    fn merge_substitutions_keep_styles_on_both_sides_of_the_replacement() {
+        let text = "é {{1032}} | <<$$Empty>> Ω";
+        let shown = "é Ad\rmin |  Ω";
+        let size = |points| CharacterStyle {
+            font_size: Some(points),
+            ..Default::default()
+        };
+        let rich = StyledText {
+            text: text.into(),
+            character_runs: vec![
+                StyledRun {
+                    range: 0..3,
+                    style: size(12.0),
+                },
+                StyledRun {
+                    range: 3..5,
+                    style: size(18.0),
+                },
+                StyledRun {
+                    range: 5..11,
+                    style: size(8.0),
+                },
+                StyledRun {
+                    range: 14..25,
+                    style: size(7.0),
+                },
+                StyledRun {
+                    range: 25..text.len(),
+                    style: size(10.0),
+                },
+            ],
+            ..Default::default()
+        };
+        let painted = substitute(
+            &rich,
+            shown,
+            &[
+                TextSubstitution {
+                    source: 3..11,
+                    display: 3..9,
+                },
+                TextSubstitution {
+                    source: 14..25,
+                    display: 12..12,
+                },
+            ],
+        );
+        let job = layout_job(shown, &ResolvedStyle::default(), Some(&painted), 100.0);
+        let styles: Vec<_> = job
+            .sections
+            .iter()
+            .map(|section| {
+                (
+                    &job.text[section.byte_range.start.0..section.byte_range.end.0],
+                    section.format.font_id.size,
+                )
+            })
+            .collect();
+        assert_eq!(
+            styles,
+            [("é ", 12.0), ("Ad\nmin", 18.0), (" | ", 14.0), (" Ω", 10.0)]
+        );
     }
 
     #[test]
