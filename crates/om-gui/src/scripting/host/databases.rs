@@ -212,22 +212,36 @@ impl WorkerHost<'_> {
     /// its host by name; on another host or port, named
     /// `fmnet:/host:port/Name` ([`om_data::file_refs::fmnet_name`], #976),
     /// which the provider opens only with an account typed for it; or for
-    /// a file on this computer beside it by plain names (never a server, a
-    /// folder or another volume).
+    /// a file on this computer by a plain name or a local path supplied by
+    /// a file variable.
     fn hosted_database_names(&mut self, paths: Vec<FilePath>) -> HostResult<Vec<String>> {
         let host = self.s.file.context.host.clone();
         let port = self.p().server_port();
         let local = self.p().local_path().is_some();
+        if let [path] = paths.as_slice() {
+            if let Some(variable) = path.global_variable().filter(|_| local) {
+                let value = self
+                    .p()
+                    .local_source_variable(variable)
+                    .ok_or(ErrorCode(802))?
+                    .to_owned();
+                return if self.p().local_peer_path(&value).is_some() {
+                    Ok(vec![value])
+                } else {
+                    Err(HostError::Unsupported)
+                };
+            }
+        }
         let names: Vec<_> = paths
             .into_iter()
-            .filter_map(|p| {
+            .filter_map(|path| {
                 if local {
-                    return p.relative_name();
+                    return path.relative_name();
                 }
-                p.same_host_name(&host, port).or_else(|| {
-                    let (there, there_port) = p.fmnet_endpoint()?;
-                    om_data::file_refs::is_plain_name(&p.name)
-                        .then(|| om_data::file_refs::fmnet_name(there, there_port, &p.name))
+                path.same_host_name(&host, port).or_else(|| {
+                    let (there, there_port) = path.fmnet_endpoint()?;
+                    om_data::file_refs::is_plain_name(&path.name)
+                        .then(|| om_data::file_refs::fmnet_name(there, there_port, &path.name))
                 })
             })
             .collect();

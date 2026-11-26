@@ -6,8 +6,11 @@ Legal, Tabloid, A3/A4/A5, custom width/height in points (72 points = one inch), 
 portrait/landscape. Custom dimensions are the unrotated sheet, 1–200 inches on each
 axis. Landscape swaps the axes once. A layout prints within its stored fixed margins
 when Layout Setup's "Use fixed page margins" is checked, and otherwise within
-the printer's margins, 18 / 40 / 18 / 18 points (top, bottom, left, right), for
-every paper ([portable PDF](portable-pdf.md#supported-layout-and-output-contract), #609).
+OpenMaker's printer margins, 18 / 40 / 18 / 18 points (top, bottom, left,
+right) for every paper ([portable PDF](portable-pdf.md#supported-layout-and-output-contract), #609).
+FileMaker Pro for macOS with Any Printer uses a 41-point bottom margin
+on A4 and 18 points on A3, A5 and Tabloid in the measured setups
+([file format](re/file-format.md) 3.8).
 Page Setup does not edit margins or layout metadata; a layout's fixed
 page margins are Layout Setup's (Printing tab; [desktop
 client](desktop-client.md), "Layout Setup"). A paper choice can leave a
@@ -30,8 +33,12 @@ they print at. The printer's margins scale with the page, so they stay
 ([#871](https://github.com/OpenMaker-Dev/openmaker/issues/871)): the 1%–1000%
 bounds are OpenMaker's (FileMaker Pro's are unmeasured; Claris documents scale
 only as a macOS Page Setup option), and so are a layout's fixed page margins
-scaling with the page and how Preview shows a scaled page; FileMaker's
-Preview and PDF output at a scale were not compared.
+scaling with the page and how Preview shows a scaled page;
+FileMaker's Preview was not compared. FileMaker Pro's Save Records as
+PDF differs: it writes the page in layout points, the sheet divided by
+the scale (1584 x 1224 for US Letter landscape at 50%), with no scaling
+in the content ([#954](https://github.com/OpenMaker-Dev/openmaker/issues/954),
+[file format](re/file-format.md) 3.8).
 
 Accepted paper settings belong to the open **file session**, apply to every
 layout and window of that file, and are inherited by new windows. Other files,
@@ -53,14 +60,55 @@ Without one,
 the Letter/layout-orientation defaults remain and the first dialog is seeded from
 the current layout. None of the starter solutions stores one.
 
-Nothing is written back: there is **no local disk persistence** and no write to
-the hosted file, so a Page Setup accepted in OpenMaker is lost when the file
-closes, and the file keeps the setup it had. Once accepted, the preference
-overrides layout orientation for every layout. This differs from native
-FileMaker, which saves the choice in the file. What FileMaker accepts at
-`[2, 87]`, and how FileMaker Pro writes it to a hosted file, are unknown
-([#876](https://github.com/OpenMaker-Dev/openmaker/issues/876)), so OpenMaker
-writes nothing there yet.
+Once accepted, the preference overrides layout orientation for every layout.
+
+**Saving it in the file.** A Page Setup accepted in its dialog without
+Restore is saved in a file on this computer at the OK, as FileMaker Pro saves
+it ([file format](re/file-format.md) 3.8,
+[#876](https://github.com/OpenMaker-Dev/openmaker/issues/876)). That covers
+File > Page Setup, the Preview toolbar's button, and a script's Print Setup
+with the dialog and Restore off.
+- **What is written:** `[2, 87]` holds one `Comm` chunk
+  (`PaperSettings::common_format`), stored chunked as Pro stores it.
+  `DataProvider::store_page_format` locks the key, checks that the file
+  still stores what the decision was made on, uploads it and reads it
+  back. FileMaker Pro reads such a page setup whole, in its Page Setup sheet
+  and its output, and adds its own platform records at its next OK.
+- **Platform records:** the file's `MMod` copies, and its `M_PM` when it
+  is an Any Printer record for one of the printer's papers, go with a
+  change: Pro makes those again from `Comm` (file-format.md 3.8). Kept
+  beside a new `Comm`, Pro's sheet would show their old settings while its
+  output used the new ones, and its next OK would return to them.
+
+Nothing is written when:
+- the file's setup already reads as the accepted paper, so an OK without
+  changes keeps Pro's records;
+- the file stores a setup OpenMaker cannot read, or its schema was not read,
+  so what it stores is not known: it is kept as it is;
+- the file's setup holds a record Pro may not make again: a custom paper
+  or a named printer in `M_PM`, an `M_PM` not written as plain text (an
+  entity or character reference, CDATA, a comment), or a record other than
+  `Comm`, `M_PM` and `MMod`, a Windows one say. It is also kept when it is
+  not stored as Pro stores it, or changed since it was read;
+- the file is hosted. FileMaker Pro sent nothing for a hosted file, and
+  reopening it showed the setup it had ([write path](re/write-path.md)
+  5.9; whether Pro kept the accepted one until the file closed was not
+  checked). OpenMaker keeps it for the session;
+- the step restores a stored setup. FileMaker Pro's restore without the dialog
+  left the file's setup as it was; with the dialog, Pro's behavior is
+  unmeasured;
+- the account does not have [Full Access], or the file is read-only. The
+  in-process host stores a direct upload only for [Full Access]; what
+  FileMaker Pro saves for other accounts is unmeasured.
+
+In each of these cases the setup is the session's. A save that is refused
+or fails is logged.
+The `Comm` carries OpenMaker's sheet sizes and printer margins, 18 / 40 /
+18 / 18, which Pro reads as they are. Pro resaves OpenMaker's A4, A3 and A5,
+which are not its own sizes, as custom papers of the same size at its next
+OK ([#960](https://github.com/OpenMaker-Dev/openmaker/issues/960)). How
+FileMaker Pro for Windows reads a page setup without its own record is
+unmeasured ([#955](https://github.com/OpenMaker-Dev/openmaker/issues/955)).
 
 ## Script step 42
 
@@ -105,7 +153,8 @@ Original key `87` bytes, including opaque `M_PM`, `M_PD`, `MMod`, printer names 
 unknown chunks, remain intact in the script codec and session source record. UI
 edits change the portable paper preference, not those source bytes. Undecoded
 platform records have no portable effect; preserving them does not apply printer,
-driver, tray, duplex, resolution or other native options. Key `88` remains untouched.
+driver, tray, duplex, resolution or other native options. Key `88` remains untouched,
+as Page Setup leaves it in FileMaker Pro.
 
 ## Acceptance and limits
 
@@ -128,9 +177,11 @@ ordinary report limitations still apply ([Preview](preview.md),
 [portable PDF](portable-pdf.md)); sorted sub-summary groups share the same plan
 ([report sections](report-sections.md)), as do objects that slide up
 ([report sliding](report-sliding.md)); other advanced parts remain separate
-work (C41 in [client-progress.md](client-progress.md)). Desktop Print (43) now uses the same report foundation; see [printing](printing.md) for its dispatcher and limits. Native FileMaker
-acceptance, platform print-record interpretation and native per-file persistence
-are unmeasured/unimplemented; this is not a 1:1 native printing claim.
+work (C41 in [client-progress.md](client-progress.md)). Desktop Print (43) now uses the same report foundation; see [printing](printing.md) for its dispatcher and limits. Platform print-record
+interpretation is unimplemented; this is not a 1:1 native printing claim. Saving
+in the file is checked against OpenMaker's local host: the setup is written,
+stored chunked and read back after a reopen. The menu test checks which OKs
+save one.
 
 Primary semantics: [Claris printer and paper options](https://help.claris.com/en/pro-help/content/printer-paper-options.html)
 (per-file paper/orientation, all layouts, menu/toolbar, macOS scale) and

@@ -131,7 +131,7 @@ impl Recorder<'_> {
         // effective shortcut in the row's shape so a change rebuilds the
         // item: muda's setter leaves the old AppKit equivalent on None.
         let shortcut =
-            shortcut.filter(|shortcut| enabled && !editor_equivalent(&self.path, *shortcut));
+            shortcut.filter(|shortcut| enabled && !viewport_shortcut(&self.path, *shortcut));
         self.rows.push(Row::Item {
             id,
             label: label.to_owned(),
@@ -216,10 +216,14 @@ impl MenuRows for Recorder<'_> {
 }
 
 /// These keys go through the viewport even when the menu row is enabled.
-fn editor_equivalent(path: &str, shortcut: KeyboardShortcut) -> bool {
+/// Keep Save Layout in the same input stream as Undo and Redo so AppKit
+/// cannot reorder a file write around a draft edit.
+fn viewport_shortcut(path: &str, shortcut: KeyboardShortcut) -> bool {
     matches!(
         (path.split('\u{1f}').next(), shortcut.logical_key),
-        (Some("Edit" | "Insert"), _) | (Some("View"), Key::Plus | Key::Minus)
+        (Some("Edit" | "Insert"), _)
+            | (Some("View"), Key::Plus | Key::Minus)
+            | (Some("Layouts"), Key::S)
     )
 }
 
@@ -270,5 +274,25 @@ mod tests {
             rows.item("Run", None, false, false)
         });
         assert!(!answered);
+    }
+
+    #[test]
+    fn save_layout_has_no_appkit_key_equivalent() {
+        let mut chosen = None;
+        let mut recorder = Recorder::new("Layouts".into(), &mut chosen, true, false);
+        recorder.item(
+            "Save Layout",
+            Some(KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::S)),
+            false,
+            true,
+        );
+        assert!(matches!(
+            recorder.rows[0],
+            Row::Item {
+                enabled: true,
+                shortcut: None,
+                ..
+            }
+        ));
     }
 }

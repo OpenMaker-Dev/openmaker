@@ -983,6 +983,15 @@ fn closing_a_file_asks_its_clients_and_opening_it_loads_it_again() {
         handle.pause_file(file_id),
         Err(FileError::NotAllowed(FileStatus::Closed))
     );
+    // Closed, an Open of it is answered as one of a name the server does
+    // not host, as FileMaker Server answers it (spec 5.5).
+    let mut after = connect(port, "After");
+    match after.open_file("127.0.0.1", FILE) {
+        Err(SessionError::Protocol(error)) => {
+            assert!(error.ends_with("server error code 0x4fb5"), "{error}")
+        }
+        other => panic!("expected error 0x4fb5, got {other:?}"),
+    }
 
     // A file that fails to load stays closed, with the reason.
     let good = std::fs::read(&file.0).unwrap();

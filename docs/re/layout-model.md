@@ -1995,11 +1995,16 @@ template carries copies of `com.filemaker.theme.universal_touch` and
 - A font is a member `[19, 5, F]`, `F` a two-byte key [O: the 66 starter
   files, file-format.md 3.7]: `10` the family name (`Helvetica Neue`, or a
   CSS list such as `arial,sans-serif`); `03`, on faces, the face's
-  PostScript name (`HelveticaNeue-Light`, `ArialMT`, `.SFNSText`); `02`,
-  `01 00` or `01 fe`, [I] a one-byte value as a key string, [I] the code
-  set (`fontCodeSet`), [U] what `fe` is; `d8` and the stamp. A theme names
-  a font the same two ways: `-fm-font-family(<family>, <code set or
-  PostScript name>)` (7.3).
+  PostScript name (`HelveticaNeue-Light`, `ArialMT`, `.SFNSText`); `02`
+  (`KStatus`) is its code set as a one-byte key string, `01 00` or
+  `01 fe` in the starter corpus; `d8` is its UUID and `fc` its stamp.
+  [O from bin: FileMaker
+  Pro 26.1.1 Mac arm64 DBEngine] `DBFontEntry::GetCodeSet` (`0x188d088`)
+  and `SetCodeSet` (`0x188daf0`) read and write the code-set byte.
+  `CreateNewPostScriptEntry` (`0x188cc00`) sets it to `fe` when creating
+  an entry identified by its PostScript name. Other code-set values are
+  unmeasured. A theme names a font the same two ways:
+  `-fm-font-family(<family>, <code set or PostScript name>)` (7.3).
 - Styled text model (`Draco::Text` in Support): Unicode text with character
   style runs (`CharacterStyle`: font, size, color, faces) and paragraph style
   runs (`ParagraphStyle`: alignment, indents, spacing, tabs); SCSU compression
@@ -2335,7 +2340,7 @@ small SVGs for the `-fm-icon` arrow, calendar, and check glyphs.
 | Layout-level styles | `KLayoutStyleDefs` | `ThemeStyles` protobuf |
 | Layout metadata | `KMetadataDefs` | [U] |
 | Layout script triggers | `KScriptTriggers` (`30`) | trigger cache and records, [file-metadata.md](file-metadata.md) section 7 |
-| [U] `16` | layout + `16` | `00 00` on every layout seen with it; FileMaker Pro 26 added it in the Layout mode saves that were looked at, Layout Setup's OK with Save Layout (10.14) and the save of a new portal (10.17); that every Layout mode save adds it is [U]; [I] `KGuides`, the layout's guides (file-format.md 3.7) |
+| Layout guides | layout + `KGuides` (`16`) | guide list, a big-endian i16 count followed by the guides (below) |
 | Table-view layout | layout + `0d` | the layout's own table view (`FMLayout::HasTableLayout`), objects at `0d/05/<object>` with their own trigger caches ([file-metadata.md](file-metadata.md) 7.1); a new file's, member by member, in 10.14 |
 | Per-object attributes | section 5.5 | calc formulas and binary records [U] |
 | Themes | `KThemeDefs`, `KStyleDefs`, `KMetadataDefs`, `KBaseThemeName`, `KBaseThemeVersion` | `ThemeStyles`, `ThemeMetadata` protobuf |
@@ -2344,6 +2349,17 @@ small SVGs for the `-fm-icon` arrow, calendar, and check glyphs.
 Each protobuf value is read through an `HBCharIStream` over the HBAM position
 and parsed with `ParseFromIstream` [O, `LayoutDef::Read` @0x2c979a, REA Evidence
 `ev_27e8f820a04654acb990a93b7a469680a290ee3f6de7c68e64a40089782d4126`].
+
+[O from bin, FileMaker Pro 26.1.1 Mac arm64 FMEngine]
+`FMLayout::GetGuideList` (`0x2d6dd0`) reads `KGuides` and
+`FMLayout::SaveLayout` (`0x2d1b1c`) writes it when the guide list is
+loaded. `GuideList::Read` (`0x2ee668`) and `Write` (`0x2ee848`) use a
+big-endian i16 count. Each `TGuide` record (`Read` at `0x2ee304`,
+`Write` at `0x2ee3d4`) is 13 bytes: one byte, a big-endian u32 flag
+word, and a big-endian eight-byte word. The last word's coordinate
+interpretation and the first byte's values need a nonempty native sample.
+The observed `00 00` leaf is an empty list
+([file-format.md](file-format.md) 3.7).
 
 ### 10.2 Server to client
 

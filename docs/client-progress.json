@@ -392,10 +392,11 @@
       "feature": "Imported-table layouts and cross-file GTRR",
       "previous_status": "Partial",
       "status": "Partial",
-      "scope": "Layouts of another file's tables support Browse, edits, new, duplicate and delete records, finds and sorts, Go to Related Record into the other file, and script transactions that prepare every file before any data goes ([limits](record-writes.md#limits)).",
-      "remaining": "Imports, global and repeating fields, the layout's related records and duplicating a record that holds a container are refused on these layouts [#43](https://github.com/OpenMaker-Dev/openmaker/issues/43), and so are the user's own edits and deletions there while a script is paused inside a transaction [#411](https://github.com/OpenMaker-Dev/openmaker/issues/411). Each file commits on its own, so a connection lost, or a host refusing a later file, after an earlier file's commit leaves that file committed.",
+      "scope": "Layouts of another file's tables support Browse, edits (repeating fields included), new, duplicate and delete records, imports, finds and sorts, their portals and related fields (each record written by the file that owns it), Go to Related Record into the other file, and script transactions that prepare every file before any data goes; their globals are that file's session values ([limits](record-writes.md#limits)).",
+      "remaining": "Importing inside a script's transaction is refused on these layouts [#933](https://github.com/OpenMaker-Dev/openmaker/issues/933), and inserting into a related record's container of another file's table can fail outside a transaction [#957](https://github.com/OpenMaker-Dev/openmaker/issues/957). The user's own edits and deletions there while a script is paused inside a transaction are refused, except a save holding a related record's edits and the Records menu's New Record and Duplicate Record, which the transaction holds [#411](https://github.com/OpenMaker-Dev/openmaker/issues/411). Each file commits on its own, so a connection lost, or a host refusing a later file, after an earlier file's commit leaves that file committed.",
       "issues": [
-        43,
+        933,
+        957,
         411
       ],
       "docs": [

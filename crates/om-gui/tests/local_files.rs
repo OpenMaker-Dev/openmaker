@@ -1246,6 +1246,96 @@ fn consecutive_fields_are_drafts_until_save_and_survive_reopen() {
     reader.close();
 }
 
+#[test]
+fn variable_data_source_open_reports_file_errors_and_continues() {
+    use om_hbam::OwnedNode;
+    use om_scripts::{flag, ScriptStep, StepData};
+
+    let folder = Folder::new("variable-source");
+    let mut peer = fixture::tree(&[], true);
+    fixture::add_local_accounts(&mut peer);
+    fixture::write_tree(&folder.0.join("Peer.fmp12"), &peer);
+    let outside = Folder::new("absolute-variable-source");
+    let absolute_peer = outside.0.join("AbsolutePeer.fmp12");
+    fixture::write_tree(&absolute_peer, &peer);
+
+    let open = || {
+        let mut step = ScriptStep::new(33);
+        step.flags |= flag::FILE_REFERENCE | flag::OPTION;
+        step.set_data_leaf(
+            StepData::FILE_REFERENCES,
+            Some(OwnedNode::leaf([StepData::FILE_REFERENCES], [1, 1])),
+        );
+        step
+    };
+    let script = |id, name, path: &str| {
+        fixture::script(
+            id,
+            name,
+            vec![
+                fixture::on(86, true),
+                fixture::set_variable("$$RelatedPath", &format!("{path:?}")),
+                open(),
+                fixture::set_variable("$openError", "Get ( LastError )"),
+                show(&format!("\"{name}:\" & $openError")),
+            ],
+        )
+    };
+    let mut scripts = vec![
+        script(1, "Unset", ""),
+        script(2, "Missing", "file:Missing.fmp12"),
+        script(3, "Relative", "file:Peer.fmp12"),
+    ];
+    let mut cases = vec![
+        ("Unset", "Unset:802"),
+        ("Missing", "Missing:100"),
+        ("Relative", "Relative:0"),
+    ];
+    if cfg!(target_os = "macos") {
+        let path = om_data::file_refs::local_file_path(&absolute_peer.canonicalize().unwrap());
+        scripts.push(script(
+            4,
+            "Absolute",
+            &path.replacen("file:", "filemac:", 1),
+        ));
+        cases.push(("Absolute", "Absolute:0"));
+    }
+    let mut root = fixture::tree(&scripts, true);
+    fixture::add_local_accounts(&mut root);
+    add_name_field(&mut root);
+    root.put(
+        &[&[32], &[5], &[1], &[16]],
+        om_scripts::text_node(&[], "Peer"),
+    );
+    let mut paths = 1u32.to_be_bytes().to_vec();
+    for text in ["", "", "$$RelatedPath"] {
+        paths.extend(om_scsu::encode_counted(text));
+    }
+    root.put(&[&[32], &[5], &[1], &[0x82]], OwnedNode::leaf([], paths));
+    fixture::write_tree(&folder.file(), &root);
+
+    let mut app = app();
+    common::open_menu(&mut app, "File");
+    common::click(&mut app, "Open...");
+    choose(&mut app, &folder.file());
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
+    for (script, expected) in cases {
+        common::open_menu(&mut app, "Scripts");
+        common::click(&mut app, script);
+        common::wait_until(&mut app, expected, |a| {
+            a.query_by_label(expected).is_some() || a.state().error().is_some()
+        });
+        assert!(
+            app.query_by_label(expected).is_some(),
+            "{:?}",
+            app.state().error()
+        );
+        common::click(&mut app, "OK");
+        common::wait_until(&mut app, "script ended", |a| !a.state().script_running());
+    }
+}
+
 /// A local file whose script performs a script of the file beside it,
 /// through the window, with no server and no license: Root's data source
 /// names Peer by a plain relative name. Peer's script runs in Peer's own
