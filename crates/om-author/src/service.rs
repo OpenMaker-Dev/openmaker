@@ -2372,8 +2372,8 @@ impl Service {
                     ErrorKind::OutcomeUnknown,
                     format!(
                         "The new frames were sent but no answer came back ({reason}), so they may \
-                         or may not have been saved. Get {layout_ref} again, or repeat the same \
-                         set_object_frames: it reports already_applied if they are there."
+                         or may not have been saved. Get {layout_ref} again to check the objects' \
+                         current frames."
                     ),
                 )
                 .with_details(json!({ "previous_revision": revision_text(&expected) }))
