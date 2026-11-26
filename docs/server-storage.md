@@ -1149,7 +1149,8 @@ Nothing of its write side is built.
   stood (`om_store::tree::Place`): the next is sought from there rather
   than from the root, below the deepest page that is on the way to both,
   so that an index entry read at a key a listing has just given, and the
-  listing's next page, read none of the pages on the way again (#767).
+  listing's next page, read none of the pages on the way again
+  ([#767](https://github.com/OpenMaker-Dev/openmaker/issues/767)).
   After a page of children that is the first child's place, where a
   reader of their entries starts; after a subtree, where its walk ended,
   at the next key. Each choice is the one a descent from the root makes,
