@@ -1033,14 +1033,17 @@ impl NativeProvider {
                     record_number: context.record_number.or(previewed.context.record_number),
                     ..previewed.context.clone()
                 },
-                // New Record keeps its original position and clock
-                // samples when later writes change the held row.
+                // Keep what the new record knew at creation as it takes
+                // later field edits in this record session.
                 None => {
                     let created = before.filter(|held| matches!(held.change, Change::New(_)));
                     WriteContext {
                         record_number: context
                             .record_number
                             .or_else(|| created.and_then(|held| held.context.record_number)),
+                        other_globals: created
+                            .and_then(|held| held.context.other_globals.clone())
+                            .or(context.other_globals),
                         creation_utc_clock: created
                             .and_then(|held| held.context.creation_utc_clock.clone())
                             .or(context.creation_utc_clock),

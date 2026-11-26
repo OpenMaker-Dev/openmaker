@@ -387,6 +387,7 @@ fn clock_environment(account: &str, uuid: String, now: &jiff::Zoned) -> RecordEn
             creation_utc_clock: None,
             sequence: om_data::rules::WriteSequence::Unmeasured,
             file_variables: None,
+            other_globals: None,
         },
         timestamp,
         date,
