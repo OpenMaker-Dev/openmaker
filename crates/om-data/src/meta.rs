@@ -81,6 +81,27 @@ pub fn page_format(tree: &KeyTree<'_>) -> Option<Vec<u8>> {
     node.assembled().map(|bytes| bytes.into_owned())
 }
 
+/// `value` as the node of a file's page setup ([`PAGE_SETUP`]), stored
+/// chunked as FileMaker Pro stores it whatever its length: child `00` the
+/// u32 total, then 1000-byte pieces keyed 1, 2, ... (file-format.md 3.8,
+/// 4.3). Pro read a 37-byte `[2, 87]` stored this way; one stored as a
+/// plain leaf it was never shown. `None` past [`MAX_PAGE_FORMAT`], which
+/// [`page_format`] would not read back.
+pub fn page_format_node(value: &[u8]) -> Option<om_hbam::OwnedNode> {
+    if value.len() > MAX_PAGE_FORMAT {
+        return None;
+    }
+    let total = u32::try_from(value.len()).ok()?;
+    let mut children = vec![om_hbam::OwnedNode::leaf([0], total.to_be_bytes())];
+    for (i, piece) in value.chunks(1000).enumerate() {
+        children.push(om_hbam::OwnedNode::leaf(
+            om_hbam::serial::encode(i as u64 + 1),
+            piece,
+        ));
+    }
+    Some(om_hbam::OwnedNode::list([0x87], children))
+}
+
 /// A big-endian reader over a stored stream (file-metadata.md 0).
 struct Reader<'a> {
     bytes: &'a [u8],

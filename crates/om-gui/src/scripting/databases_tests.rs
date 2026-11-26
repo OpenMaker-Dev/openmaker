@@ -408,6 +408,14 @@ impl DataProvider for Provider {
     fn calc_schema(&mut self) -> Result<Option<Arc<CalcSchema>>, DataError> {
         Ok(Some(self.schema()))
     }
+    /// A page setup saved in the file (`[2, 87]`), as an event with its
+    /// bytes in hex; the file then stores it.
+    fn store_page_format(&mut self, value: &[u8]) -> Result<bool, DataError> {
+        let hex: String = value.iter().map(|b| format!("{b:02x}")).collect();
+        self.note(&format!("page_format:{hex}"));
+        self.server.lock().unwrap().page_format = Some(value.to_vec());
+        Ok(true)
+    }
     fn calc_data(&mut self, needs: &[om_data::host::CalcNeed]) -> Result<CalcData, DataError> {
         let schema = self.schema();
         let mut source = MemorySource::new();

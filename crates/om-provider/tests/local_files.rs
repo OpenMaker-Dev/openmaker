@@ -539,6 +539,52 @@ fn damaged_files_are_refused_unchanged() {
 }
 
 #[cfg(unix)]
+/// A page setup accepted in Page Setup is kept in a file on this computer,
+/// as FileMaker Pro keeps it at the OK (#112). `[2, 87]` then holds the one
+/// `Comm` chunk, stored chunked as Pro stores it: child `00` the length,
+/// then the piece (file-format.md 3.8; Pro read such a file whole), and
+/// the file opens with it.
+#[test]
+fn a_page_setup_is_kept_in_the_local_file_as_filemaker_pro_stores_it() {
+    use om_layout::paper::{Orientation, PaperSettings};
+    let folder = Folder::new("page-setup");
+    let path = folder.tasks(None);
+    let value = PaperSettings {
+        width: 595.2756,
+        height: 841.8898,
+        orientation: Orientation::Landscape,
+        scale: 0.5,
+    }
+    .common_format();
+    let stored = |path: &Path| {
+        let file = om_hbam::HbamFile::open(path).unwrap();
+        let tree = file.key_tree().unwrap();
+        tree.node(&[&[2], &[0x87]]).map(|node| {
+            let parts: Vec<(Vec<u8>, Option<Vec<u8>>)> = node
+                .children
+                .iter()
+                .map(|child| (child.segment.0.to_vec(), child.value.map(<[u8]>::to_vec)))
+                .collect();
+            parts
+        })
+    };
+    assert_eq!(stored(&path), None);
+
+    let mut provider = opened(&path);
+    assert!(provider.store_page_format(&value).unwrap());
+    provider.close();
+    assert_eq!(
+        stored(&path),
+        Some(vec![
+            (vec![0], Some(37u32.to_be_bytes().to_vec())),
+            (vec![1], Some(value.to_vec())),
+        ])
+    );
+    let mut reopened = opened(&path);
+    let schema = reopened.calc_schema().unwrap().unwrap();
+    assert_eq!(schema.page_format.as_deref(), Some(&value[..]));
+}
+
 #[test]
 fn a_file_it_may_not_write_opens_read_only_and_refuses_every_change() {
     use std::os::unix::fs::PermissionsExt;

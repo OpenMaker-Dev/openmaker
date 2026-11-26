@@ -80,6 +80,46 @@ impl PaperSettings {
         Ok(())
     }
 
+    /// This setup as the `Comm` chunk of a page format (script-steps.md
+    /// 11.6, file-format.md 3.8): the tag, its u32 length 29, the
+    /// orientation (0 portrait, 2 landscape), then big-endian f32s: the
+    /// scale, the sheet upright around the printable origin (left, top,
+    /// right, bottom), and the printable size in the page's orientation,
+    /// divided by the scale. The printable area is inside the
+    /// [`printer_margins`], so US Letter gives the bytes FileMaker Pro for
+    /// macOS stores with Any Printer, in either orientation. Other papers
+    /// keep OpenMaker's own sheet and margins, which Pro reads as they are
+    /// (its A4 is 595 x 842, with a 41-point bottom margin; #960).
+    pub fn common_format(&self) -> [u8; 37] {
+        let m = printer_margins();
+        let (across, down) = (
+            self.width - m.left - m.right,
+            self.height - m.top - m.bottom,
+        );
+        let (printable_w, printable_h, orientation) = match self.orientation {
+            Orientation::Portrait => (across, down, 0),
+            Orientation::Landscape => (down, across, 2),
+        };
+        let mut out = [0u8; 37];
+        out[..4].copy_from_slice(b"Comm");
+        out[4..8].copy_from_slice(&29u32.to_be_bytes());
+        out[8] = orientation;
+        let values = [
+            self.scale,
+            -m.left,
+            -m.top,
+            self.width - m.left,
+            self.height - m.top,
+            printable_w / self.scale,
+            printable_h / self.scale,
+        ];
+        for (i, value) in values.into_iter().enumerate() {
+            let at = 9 + 4 * i;
+            out[at..at + 4].copy_from_slice(&(value as f32).to_be_bytes());
+        }
+        out
+    }
+
     /// Before a file has explicit settings, seed its dialog from the existing
     /// layout orientation. Once accepted, one preference applies to all layouts.
     pub fn initial(layout: &Layout) -> Result<Self, String> {
