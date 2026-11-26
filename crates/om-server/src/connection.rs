@@ -1147,7 +1147,13 @@ impl Connection {
             // the session holds already, and lets go of each once done:
             // waiting on one file's lock table (a commit of another session
             // holds it through its save) holds no file the session never
-            // opened, nor one it is done with (#1007).
+            // opened, nor one it is done with (#1007). A file let go of is
+            // also taken out of what the administrator's list counts for
+            // this client, before its reference is dropped: it may finish
+            // closing while the session still waits in another, and must
+            // not be listed closed with this client in it. That takes the
+            // client registry's lock alone, no other being held then, and
+            // cannot panic (`Clients::closed`).
             for file in std::mem::take(&mut session.open).into_values() {
                 let release = Operation::ReleaseSessionLocks(ReleaseSessionLocks { connection });
                 let outcome = self.shared.engine.submit(&file.hosted, release);
@@ -1157,6 +1163,7 @@ impl Connection {
                 file.hosted
                     .registrations()
                     .retain(|r| r.connection != connection);
+                self.shared.clients.closed(connection, file.hosted.id);
             }
             self.shared.mailboxes.close(connection);
             self.shared.clients.ended(connection);
