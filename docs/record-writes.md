@@ -1173,7 +1173,10 @@ record's place in what the rules read:
   The related draft shows 0 on creation and keeps a nonempty assignment
   made before or after an intermediate Commit. This also works with the
   measured indexed Position. Both stored values can be found after
-  reopen through their indexes.
+  reopen through their indexes. With both indexed fields, a replacing
+  UUID key can validate Always, Not empty and Unique with override
+  disabled (`0x0000041c`). The copied value goes through normal write
+  validation and can be distinct plain text.
   The measured unindexed, replacing
   `If ( IsEmpty ( Self ) ; 0 ; Self + 1 )` (`0x00000088`, no validation)
   also starts at 0 in this relationship when there is no stored Position.

@@ -890,6 +890,16 @@ result. Exact Finds after reopen returned the new row from both indexes.
 The closed indexes already contained the new entries before the Finds.
 [Combined comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7205174459)
 
+With those two indexed Number fields, the replacing UUID key also kept
+its copied value when the key validated Always, Not empty and Unique
+with override disabled (validation word `0x0000041c`). Both a fresh UUID
+and distinct plain text worked as the copied key. Position 1 and Amount 0
+were visible at creation, and assigning 25 persisted. The UUID tests with
+and without an intermediate Commit both returned 0 and gave the same
+exact Find results after reopen. The comparison did not time validation
+on a duplicate edit.
+[Validated-key comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7205531644)
+
 ## Serial numbers
 
 Option `0x2` generates a serial number when the record is created, `0x200`
