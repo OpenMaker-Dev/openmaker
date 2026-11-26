@@ -366,6 +366,30 @@ pub enum WriteLayout {
     Number(u64),
 }
 
+/// The owning local file's script variables at the start of a write.
+#[derive(Clone)]
+pub struct WriteFileVariables(Arc<Variables>);
+
+impl WriteFileVariables {
+    pub fn new(variables: Arc<Variables>) -> Self {
+        Self(variables)
+    }
+}
+
+impl std::fmt::Debug for WriteFileVariables {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteFileVariables").finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for WriteFileVariables {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.revision() == other.0.revision()
+    }
+}
+
+impl Eq for WriteFileVariables {}
+
 /// What the operation making a write knows that its formulas may read
 /// ([`CONTEXT_SELECTORS`]). A value left out refuses a write whose
 /// evaluated formula reads it; it is never answered empty in its place.
@@ -386,6 +410,9 @@ pub struct WriteContext {
     /// typed into an unsorted portal's creation row: its place among the
     /// related records), never a position this planner infers.
     pub record_number: Option<u64>,
+    /// The local file's `$$` variables for directly reading a Text
+    /// auto-enter value. New Record's preview retains this snapshot.
+    pub file_variables: Option<WriteFileVariables>,
 }
 
 impl WriteContext {
@@ -730,6 +757,7 @@ pub(crate) struct Evaluation {
     /// The session's global values ([`RecordEnvironment::globals`]).
     globals: Option<Arc<RecordValues>>,
     /// `Get ( RecordNumber )` ([`WriteContext::record_number`]).
+    file_variables: Option<WriteFileVariables>,
     record_number: Option<u64>,
     /// [`RecordEnvironment::related_needs`].
     related_needs: Option<Arc<RelatedNeeds>>,
@@ -840,6 +868,7 @@ impl RecordEnvironment {
             related: self.lookups.related.clone(),
             globals: self.globals.clone(),
             record_number: context.record_number,
+            file_variables: context.file_variables.clone(),
             related_needs: self.related_needs.clone(),
             written: self.lookups.written,
             stored: BTreeMap::new(),
@@ -1584,6 +1613,22 @@ impl PlannedField {
     /// Validated Always, not only during data entry.
     fn validates_always(&self) -> bool {
         self.options.validation_options & VALIDATE_ALWAYS != 0
+    }
+
+    /// A direct `$$` read by the measured Text auto-enter form (#1037).
+    fn auto_entry_file_variable(&self) -> Option<&str> {
+        if self.options.field_kind != 1
+            || self.options.max_repetitions != 1
+            || !self.in_row()
+            || self.data_type != DataType::Text
+            || !self.options.auto_entry_calculation()
+        {
+            return None;
+        }
+        match &self.expression.as_ref()?.formula.polish {
+            Expr::Variable(name) if name.starts_with("$$") => Some(name),
+            _ => None,
+        }
     }
 
     /// Whether the rules FileMaker checks as a value is entered (maximum
@@ -3406,6 +3451,13 @@ impl RecordPlan {
             })
     }
 
+    /// Whether a direct Text auto-enter reads the local file's variables.
+    pub fn reads_auto_entry_file_variables(&self) -> bool {
+        self.fields
+            .values()
+            .any(|field| field.auto_entry_file_variable().is_some())
+    }
+
     /// The [`CONTEXT_SELECTORS`] the table's auto-entered, stored and
     /// validation formulas read, through the custom functions they call:
     /// what a write's operation must supply in its [`WriteContext`].
@@ -5054,6 +5106,25 @@ impl RecordPlan {
             followed: std::cell::RefCell::default(),
         };
         let (mut locals, mut globals) = (Variables::new(), Variables::new());
+        if let Some(snapshot) = &session.file_variables {
+            let name = self.fields.get(&field).and_then(|rule| {
+                rule.expression
+                    .as_ref()
+                    .filter(|e| std::ptr::eq(*e, expression))
+                    .and_then(|_| rule.auto_entry_file_variable())
+            });
+            if let Some((name, value)) =
+                name.and_then(|name| snapshot.0.get(name, 1).map(|value| (name, value)))
+            {
+                if !matches!(value, Value::Text(_)) {
+                    return Err(RunError::Unread(DataError::with_code(
+                        error::UNAVAILABLE,
+                        "A non-Text script variable cannot be auto-entered into Text.",
+                    )));
+                }
+                globals.set(name, 1, value.clone());
+            }
+        }
         // Rules belong to the table's file, including when a root layout
         // edits an imported table. Caller layout/script identity stays outside
         // this record-only evaluation.
@@ -7549,6 +7620,7 @@ mod tests {
             // A row typed after two related rows of an unsorted portal
             // (#1038).
             record_number: Some(3),
+            file_variables: None,
         };
         let created = write(known.clone(), WriteMode::Create).unwrap();
         assert_eq!(

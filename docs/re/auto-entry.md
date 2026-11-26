@@ -160,6 +160,14 @@ name and user name are distinct variables. The table describes the selected
 variable; it does not establish when creation and modification defaults are
 scheduled, including initialization of modification fields on creation.
 
+On FileMaker Pro 26.1.1, a local Text field with the calculated
+auto-enter `$$Marker` read the current file's variable at New Record.
+The two Text assignments produced two corresponding stored values. An
+unset variable produced empty and left out the stored cell. Set Field on
+an unrelated field, Commit and reopening kept those results. The check
+did not change the variable between New Record and Commit.
+[Native results](https://github.com/OpenMaker-Dev/openmaker/issues/1037#issuecomment-7185794811).
+
 In this file, a field calculation subtree is `<base-table>/3/5/<field>/5`.
 Child 4 contains its context, child 5 the formatted stream and child 6 the
 unformatted stream. `DBGetFunction::WriteAsPolish` (`0x16c6930`) writes
