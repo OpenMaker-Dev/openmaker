@@ -1097,7 +1097,7 @@ impl NativeProvider {
             .filter(|(cell, value)| value.is_none() || serials.get(cell) != value.as_ref())
             .map(|(cell, value)| (*cell, value.clone()))
             .collect();
-        let fields = plan.preview_fields(false);
+        let fields = plan.preview_creation_fields(&given);
         let none = |_, _, _| false;
         let reads = (&fields, &none as om_data::rules::UnknownValue<'_>);
         let values = self.preview_record(plan, (entry, false), &given, &environment, reads)?;

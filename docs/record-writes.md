@@ -2042,6 +2042,16 @@ application creation plan.
     value, so those sequences return error 3. Hosted and routed writes
     using the grouped self-join return 3.
     [Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7184309703).
+    This join also supports the replacing Number formula
+    `If ( Peer::Primary = 1 ; 0 ; 1 )` with a replacing UUID row key on
+    the same table. Ordinary New Record in an unsorted local found set
+    shows `1` before the group is assigned. A new record stores the
+    result for its final group and row key at commit. A single
+    field-setting step can move an existing record to another nonempty
+    group. Reassigning that same group, other edits on stored rows,
+    explicit edits of the result and clearing the group are refused. Hosted, routed, and
+    other creation paths are outside this support.
+    [Replacing native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7191674029).
   - **What is unmeasured:** sorted and other non-equality joins with
     matches, stored and validation formulas, and portal rows made in one
     commit.

@@ -139,13 +139,35 @@ fn name(value: &str) -> FieldChanges {
     FieldChanges::from([("Name".to_owned(), Some(value.to_owned()))])
 }
 
+fn add_grouped_self_join(
+    root: &mut om_hbam::OwnedNode,
+    here: u64,
+    other: u64,
+    group: u64,
+    row_key: u64,
+) {
+    fixture::add_relationship(root, 9, (here, row_key), 1, (other, row_key));
+    // Put equality second to exercise the index even when inequality
+    // is the first predicate in the definition.
+    let segment = om_hbam::slot::uint_segment(group);
+    let mut key = vec![segment.len() as u8 + 1, segment.len() as u8];
+    key.extend(segment);
+    let mut predicate = vec![0];
+    predicate.extend(&key);
+    predicate.extend(key);
+    root.put(
+        &[&[3], &[0xfb], &[5], &[9], &[3], &[2]],
+        om_hbam::OwnedNode::leaf([], predicate),
+    );
+}
+
 #[test]
 fn grouped_self_join_reads_other_records_after_setting_the_group() {
     use fixture::{LAYOUT, OCCURRENCE};
     use om_data::calc::Value;
     use om_data::host::CalcNeed;
     use om_data::ScriptWrite;
-    use om_hbam::{slot::uint_segment, OwnedNode};
+    use om_hbam::slot::uint_segment;
 
     const GROUP: u64 = 30;
     const KEY: u64 = 31;
@@ -171,19 +193,7 @@ fn grouped_self_join_reads_other_records_after_setting_the_group() {
             names.add_field(TABLE, id, name);
             fixture::add_field(root, TABLE, id, name, 1, kind, 0, options, 0);
         }
-        // Reverse the predicate order to exercise the equality index even
-        // when the inequality comes first in the definition.
-        fixture::add_relationship(root, 9, (OCCURRENCE, KEY), 1, (OTHER, KEY));
-        let segment = uint_segment(GROUP);
-        let mut key = vec![segment.len() as u8 + 1, segment.len() as u8];
-        key.extend(segment);
-        let mut predicate = vec![0];
-        predicate.extend(&key);
-        predicate.extend(key);
-        root.put(
-            &[&[3], &[0xfb], &[5], &[9], &[3], &[2]],
-            OwnedNode::leaf([], predicate),
-        );
+        add_grouped_self_join(root, OCCURRENCE, OTHER, GROUP, KEY);
         fixture::add_formula(root, &names, (TABLE, OCCURRENCE), KEY, 5, "Get ( UUID )");
         fixture::add_formula(
             root,
@@ -323,6 +333,106 @@ fn grouped_self_join_reads_other_records_after_setting_the_group() {
         assert_eq!(elapsed, seconds);
     }
     provider.close();
+}
+
+#[test]
+fn replacing_group_flag_uses_the_first_peer_and_leaves_other_rows_unchanged() {
+    use fixture::{LAYOUT, OCCURRENCE};
+    use om_data::calc::Value;
+    use om_data::host::CalcNeed;
+    use om_data::rules::RecordNumber;
+    use om_data::{RecordCreation, ScriptWrite};
+
+    const GROUP: u64 = 30;
+    const KEY: u64 = 31;
+    const FLAG: u64 = 32;
+    const OTHER: u64 = 0xd0_0009;
+    let folder = Folder::new("replacing-grouped-flag");
+    let path = folder.file("Items.fmp12", PASSWORD, |root| {
+        let table = om_hbam::slot::uint_segment(TABLE);
+        root.remove(&[&table, &[5]]);
+        root.remove(&[&table, &[0x0d]]);
+        fixture::add_occurrence(root, OTHER, "Peers", TABLE);
+        let mut names = fixture::names();
+        names.add_occurrence(OTHER, "Peers", TABLE);
+        for (id, name, kind, options) in [
+            (GROUP, "GroupKey", 1, 0x8000_0000),
+            (KEY, "ItemKey", 1, 0x8000_0088),
+            (FLAG, "Primary", 2, 0xa8),
+        ] {
+            names.add_field(TABLE, id, name);
+            fixture::add_field(root, TABLE, id, name, 1, kind, 0, options, 0);
+        }
+        add_grouped_self_join(root, OCCURRENCE, OTHER, GROUP, KEY);
+        for (field, text) in [
+            (KEY, "Get ( UUID )"),
+            (FLAG, "If ( Peers::Primary = 1 ; 0 ; 1 )"),
+        ] {
+            fixture::add_formula(root, &names, (TABLE, OCCURRENCE), field, 5, text);
+        }
+    });
+
+    let mut provider = opened(&path);
+    let draft = ScriptWrite {
+        layout: LAYOUT as u32,
+        ..Default::default()
+    };
+    let read = |provider: &mut NativeProvider, record: i64| {
+        let record = u64::try_from(record).unwrap();
+        let need = CalcNeed::Record {
+            table: TABLE,
+            record,
+        };
+        let page = provider.calc_data(&[need]).unwrap();
+        let values = page.records[&(TABLE, record)].as_ref().unwrap();
+        match values.get(FLAG, 1) {
+            Some(Value::Number(number) | Value::NumberText(number, _)) => number.to_i64(),
+            None => None,
+            value => panic!("unexpected group flag {value:?}"),
+        }
+    };
+    let set = |record, field, value: &str| ScriptWrite {
+        record: Some(record),
+        cells: [(field, Some(value.to_owned()))].into(),
+        single_field_step: true,
+        ..draft.clone()
+    };
+    let mut ids = Vec::new();
+    for (index, (group, want)) in [("A", 1), ("A", 0), ("A", 0), ("B", 1)]
+        .into_iter()
+        .enumerate()
+    {
+        let start = ScriptWrite {
+            record_number: Some(RecordNumber::LocalNewRecord(index as u64 + 1)),
+            ..draft.clone()
+        };
+        provider.begin_record_commit().unwrap();
+        let created = provider
+            .write_record_with_creation(&start, RecordCreation::NewRecord)
+            .unwrap();
+        let record = created.id;
+        assert_eq!(
+            read(&mut provider, record),
+            Some(1),
+            "New Record: {created:?}"
+        );
+        provider.write_record(&set(record, GROUP, group)).unwrap();
+        provider.commit_transaction(true).unwrap();
+        assert_eq!(read(&mut provider, record), Some(want), "after Commit");
+        ids.push(record);
+    }
+
+    // Moving A's first row to B reads B's first row and only changes
+    // the moved row.
+    provider.begin_record_commit().unwrap();
+    provider.write_record(&set(ids[0], GROUP, "B")).unwrap();
+    provider.commit_transaction(true).unwrap();
+    assert_eq!(read(&mut provider, ids[0]), Some(0));
+    provider.close();
+    let mut provider = opened(&path);
+    for (record, want) in ids.into_iter().zip([0, 0, 0, 1]) {
+        assert_eq!(read(&mut provider, record), Some(want), "after reopen");
+    }
 }
 
 /// A field with furigana ("Use Furigana Field", option `0x40`): FileMaker

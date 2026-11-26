@@ -632,6 +632,21 @@ The two intervals identify the oldest matching row in this setup. The
 first row retained an empty result after the later rows joined its group.
 [Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7184309703).
 
+A second FileMaker Pro 26.1.1 run used the same unsorted join with an
+ordinary Text group key and a replacing Text `Get ( UUID )` row key
+(low option word `0x88`). A Number field had the replacing calculation
+`If ( Peer::Primary = 1 ; 0 ; 1 )`, where the related field is itself
+(low option word `0xa8`). New Record assigned `1` with the group key
+unset. After assigning group A, the first row kept `1`, and the next
+two, each of which read the first row, became `0` at Set Field. Assigning
+the first row to group B later changed it to `0` at Set Field, reading
+B's first row. A Note edit and reassigning the same group preserved
+the value. An explicit row key in a new record survived its group
+assignment and commit. Other committed rows retained their stored
+values throughout. All actions returned zero and reopened with the
+observed values.
+[Replacing native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7191674029).
+
 Still unmeasured:
 - sorted joins and other non-equality and multi-predicate joins,
   stored calculations and validation, and portal rows created in one
