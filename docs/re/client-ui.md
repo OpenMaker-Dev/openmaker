@@ -455,9 +455,23 @@ documents moving the selection by one point per arrow key press. See
 [layout-model.md 10.7](layout-model.md#107-an-objects-position) for how a
 move is stored.
 
-**Unknowns:** Which nested objects Select All and a layout-level box select,
-how they treat locked objects, and whether a modifier changes the arrow
-step. These gestures were not observed in a running FileMaker Pro window.
+### Select All
+
+[O] FileMaker Pro 26.1.1 on macOS, Actual Size, on a synthetic form with a
+locked rectangle, a group of two rectangles and a tab control with a
+rectangle on each panel ([#884](https://github.com/OpenMaker-Dev/openmaker/issues/884)).
+With the Selection tool active, Edit > Select All selected the standalone
+and locked rectangles, the group as a unit, both tab panels and the
+rectangles on both panels. Objects highlighted the panel rows and the group
+row, leaving the tab control row and individual group members unhighlighted.
+The front panel stayed active. With the Rectangle tool active, Select All
+selected just the four ungrouped rectangles, including the locked one and
+the one on the back panel, and switched back to the Selection tool.
+[Claris Help](https://help.claris.com/en/pro-help/content/protecting-objects-from-change.html)
+documents that a lock protects an object from edits, moves and deletion.
+
+**Unknowns:** The all-object selection rules for portal and slide-control
+contents, the Option-held menu label, and how mixed locked selections edit.
 
 ### Artwork and boundaries
 
