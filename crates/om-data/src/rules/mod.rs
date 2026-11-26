@@ -1987,6 +1987,11 @@ impl RecordPlan {
                     INDEX_OPTIONS | BOOKKEEPING_OPTIONS | ALWAYS_EVALUATE | UNSTORED
                 }
                 FieldKind::Summary => INDEX_OPTIONS | BOOKKEEPING_OPTIONS,
+                // While this container's transfer is pending, other cells
+                // may be written without touching its payload or definition.
+                FieldKind::Normal if local && options.pending_embedded_container_transfer() => {
+                    options.options
+                }
                 // A lookup alone: with other auto-entry its order is unmeasured.
                 // Furigana leaves a normal field's table writable: a change
                 // of its value alone is refused (`refuse_unwritable_changes`).
@@ -4072,6 +4077,15 @@ impl RecordPlan {
                 DataError::with_code(error::FIELD_MISSING, "A changed field no longer exists.")
             })?;
             let field = &self.fields[&field_id];
+            if field.options.pending_embedded_container_transfer() {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {} cannot be changed while its container storage transfer is pending.",
+                        field.name
+                    ),
+                ));
+            }
             // A container's text is its host's reference to the data
             // (containers.md 1.4), set by the client for any writer.
             let allowed = if entry.script {
@@ -7756,6 +7770,42 @@ mod tests {
         assert!(!prepared.values.contains_key(&9));
         assert!(!prepared.values.contains_key(&10));
         assert!(!prepared.values.contains_key(&12));
+    }
+
+    #[test]
+    fn a_pending_container_transfer_leaves_other_local_cells_writable() {
+        let table = Table {
+            id: 0x8002,
+            name: "Items".into(),
+            fields: vec![
+                field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(2, FieldKind::Normal, DataType::Container, 0, 0x6000, 0),
+            ],
+        };
+        let tree = KeyTree::default();
+        let file = CalcSchema::new("Items", Locale::en_us());
+        assert!(RecordPlan::from_desktop_file_schema(&table, &tree, &file, false).is_err());
+        let plan = RecordPlan::from_desktop_file_schema(&table, &tree, &file, true).unwrap();
+        let existing = BTreeMap::from([(1, "Before".into()), (2, "Existing reference".into())]);
+        let changes = BTreeMap::from([(1, Some("Example".into()))]);
+        let env = environment();
+        for (mode, row) in [
+            (WriteMode::Create, &BTreeMap::new()),
+            (WriteMode::Update, &existing),
+        ] {
+            let prepared = plan.prepare(mode, row, &changes, &env).unwrap();
+            assert_eq!(prepared.changed_fields, [1]);
+            assert_eq!(decoded(&prepared, 1).as_deref(), Some("Example"));
+            assert!(!prepared.values.contains_key(&2));
+        }
+        let refused = plan.compute(
+            WriteMode::Update,
+            &existing,
+            &BTreeMap::from([(2, None)]),
+            &env,
+            Entry::script(false, false),
+        );
+        assert_eq!(refused.err().and_then(|e| e.code), Some(error::UNAVAILABLE));
     }
 
     #[test]

@@ -849,7 +849,17 @@ definition's `mOptionSet` (schema-path.md 5.5; DWARF enum
 | `0x4000000` | `kSecureLessFolder` | secure storage with fewer folders |
 
 `0x4000` (`kNeedLibraryUpdate`) and `0x8000` (`kSkipLibraryUpdate`) are
-named in the same enum; their use was not traced. The other settings are
+named in the same enum. FileMaker Pro 26.1.1 stored `0x6000` after turning
+off external Open storage and deferring the transfer. The existing image
+stayed external. New Record and text-only changes to new and existing
+rows succeeded. The container definition and values stayed byte-identical.
+Completing the transfer changed the word to `0x2000` and moved the image
+back into the file. Inferred: `0x4000` marks a pending library transfer and
+`0x2000` retains the Open selector. `0x8000`, hosted writes and changes
+to the container in this state are unmeasured.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1060)
+
+The other settings are
 members of the field definition `[T, 03, 05, F]` (bin
 `DBBinaryData::GenerateREMO` 0xd7d240, `RemoteHeader::ConstructFlags`
 0xd97900):
