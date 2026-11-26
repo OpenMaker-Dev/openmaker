@@ -7,8 +7,8 @@ use egui::{pos2, vec2, Color32, CornerRadius, Rect, Stroke, StrokeKind, Ui};
 use om_layout::{Layout, ObjectKind, TextRun};
 
 use super::{
-    border_width, color, layout_cache::LayoutCache, line, paint_box, paint_library_image,
-    paint_rich_text, Session,
+    color, layout_cache::LayoutCache, line, paint_box, paint_library_image, paint_rich_text,
+    Session,
 };
 
 pub(crate) struct Surface<'a> {
@@ -88,7 +88,7 @@ impl<'a> Surface<'a> {
         paint_box(ui, rect, &style, kind);
         if matches!(kind, ObjectKind::Field | ObjectKind::Text)
             && !(0..4).any(|side| {
-                border_width(&style, side).is_some()
+                super::border_width(&style, side).is_some()
                     && style.border_color[side].is_none_or(|c| color(c).a() > 0)
             })
         {

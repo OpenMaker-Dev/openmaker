@@ -2131,18 +2131,20 @@ at the current draft frames. Merge text shows its stored markers and
 fields show their design names. The editor draws this artwork without
 evaluating record calculations or running document actions. Pasteboard
 objects, unsupported objects and geometry-only providers still use
-outlines and captions. Objects that cross the layout edge retain their
-full outline, with artwork clipped to the layout. Borderless fields and
-text have a faint editing boundary. The FileMaker boundary display options
-have not been compared. Contents of closed popovers still appear on the
-canvas, as do contents of inactive panels. Button icons, container
-visibility and design-time web viewer placeholders are separate work
-([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
+outlines and captions. Button icons, panel visibility and design-time
+web viewer placeholders are separate work ([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
 The scrollable canvas, part tabs, objects and selection handles scale
 together. Placement, movement, resizing and the Inspector use the original
 layout points at every zoom. The toolbar, Objects pane and Inspector keep
 their size. The wheel and scroll bars scroll the canvas at every zoom.
 Touch drag to scroll is available at Actual Size.
+
+Objects that cross the layout edge retain their full outline, with artwork
+clipped to the layout. Borderless fields and text have a faint editing
+boundary. FileMaker's boundary display options have not been compared.
+Contents of closed popovers still appear on the canvas
+([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
+
 The Objects pane is 220 pt wide, lists the layout's objects front to back,
 filters by kind or known field name, and selects and reveals the matching
 canvas object. Inspector tabs are interactive; Position shows real bounds
