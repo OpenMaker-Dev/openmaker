@@ -621,6 +621,8 @@ from the current record page. Stored anchors resize objects within their
 containers. Record changes keep the user's selected panels. Browse shows no
 authoring part tabs or object kind captions.
 
+- Text objects in Browse draw an edge only when its style resolves to a
+  line. A width and color alone leave the edge hidden.
 - A text, number, date, time or timestamp value stored with character
   styles (a chunked value beside a style subtree `ff`, calc-values.md
   implementation notes) shows its text; a nested form the provider cannot

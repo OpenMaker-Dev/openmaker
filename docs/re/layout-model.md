@@ -1648,6 +1648,16 @@ file. No CSS or font asset is copied into the implementation.
 | text transform (75) | 1 none (`fill-low-shadow-inverted-edit:placeholder`); 3 uppercase (`uppercase-secondary-text`, `separator-uppercase-highlight-buttonbar`) | 2 capitalize, 4 lowercase inferred; no such rule in the inspected installed theme CSS |
 | text vertical align (611) | 0 top (`field`, `small_valigned_top_editbox`); 1 center (`button`, `small_center_aligned_text`); 2 bottom (`small_bottom_aligned_text`, `medium_valigned_btmright_editbox`) | These are zero-based, unlike text-align |
 
+[O, FileMaker Pro 26.1.1] Browse draws no line on a Text object's edge
+when its resolved border style is unset, even with a set width and
+color. A Text object with only its top edge enabled retained red and
+1-point width on all four sides. Only the top had a resolved style
+(solid, 5), and only the top drew. Removing that last style left all
+edges invisible and the Inspector showed None, with the width and color
+still present. A control with all four styles set to solid drew all four
+edges. Other object kinds and modes were not checked.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1091#issuecomment-7191245927)
+
 [O] Where a field's text sits when its style stores no vertical align (611).
 None of the 156 field objects of the six English starters resolves 611 from
 the object, the layout or the theme, components 1 and 3. Their themes carry it
