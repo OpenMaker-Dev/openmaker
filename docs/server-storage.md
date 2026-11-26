@@ -1614,36 +1614,53 @@ id was not issued or that a record already has, an entry in the edit form
 for a record the file does not hold (deleted, or never created: only an
 entry marked new creates a record; OpenMaker's choice, write-path.md 3.4,
 [#840](https://github.com/OpenMaker-Dev/openmaker/issues/840)), a staged
-record whose modification count is not one, and a record whose upload an
-earlier commit of the same transaction took and could not save (below).
-FileMaker Server half-writes a record another lock user holds and answers
-done (write-path.md 3.4); OpenMaker refuses.
+record whose modification count is not one, a record whose upload an
+earlier commit of the same transaction took and could not save, and a
+new record named with nothing uploaded for it (below). FileMaker Server
+half-writes a record another lock user holds and answers done
+(write-path.md 3.4); OpenMaker refuses.
 
-A record the list names with nothing staged for it, and the deletion of
-one that is not there, ask for nothing: the commit is answered done with
-nothing stored for that entry, and the log says `commit of record … that
-was never uploaded`. The one exception is a record whose upload a commit
-of this connection took and did not store: its save failed and was taken
-back, or the engine gave no commit's answer, and the upload went with it.
-The connection's temporary area keeps such a record's path with the
-commit's transaction (`writes::TempArea`), recorded once the commit's
-outcome is known, so that each record the commit was lent ends up staged
-again, stored, or kept there. A commit of that transaction naming the
-record again with nothing staged is refused, nothing written and its other
+A record the list names in the edit form with nothing staged for it, and
+the deletion of one that is not there, ask for nothing: the commit is
+answered done with nothing stored for that entry, and the log says
+`commit of record … skipped: nothing is staged for it` (before
+[#839](https://github.com/OpenMaker-Dev/openmaker/issues/839) was fixed,
+`commit of record … that was never uploaded`). Two such entries
+are refused instead, with the whole commit, nothing written and its
 staged records left staged
-([#839](https://github.com/OpenMaker-Dev/openmaker/issues/839)): answered
-done, it would report as stored what is not, which FileMaker Pro's user
-then believes. The record is forgotten when it is uploaded again, when op62
-releases its lock or op65 its transaction's locks, and with the session;
-each such entry is charged to the client's upload memory, at most what its
-record was.
+([#839](https://github.com/OpenMaker-Dev/openmaker/issues/839)):
 
-Only that case is refused, because the others might come from a stock
-client: what FileMaker Server answers an entry naming a record with
-nothing uploaded is unmeasured, and so is what FileMaker Pro sends when it
-has locked a record and leaves it without a change (the Open Record/Request
-script step and then Commit Records; a character typed and deleted, then
-the record left; Revert Record)
+- A record whose upload a commit of this connection took and did not
+  store: its save failed and was taken back, or the engine gave no
+  commit's answer, and the upload went with it. Answered done, the same
+  commit sent again would report as stored what is not, which FileMaker
+  Pro's user then believes. The connection's temporary area keeps such a
+  record's path with the commit's transaction (`writes::TempArea`),
+  recorded once the commit's outcome is known, so that each record the
+  commit was lent ends up staged again, stored, or kept there; a commit of
+  that transaction naming it with nothing staged is refused. The record is
+  forgotten when it is uploaded again; when an op62 of that transaction
+  leaves the transaction holding no lock on it, as the lock table says
+  after the release (a lock taken twice is still held after one op62, and
+  another transaction's op62 changes nothing); when an op65 releases that
+  transaction's locks, or all of the connection's; when a commit of that
+  transaction naming it for deletion is saved; and with the session. A
+  deletion by another session forgets nothing: the refusal stays true.
+  Each entry is charged to the client's upload memory, at most what its
+  record was.
+- A record marked new (`01`) with nothing uploaded: a record is asked for
+  and nothing makes one, so done cannot be true, and a staged edit in the
+  same commit would be stored without it. OpenMaker's choice; what
+  FileMaker Server answers is unmeasured
+  ([#1008](https://github.com/OpenMaker-Dev/openmaker/issues/1008)).
+
+Only these are refused, because an entry in the edit form with nothing
+uploaded might come from a stock client, and answered done it says
+nothing false (nothing changed): what FileMaker Server answers such an
+entry is unmeasured, and so is what FileMaker Pro sends when it has locked
+a record and leaves it without a change (the Open Record/Request script
+step and then Commit Records; a character typed and deleted, then the
+record left; Revert Record)
 ([#1008](https://github.com/OpenMaker-Dev/openmaker/issues/1008)). The
 capture of FileMaker Pro 26.0.3 against FileMaker Server 26.0.3 written out
 request by request

@@ -542,8 +542,11 @@ pub struct TempArea {
     /// the transaction that names one again with nothing staged is refused
     /// ([`unstorable`]), where it would be answered done with nothing
     /// stored (#839 of github.com/OpenMaker-Dev/openmaker). An entry goes
-    /// when the record is staged again, when an op62 releases its lock, or
-    /// an op65 its transaction's locks, and with the area. Each is charged
+    /// when the record is staged again; when an op62 of its transaction
+    /// leaves that transaction holding no lock on the record; when an op65
+    /// releases its transaction's locks, or all of the connection's; when a
+    /// commit of its transaction that names the record for deletion is
+    /// saved; and with the area. Each is charged
     /// [`lost_memory`], at most what its record was, so they are bounded as
     /// the staged records they replace were.
     lost: BTreeMap<KeyPath, Lost>,
@@ -614,13 +617,50 @@ impl TempArea {
         named
     }
 
-    /// Forget that the upload of the record at `path` was lost: it is
-    /// staged again, or its lock was released (op62).
-    pub fn forget_lost(&mut self, path: &KeyPath) {
-        if let Some(lost) = self.lost.remove(path) {
-            self.held
-                .shrink_to(self.held.bytes().saturating_sub(lost.charge));
+    /// Forget that the upload of the record at `path` was lost, if it was
+    /// lost to a commit of transaction `txn` (`None`: of any): the record is
+    /// staged again (any), its transaction no longer holds a lock on it
+    /// (op62), or a commit of the transaction deleted it.
+    pub fn forget_lost(&mut self, path: &KeyPath, txn: Option<u32>) {
+        if self
+            .lost
+            .get(path)
+            .is_some_and(|lost| txn.is_none_or(|txn| lost.txn == txn))
+        {
+            if let Some(lost) = self.lost.remove(path) {
+                self.held
+                    .shrink_to(self.held.bytes().saturating_sub(lost.charge));
+            }
         }
+    }
+
+    /// The records commit `list` names for deletion whose upload an earlier
+    /// commit of transaction `txn` lost: forgotten once the commit is
+    /// saved ([`TempArea::forget_lost`]).
+    pub fn lost_deleted(&self, list: &OwnedNode, txn: u32) -> Vec<KeyPath> {
+        if self.lost.is_empty() {
+            return Vec::new();
+        }
+        let mut deleted = Vec::new();
+        for table in &list.children {
+            let Some(records) = table.child(RECORDS) else {
+                continue;
+            };
+            for entry in &records.children {
+                if entry.push || entry.value.as_deref() != Some(&[COMMIT_DELETED]) {
+                    continue;
+                }
+                let path = vec![
+                    table.segment.clone(),
+                    RECORDS.to_vec(),
+                    entry.segment.clone(),
+                ];
+                if self.lost.get(&path).is_some_and(|lost| lost.txn == txn) {
+                    deleted.push(path);
+                }
+            }
+        }
+        deleted
     }
 
     /// Forget the lost uploads of transaction `txn`, or of every
@@ -912,7 +952,7 @@ pub fn stage_upload(
     for record in &records {
         let mut path = dest.clone();
         path.push(record.segment.clone());
-        area.forget_lost(&path);
+        area.forget_lost(&path, None);
     }
     let before = area.held();
     let mut held = before + created;
@@ -947,9 +987,10 @@ pub fn stage_upload(
 /// record whose modification count is not a count, 5.4) is refused whole
 /// as [`CommitError::Refused`], its staged records left staged. So is a
 /// commit naming a record whose upload an earlier commit of its
-/// transaction took and could not save ([`unstorable`]); a record named
-/// with nothing staged otherwise asks for nothing, as the deletion of one
-/// that is not there does. The commit counts once the engine saved it:
+/// transaction took and could not save, or a new record with nothing
+/// uploaded ([`unstorable`]); a record named in the edit form with nothing
+/// staged otherwise asks for nothing, as the deletion of one that is not
+/// there does. The commit counts once the engine saved it:
 /// when it cannot be, every record is put back, the records stay locked
 /// and the save's error is returned as [`CommitError::NotSaved`], which
 /// fails the op70; the uploads it took are then lost, and the connection
@@ -1154,13 +1195,14 @@ fn refused_action(
 /// [`commit_list`] writes any: the first entry it would have to leave out
 /// (see [`commit`]). The deletion of a record that is not there asks for
 /// nothing and passes. An entry other than a deletion with nothing staged
-/// for it is refused only when its upload was taken by an earlier commit of
-/// the same transaction whose save failed (`lost`, [`TempArea::settle`]):
+/// for it is refused when its upload was taken by an earlier commit of the
+/// same transaction whose save failed (`lost`, [`TempArea::settle`]):
 /// answered done, the same commit sent again would say stored what is not
-/// (#839 of github.com/OpenMaker-Dev/openmaker). Any other entry with
-/// nothing staged asks for nothing and passes, as before: what FileMaker
-/// Server answers such an entry, and what FileMaker Pro sends when it
-/// leaves a record it locked unchanged, are unmeasured
+/// (#839 of github.com/OpenMaker-Dev/openmaker); and when it is marked new,
+/// asking for a record nothing makes. An entry in the edit form with
+/// nothing staged otherwise asks for nothing and passes, as before: what
+/// FileMaker Server answers such an entry, and what FileMaker Pro sends
+/// when it leaves a record it locked unchanged, are unmeasured
 /// (docs/server-storage.md 5). Only an entry marked new (`01`) creates a
 /// record, and only one whose id was issued and is free; an entry in the
 /// edit form for a record the file does not hold is refused, whatever its
@@ -1196,23 +1238,37 @@ fn unstorable(
             }
             let Some(record) = staged.get(&path) else {
                 // Nothing staged asks for nothing, as on main before #839 of
-                // github.com/OpenMaker-Dev/openmaker, unless an earlier
-                // commit of this transaction took the record's upload and
-                // could not save it: answered done, it would say stored
-                // what is not.
-                if !lost.contains(&path) {
-                    continue;
+                // github.com/OpenMaker-Dev/openmaker, but for two entries:
+                // one whose upload an earlier commit of this transaction
+                // took and could not save, which answered done would say
+                // stored what is not, and one marked new, which asks for a
+                // record that nothing makes, so that done cannot be true
+                // (OpenMaker's choice; FileMaker Server unmeasured).
+                if lost.contains(&path) {
+                    return Some(match id {
+                        Some(id) => format!(
+                            "record {id}'s upload was taken by an earlier commit of this session \
+                             whose save failed; it must be uploaded again"
+                        ),
+                        None => format!(
+                            "{path:02x?}'s upload was taken by an earlier commit of this session \
+                             whose save failed; it must be uploaded again"
+                        ),
+                    });
                 }
-                return Some(match id {
-                    Some(id) => format!(
-                        "record {id}'s upload was taken by an earlier commit of this session \
-                         whose save failed; it must be uploaded again"
-                    ),
-                    None => format!(
-                        "{path:02x?}'s upload was taken by an earlier commit of this session whose \
-                         save failed; it must be uploaded again"
-                    ),
-                });
+                if !entry.push && value == Some(&[COMMIT_NEW]) {
+                    return Some(match id {
+                        Some(id) => format!(
+                            "new record {id} was named with no upload; a commit creates a record \
+                             only from its upload"
+                        ),
+                        None => format!(
+                            "{path:02x?} was named as a new record with no upload; a commit \
+                             creates a record only from its upload"
+                        ),
+                    });
+                }
+                continue;
             };
             let Some(id) = id else {
                 return Some(format!("{path:02x?} is no record of a table the file has"));
@@ -1294,7 +1350,7 @@ fn commit_list(
                     continue;
                 }
                 let Some(mut record) = staged.remove(&path) else {
-                    warn!("{file:?}: commit of record {id} that was never uploaded");
+                    warn!("{file:?}: commit of record {id} skipped: nothing is staged for it");
                     continue;
                 };
                 if !modcount::counted(&record) {
@@ -1667,27 +1723,35 @@ fn names_a_change(code: u32) -> bool {
 /// anyone, so one op62 makes each other client receive at most one
 /// notification, about a path the sender had locked, no longer than a key
 /// (255 bytes). FileMaker Pro also sends op62 with an empty path to end a
-/// notification lock, which needs nothing here.
-pub(crate) fn unlock(op: ReleaseLock, locks: &mut Locks<'_>) -> Vec<Change> {
+/// notification lock, which needs nothing here. Returns the notices, and
+/// whether the lock user still holds a lock on the path afterwards
+/// ([`crate::engine::Reply::ReleaseLock`]).
+pub(crate) fn unlock(op: ReleaseLock, locks: &mut Locks<'_>) -> (Vec<Change>, bool) {
     let ReleaseLock {
         connection,
         request: req,
     } = op;
     if req.path.is_empty() {
-        return Vec::new();
+        return (Vec::new(), false);
     }
     let user = LockUser {
         connection,
         txn: req.txn,
     };
     let released = locks.unlock(&req.path, user, req.lock_type);
+    // Whether the lock user still holds the path: a lock taken twice is
+    // held after one op62 (write-path.md 4.3).
+    let held = locks.holds_any(&req.path, user);
     if released && names_a_change(req.attention_mask) {
-        return vec![Change {
-            path: req.path,
-            code: req.attention_mask,
-        }];
+        return (
+            vec![Change {
+                path: req.path,
+                code: req.attention_mask,
+            }],
+            held,
+        );
     }
-    Vec::new()
+    (Vec::new(), held)
 }
 
 /// op65: release a transaction's locks, or all of the connection's.

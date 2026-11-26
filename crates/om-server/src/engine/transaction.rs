@@ -790,6 +790,11 @@ impl<'a> Locks<'a> {
         self.table().unlock(path, user, lock_type)
     }
 
+    /// `LockTable::holds_any`.
+    pub fn holds_any(&mut self, path: &[Vec<u8>], user: LockUser) -> bool {
+        self.table().holds_any(path, user)
+    }
+
     /// Take the table now, before the operation reads anything else: a
     /// server script's commit held it from its start before the engine
     /// interface, so no lock request ran between its checks and its store.

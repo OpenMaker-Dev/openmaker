@@ -1457,7 +1457,7 @@ impl Connection {
                         .get(&header.file_id)
                         .filter(|f| f.account.is_some())
                     {
-                        let path = request.path.clone();
+                        let (path, txn) = (request.path.clone(), request.txn);
                         let release = ReleaseLock {
                             connection: session.connection_id,
                             request,
@@ -1466,10 +1466,16 @@ impl Connection {
                             .engine
                             .submit(&file.hosted, Operation::ReleaseLock(release));
                         outcome.notices.deliver(&file.hosted, &shared.mailboxes);
-                        // The record's lock released, a commit of it is no
-                        // longer the one its failed save interrupted.
-                        if let Some(temp) = session.temp.get_mut(&header.file_id) {
-                            temp.forget_lost(&path);
+                        // Once the transaction holds no lock on the record,
+                        // as the lock table says after the release (a lock
+                        // taken twice is held after one op62), a commit of
+                        // it is no longer the one its failed save
+                        // interrupted. Another transaction's op62 changes
+                        // nothing.
+                        if let Reply::ReleaseLock { held: false } = outcome.reply {
+                            if let Some(temp) = session.temp.get_mut(&header.file_id) {
+                                temp.forget_lost(&path, Some(txn));
+                            }
                         }
                     }
                     write::echo_header(&header)
@@ -4035,6 +4041,7 @@ fn commit(
         .or_insert_with(|| writes::TempArea::new(Charge::none(&shared.upload_memory, client)));
     let (staged, lent) = temp.lend(&list);
     let lost = temp.lost_named(&list, user.txn);
+    let deleted = temp.lost_deleted(&list, user.txn);
     // The account's set decides each record's action under the write lock
     // (`writes::refused_action`); a refused commit writes nothing, and fails
     // as one not saved does (FileMaker Pro checks first and reports 200).
@@ -4071,6 +4078,11 @@ fn commit(
         }
     };
     let taken = if committed.result.is_ok() {
+        // A record this commit of the transaction deleted is no longer one
+        // whose lost upload a commit of it could name.
+        for path in &deleted {
+            temp.forget_lost(path, Some(user.txn));
+        }
         Taken::Stored
     } else {
         lost
