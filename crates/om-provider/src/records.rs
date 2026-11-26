@@ -667,11 +667,21 @@ impl NativeProvider {
                 .is_some_and(|options| options.options & 0x1_0000 == 0)
     }
 
-    /// Whether Browse edits `field` of another file's table on a layout:
-    /// one a routed write takes ([`Self::check_scalar_cells`]) that does
-    /// not repeat. Browse edits a later repetition of the layout's own
-    /// record through its related path, which a routed table does not
-    /// take yet.
+    /// Whether Browse writes `field` through the owner on a layout of its
+    /// table: an ordinary stored field ([`Self::ordinary_stored`]), each of
+    /// its repetitions up to the 255th by its cell, as Set Field writes
+    /// them (`check_scalar_cells`) and as a layout of this file's table
+    /// offers them (#43).
+    pub(super) fn routed_layout_field(field: &om_hbam::Field) -> bool {
+        Self::ordinary_stored(field)
+            && field
+                .decoded_options()
+                .is_some_and(|options| options.max_repetitions <= 255)
+    }
+
+    /// Whether Browse edits `field` of another file's table in a portal row
+    /// or related field: one a routed write takes
+    /// ([`Self::check_scalar_cells`]) that does not repeat.
     pub(super) fn routed_browse_field(field: &om_hbam::Field) -> bool {
         Self::ordinary_stored(field)
             && field

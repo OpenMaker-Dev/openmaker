@@ -3394,7 +3394,7 @@ impl DataProvider for NativeProvider {
             // Planned over the owner's routed plan (#187), as its write is,
             // opening nothing; deferred while a file its rules read waits
             // (`routed_edits`, #1160).
-            let (editable, typed) = match self.routed_edits(route, &file)? {
+            let editable = match self.routed_edits(route, &file)? {
                 related_owner::RoutedEdits::ReadOnly => {
                     return Ok(om_data::RecordCapabilities {
                         editable_fields: Some(BTreeSet::new()),
@@ -3402,37 +3402,33 @@ impl DataProvider for NativeProvider {
                     });
                 }
                 // Only the fields Browse writes through the owner
-                // (`routed_browse_field`): a repeating field the owner's
-                // plan offers is not. Its typed globals are the owner's
-                // session values (`set_typed_globals`).
+                // (`routed_layout_field`), and its typed globals, the
+                // owner's session values (`set_typed_globals`).
                 related_owner::RoutedEdits::Offered {
                     fields,
                     globals,
                     table,
-                } => (
-                    Some(
-                        fields
-                            .into_iter()
-                            .filter(|name| {
-                                table.fields.iter().any(|field| {
-                                    field.name == *name && Self::routed_browse_field(field)
-                                })
+                } => Some(
+                    fields
+                        .into_iter()
+                        .filter(|name| {
+                            table.fields.iter().any(|field| {
+                                field.name == *name && Self::routed_layout_field(field)
                             })
-                            .chain(globals.iter().cloned())
-                            .collect(),
-                    ),
-                    globals,
+                        })
+                        .chain(globals)
+                        .collect::<BTreeSet<String>>(),
                 ),
-                related_owner::RoutedEdits::Refused => (None, BTreeSet::new()),
+                related_owner::RoutedEdits::Refused => None,
             };
-            // A typed global's later repetitions are entered as cells of the
-            // record's own related draft (#185), as on a layout of this
-            // file's table: by the layout's occurrence and field id.
+            // Later repetitions are entered as cells of the record's own
+            // related draft (#185), as on a layout of this file's table: by
+            // the layout's occurrence and field id.
             let repetitions: BTreeSet<u64> = file
                 .table(table.id)
                 .into_iter()
                 .flat_map(|t| t.fields.values())
-                .filter(|f| typed.contains(&f.name))
+                .filter(|f| editable.as_ref().is_some_and(|e| e.contains(&f.name)))
                 .map(|f| f.id)
                 .collect();
             let mut related = BTreeMap::new();

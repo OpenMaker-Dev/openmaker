@@ -1494,6 +1494,20 @@ fn imported_layout_edits_commit_on_the_owner_and_return_fresh_calculations() {
             ..write.clone()
         })
         .unwrap();
+    // Browse offers the repeating field there, its later repetitions by the
+    // layout's occurrence (#43), and the window's commit of the user's
+    // typing into the second is the owner's to check and write.
+    let capabilities = provider.record_capabilities(layout).unwrap();
+    assert!(capabilities.editable_fields.unwrap().contains("Count"));
+    assert!(capabilities.related[&REMOTE].contains(&COUNT));
+    let second = COUNT * 256 + 2;
+    provider
+        .write_record(&om_data::ScriptWrite {
+            cells: [(second, Some("8".into()))].into(),
+            typed: [second].into(),
+            ..write.clone()
+        })
+        .unwrap();
     let read = provider
         .calc_data(&[CalcNeed::Record {
             table: imported,
@@ -1507,7 +1521,7 @@ fn imported_layout_edits_commit_on_the_owner_and_return_fresh_calculations() {
             .map(|v| v.to_text(&cx).into_string())
             .unwrap_or_default()
     };
-    assert_eq!((count(1), count(2)), ("41".to_owned(), "7".to_owned()));
+    assert_eq!((count(1), count(2)), ("41".to_owned(), "8".to_owned()));
 }
 
 /// Deletion needs no field-entry plan. The complete owner engine must retain
@@ -1926,10 +1940,9 @@ fn a_related_files_globals_are_its_session_values() {
     // Its second repetition is entered by the layout's occurrence and id.
     let capabilities = provider.record_capabilities(layout).unwrap();
     assert!(capabilities.editable_fields.unwrap().contains("Setting"));
-    assert_eq!(
-        capabilities.related,
-        [(REMOTE, [SETTING, DEFAULTS].into())].into()
-    );
+    assert!([SETTING, DEFAULTS]
+        .iter()
+        .all(|field| capabilities.related[&REMOTE].contains(field)));
     let before = effects();
     provider
         .set_typed_globals(imported, &[((DEFAULTS, 2), "second".into())].into())
