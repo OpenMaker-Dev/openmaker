@@ -166,6 +166,12 @@ fn the_display_script_refuses_options_that_open_its_display() {
         "-displayfd 3",
         "-nolock",
         "-screen 0 800x600x24 -extension MIT-SHM",
+        "   ",
+        "-dpi 96x24",
+        "-screen 0",
+        "-screen 0 800x",
+        "-screen 0 800x600",
+        "-screen x 800x600",
     ] {
         let out = std::process::Command::new("sh")
             .args([script, "-s", screen, "true"])

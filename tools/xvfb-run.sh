@@ -26,18 +26,44 @@
 set -euf
 
 screen='-screen 0 1600x1000x24'
+refuse_screen() {
+    echo "$0: -s takes only -screen and -dpi settings (\"-screen <n> <W>x<H>x<D>\", \"-dpi <n>\"), not \"$screen\"" >&2
+    exit 2
+}
+# Whether $2 is exactly a match of the extended regular expression $1.
+matches() { printf '%s\n' "$2" | grep -Eqx "$1"; }
+
 if [ "${1-}" = -s ]; then
     screen=${2:?"-s needs Xvfb's arguments"}
     shift 2
+    # Whole settings only, at least one: each -screen with its number and
+    # size (Xvfb needs the depth too), each -dpi with its value.
+    expect=option
+    settings=0
     for argument in $screen; do
-        case $argument in
-        -screen | -dpi) ;;
-        '' | x* | *[!0-9x]*)
-            echo "$0: -s takes only -screen and -dpi settings, not $argument" >&2
-            exit 2
+        case $expect in
+        option)
+            case $argument in
+            -screen) expect=number ;;
+            -dpi) expect=dpi ;;
+            *) refuse_screen ;;
+            esac
+            ;;
+        number)
+            matches '[0-9]+' "$argument" || refuse_screen
+            expect=size
+            ;;
+        size)
+            matches '[1-9][0-9]*x[1-9][0-9]*x[1-9][0-9]*' "$argument" || refuse_screen
+            expect=option settings=$((settings + 1))
+            ;;
+        dpi)
+            matches '[1-9][0-9]*' "$argument" || refuse_screen
+            expect=option settings=$((settings + 1))
             ;;
         esac
     done
+    [ "$expect" = option ] && [ "$settings" -gt 0 ] || refuse_screen
 fi
 if [ $# -eq 0 ]; then
     echo "usage: $0 [-s \"-screen 0 <W>x<H>x<D>\"] <command> [arguments...]" >&2
