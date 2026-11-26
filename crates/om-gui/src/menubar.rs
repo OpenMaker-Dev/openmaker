@@ -759,6 +759,10 @@ fn view_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
 /// stores for each is not measured, containers.md "Desktop menus and file
 /// dialogs").
 fn insert_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut Vec<Action>) {
+    if context.mode == Mode::Layout {
+        layout_insert_menu(rows, context, actions);
+        return;
+    }
     // Editing only and Minimum leave both out (FileMaker Pro 26.0.3,
     // #651's reading).
     let insert = context.container_insert && context.full_menus();
@@ -821,6 +825,60 @@ fn insert_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut
             actions.push(Action::Step(step, 0));
         }
     }
+}
+
+/// Layout mode's Insert menu: FileMaker Pro 26.1.1's items, titles, order,
+/// submenus and shortcuts (re/client-ui.md, "Layout mode's Insert menu").
+/// Part... opens Part Definition, as the Part tool does; the other items
+/// are shown but not offered yet.
+fn layout_insert_menu(
+    rows: &mut dyn MenuRows,
+    context: &MenuContext<'_>,
+    actions: &mut Vec<Action>,
+) {
+    let alt_cmd = |key| command(CMD.plus(Modifiers::ALT), key);
+    let shown = context.session.and_then(|session| session.layout);
+    pending(rows, "Field...", None);
+    if rows.item("Part...", None, false, context.design && shown.is_some()) {
+        actions.push(Action::InsertPart);
+    }
+    rows.separator();
+    pending_submenu(rows, "Graphic Object");
+    pending_submenu(rows, "Field/Control");
+    for label in [
+        "Portal...",
+        "Tab Control...",
+        "Slide Control",
+        "Web Viewer...",
+        "Chart...",
+        "Button",
+        "Popover Button",
+        "Button Bar",
+    ] {
+        pending(rows, label, None);
+    }
+    rows.separator();
+    pending(rows, "Picture...", None);
+    rows.separator();
+    pending(rows, "Current Date", None);
+    pending(rows, "Current Time", command(CMD, Key::Semicolon));
+    pending(rows, "Current User Name", command(SHIFT_CMD, Key::N));
+    rows.separator();
+    for label in [
+        "Date Symbol",
+        "Time Symbol",
+        "User Name Symbol",
+        "Page Number Symbol",
+        "Record Number Symbol",
+        "Other Symbol...",
+    ] {
+        pending(rows, label, None);
+    }
+    rows.separator();
+    pending(rows, "Merge Field...", alt_cmd(Key::M));
+    pending(rows, "Merge Variable", None);
+    rows.separator();
+    pending(rows, "Layout Calculation...", command(SHIFT_CMD, Key::C));
 }
 
 fn format_menu(rows: &mut dyn MenuRows) {

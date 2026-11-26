@@ -236,6 +236,7 @@ gray.
   Formatting Bar | Ruler | Actual Size, Zoom In, Zoom Out.
 - **Insert**: Picture..., Audio/Video..., PDF..., File... | Current Date,
   Current Time, Current User Name | From Index..., From Last Visited Record.
+  Layout mode has its own (below, "Layout mode's Insert menu").
 - **Format**: Font >, Size >, Style >, Align Text >, Line Spacing >,
   Text Color >.
 - **Records** (Browse/Preview): New Record ⌘N, Duplicate Record ⌘D, Delete
@@ -684,6 +685,44 @@ SHA-256 of the archives: `IDD_PART_SETUP.nib`
 `3231311abf1fbf77a3d0511afc31b78796d82f84d7f3cf293579f6a32af195ec`;
 `IDD_PART_DEFINITION.nib`
 `a5068fd2b6fa7447f66a1950740445d0fdd9e16991de0710f588f64d17e68224`.
+
+## Layout mode's Insert menu
+
+[O, 2026-11-26, FileMaker Pro 26.1.1 for macOS, #911's run: Layout mode on
+a starter layout, the menu read through accessibility and a 2× screenshot
+with nothing selected, with one edit box selected, and while a text was
+being edited] The menu was the same in all three states, every item
+enabled. Top to bottom (`|` a separator, `>` a submenu):
+
+- Field..., Part... |
+- Graphic Object > (Text, Line, Rectangle, Rounded Rectangle, Oval),
+  Field/Control > (Edit Box, Drop-down List, Pop-up Menu, Checkbox Set,
+  Radio Button Set, Drop-down Calendar, Concealed Edit Box), Portal...,
+  Tab Control..., Slide Control, Web Viewer..., Chart..., Button, Popover
+  Button, Button Bar |
+- Picture... |
+- Current Date, Current Time ⌘;, Current User Name ⇧⌘N |
+- Date Symbol, Time Symbol, User Name Symbol, Page Number Symbol, Record
+  Number Symbol, Other Symbol... |
+- Merge Field... ⌥⌘M, Merge Variable |
+- Layout Calculation... ⇧⌘C
+
+Titles end in three periods where shown. Current Date has no shortcut here
+(⌘- in Browse).
+
+- **Part...** opened Part Definition at once, with the first kind of part
+  the layout lacked chosen (Title Header, on a layout with a top
+  navigation part and a body, both dimmed). Every checkbox was off, and
+  only "Restart page numbers after each occurrence" was enabled for that
+  choice.
+- **Field...** opened Specify Field on the layout's table, no field chosen
+  (OK dimmed) and the label to the left. OK inserted a selected edit box
+  at the bottom of the body (left 374, top 528, 253 by 44 points on that
+  layout, its bottom at the body's), with its label to its left. Undo
+  removed both, and leaving the layout still asked whether to save it.
+
+Unknown: where Field... puts the edit box on other layouts (the rule
+behind 374/528), and what the other items do.
 
 ## Portal Setup
 
