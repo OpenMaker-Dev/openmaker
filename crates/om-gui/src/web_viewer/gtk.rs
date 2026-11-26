@@ -95,7 +95,9 @@ pub(crate) struct GtkBackend {
 ///   shared memory instead (the web process still renders on the GPU): the
 ///   renderer cannot allocate its buffers there ("Failed to create GBM
 ///   buffer"), nor, without GBM, import them (measured through XWayland,
-///   NVIDIA 615, WebKitGTK 2.54).
+///   NVIDIA 615, Arch's WebKitGTK 2.54). Debian's and Ubuntu's WebKitGTK
+///   make a choice of their own on NVIDIA's driver first (a patch of
+///   theirs; docs/re/layout-model.md 9.6).
 ///
 /// The variables must be set before any other thread starts.
 pub(crate) fn prepare_environment() {
@@ -119,9 +121,18 @@ pub(crate) fn prepare_environment() {
     }
 }
 
+/// [`dri3_device_driver`], or `None` when the server's reply makes x11rb
+/// panic: it asserts that a reply brings the file descriptors it announces,
+/// and the X server is another process, which this check must not let end
+/// the app before its first window.
+fn dri3_driver(x11: &RustConnection, screen: usize) -> Option<String> {
+    let asked = std::panic::AssertUnwindSafe(|| dri3_device_driver(x11, screen));
+    std::panic::catch_unwind(asked).ok().flatten()
+}
+
 /// The kernel driver of the device the X server's DRI3 hands out for
 /// `screen` (the `driver` link of its `/sys/dev/char` entry).
-fn dri3_driver(x11: &RustConnection, screen: usize) -> Option<String> {
+fn dri3_device_driver(x11: &RustConnection, screen: usize) -> Option<String> {
     use std::os::unix::fs::MetadataExt as _;
     use x11rb::protocol::dri3::ConnectionExt as _;
     let root = x11.setup().roots.get(screen)?.root;
