@@ -48,6 +48,7 @@ pub enum Command {
     PlaceField(PlaceFieldParams),
     SetObjectFrames(ObjectFramesParams),
     ArrangeObjects(ArrangeObjectsParams),
+    MoveObjects(MoveObjectsParams),
     DeleteObjects(DeleteObjectsParams),
     PlaceText(PlaceTextParams),
     PlacePortal(PlacePortalParams),
@@ -124,6 +125,7 @@ impl Command {
             Command::PlaceField(_) => &catalog::PLACE_FIELD,
             Command::SetObjectFrames(_) => &catalog::SET_OBJECT_FRAMES,
             Command::ArrangeObjects(_) => &catalog::ARRANGE_OBJECTS,
+            Command::MoveObjects(_) => &catalog::MOVE_OBJECTS,
             Command::DeleteObjects(_) => &catalog::DELETE_OBJECTS,
             Command::PlaceText(_) => &catalog::PLACE_TEXT,
             Command::PlacePortal(_) => &catalog::PLACE_PORTAL,
@@ -593,6 +595,25 @@ pub struct ArrangeObjectsParams {
     pub arrangement: String,
     /// The layout's `revision` from get_layout: required, so nothing is
     /// arranged on a layout that changed unseen.
+    pub expected_revision: String,
+}
+
+/// Move a selection of top-level objects by an offset in layout points.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MoveObjectsParams {
+    /// The layout, as for `get_layout`.
+    #[serde(default)]
+    pub layout: Option<String>,
+    #[serde(default)]
+    pub layout_name: Option<String>,
+    /// One or more distinct `layout_object` references from `get_layout`.
+    pub objects: Vec<String>,
+    /// Horizontal offset in points, positive to the right.
+    pub dx: f64,
+    /// Vertical offset in points, positive down.
+    pub dy: f64,
+    /// The layout revision the offset applies to, from `get_layout`.
     pub expected_revision: String,
 }
 

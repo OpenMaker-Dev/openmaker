@@ -44,6 +44,7 @@ struct Nav {
 
 /// Everything the toolbar reads.
 pub(crate) struct ToolbarContext<'a> {
+    pub height: f32,
     pub mode: Mode,
     pub session: &'a Session,
     pub find: &'a FindState,
@@ -96,7 +97,7 @@ pub(crate) fn show(
     let frame = egui::Frame::new().fill(theme::TOOLBAR_BG);
     egui::Panel::top("status_toolbar")
         .frame(frame)
-        .exact_size(theme::TOOLBAR_HEIGHT)
+        .exact_size(context.height)
         .show_separator_line(false)
         .resizable(false)
         .show(ui, |ui| {

@@ -2037,6 +2037,7 @@ mod tests {
             width: 400.0,
             height: 300.0,
             parts: vec![om_data::PartGeom {
+                identity: None,
                 kind_name: "Body".into(),
                 top: 0.0,
                 height: 300.0,

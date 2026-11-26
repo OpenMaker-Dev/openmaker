@@ -387,6 +387,7 @@ impl DataProvider for MockProvider {
 /// note.
 fn contact_details() -> LayoutGeometry {
     let part = |kind_name: &str, top: f64, height: f64| PartGeom {
+        identity: None,
         kind_name: kind_name.into(),
         top,
         height,

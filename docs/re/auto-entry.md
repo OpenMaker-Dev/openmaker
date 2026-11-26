@@ -72,6 +72,24 @@ keeps the value. The result is visible immediately and survives commit.
 Inferred: `Self` reads the proposed field value. Hosted files and other
 field types were not measured.
 
+In a [sorted local desktop trial](https://github.com/OpenMaker-Dev/openmaker/issues/1059#issuecomment-7203492423)
+with "Keep records in sorted order" on, New Record inserted at position 2
+after the selected first record in the two-row found set. The field read
+0 at creation, 26 immediately after Set Field to 25 with replacing
+`Self + 1`, and 26 after Commit and reopen. The found set remained
+sorted. The replacing identity and nonreplacing identity both kept 25
+after the write, as did the replacing identity in a new window that
+inherited the sorted found set. Every script step returned 0.
+
+The [unsorted option trial](https://github.com/OpenMaker-Dev/openmaker/issues/1059#issuecomment-7203492423)
+toggled "Do not evaluate if all referenced fields are empty" for the
+replacing Number formula `If ( IsEmpty ( Self ) ; 0 ; Self )`. The two
+closed baselines and written copies stored option words `0x88` (on)
+and `0xa8` (off). Both cases showed 0 at New Record, 25 after an explicit
+assignment, and 0 immediately on clear, with the last value stored.
+Writing an unrelated field left Amount alone. Every step returned 0.
+The off option was unmeasured in a sorted window.
+
 ## Fixed field definition
 
 The definition is at `<base-table>/3/5/<field>/2`. The decoder accepts exactly

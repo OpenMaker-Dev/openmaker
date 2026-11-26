@@ -641,6 +641,18 @@ fn give_token(webview: &WebView, route: &std::cell::RefCell<Option<String>>) {
 /// `url` when Foundation reads it as a URL, a blank page otherwise: wry
 /// unwraps Foundation's reading, and would panic.
 fn readable(url: String) -> String {
+    // FileMaker loads literal inline markup with URL encoding off (#1129).
+    // Keep its hashes in the HTML instead of letting Foundation parse a
+    // fragment. Already encoded addresses can still contain real fragments.
+    let url = if url.split_once(',').is_some_and(|(header, payload)| {
+        header.eq_ignore_ascii_case("data:text/html")
+            && payload.trim_start().starts_with('<')
+            && payload.contains('#')
+    }) {
+        url.replace('#', "%23")
+    } else {
+        url
+    };
     if NSURL::URLWithString(&NSString::from_str(&url)).is_some() {
         url
     } else {
@@ -741,5 +753,20 @@ mod tests {
         assert_eq!(super::readable("http://[".into()), "about:blank");
         let page = "data:text/html,%3Cp%3Ehi%3C/p%3E";
         assert_eq!(super::readable(page.into()), page);
+    }
+
+    #[test]
+    fn literal_inline_html_keeps_hashes_in_the_page() {
+        assert_eq!(
+            super::readable("data:text/html,<style>b{color:#112233}</style><b>#1</b>".into()),
+            "data:text/html,<style>b{color:%23112233}</style><b>%231</b>"
+        );
+        for address in [
+            "data:text/html,%3Cb%3E%231%3C/b%3E#section",
+            "data:text/html;base64,PGI+IyE8L2I+#section",
+            "https://example.com/#section",
+        ] {
+            assert_eq!(super::readable(address.into()), address);
+        }
     }
 }

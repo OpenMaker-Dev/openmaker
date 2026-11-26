@@ -836,9 +836,11 @@ Open items:
   in a part its Table View Properties include; layout-model.md 9.6);
   elsewhere
   they fail with 116 (no live web
-  viewer) rather than succeed. The error codes for a page still loading (5),
-  a missing or throwing function (5) and a viewer that is not shown (116)
-  are inferred, not measured on FileMaker Pro. A page's
+  viewer) rather than succeed. On macOS, a `data:text/html,` address that
+  starts with literal markup after the comma keeps its hashes in the HTML
+  when the viewer loads it (layout-model.md 9.6). The error codes for a
+  page still loading (5), a missing or throwing function (5) and a viewer
+  that is not shown (116) are inferred, not measured on FileMaker Pro. A page's
   `FileMaker.PerformScript` works in its main frame, and in a frame of the
   page's own origin through `parent.FileMaker`; another site's frame in the
   page cannot start a script (layout-model.md 9.6; FileMaker Pro's scope

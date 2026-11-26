@@ -2180,6 +2180,20 @@ Inferred paint order per object [I]: outer box shadow, background layers,
 border (or border image), inner shadow, `inner_border` component, content
 (text, icon, image), then child objects.
 
+[O, FileMaker Pro 26.1.1 on macOS] On solid square rectangles and
+buttons, an opaque outer shadow at horizontal +6 pt, vertical +3 pt, blur
+4 pt and spread 2 pt extends about 0 pt left, 2-2.5 pt up, 11-11.25 pt
+right and 8-8.4 pt down beyond the visible border. The inset shadow is
+clipped at the inside edge of the border to layout-point precision, below
+the button text and glyph. The two effects can be enabled together.
+The matching outer rectangle property is 122 with one field-19 shadow
+of type 1, inset 0, alpha 1 and the four lengths in points. [Native
+measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1034#issuecomment-7202993034)
+
+[I] The outer extents fit an offset rectangle expanded by the spread,
+with the blur extending about one blur distance beyond that edge.
+The samples do not identify FileMaker's exact blur kernel.
+
 ### 9.3 Graphics backends
 
 | | Mac | Windows |
@@ -2242,6 +2256,12 @@ Storage [O, 2026-11-02]:
   `d0 00 02`).
   `om-layout` decodes it as `ObjectCalcs::web_address`; `tests/web_viewers.rs`
   checks the shipped template.
+
+[O, FileMaker Pro 26.1.1, macOS] With Automatically encode URL off,
+a calculated `data:text/html,` address containing literal HTML and a
+CSS color with a raw `#` displayed the styled text after the hash.
+Data URL fragments, other media types and base64 were outside that
+comparison. [Native check](https://github.com/OpenMaker-Dev/openmaker/issues/1129#issuecomment-7202980493)
 
 OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
 
@@ -2327,8 +2347,13 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   load only when it commits and when it finishes, so each frame also looks
   at the page's `loading`: a navigation is loading from when it starts,
   and one that fails before committing ends a quarter of a second after it
-  stops loading. An address Foundation cannot read as a URL shows a blank
-  page [I, OpenMaker's choice; wry would panic on it]. Every window shows
+  stops loading. Before handing a `data:text/html,` address whose
+  payload starts with literal markup to Foundation, OpenMaker escapes
+  raw hashes so they stay in the HTML even when auto-encoding is off.
+  A trailing `#section` after the literal markup becomes page text
+  [I, OpenMaker's choice; FileMaker Pro's behavior is unmeasured].
+  An address Foundation cannot read as a URL shows a blank page
+  [I, OpenMaker's choice; wry would panic on it]. Every window shows
   its own pages: another window's AppKit window is found as
   `web_viewer/viewports.rs` says (below). `tests/web_viewer_native.rs`
   runs on macOS too, with the window's mouse events given to the view under

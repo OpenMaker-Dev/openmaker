@@ -117,6 +117,7 @@ pub(crate) const WINDOW_ZOOM: Color32 = Color32::from_rgb(0x28, 0xC8, 0x40);
 // Metrics, in points.
 pub(crate) const MENU_BAR_HEIGHT: f32 = 24.0;
 pub(crate) const TOOLBAR_HEIGHT: f32 = 54.0;
+pub(crate) const MACOS_BROWSE_TOOLBAR_HEIGHT: f32 = 55.0;
 pub(crate) const LAYOUT_BAR_HEIGHT: f32 = 25.0;
 pub(crate) const FORMATTING_BAR_HEIGHT: f32 = 27.0;
 pub(crate) const MENU_ROW_HEIGHT: f32 = 22.0;

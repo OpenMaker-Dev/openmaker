@@ -4885,6 +4885,14 @@ fn paint_object_repetition(
     if object.kind() == ObjectKind::Line {
         line::paint(ui.painter(), rect, object.flags, &style);
     } else {
+        if !finding
+            && portal.is_none()
+            && object.parent.is_none()
+            && object.rotation == 0
+            && object.kind() == ObjectKind::Rectangle
+        {
+            paint_outer_box_shadow(ui, rect, &style);
+        }
         paint_box(ui, rect, &style, object.kind());
     }
     if object.kind() == ObjectKind::Popover {
@@ -9613,6 +9621,49 @@ fn resized_bounds(layout: &Layout, id: u64, mut growth: egui::Vec2) -> Option<Re
         origin = rect.min;
     }
     Some(rect)
+}
+
+/// A solid rectangle hides the part of its outer shadow behind its own fill.
+/// Other shapes need separate clipping and are outside this path.
+fn paint_outer_box_shadow(ui: &Ui, rect: Rect, style: &ResolvedStyle) {
+    let Some([shadow]) = style.box_shadows.as_deref() else {
+        return;
+    };
+    if shadow.kind != 1
+        || shadow.inset
+        || style.border_radius.unwrap_or(0.0) != 0.0
+        || !style.background.is_some_and(|fill| fill.alpha == 1.0)
+    {
+        return;
+    }
+    let Some(tint) = shadow.color.filter(|tint| tint.alpha == 1.0) else {
+        return;
+    };
+    // Keep non-finite and excessive file coordinates out of tessellation.
+    let points = |length: Option<&om_layout::Length>| {
+        length
+            .and_then(om_layout::Length::points)
+            .filter(|value| value.abs() <= 4096.0)
+            .map(|value| value as f32)
+    };
+    let (Some(x), Some(y), Some(blur), Some(spread)) = (
+        points(shadow.offset[0].as_ref()),
+        points(shadow.offset[1].as_ref()),
+        points(shadow.blur.as_ref()),
+        points(shadow.spread.as_ref()),
+    ) else {
+        return;
+    };
+    if blur < 0.0 || spread < 0.0 || !rect.is_positive() {
+        return;
+    }
+    let bounds = rect.translate(egui::vec2(x, y)).expand(spread);
+    // Epaint centers its feathering on the edge. Use a full width of
+    // twice the blur distance to reach about one blur distance outward.
+    ui.painter().add(
+        egui::epaint::RectShape::filled(bounds, CornerRadius::ZERO, color(tint))
+            .with_blur_width(2.0 * blur),
+    );
 }
 
 fn paint_box(ui: &Ui, rect: Rect, style: &ResolvedStyle, kind: ObjectKind) {

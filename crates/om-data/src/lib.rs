@@ -30,6 +30,7 @@ pub mod found;
 pub mod host;
 pub mod layout_arrange;
 pub mod layout_catalog;
+pub mod layout_move;
 pub mod layout_objects;
 pub mod layout_placement;
 pub mod library_uses;
@@ -254,6 +255,10 @@ pub struct PendingValues {
     /// Pending results that must fail with error 3 when the preview cannot
     /// evaluate them. Reading a prior stored value would affect the script.
     pub unavailable: std::collections::BTreeSet<u64>,
+    /// Script-assigned Number cells whose supported auto-entry uses the
+    /// proposed value as Self. A script reads the computed value in
+    /// `values` for these cells while the raw assignment is still pending.
+    pub proposed_self: std::collections::BTreeSet<u64>,
 }
 
 /// Record operations supported for one layout's underlying table.
@@ -429,7 +434,7 @@ pub struct LayoutGeometry {
     pub width: f64,
     /// Layout height in points: the bottom of the lowest part.
     pub height: f64,
-    /// Parts, top to bottom.
+    /// Parts in provider order, each with its own position and identity.
     pub parts: Vec<PartGeom>,
     /// Objects in stacking order, back-most first; a container comes before
     /// the objects inside it.
@@ -445,12 +450,23 @@ pub struct LayoutGeometry {
 /// One layout part: a band across the layout.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PartGeom {
+    /// The stored part targeted by a resize. Synthetic bands have no identity.
+    pub identity: Option<PartIdentity>,
     /// The part type for display, e.g. "Header" or "Body".
     pub kind_name: String,
     /// Top edge in layout coordinates (points).
     pub top: f64,
     /// Height in points.
     pub height: f64,
+}
+
+/// A stored part within the layout whose geometry was read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PartIdentity {
+    /// The part's key in the layout member.
+    pub key: u64,
+    /// The stored part type, such as Header or Body.
+    pub part_type: i32,
 }
 
 /// One layout object.
