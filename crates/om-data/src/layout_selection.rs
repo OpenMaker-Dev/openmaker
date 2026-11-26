@@ -118,6 +118,9 @@ pub struct MarqueeSelection {
     pub indices: BTreeSet<usize>,
     /// Draw one set of handles and include the selected inactive panel outlines.
     pub aggregate: bool,
+    /// Outer frames for fully selected tab controls. The controls themselves
+    /// are represented in the selection by their panels.
+    pub tab_controls: BTreeSet<usize>,
 }
 
 /// Select from the finite frames provided by the window. A group is one
@@ -128,22 +131,22 @@ pub fn marquee(
     coverage: Coverage,
     frames: &[MarqueeFrame<'_>],
 ) -> MarqueeSelection {
-    let by_key: BTreeMap<_, _> = frames
+    let groups: BTreeMap<_, _> = frames
         .iter()
         .rev()
         .filter_map(|frame| {
-            let key = frame.object?.key;
-            (key != 0).then_some((key, frame))
+            let object = frame.object?;
+            (object.selection == Target::Object(ObjectKind::Group)).then_some((object.key, frame))
         })
         .collect();
-    let enclosed_tabs: BTreeSet<_> = frames
+    let enclosed_tabs: BTreeMap<_, _> = frames
         .iter()
         .filter_map(|frame| {
             let object = frame.object?;
             (frame.visible
                 && object.marquee == MarqueeRole::TabControl
                 && contains(bounds, frame.rect))
-            .then_some(object.key)
+            .then_some((object.key, frame.index))
         })
         .collect();
     let mut result = MarqueeSelection::default();
@@ -152,22 +155,23 @@ pub fn marquee(
             .object
             .map_or(MarqueeRole::Frame, |object| object.marquee);
         match role {
-            MarqueeRole::OnTab(key) if enclosed_tabs.contains(&key) => {
+            MarqueeRole::OnTab(key) if enclosed_tabs.contains_key(&key) => {
                 if frame
                     .object
                     .is_some_and(|object| SelectAll::Layout.includes(object.selection))
                 {
                     result.indices.insert(frame.index);
                     result.aggregate = true;
+                    result.tab_controls.insert(enclosed_tabs[&key]);
                 }
             }
             MarqueeRole::TabControl
                 if frame
                     .object
-                    .is_some_and(|object| enclosed_tabs.contains(&object.key)) => {}
+                    .is_some_and(|object| enclosed_tabs.contains_key(&object.key)) => {}
             _ if !frame.visible => {}
             MarqueeRole::GroupMember(key) => {
-                if let Some(group) = by_key.get(&key).filter(|group| group.visible) {
+                if let Some(group) = groups.get(&key).filter(|group| group.visible) {
                     let hit = match coverage {
                         Coverage::Contains => contains(bounds, group.rect),
                         Coverage::Intersects => intersects(bounds, frame.rect),
@@ -190,6 +194,13 @@ pub fn marquee(
                     });
                 }
             }
+        }
+    }
+    // A legacy or damaged control with no selectable panel frames can still
+    // be picked by its own frame.
+    for &index in enclosed_tabs.values() {
+        if !result.tab_controls.contains(&index) {
+            result.indices.insert(index);
         }
     }
     result

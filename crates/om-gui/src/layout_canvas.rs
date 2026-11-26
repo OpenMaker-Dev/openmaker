@@ -302,12 +302,13 @@ struct Drag {
 }
 
 #[derive(Default)]
-struct Selection(
-    BTreeSet<usize>,
-    Option<&'static str>,
-    // Whether to paint aggregate handles and selected inactive panel outlines.
-    bool,
-);
+struct Selection(BTreeSet<usize>, Option<&'static str>, SelectionOverlay);
+
+#[derive(Default)]
+struct SelectionOverlay {
+    aggregate: bool,
+    tab_controls: BTreeSet<usize>,
+}
 
 impl Selection {
     fn single(&self) -> Option<usize> {
@@ -324,18 +325,18 @@ impl Selection {
 
     fn replace(&mut self, indices: impl IntoIterator<Item = usize>) {
         self.1 = None;
-        self.2 = false;
+        self.2 = SelectionOverlay::default();
         self.0.clear();
         self.0.extend(indices);
     }
 
-    fn replace_with_overlay(&mut self, indices: impl IntoIterator<Item = usize>, aggregate: bool) {
+    fn replace_with_overlay(
+        &mut self,
+        indices: impl IntoIterator<Item = usize>,
+        overlay: SelectionOverlay,
+    ) {
         self.replace(indices);
-        self.2 = aggregate;
-    }
-
-    fn uses_aggregate_overlay(&self) -> bool {
-        self.2
+        self.2 = overlay;
     }
 
     fn start_drag(&mut self, index: usize, shift: bool) {
@@ -343,7 +344,7 @@ impl Selection {
             if shift {
                 self.0.insert(index);
                 self.1 = None;
-                self.2 = false;
+                self.2 = SelectionOverlay::default();
             } else {
                 self.set(Some(index));
             }
@@ -352,7 +353,7 @@ impl Selection {
 
     fn click(&mut self, index: Option<usize>, shift: bool) {
         self.1 = None;
-        self.2 = false;
+        self.2 = SelectionOverlay::default();
         if let Some(index) = index.filter(|_| shift) {
             if !self.0.remove(&index) {
                 self.0.insert(index);
@@ -831,7 +832,10 @@ impl CanvasState {
         };
         self.selected.replace_with_overlay(
             selectable_frames(geometry, fields, shown).map(|(index, _)| index),
-            true,
+            SelectionOverlay {
+                aggregate: true,
+                ..Default::default()
+            },
         );
         self.scroll_to_selected = false;
     }
@@ -1775,12 +1779,7 @@ fn draw(
                                     .unwrap_or(input.modifiers.command)
                             });
                             let bounds = rect.translate(-origin.to_vec2());
-                            let bounds = GeomRect {
-                                left: f64::from(bounds.left()),
-                                top: f64::from(bounds.top()),
-                                right: f64::from(bounds.right()),
-                                bottom: f64::from(bounds.bottom()),
-                            };
+                            let bounds = geometry_frame(bounds);
                             let coverage = if contained {
                                 Coverage::Contains
                             } else {
@@ -1793,7 +1792,10 @@ fn draw(
                             );
                             selected.replace_with_overlay(
                                 selected_frames.indices,
-                                selected_frames.aggregate,
+                                SelectionOverlay {
+                                    aggregate: selected_frames.aggregate,
+                                    tab_controls: selected_frames.tab_controls,
+                                },
                             );
                             *scroll_to_selected = false;
                         }
@@ -2041,7 +2043,7 @@ fn draw(
                 );
             }
 
-            let aggregate_selection = selected.uses_aggregate_overlay();
+            let aggregate_selection = selected.2.aggregate;
             let selection_frame = |object: &ObjectGeom| {
                 if aggregate_selection {
                     present(object)
@@ -2049,9 +2051,27 @@ fn draw(
                     shown(object)
                 }
             };
-            if selected.0.len() > 1 {
+            if selected.0.len() > 1 || !selected.2.tab_controls.is_empty() {
                 let mut bounds = Rect::NOTHING;
                 let mut unlocked = false;
+                for &index in &selected.2.tab_controls {
+                    let Some((object, frame)) = geometry
+                        .objects
+                        .get(index)
+                        .and_then(|object| Some((object, shown(object)?)))
+                    else {
+                        continue;
+                    };
+                    let rect = object_rect(origin, &frame);
+                    if rect.is_finite() {
+                        draw_selection_outline(&painter, rect, object.locked);
+                        if let Some(design) = design {
+                            design.outline_tab_labels(&painter, object.key, rect);
+                        }
+                        bounds = bounds.union(rect);
+                        unlocked |= !object.locked;
+                    }
+                }
                 for &index in &selected.0 {
                     let Some(object) = geometry.objects.get(index) else {
                         if let Some(field) = new
@@ -2092,6 +2112,7 @@ fn draw(
             }
             if let Some((object, frame)) = selected
                 .single()
+                .filter(|_| selected.2.tab_controls.is_empty())
                 .and_then(|index| geometry.objects.get(index))
                 .and_then(|object| Some((object, selection_frame(object)?)))
             {
@@ -2244,8 +2265,21 @@ fn marquee_frames<'a>(
                     visible: true,
                 }),
         )
-        .filter(|entry| object_rect(Pos2::ZERO, &entry.rect).is_finite())
+        .filter_map(|mut entry| {
+            let shown = object_rect(Pos2::ZERO, &entry.rect);
+            entry.rect = geometry_frame(shown);
+            shown.is_finite().then_some(entry)
+        })
         .collect()
+}
+
+fn geometry_frame(rect: Rect) -> GeomRect {
+    GeomRect {
+        left: f64::from(rect.left()),
+        top: f64::from(rect.top()),
+        right: f64::from(rect.right()),
+        bottom: f64::from(rect.bottom()),
+    }
 }
 
 fn begin_selection_drag(
@@ -3153,7 +3187,9 @@ mod tests {
                 },
                 ObjectGeom {
                     key: 2,
-                    ..object([70.0, 25.0, 90.0, 45.0])
+                    // Stored endpoints can be reversed. Marquee uses the
+                    // frame the canvas draws, including for containment.
+                    ..object([90.0, 25.0, 70.0, 45.0])
                 },
                 ObjectGeom {
                     key: 3,

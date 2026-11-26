@@ -2255,7 +2255,8 @@ stored tab order.
   with the objects it crosses. Hold Cmd on macOS or Ctrl elsewhere to
   select only objects entirely inside. Crossing a group member selects
   its group. Surrounding a whole tab control selects its panels and their
-  objects without switching the front panel. The modified marquee uses
+  objects without switching the front panel. Handles span the outer
+  control and label outlines use the saved tab geometry. The modified marquee uses
   the documented containment rule. That variant has not been tested in
   FileMaker. Select All treats slide panels like tab panels and a portal
   as one object, both unverified against FileMaker. Other tool-specific

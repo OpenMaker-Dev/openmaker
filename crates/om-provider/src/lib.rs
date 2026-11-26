@@ -6832,14 +6832,25 @@ mod tests {
                 .into_iter()
                 .map(|i| geometry[i].key)
                 .collect::<Vec<_>>();
-            (keys, selected.aggregate)
+            let controls = selected
+                .tab_controls
+                .into_iter()
+                .map(|i| geometry[i].key)
+                .collect::<Vec<_>>();
+            (keys, selected.aggregate, controls)
         };
         let group = [70.0, 80.0, 245.0, 160.0];
-        assert_eq!(select_box(group, Coverage::Intersects), (vec![1, 3], true));
-        assert_eq!(select_box(group, Coverage::Contains), (vec![1], false));
+        assert_eq!(
+            select_box(group, Coverage::Intersects),
+            (vec![1, 3], true, vec![])
+        );
+        assert_eq!(
+            select_box(group, Coverage::Contains),
+            (vec![1], false, vec![])
+        );
         assert_eq!(
             select_box([460.0, 184.0, 790.0, 444.0], Coverage::Intersects),
-            (vec![7, 8, 9, 10], true)
+            (vec![7, 8, 9, 10], true, vec![6])
         );
     }
 

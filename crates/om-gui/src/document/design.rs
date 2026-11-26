@@ -46,6 +46,41 @@ impl<'a> Surface<'a> {
         }
     }
 
+    /// Outline each stored tab label without activating a panel or
+    /// adding a hit target to the layout canvas.
+    pub(crate) fn outline_tab_labels(&self, painter: &egui::Painter, key: u64, rect: Rect) {
+        let Some(control) = self.cache.object(self.layout, key) else {
+            return;
+        };
+        let Some(tab) = &control.tab else {
+            return;
+        };
+        for &key in &control.children {
+            let Some(panel) = self.cache.object(self.layout, key) else {
+                continue;
+            };
+            let Some(label) = panel
+                .tab_panel
+                .as_ref()
+                .filter(|_| panel.kind() == ObjectKind::TabPanel)
+            else {
+                continue;
+            };
+            let header = Rect::from_min_size(
+                pos2(rect.left() + label.tab_left_edge as f32, rect.top()),
+                vec2(label.tab_width as f32, tab.tab_height as f32),
+            );
+            if header.is_positive() {
+                painter.rect_stroke(
+                    header,
+                    CornerRadius::ZERO,
+                    Stroke::new(1.0, crate::theme::SELECTED),
+                    StrokeKind::Middle,
+                );
+            }
+        }
+    }
+
     /// Paint the object in its current draft frame. Unsupported objects
     /// keep the canvas's outline and caption.
     pub(crate) fn paint_object(
