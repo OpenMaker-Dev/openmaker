@@ -404,7 +404,9 @@ fn lp_command(pdf: &Path, options: &Options, paper: &PageSize, title: &str) -> C
         .arg(options.copies.to_string())
         .arg("-t")
         .arg(title);
-    let (w, h) = (paper.width.min(paper.height), paper.width.max(paper.height));
+    // The sheet, not the page in layout points (Page Setup's scale).
+    let (sheet_width, sheet_height) = paper.sheet();
+    let (w, h) = (sheet_width.min(sheet_height), sheet_width.max(sheet_height));
     let media = [
         (612.0, 792.0, "Letter"),
         (612.0, 1008.0, "Legal"),
@@ -420,7 +422,7 @@ fn lp_command(pdf: &Path, options: &Options, paper: &PageSize, title: &str) -> C
         |(_, _, name)| name.into(),
     );
     command.arg("-o").arg(format!("media={media}"));
-    command.arg("-o").arg(if paper.width > paper.height {
+    command.arg("-o").arg(if sheet_width > sheet_height {
         "orientation-requested=4"
     } else {
         "orientation-requested=3"
