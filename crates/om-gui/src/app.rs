@@ -2921,13 +2921,13 @@ impl OpenMakerApp {
                 .layout_workspace
                 .show_portal_setup(&ctx, self.w.calcs.schema().cloned(), own);
             // Changes another client's deletion made impossible to save
-            // went with the objects: the window says so rather than drop
-            // them unseen.
+            // stay as unsaved changes (closing and quitting wait for Save
+            // or Revert Layout); the window says why they cannot be saved.
             // After an alert already shown, on a later frame.
-            if self.error.is_none() && self.w.layout_workspace.take_dropped_drafts() {
+            if self.error.is_none() && self.w.layout_workspace.take_orphaned_drafts() {
                 self.error = Some(
-                    "Another user deleted objects of this layout that you had changed. Those \
-                     changes could not be kept; the layout shows it as it is now."
+                    "Another user deleted objects of this layout that you had changed. Your \
+                     changes to them cannot be saved; choose Revert Layout to discard them."
                         .into(),
                 );
             }

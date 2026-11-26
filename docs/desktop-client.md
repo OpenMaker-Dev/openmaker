@@ -2526,9 +2526,13 @@ before made, then places a new field and sends its control. A list control
 without a value list is not sent: an alert asks for one. A layout changed
 since it was shown is refused (306): the control changes are dropped and
 the layout read again; another refusal keeps them. Revert Layout drops
-them, and so does reading the layout again without the object (another
-window or client deleted it), with an alert saying the changes to deleted
-objects could not be kept (a retyped text's words go the same way). A related field's control is offered too. Limits: the canvas outlines the changed object but does not draw the
+them. When the layout is read again without the object (another window
+or client deleted it), the change stays, as a retyped text's words do: an
+alert says it cannot be saved, Save Layout is refused for it, and closing
+or quitting waits until Revert Layout discards it (OpenMaker's choice, so
+that no change is dropped unseen; FileMaker Pro locks a layout being
+edited, so it meets no such case). An editor opened on such a text and
+left unchanged is no change. A related field's control is offered too. Limits: the canvas outlines the changed object but does not draw the
 control until the layout is saved and read again; the options under Values
 from (the arrow, editing, other values, auto-complete, the checkbox icon)
 and the button that edits value lists are not offered, and the Data tab's

@@ -423,8 +423,8 @@ pub(crate) struct CanvasState {
     /// The Part tool was used on the layout: Part Definition opens.
     part_tool: bool,
     /// A layout read again no longer has objects that unsaved control or
-    /// text changes were made to, and those changes were dropped.
-    dropped_drafts: bool,
+    /// text changes were made to; the changes are kept.
+    orphaned_drafts: bool,
 }
 
 /// A part boundary being dragged: the part's place in the layout's parts
@@ -468,10 +468,10 @@ impl CanvasState {
         self.part_resize.take()
     }
 
-    /// Whether unsaved changes to objects the layout no longer has were
-    /// dropped since the last call (another client deleted the objects).
-    pub(crate) fn take_dropped_drafts(&mut self) -> bool {
-        std::mem::take(&mut self.dropped_drafts)
+    /// Whether a read found unsaved changes to objects the layout no longer
+    /// has since the last call (another client deleted the objects).
+    pub(crate) fn take_orphaned_drafts(&mut self) -> bool {
+        std::mem::take(&mut self.orphaned_drafts)
     }
 
     /// Whether the Part tool was used on the layout since the last call:
@@ -1075,36 +1075,20 @@ impl CanvasState {
                 session.layout,
             ));
             self.geometry = geometry.cloned();
-            // A control change for an object the layout no longer has (another
-            // window deleted it) could never be saved: it goes, and the
-            // window says so (`take_dropped_drafts`).
+            // Changes to objects the layout no longer has (another window
+            // or client deleted them) cannot be saved, but they are the
+            // user's: they stay, so Save Layout reports them, Revert Layout
+            // discards them, and closing or quitting waits for one or the
+            // other. A text being typed in such an object is kept as its
+            // change if the words changed, and its editor closes. The window
+            // is told (`take_orphaned_drafts`).
             if let Some(geometry) = &self.geometry {
                 let gone = |key: &u64| !geometry.objects.iter().any(|o| o.key == *key);
-                let controls: Vec<u64> = self
-                    .controls
-                    .objects
-                    .keys()
-                    .filter(|k| gone(k))
-                    .copied()
-                    .collect();
-                let words: Vec<u64> = self
-                    .words
-                    .objects
-                    .keys()
-                    .filter(|k| gone(k))
-                    .copied()
-                    .collect();
-                let retyped = self.retyping.as_ref().is_some_and(|r| gone(&r.key));
-                self.dropped_drafts |= !controls.is_empty() || !words.is_empty() || retyped;
-                for key in controls {
-                    self.control_sent(key);
+                if let Some(done) = self.retyping.take_if(|r| gone(&r.key)) {
+                    keep_words(&mut self.words, done);
                 }
-                for key in words {
-                    self.words_sent(key);
-                }
-                if retyped {
-                    self.retyping = None;
-                }
+                self.orphaned_drafts |=
+                    self.controls.objects.keys().any(gone) || self.words.objects.keys().any(gone);
             }
         }
         if moved || geometry_changed || revisited {
@@ -2994,10 +2978,12 @@ mod tests {
     }
 
     /// Unsaved text and control changes to an object another client
-    /// deleted are dropped when the layout is read again without it, and
-    /// the window is told, so the loss is not silent (#1048's re-check).
+    /// deleted are kept when the layout is read again without it, so
+    /// closing waits for Save or Revert Layout, and the window is told; an
+    /// editor opened on such an object and left unchanged is no change
+    /// (#1048's re-checks).
     #[test]
-    fn changes_to_objects_deleted_elsewhere_are_dropped_and_reported() {
+    fn changes_to_objects_deleted_elsewhere_are_kept_and_reported() {
         let mut session = Session::new(
             Target {
                 host: "test".into(),
@@ -3019,21 +3005,43 @@ mod tests {
                 ..LayoutGeometry::default()
             })
         };
-        session.geometry = with(&[7, 8]);
+        session.geometry = with(&[7, 8, 9]);
         let mut state = CanvasState::default();
         state.synchronize(&session);
         state.words.objects.insert(7, "Retyped".into());
         state.controls.objects.insert(8, (2, None));
-        session.geometry = with(&[8]);
+        // An editor open on object 9 with its words untouched.
+        state.retyping = Some(Retyping {
+            key: 9,
+            text: "Name".into(),
+            stored: "Name".into(),
+            revision: None,
+            focus: false,
+        });
+        session.geometry = with(&[9]);
         state.synchronize(&session);
-        assert!(state.words().objects.is_empty());
-        assert!(state.take_dropped_drafts());
-        assert!(!state.take_dropped_drafts());
-        // A read that keeps the changed object keeps its change, silently.
-        session.geometry = with(&[8, 9]);
-        state.synchronize(&session);
-        assert_eq!(state.controls().objects.len(), 1);
-        assert!(!state.take_dropped_drafts());
+        assert_eq!(
+            state.words().objects.get(&7).map(String::as_str),
+            Some("Retyped")
+        );
+        assert!(state.controls().objects.contains_key(&8));
+        assert!(state.take_orphaned_drafts());
+        assert!(!state.take_orphaned_drafts());
+        // The untouched editor's object goes: no change, nothing reported.
+        let mut untouched = CanvasState::default();
+        session.geometry = with(&[9]);
+        untouched.synchronize(&session);
+        untouched.retyping = Some(Retyping {
+            key: 9,
+            text: "Name".into(),
+            stored: "Name".into(),
+            revision: None,
+            focus: false,
+        });
+        session.geometry = with(&[]);
+        untouched.synchronize(&session);
+        assert!(untouched.retyping.is_none() && untouched.words().objects.is_empty());
+        assert!(!untouched.take_orphaned_drafts());
     }
 
     #[test]

@@ -1402,10 +1402,10 @@ impl LayoutWorkspace {
         self.canvas.take_part_resize()
     }
 
-    /// Whether unsaved changes were dropped with objects the layout no
-    /// longer has, since the last call.
-    pub(crate) fn take_dropped_drafts(&mut self) -> bool {
-        self.canvas.take_dropped_drafts()
+    /// Whether a read found unsaved changes to objects the layout no longer
+    /// has, since the last call; the changes stay until Revert Layout.
+    pub(crate) fn take_orphaned_drafts(&mut self) -> bool {
+        self.canvas.take_orphaned_drafts()
     }
 
     /// Whether the Part tool was used on the layout since the last call.
