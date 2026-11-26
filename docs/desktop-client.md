@@ -2140,6 +2140,13 @@ together. Placement, movement, resizing and the Inspector use the original
 layout points at every zoom. The toolbar, Objects pane and Inspector keep
 their size. The wheel and scroll bars scroll the canvas at every zoom.
 Touch drag to scroll is available at Actual Size.
+
+Objects that cross the layout edge retain their full outline, with artwork
+clipped to the layout. Borderless fields and text have a faint editing
+boundary. FileMaker's boundary display options have not been compared.
+Contents of closed popovers still appear on the canvas
+([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
+
 The Objects pane is 220 pt wide, lists the layout's objects front to back,
 filters by kind or known field name, and selects and reveals the matching
 canvas object. Inspector tabs are interactive; Position shows real bounds
