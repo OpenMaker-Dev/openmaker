@@ -5308,6 +5308,15 @@ fn paint_object_repetition(
             // Paint only the active panel. Hidden panels contain overlapping
             // field objects and must never bleed into the selected panel.
             let active = *selected;
+            let clip = ui.clip_rect();
+            let contents = if !finding && object.kind() == ObjectKind::SlideControl {
+                slide::paint_contents(ui, layout, object, rect)
+            } else {
+                None
+            };
+            if let Some(contents) = contents {
+                ui.set_clip_rect(clip.intersect(contents));
+            }
             for &child in &object.children {
                 if state.layout_cache.object(layout, child).is_some_and(|o| {
                     matches!(o.kind(), ObjectKind::TabPanel | ObjectKind::SlidePanel)
@@ -5329,6 +5338,9 @@ fn paint_object_repetition(
                     actions,
                     visited,
                 );
+            }
+            if contents.is_some() {
+                ui.set_clip_rect(clip);
             }
             if object.kind() == ObjectKind::TabControl {
                 let selected = state

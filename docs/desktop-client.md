@@ -621,6 +621,8 @@ from the current record page. Stored anchors resize objects within their
 containers. Record changes keep the user's selected panels. Clicking a
 visible navigation dot in Browse selects its slide panel. The dots use
 the slide control's stored sizes, insets and normal and active colors.
+Slide panel contents use their own fill and border and clip their children
+to the contents frame.
 Browse shows no authoring part tabs or object kind captions.
 
 - Text objects in Browse draw an edge only when its style resolves to a
