@@ -24,7 +24,7 @@ use crate::session::{Geometry, Session};
 use crate::theme;
 
 use om_data::layout_selection::{
-    self, Coverage, MarqueeFrame, MarqueeRole, SelectAll, Target as SelectionTarget,
+    self, Coverage, MarqueeFrame, SelectAll, Target as SelectionTarget,
 };
 
 mod history;
@@ -1792,6 +1792,7 @@ fn draw(
                     .max_rect(artwork_bounds),
             );
             artwork.set_clip_rect(ui.clip_rect().intersect(artwork_bounds));
+            let mut tabs = crate::document::design::TabArtwork::default();
             for (index, object) in geometry.objects.iter().enumerate() {
                 let Some(frame) = shown(object) else {
                     continue;
@@ -1814,6 +1815,7 @@ fn draw(
                     .map(|name| name.find("::").map_or(name, |at| &name[at..]))
                     .unwrap_or(&object.kind_name);
                 let draft_words = texts.words.objects.get(&object.key).map(String::as_str);
+                let tab_selected = selected.2.tab_controls.contains_key(&object.key);
                 let painted = artwork_bounds.intersects(rect)
                     && design.is_some_and(|design| {
                         design.paint_object(
@@ -1822,6 +1824,7 @@ fn draw(
                             rect,
                             field_caption,
                             draft_words,
+                            (visible, &mut tabs, tab_selected),
                         )
                     });
                 if !painted || changed || !artwork_bounds.contains_rect(rect) {
@@ -1831,12 +1834,7 @@ fn draw(
                         painter.rect_stroke(rect, CornerRadius::ZERO, outline, StrokeKind::Inside);
                     }
                 }
-                let tab_label_overlay = design.is_some() && (
-                    selected.2.tab_controls.contains_key(&object.key)
-                    || matches!(object.marquee, MarqueeRole::OnTab(key)
-                        if object.selection == SelectionTarget::Panel && selected.2.tab_controls.contains_key(&key))
-                );
-                if !painted && !tab_label_overlay && rect.width() >= 1.0 && rect.height() >= 1.0 {
+                if !painted && rect.width() >= 1.0 && rect.height() >= 1.0 {
                     let stored_words = (!texts.words.objects.contains_key(&object.key))
                         .then(|| (texts.stored)(object.key))
                         .flatten();
@@ -2033,11 +2031,20 @@ fn draw(
                     let rect = object_rect(origin, &frame);
                     if rect.is_finite() {
                         draw_selection_outline(&painter, rect, object.locked);
-                        if let Some(design) = design {
-                            design.outline_tab_labels(&painter, object.key, rect);
-                        }
                         bounds = bounds.union(rect);
                         unlocked |= !object.locked;
+                    }
+                }
+                if !selected.2.tab_controls.is_empty() {
+                    for rect in tabs.selected_labels {
+                        if rect.is_positive() {
+                            painter.rect_stroke(
+                                rect,
+                                CornerRadius::ZERO,
+                                Stroke::new(1.0, theme::TEXT),
+                                StrokeKind::Inside,
+                            );
+                        }
                     }
                 }
                 for &index in &selected.0 {

@@ -2,18 +2,25 @@
 //! all interaction. No record values, calculations or actions are read here.
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 
-use egui::{pos2, vec2, Align2, Color32, CornerRadius, Rect, Stroke, StrokeKind, Ui};
+use egui::{pos2, vec2, Color32, CornerRadius, Rect, Stroke, StrokeKind, Ui};
 use om_layout::{Layout, ObjectKind, TextRun};
 
 use super::{
     color, layout_cache::LayoutCache, line, paint_box, paint_label_icon, paint_library_image,
-    paint_rich_text, ButtonIconMode, Session,
+    paint_rich_text, rich_text, scaled_text, ButtonIconMode, Session,
 };
 
 pub(crate) struct Surface<'a> {
     layout: &'a Layout,
     cache: &'a LayoutCache,
+}
+
+#[derive(Default)]
+pub(crate) struct TabArtwork {
+    framed_panels: BTreeSet<u64>,
+    pub(crate) selected_labels: Vec<Rect>,
 }
 
 impl<'a> Surface<'a> {
@@ -46,60 +53,125 @@ impl<'a> Surface<'a> {
         }
     }
 
-    /// Paint and outline the stored labels without activating a panel or
-    /// adding a hit target.
-    pub(crate) fn outline_tab_labels(&self, painter: &egui::Painter, key: u64, rect: Rect) {
-        let Some(control) = self.cache.object(self.layout, key) else {
-            return;
+    /// Draw the saved headers and front-panel background before the canvas
+    /// paints the panel's children. Collect selected labels' ink bounds so
+    /// their editing frames can be painted above the artwork.
+    fn paint_tabs(
+        &self,
+        ui: &mut Ui,
+        control: &om_layout::LayoutObject,
+        rect: Rect,
+        (visible, artwork, selected): (&dyn Fn(u64) -> bool, &mut TabArtwork, bool),
+    ) -> bool {
+        let Some(tab) = control
+            .tab
+            .as_ref()
+            .filter(|tab| tab.tab_height > 0 && rect.is_positive())
+        else {
+            return false;
         };
-        let Some(tab) = &control.tab else {
-            return;
-        };
-        let control_style = self.cache.text_style(self.layout, control, &[], 1);
-        for &key in &control.children {
-            let Some(panel) = self.cache.object(self.layout, key) else {
-                continue;
-            };
-            let Some(position) = panel
-                .tab_panel
-                .as_ref()
-                .filter(|_| panel.kind() == ObjectKind::TabPanel)
-            else {
-                continue;
-            };
-            let Some(label) = panel.text.as_deref().filter(|text| !text.is_empty()) else {
+        let height = (tab.tab_height as f32).min(rect.height());
+        let panels = control
+            .children
+            .iter()
+            .filter_map(|&id| self.cache.object(self.layout, id))
+            .filter(|panel| {
+                panel.parent == Some(control.id) && panel.kind() == ObjectKind::TabPanel
+            });
+
+        let clip = ui.clip_rect();
+        ui.set_clip_rect(clip.intersect(rect.expand(1.0)));
+        let body = Rect::from_min_max(rect.left_top() + vec2(0.0, height), rect.max);
+        let front = panels.clone().find(|panel| visible(panel.id));
+        let mut front_painted = false;
+        if let Some(front) = front.filter(|_| body.is_positive()) {
+            let style = self.cache.formatted_style(self.layout, front, &[], 1, 7);
+            paint_box(ui, body, &style, ObjectKind::Rectangle);
+            front_painted = true;
+        }
+        let scale = ui
+            .ctx()
+            .layer_transform_to_global(ui.layer_id())
+            .map_or(1.0, |transform| transform.scaling);
+        let mut painted = front_painted;
+        for panel in panels {
+            let Some(position) = panel.tab_panel.as_ref().filter(|info| info.tab_width > 0) else {
                 continue;
             };
             let header = Rect::from_min_size(
                 pos2(rect.left() + position.tab_left_edge as f32, rect.top()),
-                vec2(position.tab_width as f32, tab.tab_height as f32),
+                vec2(position.tab_width as f32, height),
             );
-            if header.is_positive() {
-                let style = self.cache.text_style(self.layout, panel, &[], 1);
-                let mut font = crate::theme::small();
-                if let Some(size) = style
-                    .font_size
-                    .or(control_style.font_size)
-                    .filter(|size| size.is_finite())
-                {
-                    font.size = size.clamp(1.0, 256.0) as f32;
-                }
-                let color = style
-                    .color
-                    .or(control_style.color)
-                    .map(color)
-                    .unwrap_or(crate::theme::TEXT);
-                let painter = painter.with_clip_rect(header.intersect(painter.clip_rect()));
-                let label =
-                    painter.text(header.center(), Align2::CENTER_CENTER, label, font, color);
-                painter.rect_stroke(
-                    label.expand(1.0),
-                    CornerRadius::ZERO,
-                    Stroke::new(1.0, crate::theme::TEXT),
-                    StrokeKind::Middle,
+            if !header.intersect(rect).is_positive() {
+                continue;
+            }
+            let active = front.is_some_and(|front| front.id == panel.id);
+            front_painted |= active;
+            painted = true;
+            if !ui.clip_rect().intersects(header) {
+                continue;
+            }
+            let state = if active { 7 } else { 1 };
+            let mut style = self
+                .cache
+                .formatted_style(self.layout, panel, &[], 1, state);
+            let mut box_rect = header;
+            if active
+                && body.is_positive()
+                && style.background.is_some_and(|fill| color(fill).is_opaque())
+            {
+                // Join the active tab to its panel by covering the panel's
+                // top border under the tab and omitting the tab's bottom rule.
+                box_rect.max.y += super::border_width(&style, 0).unwrap_or_default() * 0.5;
+                style.border_width[2] = None;
+            }
+            paint_box(ui, box_rect, &style, ObjectKind::Rectangle);
+            let Some(label) = panel.text.as_deref().filter(|text| !text.is_empty()) else {
+                continue;
+            };
+            let mut text = self.cache.text_style(self.layout, panel, &[], state);
+            let defaults = self.cache.text_style(self.layout, control, &[], state);
+            text.font_size = text.font_size.or(defaults.font_size);
+            text.color = text.color.or(defaults.color);
+            text.text_align = Some(2);
+            let [top, right, bottom, left] =
+                text.padding.map(|value| value.unwrap_or_default() as f32);
+            let label_rect = Rect::from_min_max(
+                header.min + vec2(left, top),
+                header.max - vec2(right, bottom),
+            );
+            if !label_rect.is_positive() {
+                continue;
+            }
+            let galley = ui.fonts_mut(|fonts| {
+                let job = rich_text::layout_job(fonts, label, &text, None, label_rect.width());
+                scaled_text::layout_galley(fonts, job, scale)
+            });
+            let space = (label_rect.height() - galley.size().y).max(0.0);
+            let origin = pos2(label_rect.center().x, label_rect.top() + space * 0.5);
+            let painter = ui
+                .painter()
+                .with_clip_rect(ui.clip_rect().intersect(label_rect));
+            if selected {
+                artwork.selected_labels.push(
+                    galley
+                        .mesh_bounds
+                        .translate(origin.to_vec2())
+                        .expand(1.0)
+                        .intersect(painter.clip_rect()),
                 );
             }
+            painter.galley(
+                origin,
+                galley,
+                text.color.map(color).unwrap_or(Color32::BLACK),
+            );
         }
+        ui.set_clip_rect(clip);
+        if let Some(front) = front.filter(|_| front_painted) {
+            artwork.framed_panels.insert(front.id);
+        }
+        painted
     }
 
     /// Paint the object in its current draft frame. Unsupported objects
@@ -111,11 +183,20 @@ impl<'a> Surface<'a> {
         rect: Rect,
         field_caption: &str,
         draft_words: Option<&str>,
+        tabs: (&dyn Fn(u64) -> bool, &mut TabArtwork, bool),
     ) -> bool {
         let Some(object) = self.cache.object(self.layout, key) else {
             return false;
         };
         let kind = object.kind();
+        if kind == ObjectKind::TabControl {
+            return self.paint_tabs(ui, object, rect, tabs);
+        }
+        if kind == ObjectKind::TabPanel {
+            // The parent paints the panel frame and headers. Canvas traversal
+            // still owns visibility, selection and drawing the children.
+            return tabs.1.framed_panels.contains(&key);
+        }
         if !matches!(
             kind,
             ObjectKind::Field
