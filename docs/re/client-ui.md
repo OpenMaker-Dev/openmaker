@@ -710,9 +710,11 @@ enabled. Top to bottom (`|` a separator, `>` a submenu):
 Titles end in three periods where shown. Current Date has no shortcut here
 (⌘- in Browse).
 
-- **Part...** opened Part Definition at once, with the first kind of part
-  the layout lacked chosen (Title Header, on a layout with a top
-  navigation part and a body, both dimmed). Every checkbox was off, and
+- **Part...** opened Part Definition at once, with Title Header chosen,
+  on a layout with a top navigation part and a body (both dimmed). Title
+  Header is the first kind in the dialog's order that layout lacked;
+  whether Pro always chooses that way, and what its Part tool chooses, is
+  not measured. Every checkbox was off, and
   only "Restart page numbers after each occurrence" was enabled for that
   choice.
 - **Field...** opened Specify Field on the layout's table, no field chosen
@@ -722,7 +724,8 @@ Titles end in three periods where shown. Current Date has no shortcut here
   removed both, and leaving the layout still asked whether to save it.
 
 Unknown: where Field... puts the edit box on other layouts (the rule
-behind 374/528), and what the other items do.
+behind 374/528), what the other items do, and Part Definition's first
+choice on other layouts.
 
 ## Portal Setup
 

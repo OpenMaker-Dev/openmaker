@@ -115,6 +115,10 @@ pub(crate) struct MenuContext<'a> {
     /// How many of Layout mode's selected objects Arrange's Align,
     /// Distribute and Resize To apply to.
     pub layout_arrange: usize,
+    /// Insert > Part... can open Part Definition now: the layout is read,
+    /// holds no unsaved change, nothing is with the host, and it lacks a
+    /// kind of part Part Definition adds (`OpenMakerApp::can_insert_part`).
+    pub insert_part: bool,
 }
 
 impl MenuContext<'_> {
@@ -837,14 +841,36 @@ fn layout_insert_menu(
     actions: &mut Vec<Action>,
 ) {
     let alt_cmd = |key| command(CMD.plus(Modifiers::ALT), key);
-    let shown = context.session.and_then(|session| session.layout);
     pending(rows, "Field...", None);
-    if rows.item("Part...", None, false, context.design && shown.is_some()) {
+    if rows.item("Part...", None, false, context.insert_part) {
         actions.push(Action::InsertPart);
     }
     rows.separator();
-    pending_submenu(rows, "Graphic Object");
-    pending_submenu(rows, "Field/Control");
+    // The submenus open on their items, none offered yet.
+    for (submenu, items) in [
+        (
+            "Graphic Object",
+            &["Text", "Line", "Rectangle", "Rounded Rectangle", "Oval"][..],
+        ),
+        (
+            "Field/Control",
+            &[
+                "Edit Box",
+                "Drop-down List",
+                "Pop-up Menu",
+                "Checkbox Set",
+                "Radio Button Set",
+                "Drop-down Calendar",
+                "Concealed Edit Box",
+            ][..],
+        ),
+    ] {
+        rows.submenu(submenu, true, &mut |rows| {
+            for item in items {
+                pending(rows, item, None);
+            }
+        });
+    }
     for label in [
         "Portal...",
         "Tab Control...",
