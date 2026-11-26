@@ -242,7 +242,15 @@ that flag word; unchecking restored `0x10f30a0b`. Protobuf
 `LayoutDef.customMargins` (field 12 of `[4,5,<layout>,02]`) stores the
 rectangle in top/left/bottom/right order even with the option off. Pro also
 rewrote `printColumnWidth` and save metadata, so their changes do not
-identify the checkbox. With the box off and Format For set to **Any
+identify the checkbox. [O, 2026-11-25: the same copies' Task List
+`LayoutDef` re-read with `tools/fmp12_keytree.py`] Pro rewrote the stored
+`Rect` in place: top/bottom/left/right 50/60/70/80 is stored as its fields
+1-4 top 50, left 70, bottom 60, right 80. `printColumnWidth` (field 10)
+became the US Letter width less the left and right margins over
+`printColumnCount` (2): 270 with fixed 36 pt margins, 231 with 70/80, and
+288 with the box off (the printer's 18/18). Every save also wrote
+`layoutClientType` (field 17) 0 explicitly, 3 bytes the original lacked.
+With the box off and Format For set to **Any
 Printer**, Page Setup's paper help and Task List's disabled Printing fields
 read as follows [O, local disposable copies, #609]:
 
