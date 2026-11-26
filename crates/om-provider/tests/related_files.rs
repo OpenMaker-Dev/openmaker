@@ -2070,6 +2070,95 @@ fn imported_layout_import_records_go_to_the_owning_file() {
     assert_eq!(rows(ROOT), root);
 }
 
+/// Duplicate Record of a record holding a container, on a layout of another
+/// file's table inside a script's transaction (#43): the copy's reference
+/// is taken in that file's library and is the transaction's at once, the
+/// owning file joining it first, so the provider settles it. A copy refused
+/// before it is held gives the reference back once, and Revert Transaction
+/// sends nothing more. A held copy keeps it through Commit Transaction.
+#[test]
+fn a_container_copy_on_another_files_layout_is_the_script_transactions() {
+    use om_protocol::Opcode;
+    let mut root = fixture::tree(&[], true);
+    let mut child = fixture::tree(&[], true);
+    reference(&mut root, (REMOTE, "Remote Tasks"), 1, "Related");
+    root.put(
+        &[&[4], &[5], &uint_segment(fixture::NOTES_LAYOUT), &[2]],
+        OwnedNode::leaf([], layout_def(REMOTE)),
+    );
+    fixture::add_photo(&mut child);
+    let host = Host::new(
+        "layout-container-copy",
+        vec![(ROOT, root), (RELATED, child)],
+    );
+    let mut provider = host.open(ROOT);
+    let layout = fixture::NOTES_LAYOUT as u32;
+    let page = provider.records(layout, 0, 10).unwrap();
+    let photo = page.fields.iter().position(|f| f.name == "Photo").unwrap();
+    let source = page.records[0].values[photo].clone().unwrap();
+    let remote = provider
+        .calc_schema()
+        .unwrap()
+        .unwrap()
+        .table_of(REMOTE)
+        .unwrap()
+        .id;
+    let deltas = || {
+        host.captures
+            .with_opcode(Opcode::AdjustReferenceCount)
+            .into_iter()
+            .map(|(file, tx)| {
+                let adjust =
+                    om_protocol::container::parse_adjust_reference_count_request(&tx).unwrap();
+                (file, adjust.delta)
+            })
+            .collect::<Vec<_>>()
+    };
+    let owned = |provider: &NativeProvider| {
+        provider
+            .owned_container_drafts()
+            .get(&(remote, source.clone()))
+            .copied()
+            .unwrap_or(0)
+    };
+    let related = |delta: i32| (RELATED.to_owned(), delta);
+
+    // Refused before it is held: given back once, and nothing at the revert.
+    provider.begin_transaction(Default::default()).unwrap();
+    provider.adjust_container(layout, &source, 1).unwrap();
+    assert_eq!(owned(&provider), 1, "the transaction's at once");
+    provider.adjust_container(layout, &source, -1).unwrap();
+    assert_eq!(owned(&provider), 0);
+    provider.revert_transaction().unwrap();
+    assert_eq!(deltas(), [related(1), related(-1)]);
+
+    // Held, then committed: the copy keeps it.
+    provider.begin_transaction(Default::default()).unwrap();
+    provider.adjust_container(layout, &source, 1).unwrap();
+    let copy = provider
+        .write_record(&om_data::ScriptWrite {
+            layout,
+            cells: [
+                (NAME, Some("Copy".to_owned())),
+                (fixture::PHOTO, Some(source.clone())),
+            ]
+            .into(),
+            ..Default::default()
+        })
+        .unwrap();
+    provider.commit_transaction(false).unwrap();
+    assert_eq!(deltas(), [related(1), related(-1), related(1)]);
+    assert_eq!(owned(&provider), 0, "settled by the commit");
+    provider.close();
+    let mut peer = host.open(RELATED);
+    let stored = peer.records(fixture::LAYOUT as u32, 0, 10).unwrap();
+    let at = |name: &str| stored.fields.iter().position(|f| f.name == name).unwrap();
+    let row = stored.records.iter().find(|r| r.id == copy.id).unwrap();
+    assert_eq!(row.values[at("Name")].as_deref(), Some("Copy"));
+    assert_eq!(row.values[at("Photo")].as_deref(), Some(source.as_str()));
+    peer.close();
+}
+
 /// Root's Tasks::Code is validated Always by value list 5, the values of
 /// Remote Tasks::Name: a write the list checks would look the value up in
 /// Related's index, which Root's connection cannot ask. It is refused

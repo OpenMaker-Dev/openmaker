@@ -982,17 +982,20 @@ implementation).** An index's keys are the children of `[T, 01, field,
 kind]`, so the file holds them in key order like every key (file-format.md
 3.1: unsigned bytes, a shorter key first on a common prefix), each key
 once. om-query relies on that order. Each instruction finds its keys by
-binary search and reads the RID lists of only the keys its answer needs:
+key, by binary search in an index held whole or by a seek in one listed a
+page at a time (below), and reads the RID lists of only the keys its answer
+needs:
 
 | instruction | keys it finds |
 |-------------|---------------|
 | IndexMatch, NotIndexMatch (6.3) | `begin` |
 | IndexRange | the run between the bounds |
-| FindDuplicates | every key (its answer needs each list's size) |
-| ExistsInIndex (8.4) | the client's keys, sorted and looked up in turn from the last position |
+| FindDuplicates | every key but the empty value's (its answer needs each list's size) |
+| ExistsInIndex (8.4) | the client's keys, sorted and looked up in turn (held whole, each search from where the last one ended) |
 | CreateValueListEx (8.7) | the run of keys that start with the prefix |
-| JoinProjection (9.2) | for `=`, each source key; for `≠`, `<`, `≤`, `>`, `≥`, one run per source row, since a key is below some source key when it is below the greatest, and so on |
-| Projection, SortList | every key (they invert the index) |
+| JoinProjection (9.2), LookupValue (8.6) | for `=`, each source key, its RID list read from where its lookup found it; for `≠`, `<`, `≤`, `>`, `≥`, one run per source row, since a key is below some source key when it is below the greatest, and so on (`≠` of one key: the runs on either side of it) |
+| Projection | every key but the empty value's (it inverts the index) |
+| SortList | every key from the lowest, until every record sorted has one (it inverts the index, and stops there) |
 
 The lists are merged into one result a list at a time. With one predicate,
 JoinProjection gathers the runs of all rows first and reads each key once;
@@ -1001,19 +1004,37 @@ Answers that follow key order keep it: CreateValueListEx lists values in
 key order, and SortList sorts a record held under several keys by its
 lowest (13, question 6).
 
-The first time a program reads an index, om-query checks that its keys
-increase, one comparison per key. A file whose keys are out of order does
-not load (the key tree refuses it), OpenMaker Server builds missing indexes
-in key order and changes them in place, so no index it serves fails the
-check. An index from another source that does (keys out of order or one
-repeated) is read as if sorted, the records of a repeated key merged.
-Every lookup then answers as on the sorted index. The entry `ff 80` (long
-keys, above) is no value's key, so om-query leaves it out of every index it
-reads: no lookup, run, count or full read meets it, and each of its
-records is found under its cut key. No value's key starts with `ff`, so in
-an index in order it is the last entry, and the index is read one entry
-shorter, still in place; anywhere else it is dropped as the index is read
-as if sorted. What counts towards a program's work is in 11.4.
+A source gives an index either whole (a file on disk, a source that
+cannot list, an index built on demand) or listed (OpenMaker Server's hosted
+files, `om_query::Listing`): its keys a page at a time from a bound in
+either direction, nothing below them, and an entry's RID list only when an
+instruction takes that entry, within the work the program has left: a
+source that builds the list refuses it at the first node past either of
+the work's counters (11.4). A lookup is then one seek, a miss reads no
+RID list, and a scan reads the keys it passes (8 a page, growing to 256).
+
+The first time a program reads an index held whole, om-query checks that
+its keys increase, one comparison per key. A file whose keys are out of
+order does not load (the key tree refuses it), OpenMaker Server builds
+missing indexes in key order and changes them in place, so no index it
+serves fails the check. An index held whole that does (keys out of order
+or one repeated) is read as if sorted, the records of a repeated key
+merged, and every lookup then answers as on the sorted index. A listed
+index is checked as it is read instead, each page whole as it is fetched,
+before any of its keys is taken: a page whose keys do not each follow the
+one before in the read's direction (the first, the bound the page was
+asked from), a page with no key that says more follow, a page with more
+keys than asked for, or a listed key without an entry fails the program,
+so a broken source can neither repeat an entry, nor make a read loop, nor
+end one early as if the index ended there (a source that says no more
+follow early, or leaves a key out, cannot be told from an index without
+it). The entry `ff 80` (long keys, above) is no value's key, so om-query
+leaves it out of every index it reads: no lookup, run, count or full read
+meets it, and each of its records is found under its cut key. No value's
+key starts with `ff`, so in an index in order it is the last entry, and an
+index held whole is read one entry shorter, still in place; anywhere else
+it is dropped as the index is read as if sorted. What counts towards a
+program's work is in 11.4.
 
 ### 7.2 Text keys (High for the forms and the weights shown)
 
@@ -1967,15 +1988,35 @@ memory (565 MB measured for copies that reach the size limit, release
 build) and a few seconds. A result that cannot be encoded as a reply (a
 value over 65,535 bytes, 8.7) fails the program with `02 ffff` alone.
 
-Reading the file counts as work too (7.1): each key of an index, once, the
-first time the program reads that index (its order is checked); for each
-key looked up, the keys a binary search may compare (`log2 n + 1` of `n`);
-each index entry read, with its RID list; a node of eight bytes per 64
-records each time an instruction combines with the table's record list;
-each stored value read; and each node on an UploadMultiple's destination
-path in the file, which it reads to refuse a write beneath a value. So the time a program holds the file follows
-its own size and its answer, and stops at the work limit whatever the
-index's size. Programs that spend the work limit on index reads were
+Reading the file counts as work too (7.1). An index held whole: each key,
+once, the first time the program reads that index (its order is
+checked); for each key looked up, and for each end of a run, the keys a
+binary search may compare (`log2 n + 1` of `n`, from where the last search
+ended for ExistsInIndex's keys); nothing for a walk of every key
+(FindDuplicates, Projection, SortList) or for the runs on either side of
+a key found (`≠`); a field without the index reads as one without keys,
+each search of it counted as one key compared. A listed index: each page
+of keys, a node; each key the instruction takes from a page, a node and
+its bytes (a page can hold keys a scan that stops never takes, at most a
+page of them, fetched and not counted; OpenMaker Server's store engine
+also reads one child past a full page to say whether more follow); and
+each RID list read, a node more, read within the work the program has
+left: a source that builds the list counts each node as the program
+counts it (one node, and the bytes of its segment and value) and refuses
+it at the first node past either counter, so that a list past the work
+left fails the program at the work limit before it is read whole, and
+never one that fits; a source that lends it (OpenMaker Server's file
+engine) gives it, and the program's count refuses it the same. The read
+of an index's own node that finds whether the field has the index is not
+counted (one per index a program opens).
+Either way, each index entry whose RID list is read, with that list; a
+node of eight bytes per 64 records each time an instruction combines with
+the table's record list; each stored value read; and each node on an
+UploadMultiple's destination path in the file, one node and its own key
+and value, which it reads (whole, a long value's pieces included) to
+refuse a write beneath a value. So the time a program holds the file
+follows its own size and its answer, and stops at the work limit whatever
+the index's size. Programs that spend the work limit on index reads were
 refused after 0.6 to 1.5 s, end to end against a 40,000-key index
 (`docs/performance/query-index-lookups.md`).
 
