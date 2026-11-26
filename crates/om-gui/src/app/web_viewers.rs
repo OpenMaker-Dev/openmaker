@@ -36,7 +36,7 @@ impl OpenMakerApp {
             .and_then(|s| s.layout)
             .filter(|_| browse);
         let placements = std::mem::take(&mut self.w.document.web_viewers);
-        let covered = covered_areas(ctx, &self.w.document.overlays);
+        let covered = covered_areas(ctx, self.viewport_layer, &self.w.document.overlays);
         self.web.reconcile(
             ctx,
             &WindowFrame {
@@ -121,16 +121,36 @@ impl OpenMakerApp {
 }
 
 /// Whatever egui draws above the document in the viewport being drawn: its
-/// windows, menus, pop-ups and tooltips (every layer above the background
-/// order the panels and the document paint in), a modal's backdrop, and the
-/// layout's open popovers (`overlays`), in window points.
-fn covered_areas(ctx: &egui::Context, overlays: &[egui::Rect]) -> Vec<egui::Rect> {
+/// windows, menus, pop-ups and tooltips, a modal's backdrop, and the
+/// layout's open popovers (`overlays`), in window points. In the root
+/// viewport that is every layer above the background order the panels and
+/// the document paint in. An embedded viewport's panels and document paint
+/// in its egui window's layer (`host`) and its sublayers: there it is the
+/// layers egui paints after those, as of the last frame, such as another
+/// embedded window raised above it.
+fn covered_areas(
+    ctx: &egui::Context,
+    host: egui::LayerId,
+    overlays: &[egui::Rect],
+) -> Vec<egui::Rect> {
     let (modal, layers) = ctx.memory(|memory| {
         let areas = memory.areas();
-        let layers: Vec<(egui::LayerId, egui::Rect)> = areas
-            .visible_layer_ids()
+        let visible = areas.visible_layer_ids();
+        let above: Vec<egui::LayerId> = if host.order == egui::Order::Background {
+            visible
+                .into_iter()
+                .filter(|layer| layer.order != egui::Order::Background)
+                .collect()
+        } else {
+            memory
+                .layer_ids()
+                .skip_while(|layer| *layer != host)
+                .skip(1)
+                .filter(|layer| visible.contains(layer) && areas.parent_layer(*layer) != Some(host))
+                .collect()
+        };
+        let layers: Vec<(egui::LayerId, egui::Rect)> = above
             .into_iter()
-            .filter(|layer| layer.order != egui::Order::Background)
             .filter_map(|layer| Some((layer, memory.area_rect(layer.id)?)))
             .collect();
         (memory.top_modal_layer().is_some(), layers)
