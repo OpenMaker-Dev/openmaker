@@ -792,6 +792,15 @@ currently keeps local globals in memory for the session. See the native
 observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
 and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
 
+An ordinary single-repetition Text field in a local file can
+auto-enter a direct `$$` variable read. A Text value comes from the
+owning file's current script variables, and an unset variable gives an
+empty field. OpenMaker keeps the New Record snapshot through its preview
+and commit. That timing is inferred when the variable changes between
+those two steps. Hosted files, compound variable formulas, and non-Text
+variable values are outside this change.
+[FileMaker Pro measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1037#issuecomment-7185794811).
+
 **An auto-entered or validation formula may read an unstored
 calculation** of its own table ([#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); auto-entry.md, "Formulas over
 an unstored calculation or a summary field"). The calculation is
