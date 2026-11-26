@@ -1142,10 +1142,11 @@ FileMaker Server 26.0.3 for Ubuntu:
   FileMaker Server's replies during opening, closing and Pause remain
   unmeasured.
 
-OpenMaker Server answers `0x4fb5` for unhosted names and still answers
-4 for a hosted file that is closing, closed or opening. The change
-for the measured `CLOSED` case is tracked in
-[#939](https://github.com/OpenMaker-Dev/openmaker/issues/939).
+OpenMaker Server answers `0x4fb5` for unhosted names and for a hosted
+file that is closed, as FileMaker Server does, and 4 for one that is
+closing or opening, its earlier choice, kept while FileMaker Server's
+answer for these is unmeasured ([#992](https://github.com/OpenMaker-Dev/openmaker/issues/992)). A paused file's Open is held
+unanswered until it resumes (admin-console.md, "Pausing a file").
 
 Record/data transactions reuse the LIFO body with the HBAM slot codec:
 `RCUploadDownload::Call` (0x1d27a1c) frames `PushPtr`/`PushLen` + a packed slot
@@ -1320,8 +1321,11 @@ one's session there, related files and the files a script opens alike
 Login. No empty-password Login is sent [I: OpenMaker's choice, until what
 it stands for is known]. Otherwise:
 - An Open answered 0x4fb5 (`kFileNotFound`, above), or 4, which OpenMaker
-  Server answers for a hosted file it is not serving (and answered for a
-  name it does not host before #914), moves on to the next path.
+  Server answers for a hosted file that is closing or opening (and
+  answered for a name it does not host before
+  [#914](https://github.com/OpenMaker-Dev/openmaker/issues/914), and for a
+  closed file before [#939](https://github.com/OpenMaker-Dev/openmaker/issues/939)),
+  moves on to the next path.
 - The first file the host has, or a file already open (the opened file
   included), is the data source's file.
 - A host that could not be reached (no connection: host lookup, connect
