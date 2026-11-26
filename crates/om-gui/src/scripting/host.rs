@@ -1884,8 +1884,7 @@ impl<'a> WorkerHost<'a> {
     }
 
     /// The words of a failure, its own (`failure`) or its provider's,
-    /// taken. A step starts without them, so one an error capture kept
-    /// from an earlier step's alert is not shown under a later one.
+    /// dropped.
     fn forget_failures(&mut self) {
         self.s.failure = None;
         take_provider_failure();
@@ -3313,9 +3312,9 @@ fn without_begun(context: &Context) -> std::borrow::Cow<'_, Context> {
 }
 
 impl WorkerHost<'_> {
-    /// A provider failure as a step error, its words kept for the alert.
+    /// A provider failure as a step error, its words kept for the step's
+    /// alert, as [`data_error`] keeps them.
     fn failed(&mut self, error: DataError) -> HostError {
-        self.s.failure = Some(error.message.clone());
         data_error(error)
     }
 }
@@ -3434,8 +3433,7 @@ thread_local! {
     /// error, for that step's alert (#818). Most of the script host
     /// converts a `DataError` with `map_err(data_error)` while it holds
     /// the window and the provider, where the session's `failure` is out
-    /// of reach. Each step starts without it
-    /// ([`WorkerHost::forget_failures`]).
+    /// of reach. Each step starts without it (`before_step`).
     static PROVIDER_FAILURE: std::cell::RefCell<Option<String>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -4155,8 +4153,11 @@ impl ScriptHost for WorkerHost<'_> {
     }
 
     fn before_step(&mut self) {
-        // A step's alert gives only its own failure's words (#818).
-        self.forget_failures();
+        // A provider's words belong to the step it failed (#818): one an
+        // error capture kept from an earlier step's alert is not shown
+        // under a later one. `failure`, which a few steps set with words
+        // of their own, keeps the life it had.
+        take_provider_failure();
     }
 
     fn take_triggers(&mut self) -> Vec<Trigger> {
