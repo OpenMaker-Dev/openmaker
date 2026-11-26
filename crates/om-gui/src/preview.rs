@@ -173,14 +173,16 @@ pub(crate) fn show(
     if let Some(offset) = frame.offset() {
         scroll = scroll.scroll_offset(offset);
     }
+    let (draw, magnify) = drawn(plan.paper.scale);
+    let gutter = 16.0 / magnify;
     let output = scroll.stick_to_bottom(frame.at_end()).show(ui, |ui| {
         zoom::show(
             ui,
             vec2(
-                plan.paper.width as f32 + 32.0,
-                plan.paper.height as f32 + 32.0,
+                plan.paper.width as f32 * draw + 2.0 * gutter,
+                plan.paper.height as f32 * draw + 2.0 * gutter,
             ),
-            zoom.factor(),
+            zoom.factor() * magnify,
             |ui| paint(ui, &scene, &plan.paper),
         );
         frame.hold(ui);
@@ -200,10 +202,30 @@ fn color(c: Color) -> Color32 {
         (c.alpha * 255.0) as u8,
     )
 }
-fn rect(r: &om_layout::Rect) -> Rect {
+/// How Preview shows a page at Page Setup's `scale`: the scene's layout
+/// points drawn times the first, and that drawing magnified by the second
+/// with the zoom. Up to 100% the scene is drawn on the sheet, so text is
+/// rasterized at the size it prints; above it, at its own size and
+/// magnified, as zooming in does, since egui drops glyphs rasterized
+/// past 1,024 pixels.
+fn drawn(scale: f64) -> (f32, f32) {
+    let scale = scale as f32;
+    if scale > 1.0 {
+        (1.0, scale)
+    } else {
+        (scale, 1.0)
+    }
+}
+
+/// `r`, in the page's layout points, drawn `draw` times its size inside
+/// the gutter (`gutter` drawn points).
+fn sheet_rect(r: &om_layout::Rect, draw: f32, gutter: f32) -> Rect {
     Rect::from_min_max(
-        pos2(r.left as f32 + 16.0, r.top as f32 + 16.0),
-        pos2(r.right as f32 + 16.0, r.bottom as f32 + 16.0),
+        pos2(r.left as f32 * draw + gutter, r.top as f32 * draw + gutter),
+        pos2(
+            r.right as f32 * draw + gutter,
+            r.bottom as f32 * draw + gutter,
+        ),
     )
 }
 fn black() -> Color {
@@ -217,14 +239,14 @@ fn black() -> Color {
 /// rounded shape and draws its one border inside the bounds: the scene was
 /// checked by the PDF writer first, so every side of a rounded frame has
 /// the same border. egui rounds corner radii to whole points, as Browse's
-/// frames do.
-fn box_style(painter: &egui::Painter, r: Rect, style: &ResolvedStyle, radius: f64) {
-    let radius = radius
+/// frames do. Widths and `radius` are in layout points, drawn at `scale`.
+fn box_style(painter: &egui::Painter, r: Rect, style: &ResolvedStyle, radius: f64, scale: f32) {
+    let radius = (radius * f64::from(scale))
         .min(f64::from(r.width()) / 2.0)
         .min(f64::from(r.height()) / 2.0)
         .max(0.0);
     if radius > 0.0 {
-        let width = style.border_width[0].unwrap_or(0.0) as f32;
+        let width = style.border_width[0].unwrap_or(0.0) as f32 * scale;
         let stroke = if width > 0.0 && !matches!(style.border_style[0], Some(0 | 1)) {
             Stroke::new(width, color(style.border_color[0].unwrap_or_else(black)))
         } else {
@@ -243,7 +265,7 @@ fn box_style(painter: &egui::Painter, r: Rect, style: &ResolvedStyle, radius: f6
         painter.rect_filled(r, CornerRadius::ZERO, color(c));
     }
     for side in 0..4 {
-        let width = style.border_width[side].unwrap_or(0.0) as f32;
+        let width = style.border_width[side].unwrap_or(0.0) as f32 * scale;
         if width <= 0.0 || matches!(style.border_style[side], Some(0 | 1)) {
             continue;
         }
@@ -399,16 +421,22 @@ pub(crate) fn paint(
     scene: &report::ReportPage,
     paper: &om_layout::pagination::PageSize,
 ) {
+    // The scene is in the page's layout points, drawn at Page Setup's
+    // scale ([`drawn`]); the gutter and the guide look the same at every
+    // scale.
+    let (scale, magnify) = drawn(paper.scale);
+    let gutter = 16.0 / magnify;
+    let rect = |r: &om_layout::Rect| sheet_rect(r, scale, gutter);
     let painter = ui.painter().clone();
     painter.rect_filled(ui.max_rect(), CornerRadius::ZERO, theme::PRINT_WORKSPACE);
     let page = Rect::from_min_size(
-        pos2(16.0, 16.0),
-        vec2(paper.width as f32, paper.height as f32),
+        pos2(gutter, gutter),
+        vec2(paper.width as f32 * scale, paper.height as f32 * scale),
     );
     painter.rect_filled(page, CornerRadius::ZERO, Color32::WHITE);
     for part in &scene.parts {
         let painter = painter.with_clip_rect(rect(&part.bounds).intersect(ui.clip_rect()));
-        box_style(&painter, rect(&part.bounds), &part.style, 0.0);
+        box_style(&painter, rect(&part.bounds), &part.style, 0.0, scale);
         for object in &part.objects {
             let r = rect(&object.bounds);
             match object.kind {
@@ -428,7 +456,7 @@ pub(crate) fn paint(
                     painter.line_segment(
                         ends,
                         Stroke::new(
-                            object.style.border_width[0].unwrap_or(1.0) as f32,
+                            object.style.border_width[0].unwrap_or(1.0) as f32 * scale,
                             color(
                                 object.style.border_color[0]
                                     .or(object.style.color)
@@ -438,7 +466,7 @@ pub(crate) fn paint(
                     );
                 }
                 ObjectKind::Graphic => {
-                    box_style(&painter, r, &object.style, object.radius);
+                    box_style(&painter, r, &object.style, object.radius, scale);
                     if let Some(picture) = &object.picture {
                         painter.image(
                             picture_texture(ui.ctx(), picture).id(),
@@ -457,12 +485,12 @@ pub(crate) fn paint(
                         stroke: if object.style.background.is_some_and(|c| c.alpha != 0.0) {
                             Stroke::NONE
                         } else {
-                            Stroke::new(1.0, Color32::BLACK)
+                            Stroke::new(scale, Color32::BLACK)
                         },
                     });
                 }
                 _ => {
-                    box_style(&painter, r, &object.style, object.radius);
+                    box_style(&painter, r, &object.style, object.radius, scale);
                     if let (Some(picture), Some([clip, image])) = (&object.picture, &object.placed)
                     {
                         painter
@@ -499,13 +527,15 @@ pub(crate) fn paint(
                             }
                             None => painter.clone(),
                         };
-                        let font =
-                            egui::FontId::new(line.size as f32, theme::report_family(line.face));
+                        let font = egui::FontId::new(
+                            line.size as f32 * scale,
+                            theme::report_family(line.face),
+                        );
                         // Use shared measured advances and baselines; egui only
                         // rasterizes the bundled font glyphs at those positions,
                         // each part of the line in its color.
                         for (glyphs, part_color, start) in line.parts() {
-                            let mut x = start as f32 + 16.0;
+                            let mut x = start as f32 * scale + gutter;
                             for (_, advance, ch) in glyphs {
                                 let galley = painter.layout_no_wrap(
                                     ch.to_string(),
@@ -518,11 +548,11 @@ pub(crate) fn paint(
                                     .and_then(|r| r.glyphs.first().map(|g| r.pos.y + g.pos.y))
                                     .unwrap_or(0.0);
                                 painter.galley(
-                                    pos2(x, line.baseline as f32 + 16.0 - baseline),
+                                    pos2(x, line.baseline as f32 * scale + gutter - baseline),
                                     galley,
                                     color(part_color),
                                 );
-                                x += *advance as f32;
+                                x += *advance as f32 * scale;
                             }
                         }
                         // Underlines and strikethroughs, in the line's clip.
@@ -545,9 +575,10 @@ pub(crate) fn paint(
             }
         }
     }
+    let m = &paper.margins;
     let printable = Rect::from_min_max(
-        page.min + vec2(paper.margins.left as f32, paper.margins.top as f32),
-        page.max - vec2(paper.margins.right as f32, paper.margins.bottom as f32),
+        page.min + vec2(m.left as f32, m.top as f32) * scale,
+        page.max - vec2(m.right as f32, m.bottom as f32) * scale,
     );
     for [a, b] in [
         [printable.left_top(), printable.right_top()],
@@ -557,9 +588,9 @@ pub(crate) fn paint(
     ] {
         painter.add(egui::Shape::dashed_line(
             &[a, b],
-            Stroke::new(0.7, MARGIN_GUIDE),
-            2.0,
-            3.0,
+            Stroke::new(0.7 / magnify, MARGIN_GUIDE),
+            2.0 / magnify,
+            3.0 / magnify,
         ));
     }
 }

@@ -343,9 +343,12 @@ file committed (record-writes.md, "A script's transaction across files").
 A script's Delete Record inside one is held there too; the user's own edits
 and deletions on such a layout while the script is paused are refused
 ([#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)).
-Import, writes to the layout's related records in other tables, globals and
-Browse entry of repeating fields remain refused on these layouts
-([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). The owning file
+Import, writes to the layout's related records in other tables and Browse
+entry of repeating fields remain refused on these layouts
+([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). A global of
+another file's table, set by Set Field from any layout or typed on such a
+layout, is that file's session value (record-writes.md, "A related file's
+globals"). The owning file
 is reached through its data source's paths, on its own host
 (desktop-files.md); native FileMaker acceptance is unmeasured.
 
