@@ -1282,11 +1282,8 @@ impl Connection {
                     build_is_a_reply(id, repo == Some(REPO_ID) || file_list || authoring)
                 }
                 op::CONNECT => self.connect(id, msg),
-                op::PERFORM => match self.perform(&request, msg) {
-                    Some(reply) => reply,
-                    // Held for a paused file.
-                    None => return None,
-                },
+                // None: held for a paused file.
+                op::PERFORM => self.perform(&request, msg)?,
                 hosted_files::LIST_FILES => self.list_files(&request),
                 op::DISCONNECT => {
                     match (parse_disconnect_request(request.body), &self.session) {
