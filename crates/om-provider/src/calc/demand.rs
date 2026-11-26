@@ -269,15 +269,9 @@ impl NativeProvider {
         Ok(())
     }
 
-    /// The calculation schema with the related files `layout` reads open.
+    /// Related schema needed to describe a layout. A scripted visit can
+    /// leave unset variable sources pending until a data read needs them.
     pub(crate) fn calc_schema_for_layout(
-        &mut self,
-        layout: &om_layout::Layout,
-    ) -> Result<Arc<CalcSchema>, DataError> {
-        self.calc_schema_for_layout_with_demand(layout, false)
-    }
-
-    pub(crate) fn calc_schema_for_layout_with_demand(
         &mut self,
         layout: &om_layout::Layout,
         scripted: bool,

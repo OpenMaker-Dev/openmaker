@@ -1600,7 +1600,7 @@ impl NativeProvider {
     ) -> Result<Option<RenderLayout>, DataError> {
         let mut layout = self.decoded_layout(layout_id)?;
         let field_bindings = self.bindings(&layout)?;
-        let schema = self.calc_schema_for_layout_with_demand(&layout, scripted)?;
+        let schema = self.calc_schema_for_layout(&layout, scripted)?;
         resolve_merge_bindings(&mut layout, &schema);
         Ok(Some(RenderLayout {
             layout,
@@ -3417,7 +3417,7 @@ impl DataProvider for NativeProvider {
         let layout = self.decoded_layout(layout_id)?;
         // The related files it reads open first, so their fields' rules
         // count (#983): the window asks before it draws the layout.
-        let file = self.calc_schema_for_layout_with_demand(&layout, scripted)?;
+        let file = self.calc_schema_for_layout(&layout, scripted)?;
         if shows_related_file(&file, layout_occurrence(&layout)?) {
             if denied {
                 return Ok(none());
