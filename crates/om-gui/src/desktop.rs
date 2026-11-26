@@ -1,7 +1,7 @@
 //! Where the window sits on the desktop, for the window selectors and
 //! layout objects' screen bounds (calc-functions.md 6.3 O1, O5): the main
-//! screen, the desktop area it leaves for windows (the X11 work area on
-//! Linux: the screen less panels and docks), the window's frame, its client
+//! screen, the desktop area it leaves for windows (the visible display
+//! area on Mac and the X11 work area on Linux), the window's frame, its client
 //! area and the content area that shows the layout, in points.
 
 use std::sync::OnceLock;
@@ -13,6 +13,9 @@ use om_data::host::{Frame, WindowInfo};
 pub(crate) struct Placement {
     pub screen: Frame,
     pub desktop: Frame,
+    /// The current display's physical work area when its origin differs
+    /// from the desktop origin FileMaker exposes to position selectors.
+    pub work_area: Option<Frame>,
     /// The outer frame, the client area inside the system's title bar and
     /// borders, and the content area showing the layout.
     pub frame: Frame,
@@ -75,14 +78,23 @@ pub(crate) fn placement(
             Frame::new(left / p, top / p, width / p, height / p)
         })
         .unwrap_or(screen);
+    let scale = viewport.native_pixels_per_point.unwrap_or(points);
+    #[cfg(target_os = "macos")]
+    let (desktop, work_area) = viewport
+        .outer_rect
+        .and_then(|outer| mac_work_areas(frame(outer), screen, f64::from(scale / points)))
+        .map_or((desktop, None), |(desktop, area)| (desktop, Some(area)));
+    #[cfg(not(target_os = "macos"))]
+    let work_area = None;
     let content = content.unwrap_or(egui::Rect::from_min_size(egui::Pos2::ZERO, inner.size()));
     Placement {
         screen,
         desktop,
+        work_area,
         frame: frame(outer),
         inner: frame(inner),
         content: frame(content.translate(inner.min.to_vec2())),
-        scale: f64::from(viewport.native_pixels_per_point.unwrap_or(points)),
+        scale: f64::from(scale),
         active: viewport.focused.unwrap_or(false),
         toolbar,
         bars: f64::from(bars),
@@ -181,6 +193,7 @@ impl Placement {
         }
         let info = self.window_info(toolbar, menubar, zoom, "");
         let scale = f64::from(zoom) / 100.0;
+        let area = self.work_area.unwrap_or(info.desktop);
         let room = |start: f64, origin: f64, extent: f64| {
             let left = origin + extent - start;
             if start >= origin && left > 0.0 {
@@ -192,11 +205,11 @@ impl Placement {
         let limit = |need: f64, room: f64| if room > 0.0 { need.min(room) } else { need };
         let width = limit(
             info.frame.width - info.content.width + layout.0 * scale,
-            room(info.frame.left, info.desktop.left, info.desktop.width),
+            room(info.frame.left, area.left, area.width),
         );
         let height = limit(
             info.frame.height - info.content.height + layout.1 * scale,
-            room(info.frame.top, info.desktop.top, info.desktop.height),
+            room(info.frame.top, area.top, area.height),
         );
         Some((width.max(1.0), height.max(1.0)))
     }
@@ -240,6 +253,60 @@ pub(crate) fn card_frame(area: Frame, card: &crate::scripting::Card) -> Frame {
         width,
         height,
     )
+}
+
+/// AppKit reports screen rectangles in global Cocoa points with y going
+/// up. Winit anchors positions at the primary screen's top-left.
+#[cfg(target_os = "macos")]
+fn mac_work_areas(window: Frame, monitor: Frame, points: f64) -> Option<(Frame, Frame)> {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSScreen;
+    use objc2_core_foundation::CGRect;
+
+    let screens = NSScreen::screens(MainThreadMarker::new()?);
+    let primary = screens.firstObject()?;
+    let height = primary.frame().size.height;
+    let top_left = |rect: CGRect| {
+        Frame::new(
+            rect.origin.x * points,
+            (height - rect.origin.y - rect.size.height) * points,
+            rect.size.width * points,
+            rect.size.height * points,
+        )
+    };
+    let origin = top_left(primary.visibleFrame());
+    let displays = screens
+        .iter()
+        .map(|screen| (top_left(screen.frame()), top_left(screen.visibleFrame())));
+    window_work_areas(window, monitor, origin, displays)
+}
+
+/// The current display supplies the work area's size. FileMaker measures
+/// positions from the primary work area's origin on both displays (§6.3).
+#[cfg(any(target_os = "macos", test))]
+fn window_work_areas(
+    window: Frame,
+    monitor: Frame,
+    primary: Frame,
+    displays: impl Iterator<Item = (Frame, Frame)>,
+) -> Option<(Frame, Frame)> {
+    let matches_monitor = |screen: Frame| {
+        (screen.width - monitor.width).abs() < 1.0 && (screen.height - monitor.height).abs() < 1.0
+    };
+    let overlap = |screen: Frame| {
+        let right = (screen.left + screen.width).min(window.left + window.width);
+        let bottom = (screen.top + screen.height).min(window.top + window.height);
+        let width = (right - screen.left.max(window.left)).max(0.0);
+        let height = (bottom - screen.top.max(window.top)).max(0.0);
+        width * height
+    };
+    let (_, visible) = displays.max_by(|(a, _), (b, _)| {
+        matches_monitor(*a)
+            .cmp(&matches_monitor(*b))
+            .then_with(|| overlap(*a).total_cmp(&overlap(*b)))
+    })?;
+    let desktop = Frame::new(primary.left, primary.top, visible.width, visible.height);
+    Some((desktop, visible))
 }
 
 /// The desktop's work area in pixels (`_NET_WORKAREA` of the current
@@ -300,6 +367,7 @@ mod tests {
         Placement {
             screen: Frame::new(0.0, 0.0, 1920.0, 1080.0),
             desktop: Frame::new(66.0, 30.0, 1854.0, 1050.0),
+            work_area: None,
             frame: Frame::new(166.0, 150.0, 1100.0, 900.0),
             inner: Frame::new(166.0, 178.0, 1100.0, 872.0),
             content: Frame::new(166.0, 255.0, 1100.0, 795.0),
@@ -311,6 +379,21 @@ mod tests {
             menu: 0.0,
             measured: true,
         }
+    }
+
+    #[test]
+    fn mac_display_size_and_position_origin_can_come_from_different_screens() {
+        let primary = Frame::new(48.0, 25.0, 1552.0, 875.0);
+        let upper = Frame::new(-400.0, -1175.0, 2000.0, 1175.0);
+        let displays = [
+            (Frame::new(0.0, 0.0, 1600.0, 900.0), primary),
+            (Frame::new(-400.0, -1200.0, 2000.0, 1200.0), upper),
+        ];
+        let window = Frame::new(300.0, -1000.0, 800.0, 600.0);
+        let (desktop, visible) =
+            window_work_areas(window, displays[1].0, primary, displays.into_iter()).unwrap();
+        assert_eq!(desktop, Frame::new(48.0, 25.0, 2000.0, 1175.0));
+        assert_eq!(visible, upper);
     }
 
     #[test]

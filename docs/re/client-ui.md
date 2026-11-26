@@ -459,6 +459,24 @@ move is stored.
 how they treat locked objects, and whether a modifier changes the arrow
 step. These gestures were not observed in a running FileMaker Pro window.
 
+### Artwork and boundaries
+
+[O] FileMaker Pro 26.1.1, Minimalist theme, Actual Size and Sample Data
+off. On a synthetic Form layout with a 40 pt Header and 480 pt Body, text
+showed stored merge markers and edit boxes showed their field names. View
+> Show > Text Boundaries drew faint outlines around borderless text.
+Field Boundaries drew darker outlines and dotted baselines on the edit
+boxes. Each disappeared with its respective option off.
+
+[O] In a 400 pt-wide duplicate, a 120 × 35 pt solid blue, borderless
+rectangle at (335, 45) kept its fill on both sides of the width divider.
+The 65 pt inside the layout was blue and the 55 pt on the pasteboard was
+dimmed. The captures are retained privately under the synthetic Client
+Card comparison ([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
+
+**Unknowns:** the exact dimming formula, other kinds of artwork, and
+whether the same effect applies below the last part.
+
 ### Front panels
 
 The [panel selection help](https://help.claris.com/en/pro-help/content/objects-on-panel-controls.html)
