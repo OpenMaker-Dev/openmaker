@@ -65,7 +65,7 @@ const AUTO_ENTRY_OPTIONS: u32 = 0x38f;
 /// A serial number generated when the record is committed, set instead of
 /// `0x2` (schema-path.md 5.9, E41).
 const SERIAL_ON_COMMIT: u32 = 0x200;
-/// The auto-entered values of which a field has one at most: a creation
+/// The auto-entry sources: a creation
 /// or modification value, a serial number on creation, a constant, a
 /// calculation, a serial number on commit (schema-path.md 5.9, E40).
 const AUTO_ENTRY_MODES: u32 = 0x20f;
@@ -1829,6 +1829,14 @@ impl RecordPlan {
             let unstored =
                 kind == FieldKind::Calculation && (options.options & UNSTORED != 0 || global);
             let auto_calculation = options.auto_entry_calculation();
+            // FileMaker keeps both definitions, but the creation date is
+            // the effective value even with calculation replacement on.
+            // The other multi-source combinations remain unmeasured.
+            let creation_date_with_calculation = !global
+                && field.data_type == DataType::Date
+                && options.max_repetitions == 1
+                && options.options & AUTO_ENTRY_MODES == 0x9
+                && options.auto_entry_variable() == Some(EntryVariable::CreationDate);
             let looked_up = options.options & LOOKUP != 0;
             let allowed = match kind {
                 // An unstored calculation is computed when read, and
@@ -1949,7 +1957,8 @@ impl RecordPlan {
                     .ok_or_else(|| error("calculation code is missing."))?;
                 parse_code_with(&code, &context, related).map_err(|e| error(&e))
             };
-            let computed = (kind == FieldKind::Calculation && !unstored) || auto_calculation;
+            let computed = (kind == FieldKind::Calculation && !unstored)
+                || (auto_calculation && !creation_date_with_calculation);
             let expression = if computed {
                 if field.data_type == DataType::Container
                     || matches!(field.data_type, DataType::Unknown(_))
@@ -2009,7 +2018,9 @@ impl RecordPlan {
                     ));
                 }
             }
-            if (options.options & AUTO_ENTRY_MODES).count_ones() > 1 {
+            if (options.options & AUTO_ENTRY_MODES).count_ones() > 1
+                && !creation_date_with_calculation
+            {
                 return Err(error("multiple auto-entry modes are unsupported."));
             }
             if options.validation_unique() || options.validation_options & VALIDATE_EXISTING != 0 {
@@ -7291,6 +7302,47 @@ mod tests {
                 .unwrap();
         }
         RecordPlan::from_schema(table, &tree)
+    }
+
+    #[test]
+    fn creation_date_is_used_with_a_calculated_auto_entry_value() {
+        for options in [0x9, 0x89] {
+            let mut table = table();
+            table
+                .fields
+                .push(field(20, FieldKind::Normal, DataType::Date, 0, options, 0));
+            let mut formulas = base_formulas();
+            formulas.push((20, 5, "Date ( 1 ; 15 ; 2030 )"));
+            let plan = plan_of(&table, &formulas, &[]).unwrap();
+            let environment = environment();
+            let created = plan
+                .prepare(
+                    WriteMode::Create,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &environment,
+                )
+                .unwrap();
+            assert_eq!(
+                decoded(&created, 20).as_deref(),
+                Some(environment.date.as_str())
+            );
+
+            let explicit = "3/3/2031";
+            let saved = plan
+                .prepare_entry(
+                    WriteMode::Create,
+                    &BTreeMap::new(),
+                    &BTreeMap::from([(20, Some(explicit.into()))]),
+                    &environment,
+                    Entry {
+                        keep_written: true,
+                        ..Entry::script(false, false)
+                    },
+                )
+                .unwrap();
+            assert_eq!(decoded(&saved, 20).as_deref(), Some(explicit));
+        }
     }
 
     const INITIALS: &str = "Case ( not IsEmpty ( Field2 ) ; Left ( Field2 ; 1 ) ; \

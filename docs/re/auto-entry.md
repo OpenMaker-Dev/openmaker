@@ -454,6 +454,16 @@ Not measured: an unstored calculation over a related or global field, a
 chain of unstored calculations, a summary of another kind or over a
 sorted found set, and FileMaker Pro's own data entry.
 
+## Creation Date with a calculated auto-entry value
+
+FileMaker Pro 26.1.1 kept both options on one local Date field after
+reopening, in either authoring order. New Record yielded the creation
+date, including with a calculation that yields a different date and
+with replacement enabled. Editing a different field left the date as
+it was. An explicit assignment to the Date field survived commit and
+reopen. The internal evaluation order and hosted behavior are unmeasured.
+[Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7184309937).
+
 ## A new record's own self-join
 
 A new record's auto-entered calculation, reading its own table through a

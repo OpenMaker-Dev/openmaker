@@ -766,6 +766,12 @@ values are computed from the current rules, and single records `[T, 05, R]`.
 
 ## Limits
 
+A Date field with both Creation Date and a calculated auto-entry value
+uses the ordinary creation-date rule. An explicit assignment during the
+scripted creation keeps the assigned date. FileMaker Pro measured this
+combination in a local file. Applying the same rule on a host is inferred.
+[Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7184309937).
+
 A table is writable only when every field rule is understood
 (`om-data/src/rules`, shared with OpenMaker Server's scripts; calculations by `om-calc`):
 auto-enter and stored calculations of text, number, date, time and
