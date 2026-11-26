@@ -3390,6 +3390,14 @@ impl DataProvider for NativeProvider {
         &mut self,
         layout_id: u32,
     ) -> Result<om_data::RecordCapabilities, DataError> {
+        self.record_capabilities_for_layout(layout_id, false)
+    }
+
+    fn record_capabilities_for_layout(
+        &mut self,
+        layout_id: u32,
+        scripted: bool,
+    ) -> Result<om_data::RecordCapabilities, DataError> {
         let none = || om_data::RecordCapabilities {
             editable_fields: Some(BTreeSet::new()),
             ..Default::default()
@@ -3409,7 +3417,7 @@ impl DataProvider for NativeProvider {
         let layout = self.decoded_layout(layout_id)?;
         // The related files it reads open first, so their fields' rules
         // count (#983): the window asks before it draws the layout.
-        let file = self.calc_schema_for_layout(&layout)?;
+        let file = self.calc_schema_for_layout_with_demand(&layout, scripted)?;
         if shows_related_file(&file, layout_occurrence(&layout)?) {
             if denied {
                 return Ok(none());

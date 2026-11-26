@@ -5919,6 +5919,15 @@ impl OpenMakerApp {
     /// Requests run in order, so the geometry is in by the time the records
     /// are and Form view does not flash the generic field list first.
     fn request_layout(&mut self, ctx: &egui::Context, key: Option<PageKey>) {
+        self.request_layout_with_origin(ctx, key, false);
+    }
+
+    fn request_layout_with_origin(
+        &mut self,
+        ctx: &egui::Context,
+        key: Option<PageKey>,
+        scripted: bool,
+    ) {
         // A layout the account may not see draws `<No Access>` (or the
         // blank opening page) and offers no record commands; it reads its
         // found set's ids and count only, which the toolbar shows, as
@@ -5951,12 +5960,14 @@ impl OpenMakerApp {
                 ctx,
                 Request::RecordCapabilities {
                     layout_id: key.layout_id,
+                    scripted,
                 },
             );
             self.request(
                 ctx,
                 Request::RenderLayout {
                     layout_id: key.layout_id,
+                    scripted,
                 },
             );
             self.request(

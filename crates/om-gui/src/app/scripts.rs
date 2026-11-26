@@ -2395,7 +2395,7 @@ impl OpenMakerApp {
             // 26.0.3 does (#696).
             session.blank_start = first && !session.shows_layout(layout);
             session.current = state.index;
-            self.request_layout(ctx, Some(key));
+            self.request_layout_with_origin(ctx, Some(key), true);
         } else if data_changed || refreshed {
             session.current = state.index;
             let key = session.refresh();

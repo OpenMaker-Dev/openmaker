@@ -1093,6 +1093,9 @@ fn a_variable_source_opens_on_first_read_and_keeps_its_file() {
     assert!(root.related_file_warnings().is_empty());
     assert!(!root.references_peer("First").unwrap());
 
+    root.record_capabilities_for_layout(fixture::LAYOUT as u32, true)
+        .unwrap();
+    assert!(root.related_file_warnings().is_empty());
     assert!(root
         .render_script_layout(fixture::LAYOUT as u32)
         .unwrap()
