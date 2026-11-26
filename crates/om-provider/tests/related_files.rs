@@ -2557,6 +2557,155 @@ fn a_root_layout_writes_another_files_related_records_in_that_file() {
     provider.close();
 }
 
+/// A layout of another file's table writes its related records in the files
+/// that own them (#43), as a layout of Root's own table does (#1000). On
+/// Root's layout of Remote Tasks (Related's Tasks), a related record of
+/// Other Tasks (a third file's Tasks) is created, edited, previewed and
+/// deleted by Other, outside a transaction and inside a script's one, which
+/// commits the layout's record in Related and the related one in Other. A
+/// related record of Root's own Tasks is written by Root.
+#[test]
+fn a_layout_of_another_files_table_writes_its_related_records_in_their_files() {
+    const OTHER: &str = "Other.fmp12";
+    const OTHER_TASKS: u64 = 0xd0_0043;
+    let mut root = fixture::tree(&[], true);
+    reference(&mut root, (REMOTE, "Remote Tasks"), 1, "Related");
+    reference(&mut root, (OTHER_TASKS, "Other Tasks"), 3, "Other");
+    root.put(
+        &[&[4], &[5], &uint_segment(fixture::NOTES_LAYOUT), &[2]],
+        OwnedNode::leaf([], layout_def(REMOTE)),
+    );
+    fixture::add_relationship(&mut root, 9, (REMOTE, NAME), 0, (OTHER_TASKS, NAME));
+    fixture::add_relationship(&mut root, 10, (REMOTE, NAME), 0, (OCCURRENCE, NAME));
+    // Other's Stamp auto-enters `Get ( UUID )`.
+    const STAMP: u64 = 32;
+    let mut other_tree = fixture::tree(&[], true);
+    let mut names = fixture::names();
+    names.add_field(TABLE, STAMP, "Stamp");
+    fixture::add_field(&mut other_tree, TABLE, STAMP, "Stamp", 1, 1, 0, 0x8, 0);
+    fixture::add_formula(
+        &mut other_tree,
+        &names,
+        (TABLE, OCCURRENCE),
+        STAMP,
+        5,
+        "Get ( UUID )",
+    );
+    let files = vec![
+        (ROOT, root),
+        (RELATED, fixture::tree(&[], true)),
+        (OTHER, other_tree),
+    ];
+    let host = Host::new("layout-related-writes", files);
+    let mut provider = host.open(ROOT);
+    let layout = fixture::NOTES_LAYOUT as u32;
+    provider.records(layout, 0, 10).unwrap();
+    provider
+        .calc_data(&[CalcNeed::Occurrence {
+            occurrence: OTHER_TASKS,
+        }])
+        .unwrap();
+    let schema = provider.calc_schema().unwrap().unwrap();
+    let other = schema.table_of(OTHER_TASKS).unwrap().id;
+    assert_ne!(other, schema.table_of(REMOTE).unwrap().id);
+    let on_layout = |write: om_data::ScriptWrite| om_data::ScriptWrite { layout, ..write };
+    let write =
+        |record, cells: &[(u64, &str)]| on_layout(related_write(Some(other), record, cells));
+    let root_rows = rows_of(&host, ROOT);
+    let peer_rows = rows_of(&host, RELATED);
+
+    // A script's writes outside a transaction: created, then edited, by
+    // Other's own rules (Doubled is its stored calculation).
+    let made = provider
+        .write_record(&write(None, &[(NAME, "Write tests"), (COUNT, "4")]))
+        .unwrap();
+    let id = made.id;
+    let row = |name: &str, count: &str, doubled: &str| {
+        (id, name.to_owned(), count.to_owned(), doubled.to_owned())
+    };
+    assert!(rows_of(&host, OTHER).contains(&row("Write tests", "4", "8")));
+    provider
+        .write_record(&write(Some(id), &[(COUNT, "6")]))
+        .unwrap();
+    assert!(rows_of(&host, OTHER).contains(&row("Write tests", "6", "12")));
+
+    // A script's transaction holding the layout's own record (Related's
+    // record 1) and the related one: each file commits its own, once.
+    let sent = (commits_to(&host, RELATED), commits_to(&host, OTHER));
+    provider.begin_transaction(Default::default()).unwrap();
+    provider
+        .write_record(&on_layout(related_write(None, Some(1), &[(COUNT, "41")])))
+        .unwrap();
+    provider
+        .write_record(&write(Some(id), &[(NAME, "Held")]))
+        .unwrap();
+    provider.commit_transaction(false).unwrap();
+    assert_eq!(
+        (commits_to(&host, RELATED), commits_to(&host, OTHER)),
+        (sent.0 + 1, sent.1 + 1)
+    );
+    assert!(rows_of(&host, OTHER).contains(&row("Held", "6", "12")));
+    assert_eq!(rows_of(&host, RELATED)[0].2, "41");
+
+    // Reverted: nothing is written.
+    provider.begin_transaction(Default::default()).unwrap();
+    provider
+        .write_record(&write(Some(id), &[(NAME, "Reverted")]))
+        .unwrap();
+    provider.revert_transaction().unwrap();
+    assert!(rows_of(&host, OTHER).contains(&row("Held", "6", "12")));
+
+    // A row begun in a portal of Other Tasks: previewed by Other, and
+    // written with its preview, whose UUID it stores.
+    let begun = write(None, &[(NAME, "Begun"), (COUNT, "3")]);
+    let preview = provider.preview_new_record(&begun).unwrap().unwrap();
+    assert_eq!(preview.values[&fixture::DOUBLED].as_deref(), Some("6"));
+    let uuid = preview.values[&STAMP].clone().unwrap();
+    assert_eq!(uuid.len(), 36, "{uuid}");
+    let stored = provider
+        .write_record(&om_data::ScriptWrite {
+            prepared: Some(preview.id),
+            ..begun
+        })
+        .unwrap();
+    let begun_row = (
+        stored.id,
+        "Begun".to_owned(),
+        "3".to_owned(),
+        "6".to_owned(),
+    );
+    assert!(rows_of(&host, OTHER).contains(&begun_row));
+    let mut reader = host.open(OTHER);
+    let page = reader.records(fixture::LAYOUT as u32, 0, 100).unwrap();
+    let at = page.fields.iter().position(|f| f.name == "Stamp").unwrap();
+    let row = page.records.iter().find(|r| r.id == stored.id).unwrap();
+    assert_eq!(row.values[at].as_deref(), Some(uuid.as_str()));
+    reader.close();
+
+    // Delete Portal Row.
+    provider.delete_related_record(other, id).unwrap();
+    assert!(rows_of(&host, OTHER).iter().all(|row| row.0 != id));
+
+    // A related record of Root's own Tasks, through Remote Tasks::Name =
+    // Tasks::Name: written by Root.
+    assert_eq!(commits_to(&host, ROOT), 0);
+    provider
+        .write_record(&on_layout(related_write(
+            Some(TABLE),
+            Some(2),
+            &[(NAME, "Root row")],
+        )))
+        .unwrap();
+    assert_eq!(commits_to(&host, ROOT), 1);
+    let root_now = rows_of(&host, ROOT);
+    assert_eq!(root_now[0], root_rows[0]);
+    assert_eq!(root_now[1].1, "Root row");
+
+    // Related's records but record 1's Count are as before.
+    assert_eq!(rows_of(&host, RELATED)[1..], peer_rows[1..]);
+    provider.close();
+}
+
 /// A related file on the opened file's connection holds its records under
 /// the opened file's transaction, as FileMaker Pro does on FileMaker Server
 /// (write-path.md 1.5, #1006). Its lock and its commit carry that

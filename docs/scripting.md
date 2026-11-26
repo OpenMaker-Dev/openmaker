@@ -351,8 +351,11 @@ and deletions on such a layout while the script is paused are refused
 ([#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)), and so is the
 user's typing into a later repetition there when its save would enter a
 script's open transaction; the draft is kept.
-Writes to the layout's related records in other tables remain refused on
-these layouts ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)).
+A script's write to the layout's related records in other tables of a related
+file (Set Field into a related field, a portal row's creation, Delete Portal
+Row) goes to the file that owns them, as from a layout of this file's table;
+Browse does not edit those related records yet on these layouts
+([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)).
 Import Records on such a layout imports into its table through the owning
 file, as that file's own Import Records would, and a new row's record joins
 the window's found set. The layout is none of the owning file's, so an
