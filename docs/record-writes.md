@@ -894,8 +894,9 @@ For a field-supplied text join, the source itself also triggers
 recalculation. OpenMaker compiles the current source when a trigger
 changes. The source, listed triggers and referenced fields must be
 ordinary single-repetition Text fields of the same row without their
-own auto-entry or lookup. The write refuses with error 3 if the source
-cannot compile to the supported join or is missing when a trigger changes.
+own auto-entry or lookup. When a trigger changes, the write refuses with
+error 3 if the source is missing, cannot compile to the supported join,
+or no longer reads every listed trigger field.
 Hosted files and other dynamic record-rule expressions remain outside
 this support.
 [FileMaker Pro measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1072)
