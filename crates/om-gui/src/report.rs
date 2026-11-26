@@ -1381,6 +1381,10 @@ pub(crate) struct Pictures(
     /// Where SVG pictures and icons are drawn apart
     /// ([`Pictures::drawn_apart`]).
     Option<Drawing>,
+    /// For the screen: Preview's pictures ([`Pictures::drawn_apart`]),
+    /// sampled for the layout's own size whatever Page Setup's scale
+    /// ([`Pictures::sampling`]).
+    bool,
 );
 
 /// What is drawn apart: a static picture or a button icon, by its cache
@@ -1726,7 +1730,23 @@ impl Pictures {
             Default::default(),
             Default::default(),
             Some(Drawing::default()),
+            true,
         )
+    }
+
+    /// The scale pictures are sampled for on a page printed at `scale`
+    /// (Page Setup's): a document's at the size they print at, Preview's
+    /// at the layout's own size, as before scales other than 100%. Preview
+    /// shows a page no larger than the sheet at 100% zoom and magnifies
+    /// above it as zooming in does, so larger samples would only grow its
+    /// textures past the display's limit and keep one more of each in its
+    /// cache per scale.
+    fn sampling(&self, scale: f64) -> f64 {
+        if self.4 {
+            1.0
+        } else {
+            scale
+        }
     }
 
     pub fn clear(&mut self) {
@@ -4119,7 +4139,7 @@ pub(crate) fn prepare_page(
             }
             let style = crate::document::formatted_style(layout, object, &conditions, 1, state);
             let mut picture = if object.kind() == ObjectKind::Graphic {
-                Some(pictures.get(layout, object, plan.paper.scale)?)
+                Some(pictures.get(layout, object, pictures.sampling(plan.paper.scale))?)
             } else {
                 None
             };
@@ -4134,7 +4154,8 @@ pub(crate) fn prepare_page(
             if let (Some(data), Some(frame)) = (&data, frame.filter(room)) {
                 let format = object.graphic_format.unwrap_or_default();
                 let size = (frame.width(), frame.height());
-                match pictures.container(&data.data, format, size, plan.paper.scale) {
+                let sampling = pictures.sampling(plan.paper.scale);
+                match pictures.container(&data.data, format, size, sampling) {
                     Some(Some((shown, [x, y, w, h]))) => {
                         picture = Some(shown);
                         let image = Rect {
@@ -4179,7 +4200,7 @@ pub(crate) fn prepare_page(
                         .or(component.color)
                         .or(style.border_color[0]);
                     // Rasterized for the size it prints at.
-                    let side = (square.width() * ICON_SCALE * plan.paper.scale)
+                    let side = (square.width() * ICON_SCALE * pictures.sampling(plan.paper.scale))
                         .ceil()
                         .clamp(1.0, 1024.0) as u32;
                     let picture = pictures.icon(layout, object, button.library_key, tint, side)?;

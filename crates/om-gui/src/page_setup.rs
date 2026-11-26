@@ -166,9 +166,11 @@ pub(crate) fn dialog(
     ui.horizontal(|ui| {
         // Edited as a percentage; only an edit writes it back, so a stored
         // f32 scale (0.6 reads 0.6000000238) is kept as it is. Leaving the
-        // field reparses the shown "60", which is no edit.
+        // field reparses what it shows, two decimals ("60", "59.38" for
+        // 59.375), which is no edit.
         let label = ui.label("Scale");
         let stored = paper.scale * 100.0;
+        let shown = format!("{stored:.2}").parse().unwrap_or(stored);
         let mut percent = stored;
         let edit = ui
             .add(
@@ -182,7 +184,7 @@ pub(crate) fn dialog(
                     .suffix(" %"),
             )
             .labelled_by(label.id);
-        if edit.changed() && (percent - stored).abs() >= 0.005 {
+        if edit.changed() && percent != shown && percent != stored {
             paper.scale = percent / 100.0;
         }
     });
