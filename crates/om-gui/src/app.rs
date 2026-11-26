@@ -250,6 +250,8 @@ pub(crate) mod shortcuts {
     pub const OPEN: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::O);
     pub const PRINT: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::P);
     pub const CLOSE: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::W);
+    pub const UNDO: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::Z);
+    pub const REDO: KeyboardShortcut = KeyboardShortcut::new(CMD.plus(Modifiers::SHIFT), Key::Z);
     pub const MINIMIZE: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::M);
     pub const SELECT_ALL: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::A);
     pub const ZOOM_IN: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::Plus);
@@ -584,6 +586,7 @@ pub(crate) enum Action {
     /// Edit > Undo, Redo, Cut, Copy, Paste, Clear or Select All in the
     /// field the user is typing in.
     EditField(EditCommand),
+    EditLayoutDraft(crate::layout_canvas::DraftEdit),
     /// The toolbar's Quick Find: Perform Quick Find with the search box's
     /// text.
     QuickFind(String),
@@ -660,6 +663,8 @@ pub(crate) enum Action {
     /// The user typed into a field the account's privilege set lets them
     /// enter but not change: FileMaker Pro's alert, the value unchanged.
     RefuseTyping(om_data::EditRefusal),
+    /// An edit box clicked with an empty found set, on the named layout.
+    ClickEmptyField(u64),
     /// A value-list control's command it cannot do here: its alert.
     RefuseChoice(om_data::choice::ChoiceError),
     /// A pop-up menu's Edit…: read the list and open Edit Value List
@@ -756,8 +761,8 @@ impl Action {
 
     /// Whether the window can still do this once the connection to the
     /// host is lost: close (the file closes window by window), quit,
-    /// dismiss, bring another window to the front, discard local layout
-    /// edits, and change only how the window looks.
+    /// dismiss, bring another window to the front, edit local layout draft
+    /// history, and change only how the window looks.
     fn works_offline(&self) -> bool {
         matches!(
             self,
@@ -781,6 +786,7 @@ impl Action {
                 | Action::CloseDisconnectedFile(_)
                 | Action::DiscardEntryCandidates
                 | Action::RevertLayout
+                | Action::EditLayoutDraft(_)
                 | Action::ZoomIn
                 | Action::ZoomOut
                 | Action::ActualSize
@@ -1633,6 +1639,25 @@ impl OpenMakerApp {
                 .is_none_or(|session| self.w.document.selected_container(session).is_none())
     }
 
+    fn layout_history_has_focus(&self, ctx: &egui::Context) -> bool {
+        self.w.mode == Mode::Layout
+            && self.design_allowed()
+            && self.full_menus()
+            && !self.script.busy()
+            && !self.recovery_holds()
+            && !self.dialog_over_document()
+            && !ctx.text_edit_focused()
+    }
+
+    fn layout_history_commands(&self, ctx: &egui::Context) -> (bool, bool) {
+        if !self.layout_history_has_focus(ctx) {
+            return (false, false);
+        }
+        self.w.session.as_ref().map_or((false, false), |session| {
+            self.w.layout_workspace.draft_edits(session)
+        })
+    }
+
     fn field_menu_target(&self, ctx: &egui::Context) -> FieldMenuTarget {
         FieldMenuTarget {
             owner: self.held_keys_owner(),
@@ -1905,6 +1930,17 @@ impl OpenMakerApp {
             layout_edit: self.w.mode == Mode::Layout
                 && self.w.layout_workspace.has_changes()
                 && !self.w.layout_workspace.saving,
+            layout_revert: self.w.mode == Mode::Layout
+                && self.w.session.as_ref().is_some_and(|session| {
+                    let workspace = &self.w.layout_workspace;
+                    !workspace.saving
+                        && (workspace.has_changes() || workspace.draft_edits(session).1)
+                }),
+            layout_history: if input {
+                self.layout_history_commands(ctx)
+            } else {
+                (false, false)
+            },
             layout_select_all: input && self.can_select_all_layout_objects(ctx),
             layout_delete: self.w.mode == Mode::Layout
                 && self.design_allowed()
@@ -3820,6 +3856,7 @@ impl OpenMakerApp {
         let browse = self.w.mode == Mode::Browse;
         // Delete and Backspace go to a text field that has the keyboard.
         let typing = ui.ctx().egui_wants_keyboard_input();
+        let draft_history = self.layout_history_has_focus(ui.ctx());
         let shown_layout = self.w.session.as_ref().and_then(|session| session.layout);
         let object_selected = self.w.mode == Mode::Layout
             && self
@@ -3940,10 +3977,12 @@ impl OpenMakerApp {
                 }
             }
             if self.w.mode == Mode::Layout {
-                // Keys can share a frame. A nudge uses a preceding Select
-                // All, and Save includes any preceding nudges.
-                let mut can_nudge = object_selected;
-                let mut can_save = self.w.layout_workspace.has_changes();
+                use crate::layout_canvas::DraftEdit;
+
+                // Keys can share a frame. Route draft commands in input order
+                // so a nudge sees a preceding selection, Undo sees preceding
+                // edits, and Save sees the result.
+                let mut has_selection = object_selected;
                 input.events.retain(|event| {
                     let egui::Event::Key {
                         key,
@@ -3954,44 +3993,48 @@ impl OpenMakerApp {
                     else {
                         return true;
                     };
-                    if can_save && *key == Key::S && modifiers.matches_logically(Modifiers::COMMAND)
-                    {
-                        actions.push(Action::SaveLayout);
-                        return false;
-                    }
-                    if !layout_keys {
-                        return true;
-                    }
-                    let select_all = shortcuts::SELECT_ALL;
-                    if self.w.tool == LayoutTool::Selection
-                        && *key == select_all.logical_key
-                        && modifiers.matches_exact(select_all.modifiers)
-                    {
-                        actions.push(Action::SelectAllLayoutObjects);
-                        can_nudge = true;
-                        return false;
-                    }
-                    if !modifiers.is_none() || !can_nudge {
-                        return true;
-                    }
-                    let direction = match key {
-                        Key::ArrowLeft => NudgeDirection::Left,
-                        Key::ArrowRight => NudgeDirection::Right,
-                        Key::ArrowUp => NudgeDirection::Up,
-                        Key::ArrowDown => NudgeDirection::Down,
+                    let action = match key {
+                        Key::S if modifiers.matches_exact(Modifiers::COMMAND) => Action::SaveLayout,
+                        _ if layout_keys
+                            && self.w.tool == LayoutTool::Selection
+                            && *key == shortcuts::SELECT_ALL.logical_key
+                            && modifiers.matches_exact(shortcuts::SELECT_ALL.modifiers) =>
+                        {
+                            has_selection = true;
+                            Action::SelectAllLayoutObjects
+                        }
+                        Key::Delete | Key::Backspace
+                            if has_selection && !typing && modifiers.is_none() =>
+                        {
+                            Action::DeleteLayoutObject
+                        }
+                        Key::Z
+                            if draft_history
+                                && modifiers.matches_exact(shortcuts::REDO.modifiers) =>
+                        {
+                            Action::EditLayoutDraft(DraftEdit::Redo)
+                        }
+                        Key::Z
+                            if draft_history
+                                && modifiers.matches_exact(shortcuts::UNDO.modifiers) =>
+                        {
+                            Action::EditLayoutDraft(DraftEdit::Undo)
+                        }
+                        _ if layout_keys && has_selection && modifiers.is_none() => {
+                            let direction = match key {
+                                Key::ArrowLeft => NudgeDirection::Left,
+                                Key::ArrowRight => NudgeDirection::Right,
+                                Key::ArrowUp => NudgeDirection::Up,
+                                Key::ArrowDown => NudgeDirection::Down,
+                                _ => return true,
+                            };
+                            Action::NudgeLayoutObjects(direction)
+                        }
                         _ => return true,
                     };
-                    actions.push(Action::NudgeLayoutObjects(direction));
-                    can_save = true;
+                    actions.push(action);
                     false
                 });
-            }
-            if object_selected
-                && !typing
-                && (input.consume_key(Modifiers::NONE, Key::Delete)
-                    || input.consume_key(Modifiers::NONE, Key::Backspace))
-            {
-                actions.push(Action::DeleteLayoutObject);
             }
             if let Some(target) = field_target.as_ref().filter(|_| inserts) {
                 // The document may move focus in a later pass (including
@@ -4776,6 +4819,18 @@ impl OpenMakerApp {
         if action == Action::ExportRecords && !(self.can_export_records() && self.exports()) {
             return;
         }
+        // Keep a canvas drag (including a layout width or part handle)
+        // intact rather than interleave it with a separate draft edit.
+        if matches!(
+            action,
+            Action::NudgeLayoutObjects(_)
+                | Action::DeleteLayoutObject
+                | Action::Arrange(_)
+                | Action::EditLayoutDraft(_)
+        ) && ctx.dragged_id().is_some()
+        {
+            return;
+        }
         // Printing the account's set denies does nothing either.
         if matches!(action, Action::Step(42 | 43, _)) && !self.prints() {
             return;
@@ -5227,6 +5282,9 @@ impl OpenMakerApp {
             }
             Action::SelectLayout(layout_id) => {
                 self.w.document.cancel_pending_focus();
+                if self.w.session.as_ref().and_then(|session| session.layout) != Some(layout_id) {
+                    self.w.layout_workspace.clear_history();
+                }
                 // The layout gone to shows the view it last had in this
                 // window, at once, or the one its definition stores once it
                 // loads (#805). The layout left already has its entry, if
@@ -5305,6 +5363,7 @@ impl OpenMakerApp {
             }
             Action::SetMode(mode) => {
                 if self.w.session.is_some() && mode != self.w.mode {
+                    self.w.layout_workspace.clear_history();
                     self.w.document.cancel_pending_focus();
                     if mode == Mode::Preview {
                         if let Some(session) = &mut self.w.session {
@@ -5423,15 +5482,23 @@ impl OpenMakerApp {
                     self.request(ctx, Request::DeleteLayout(layout));
                 }
             }
-            Action::SaveLayout => self.save_layout(ctx),
+            Action::SaveLayout => {
+                if self.w.layout_workspace.has_changes() {
+                    self.save_layout(ctx);
+                }
+            }
+            Action::EditLayoutDraft(edit) => {
+                if self.layout_history_has_focus(ctx)
+                    && self.w.session.as_ref().is_some_and(|session| {
+                        self.w.layout_workspace.edit_draft(ctx, session, edit)
+                    })
+                {
+                    ctx.request_repaint();
+                }
+            }
             // The field Save Layout sent stays until the host answers.
             Action::RevertLayout if !self.w.layout_workspace.saving => {
-                self.w.layout_workspace.drop_width();
-                self.w.layout_workspace.drop_new_object();
-                self.w.layout_workspace.drop_moves();
-                self.w.layout_workspace.drop_deletions();
-                self.w.layout_workspace.drop_controls();
-                self.w.layout_workspace.drop_words();
+                self.w.layout_workspace.revert();
             }
             Action::RevertLayout => {}
             Action::SelectAllLayoutObjects => {
@@ -5535,6 +5602,22 @@ impl OpenMakerApp {
                         Some((session.layout?, session.current_record()?.1.id))
                     });
                 self.w.document.hold_focus(record);
+            }
+            Action::ClickEmptyField(layout) => {
+                if self.w.mode == Mode::Browse
+                    && self.w.view == ViewMode::Form
+                    && self.w.connection_lost.is_none()
+                {
+                    if let Some(message) = self
+                        .w
+                        .session
+                        .as_ref()
+                        .filter(|session| session.layout.map(u64::from) == Some(layout))
+                        .and_then(Session::empty_field_alert)
+                    {
+                        self.error = Some(message.into());
+                    }
+                }
             }
             Action::RefuseChoice(error) => self.error = Some(error.message()),
             Action::EditValueList(list) => self.request(ctx, Request::CustomValueList(list)),
@@ -5806,12 +5889,21 @@ impl OpenMakerApp {
     }
 
     fn request(&mut self, ctx: &egui::Context, request: Request) {
+        self.enqueue_request(ctx, request);
+    }
+
+    /// Whether the worker accepted the request into its queue.
+    fn enqueue_request(&mut self, ctx: &egui::Context, request: Request) -> bool {
         // Nothing more goes to a host whose connection is gone.
         if self.w.connection_lost.is_some() && !matches!(request, Request::Close) {
-            return;
+            return false;
         }
-        if let Err(err) = self.worker.send(ctx, self.epoch, self.w.id, request) {
-            self.fail(&err);
+        match self.worker.send(ctx, self.epoch, self.w.id, request) {
+            Ok(()) => true,
+            Err(err) => {
+                self.fail(&err);
+                false
+            }
         }
     }
 
@@ -5996,6 +6088,14 @@ impl OpenMakerApp {
         }
     }
 
+    /// A draft remains undoable until Save Layout queues its first write.
+    fn request_layout_save(&mut self, ctx: &egui::Context, request: Request) {
+        if self.enqueue_request(ctx, request) {
+            self.w.layout_workspace.clear_history();
+            self.w.layout_workspace.saving = true;
+        }
+    }
+
     /// Layouts > Save Layout: store the layout's changes with the shared
     /// operations, which plan them as the host does and have the host save
     /// them: the width (`DataProvider::set_layout_width`), moved objects
@@ -6026,8 +6126,7 @@ impl OpenMakerApp {
                 );
                 return;
             };
-            self.w.layout_workspace.saving = true;
-            self.request(
+            self.request_layout_save(
                 ctx,
                 Request::SetLayoutWidth(om_data::layout_placement::LayoutWidthChange {
                     layout,
@@ -6052,8 +6151,7 @@ impl OpenMakerApp {
                     Some("The layout has not loaded yet; save it again when it has.".into());
                 return;
             };
-            self.w.layout_workspace.saving = true;
-            self.request(
+            self.request_layout_save(
                 ctx,
                 Request::SetObjectFrames(om_data::layout_objects::LayoutObjectFrames {
                     layout,
@@ -6091,8 +6189,7 @@ impl OpenMakerApp {
                     Some("The layout has not loaded yet; save it again when it has.".into());
                 return;
             };
-            self.w.layout_workspace.saving = true;
-            self.request(
+            self.request_layout_save(
                 ctx,
                 Request::DeleteObjects(om_data::layout_objects::LayoutObjectDeletion {
                     layout,
@@ -6120,8 +6217,7 @@ impl OpenMakerApp {
                 );
                 return;
             };
-            self.w.layout_workspace.saving = true;
-            self.request(
+            self.request_layout_save(
                 ctx,
                 Request::SetLayoutText(om_data::layout_placement::TextChange {
                     layout,
@@ -6178,8 +6274,7 @@ impl OpenMakerApp {
             self.error = Some("The layout has not loaded yet; save it again when it has.".into());
             return;
         };
-        self.w.layout_workspace.saving = true;
-        self.request(
+        self.request_layout_save(
             ctx,
             Request::PlaceLayoutField(om_data::layout_placement::LayoutFieldPlacement {
                 layout,
@@ -6247,8 +6342,7 @@ impl OpenMakerApp {
             );
             return;
         }
-        self.w.layout_workspace.saving = true;
-        self.request(
+        self.request_layout_save(
             ctx,
             Request::SetFieldControl(om_data::layout_objects::FieldControlChange {
                 layout,
@@ -6279,8 +6373,7 @@ impl OpenMakerApp {
             self.error = Some("The layout has not loaded yet; save it again when it has.".into());
             return;
         };
-        self.w.layout_workspace.saving = true;
-        self.request(
+        self.request_layout_save(
             ctx,
             Request::PlaceLayoutText(om_data::layout_placement::LayoutTextPlacement {
                 layout,
@@ -6321,8 +6414,7 @@ impl OpenMakerApp {
             self.error = Some("The layout has not loaded yet; save it again when it has.".into());
             return;
         };
-        self.w.layout_workspace.saving = true;
-        self.request(
+        self.request_layout_save(
             ctx,
             Request::PlaceLayoutButton(om_data::layout_placement::LayoutButtonPlacement {
                 layout,
@@ -6360,8 +6452,7 @@ impl OpenMakerApp {
             self.error = Some("The layout has not loaded yet; save it again when it has.".into());
             return;
         };
-        self.w.layout_workspace.saving = true;
-        self.request(
+        self.request_layout_save(
             ctx,
             Request::PlaceLayoutPortal(om_data::layout_placement::LayoutPortalPlacement {
                 layout,
@@ -9429,6 +9520,29 @@ mod tests {
                 ..old_frame
             }
         );
+        let undo = key(Key::Z, shortcuts::UNDO.modifiers);
+        let redo = key(Key::Z, shortcuts::REDO.modifiers);
+        frame(
+            &mut app,
+            egui::RawInput {
+                events: vec![undo.clone()],
+                ..Default::default()
+            },
+            false,
+        );
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 51.0);
+        assert_eq!(app.w.layout_workspace.moved().frames[&1].left, 21.0);
+        frame(
+            &mut app,
+            egui::RawInput {
+                events: vec![undo, redo.clone(), redo],
+                ..Default::default()
+            },
+            false,
+        );
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 52.0);
+        assert_eq!(app.w.layout_workspace.moved().frames[&1].left, 22.0);
+
         app.apply(&ctx, Action::RevertLayout);
         assert!(!app.w.layout_workspace.has_changes());
         let save = egui::RawInput {
@@ -9452,6 +9566,58 @@ mod tests {
             );
         })
         .drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn a_refused_layout_save_keeps_history_undoable_offline() {
+        use crate::layout_canvas::DraftEdit;
+
+        let ctx = egui::Context::default();
+        let mut app = OpenMakerApp::with_license_store(
+            Box::new(om_data::mock::MockProvider::new()),
+            Box::new(NoLicense),
+        );
+        app.w = window_with_records(1, &["Ada"]);
+        app.w.mode = Mode::Layout;
+        let session = app.w.session.as_mut().unwrap();
+        session.geometry = crate::session::Geometry::Loaded(om_data::LayoutGeometry {
+            revision: Some([1; 32]),
+            ..Default::default()
+        });
+        app.w.layout_workspace.stage_field(
+            session,
+            crate::layout_canvas::NewField {
+                left: 20.0,
+                top: 30.0,
+                width: 100.0,
+                height: 22.0,
+                field: None,
+                label: false,
+                control: 0,
+                value_list: None,
+                revision: Some([1; 32]),
+            },
+        );
+        for _ in 0..2 {
+            app.apply(&ctx, Action::NudgeLayoutObjects(NudgeDirection::Right));
+        }
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 22.0);
+        app.apply(&ctx, Action::SaveLayout);
+        assert_eq!(
+            app.error.as_deref(),
+            Some("Choose the field to place in the Inspector, then save the layout.")
+        );
+        assert!(!app.w.layout_workspace.saving);
+        app.apply(&ctx, Action::DismissAlert);
+        assert_eq!(app.layout_history_commands(&ctx), (true, false));
+
+        app.lose_connection(&DataError::new("Connection lost"));
+        assert_eq!(app.layout_history_commands(&ctx), (true, false));
+        app.apply(&ctx, Action::EditLayoutDraft(DraftEdit::Undo));
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 21.0);
+        assert_eq!(app.layout_history_commands(&ctx), (true, true));
+        app.apply(&ctx, Action::EditLayoutDraft(DraftEdit::Redo));
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 22.0);
     }
 
     #[test]

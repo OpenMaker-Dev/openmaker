@@ -24,6 +24,7 @@ use crate::{
 
 mod calendar;
 mod container;
+pub(crate) mod design;
 pub(crate) use container::is_media;
 pub use container::PdfViewer;
 pub(crate) mod data_format;
@@ -214,6 +215,8 @@ pub(crate) struct DocumentState {
     /// were read again (`portals::PortalPaintRow::stale`): a click waiting
     /// for its row waits for the rows as they are now.
     painting_stale: bool,
+    /// Form canvas click left unclaimed by its interactive controls.
+    empty_field_click: Option<egui::Pos2>,
     /// The related records each portal showed, by layout, portal and
     /// parent record: in this frame and in the one before. While a
     /// portal's records are read again it shows those (#536); a portal not
@@ -824,6 +827,16 @@ struct RaisedPopover {
 }
 
 impl DocumentState {
+    pub(crate) fn design_surface<'a>(
+        &'a mut self,
+        session: &'a Session,
+    ) -> (Option<design::Surface<'a>>, &'a mut scroll::Scroll) {
+        (
+            design::Surface::new(session, &self.layout_cache),
+            &mut self.scroll,
+        )
+    }
+
     /// Capture the accepted page identity while text is only an input candidate.
     pub(crate) fn prepare_candidates(
         &mut self,
@@ -3355,6 +3368,15 @@ fn show_document(
                 let area = ui.max_rect();
                 let background =
                     ui.interact(area, ui.scope_id().with("document_canvas"), Sense::click());
+                // An empty field has no editor. Check the canvas click so
+                // buttons and other existing hit targets keep their clicks.
+                state.empty_field_click = if background.clicked_by(egui::PointerButton::Primary)
+                    && session.empty_field_alert().is_some()
+                {
+                    background.interact_pointer_pos()
+                } else {
+                    None
+                };
                 let origin = area.min;
                 let growth = vec2(
                     (area.width() - width).max(0.0),
@@ -3439,6 +3461,7 @@ fn show_document(
                         &mut visited,
                     );
                 }
+                state.empty_field_click = None;
                 if background.clicked() {
                     state.selected_row = None;
                 }
@@ -5345,6 +5368,23 @@ fn paint_object_repetition(
         }
         ObjectKind::Field if finding => find_field(ui, state, (layout, object, rect)),
         ObjectKind::Field => {
+            if state
+                .empty_field_click
+                .is_some_and(|pos| rect.intersect(ui.clip_rect()).contains(pos))
+                && !state.pending
+                && !state.clicks_held
+                && !state.painting_stale
+                && !masked
+                && portal.is_none()
+                && document.field_bindings.contains_key(&object.id)
+                && object.field_obj.as_ref().is_some_and(|field| {
+                    field.display_type == 0
+                        && field.field_entry(false) == om_layout::FieldEntry::Edit
+                })
+            {
+                state.empty_field_click = None;
+                actions.push(Action::ClickEmptyField(layout.id));
+            }
             let (mut value, mut rich_value, data) =
                 field_content(session, document, calc, object, record_index, portal);
             // The value the editor begins from: a Refresh Object's, or a
@@ -8161,6 +8201,9 @@ const MAX_WEB_VIEWERS: usize = 32;
 /// width, and an ellipsis ends what does not fit in the viewer's height. In
 /// a viewer too short for the plate it is one row, centered. The plate and
 /// text never leave the viewer or the document's clip, and take no input.
+/// The text is rasterized at the window's zoom (`layer_galley`), so it stays
+/// as sharp as the layout's own text; a note cut short with an ellipsis
+/// keeps the unzoomed raster, which `scaled_text` does not rebuild.
 fn paint_web_viewer_note(ui: &Ui, rect: Rect, note: &str) {
     /// The plate's inset from the viewer's edges.
     const MARGIN: f32 = 4.0;
@@ -8174,7 +8217,7 @@ fn paint_web_viewer_note(ui: &Ui, rect: Rect, note: &str) {
         egui::text::LayoutJob::simple(note.to_owned(), font, theme::CAPTION, text.width().max(row));
     job.wrap.max_rows = ((text.height() / row).floor() as usize).max(1);
     job.halign = Align::Center;
-    let galley = painter.layout_job(job);
+    let galley = layer_galley(ui, job);
     let size = galley.size() + 2.0 * PADDING;
     let bottom = (rect.bottom() - MARGIN).max(rect.center().y + size.y / 2.0);
     let plate = Rect::from_center_size(pos2(rect.center().x, bottom - size.y / 2.0), size);

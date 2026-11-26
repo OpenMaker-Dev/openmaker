@@ -120,6 +120,9 @@ pub(crate) fn written<T>(store: &mut Store, write: impl FnOnce(&mut Transaction<
     tx.settle();
     #[cfg(debug_assertions)]
     let check = tx.check.take();
+    // Read by the debug-only check alone; held to the end in either build,
+    // so the journal is dropped where it always was.
+    #[cfg_attr(not(debug_assertions), allow(unused_variables))]
     let journal = std::mem::replace(&mut tx.journal, tx.store.begin_commit());
     drop(tx);
     #[cfg(debug_assertions)]

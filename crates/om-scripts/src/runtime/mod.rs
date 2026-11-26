@@ -1098,7 +1098,7 @@ impl Runtime {
                         self.finish_step(host, &pending.step, exec, None);
                     }
                     None => {
-                        let exec = self.execute(host, &pending.step);
+                        let exec = self.execute_step(host, &pending.step);
                         if exec.pending {
                             self.pending = Some(Pending {
                                 step: pending.step,
@@ -1342,7 +1342,7 @@ impl Runtime {
             host.active_script_files(&files);
         }
         let executing = self.stack.last().map(|f| f.id);
-        let exec = self.execute(host, &step);
+        let exec = self.execute_step(host, &step);
         // A navigation step may change the caller's window. Keep that
         // window for restoration after an external script, not the one
         // captured when its frame first started.
@@ -1361,6 +1361,15 @@ impl Runtime {
         }
         self.finish_step(host, &step, exec, None);
         false
+    }
+
+    fn execute_step(&mut self, host: &mut dyn ScriptHost, step: &ScriptStep) -> Exec {
+        let file = self.script_file(host);
+        let exec = self.execute(host, step);
+        if let Some(variables) = self.globals.get(&file) {
+            host.file_variables_changed(file, variables);
+        }
+        exec
     }
 
     /// Depth, script and line of the step the current frame executes.
