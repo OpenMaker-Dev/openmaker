@@ -942,9 +942,11 @@ pub enum CommitError {
 
 /// The first record of commit `list` whose action the account's set
 /// `access` refuses, with its table: decided by what `store` holds under
-/// the write lock, as [`commit_list`] writes it. A record that does not
-/// exist is created, whatever its marker says; a deletion of one that does
-/// not exist writes nothing. An action limited by a formula is decided by
+/// the write lock, as [`commit_list`] writes it. Only an entry marked new
+/// creates a record; an entry in the edit form for a record that does not
+/// exist creates nothing and is refused by [`unstorable`], so it has no
+/// action to check here; a deletion of one that does not exist writes
+/// nothing. An action limited by a formula is decided by
 /// the formula on the record: the stored one for an edit or a deletion,
 /// the uploaded one in `staged` for a new record (which state FileMaker
 /// evaluates is unmeasured); a formula that cannot be built or evaluated
@@ -969,6 +971,7 @@ fn refused_action(
         };
         for entry in &records.children {
             let exists = serial::decode(&entry.segment).is_some_and(|id| store.has_record(t, id));
+            let marked_new = !entry.push && entry.value.as_deref() == Some(&[COMMIT_NEW]);
             let action = if !entry.push && entry.value.as_deref() == Some(&[COMMIT_DELETED]) {
                 if !exists {
                     continue;
@@ -976,8 +979,11 @@ fn refused_action(
                 RecordAction::Delete
             } else if exists {
                 RecordAction::Edit
-            } else {
+            } else if marked_new {
                 RecordAction::Create
+            } else {
+                // An edit of a record that is not there ([`unstorable`]).
+                continue;
             };
             let record_environment = made.get_or_insert_with(&mut *environment);
             // An edit of a record the account may not view, or that this
@@ -1034,7 +1040,13 @@ fn refused_action(
 /// Why commit `list` cannot store every record it names, checked before
 /// [`commit_list`] writes any: the first entry it would have to leave out
 /// (see [`commit`]). An entry with nothing staged for it, and the deletion
-/// of a record that is not there, ask for nothing and pass.
+/// of a record that is not there, ask for nothing and pass. Only an entry
+/// marked new (`01`) creates a record, and only one whose id was issued and
+/// is free; an entry in the edit form for a record the file does not hold
+/// is refused, whatever its id (#840 of github.com/OpenMaker-Dev/openmaker:
+/// OpenMaker's choice until FileMaker Server is measured, write-path.md
+/// 3.4). It never brings back a record another session deleted, nor plants
+/// a record under an id an honest client's later new record would get.
 fn unstorable(
     user: LockUser,
     locks: &mut Locks<'_>,
@@ -1076,6 +1088,11 @@ fn unstorable(
                 if tx.has_record(t, id) {
                     return Some(format!("new record {id}: a record has that id"));
                 }
+            } else if !tx.has_record(t, id) {
+                return Some(format!(
+                    "record {id} is not in the file: an edit creates no record (deleted, or \
+                     never created)"
+                ));
             }
             if !modcount::counted(record) {
                 return Some(format!("record {id}'s modification count is not one"));
@@ -1123,6 +1140,12 @@ fn commit_list(
                 attention::DELETE
             } else {
                 let new = !entry.push && value == Some(&[COMMIT_NEW]);
+                if !new && !tx.has_record(t, id) {
+                    warn!(
+                        "{file:?}: commit of an edit of record {id}, which is not there, refused"
+                    );
+                    continue;
+                }
                 if new && id > tx.last_record_id(t) {
                     warn!("{file:?}: commit of new record {id} beyond the last issued id refused");
                     continue;
