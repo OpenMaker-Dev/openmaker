@@ -2577,10 +2577,16 @@ operation `om-author`'s `set_field_control` uses
 controls") after any deletions, one object at a time on the layout the one
 before made, then places a new field and sends its control. A list control
 without a value list is not sent: an alert asks for one. A layout changed
-since it was shown is refused (306): the control changes are dropped and
-the layout read again; another refusal keeps them. Revert Layout drops
-them, and so does reading the layout again without the object (another
-window deleted it). A related field's control is offered too. Limits: the canvas outlines the changed object but does not draw the
+since it was shown is refused (306): the layout is read again, and the
+control changes, like retyped texts, are kept (any refusal keeps them: a
+refused save never drops them; the alert says so). Revert Layout drops
+them. When the layout is read again without the object (another window
+or client deleted it), the change stays, as a retyped text's words do: an
+alert says it cannot be saved, Save Layout is refused for it, and closing
+or quitting waits until Revert Layout discards it (OpenMaker's choice, so
+that no change is dropped unseen; FileMaker Pro locks a layout being
+edited, so it meets no such case). An editor opened on such a text and
+left unchanged is no change. A related field's control is offered too. Limits: the canvas outlines the changed object but does not draw the
 control until the layout is saved and read again; the options under Values
 from (the arrow, editing, other values, auto-complete, the checkbox icon)
 and the button that edits value lists are not offered, and the Data tab's
@@ -2589,7 +2595,7 @@ look is OpenMaker's.
 Limits: a stored object cannot be moved between parts or restyled;
 groups, portals, tab and slide controls, popovers and button bars and the
 objects inside them do not move and cannot be deleted, nor can objects
-showing a library image, a field's label or a popover button; only a stored text of one line of plain text can be retyped; and the Text tool places one line of plain text in the theme's text style, with no character styles. The Field, Text, Button and Portal tools place objects; the other tool buttons only select a tool. For a stored object, the Inspector shows its
+showing a library image, a field's label or a popover button; only a stored text of one line of plain text can be retyped; and the Text tool places one line of plain text in the theme's text style, with no character styles. The Field, Text, Button and Portal tools place objects and the Part tool adds a part; the other tool buttons only select a tool. For a stored object, the Inspector shows its
 named style and calls out local styling beyond the object's stored
 rotation. Appearance shows known
 normal-state fill, border and text colors and the base font from Browse's
@@ -2736,12 +2742,28 @@ Both go with the operation `om-author`'s `change_parts` uses
 parts are keyed again and the objects below move with their parts. Part
 Setup shows the parts as saved, takes later changes at the layout's new
 revision, and every window of the file reads the layout again. Until the
-host has answered a change and the layout is read again, the window's
-canvas takes no edit and Part Setup cannot be opened anew; the dialog
+host has answered a change and, when the layout may have changed (saved, or
+refused because it changed meanwhile), the layout is read again, the
+window's canvas takes no edit and Part Setup cannot be opened anew; the dialog
 itself waits without closing, unless another window comes forward, which
 closes it as it closes Layout Setup. A change refused because the layout
 changed meanwhile closes it; opened again, it shows the layout as it is
 now.
+
+**The Part tool.** Dragging the status toolbar's Part Tool button onto the
+layout, as Claris documents it (re/client-ui.md, "Part Setup"), or choosing
+the tool and clicking the layout, opens Part Definition alone, as Part
+Setup's Create opens it: the kinds of part the layout lacks offered (not
+sub-summaries), and OK adds the one chosen at its place in the order of
+parts, at Create's heights, with the same operation. While OK is with the
+host the dialog stays, taking no input; it closes with Cancel or with the
+host's answer, and the tool goes back to Selection. Where the button is dropped does not matter: each kind of part
+OpenMaker adds has one place. It is refused as Part Setup is (unsaved
+changes, a change still with the host), and with an alert when the layout
+has every kind of part OpenMaker adds. Not compared with FileMaker Pro: the
+height Pro gives a part the Part tool adds, whether the drop point decides
+anything for the kinds OpenMaker adds, and what a click with the tool does
+(OpenMaker's choice).
 
 **A part's boundary.** In Layout mode the Selection tool drags a part's
 lower boundary (a band across the layout and the part strip) to set its

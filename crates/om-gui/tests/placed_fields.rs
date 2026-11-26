@@ -2164,6 +2164,69 @@ fn part_setup_turns_on_the_bodys_page_break() {
     assert_eq!(parts[0].flags & PAGE_BREAK_BEFORE, PAGE_BREAK_BEFORE);
 }
 
+/// A retyped text whose Save Layout meets a layout another client changed
+/// (306) stays unsaved: the alert says it is kept, closing still waits for
+/// Save or Revert Layout, and Revert Layout discards it (#1048's re-check).
+#[test]
+fn a_retyped_text_is_kept_when_save_layout_meets_a_changed_layout() {
+    let mut tree = form_tree(encode::text_object(1, &rect(110.0, 20.0, 120.0, 20.0)));
+    let layout = uint_segment(fixture::LAYOUT);
+    tree.put(
+        &[&[4], &[5], &layout, &[5], &[1], &[1]],
+        om_scripts::text_node(&[], "Due"),
+    );
+    let file = fixture::TempFile::from_tree("gui-retype-conflict", &tree);
+    let hosted = hosted::host_file(
+        "retype-conflict",
+        Path::new(&file.0),
+        fixture::FILE,
+        (ACCOUNT, PASSWORD),
+    );
+    let mut app = open_window(&hosted);
+    common::click(&mut app, "Edit Layout");
+    common::wait_until(&mut app, "the layout canvas", |app| {
+        app.query_by_label("Text (object 1)").is_some()
+    });
+    let at = app.get_by_label("Text (object 1)").rect().center();
+    common::workspace::double_click_at(&mut app, at);
+    common::wait_until(&mut app, "the text being typed", |app| {
+        app.query_by_label("Text being typed").is_some()
+    });
+    app.event(egui::Event::Text(" date".into()));
+    app.run_steps(2);
+    app.key_press(egui::Key::Enter);
+    app.run_steps(2);
+    // Another client adds a Footer: the layout's revision moves on.
+    let mut other = hosted.opened();
+    let shown = other.layout_member(fixture::LAYOUT).unwrap().unwrap();
+    other
+        .set_layout_parts(om_data::layout_placement::PartsChange {
+            layout: u32::try_from(fixture::LAYOUT).unwrap(),
+            expected: catalog_revision(&shown),
+            change: om_data::layout_placement::PartChange::Add {
+                part_type: 7,
+                size: 22.0,
+            },
+        })
+        .unwrap();
+    other.close();
+    save_layout(&mut app);
+    common::wait_until(&mut app, "the refusal", |app| app.state().error().is_some());
+    let error = app.state().error().unwrap().to_owned();
+    assert!(error.contains("are kept"), "{error}");
+    assert!(app.state().layout_unsaved(), "the retyped text is kept");
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "the layout read again", |app| {
+        app.state().is_settled()
+    });
+    app.run_steps(5);
+    assert!(app.state().layout_unsaved(), "still kept after the read");
+    common::open_menu(&mut app, "Layouts");
+    common::click(&mut app, "Revert Layout");
+    app.run_steps(2);
+    assert!(!app.state().layout_unsaved());
+}
+
 /// Part Setup's Create adds a Header above the body, which moves the body's
 /// field down by its 110 points, and Delete removes it again, each with the
 /// operation `om-author`'s `change_parts` uses
@@ -2298,10 +2361,55 @@ fn part_setup_creates_and_deletes_a_header_and_the_body_boundary_is_dragged() {
         "95-part-boundary",
         "the Body dragged 40 points taller",
     );
-    drop(app);
     assert_eq!(
         read(&hosted),
         (vec![(4, 0.0, 240.0), (7, 240.0, 22.0)], 20.0)
+    );
+
+    // The Part tool's button dropped on the layout (#885) opens Part
+    // Definition alone, whose OK adds the part as Create does.
+    let tool = app.get_by_label("Part Tool").rect().center();
+    let canvas = app.get_by_label("Layout canvas").rect();
+    drag(&mut app, tool, canvas.min + egui::vec2(200.0, 60.0));
+    common::wait_until(&mut app, "the Part tool's Part Definition", |app| {
+        app.query_by_role_and_label(Role::RadioButton, "Header")
+            .is_some()
+    });
+    assert!(
+        app.query_by_role_and_label(Role::Button, "Create")
+            .is_none(),
+        "Part Definition opens without Part Setup's list"
+    );
+    app.get_by_role_and_label(Role::RadioButton, "Header")
+        .click();
+    app.run_steps(2);
+    shot(
+        &mut app,
+        "96-part-tool",
+        "the Part tool's Part Definition, Header chosen",
+    );
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "the Part tool's header saved", |app| {
+        assert!(app.state().error().is_none(), "{:?}", app.state().error());
+        app.state().is_settled() && app.query_by_label("Header boundary").is_some()
+    });
+    assert!(
+        app.query_by_role_and_label(Role::RadioButton, "Header")
+            .is_none(),
+        "Part Definition closed"
+    );
+    shot(
+        &mut app,
+        "97-part-tool-header",
+        "the Header the Part tool added",
+    );
+    drop(app);
+    assert_eq!(
+        read(&hosted),
+        (
+            vec![(1, 0.0, 110.0), (4, 110.0, 240.0), (7, 350.0, 22.0)],
+            130.0
+        )
     );
 }
 

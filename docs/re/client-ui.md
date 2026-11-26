@@ -715,6 +715,18 @@ origin bottom left]
 
 Which options each part type enables is in layout-model.md 10.15.
 
+**The Part tool** (doc: Claris's help, "Adding a layout part",
+`adding-layout-part.html`, FileMaker Pro 2026, fetched 2026-11-25): "In
+Layout mode, drag the Part tool in the status toolbar to the layout. Or,
+choose Insert menu > Part." Then "In the Part Definition dialog box, select
+the type of layout part you want. Part types that are already on the
+layout are dimmed. (Only subsummary parts can exist more than once on a
+layout.)" The page also says "FileMaker Pro considers an object to be in a
+part when the top of the object is in or just touching the part." Unknown:
+the height of a part the Part tool adds, what the drop point decides (where
+a sub-summary goes, whether a drop in an impossible place is refused), and
+whether a click with the tool does anything.
+
 SHA-256 of the archives: `IDD_PART_SETUP.nib`
 `3231311abf1fbf77a3d0511afc31b78796d82f84d7f3cf293579f6a32af195ec`;
 `IDD_PART_DEFINITION.nib`
