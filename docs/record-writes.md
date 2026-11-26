@@ -821,6 +821,14 @@ in memory for the session. See the native
 observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
 and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
 
+A calculated global Text field with the measured empty-Self default can
+retain its value or append a literal suffix. Ordinary New Record reads
+the current session value. Scripted Set Field reads its assigned text.
+With replacement off, either operation preserves nonempty text. Clearing
+re-enters the default. These formulas require an ordinary local desktop
+file and one repetition. Browse typing and persistence across reopen
+remain separate. See [the native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1095).
+
 A local Text or Number calculated auto-enter may read
 `Get ( CurrentTimeUTCMilliseconds )` at New Record, including through a
 custom function. Each field takes its own samples and replays them

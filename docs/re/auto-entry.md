@@ -836,6 +836,22 @@ persisted at close. The timing of the counter write before close and
 the result of reverting a newly created record were not measured.
 [O, closed-file readback](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7185027447).
 
+### Self in a calculated global Text auto-entry
+
+[O, FileMaker Pro 26.1.1] A local single-repetition global Text field
+stores option `0x00010088` for a replacing calculation and `0x00010008`
+with replacement off. The measured formulas were
+`If ( IsEmpty ( Self ) ; "Initial" ; Self )` and the same formula with
+`Self & "!"` as the final branch. The empty-input control was left on.
+New Record sees the current global through Self. Set Field sees its
+proposed text through Self. With replacement off, a nonempty value
+survives either operation. Clearing the field re-enters the default.
+Writing an unrelated field leaves the global unchanged.
+These scripts all continued with LastError 0. The local global persisted
+across reopen. Hosted files, Browse typing, Duplicate Record and portal
+creation were not tested.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1095#issuecomment-7191245589)
+
 ## A stored calculation before the commit
 
 A stored calculation of the record being edited reads its new inputs
