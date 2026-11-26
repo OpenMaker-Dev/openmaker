@@ -368,8 +368,13 @@ pub(crate) enum Event {
 pub(crate) trait Backend {
     fn create(&mut self, view: u64, parent: NativeParent, spec: ViewSpec);
     fn place(&mut self, view: u64, geometry: Geometry, visible: bool);
-    fn navigate(&mut self, view: u64, generation: u64, navigation: Navigation);
-    fn evaluate(&mut self, view: u64, call: u64, script: String);
+    /// Whether the backend took the navigation; `false` when it could not
+    /// send it (its page host ended, or the command was too long), and the
+    /// view's load fails.
+    fn navigate(&mut self, view: u64, generation: u64, navigation: Navigation) -> bool;
+    /// Whether the backend took the call; `false` when it could not send
+    /// it, and no result comes.
+    fn evaluate(&mut self, view: u64, call: u64, script: String) -> bool;
     fn destroy(&mut self, view: u64);
     /// The app's window took a click: keyboard focus a view has goes back
     /// to `parent`.
@@ -1084,13 +1089,18 @@ impl WebViewers {
                 view.state = LoadState::Loading;
                 let generation = view.generation;
                 self.fail_calls(id, INVALID);
-                self.backend
+                let taken = self
+                    .backend
                     .as_mut()
                     .unwrap()
                     .as_mut()
                     .unwrap()
                     .navigate(id, generation, navigation);
-                self.outcomes.push(answer(Ok(())));
+                // One the backend could not send fails as the step of an
+                // engine that went (OpenMaker's choice; FileMaker
+                // unmeasured).
+                self.outcomes
+                    .push(answer(if taken { Ok(()) } else { Err(UNAVAILABLE) }));
             }
             Command::Perform {
                 function,
@@ -1109,12 +1119,17 @@ impl WebViewers {
                 };
                 self.next += 1;
                 let call = self.next;
-                self.backend
+                let taken = self
+                    .backend
                     .as_mut()
                     .unwrap()
                     .as_mut()
                     .unwrap()
                     .evaluate(id, call, script);
+                if !taken {
+                    self.outcomes.push(answer(Err(UNAVAILABLE)));
+                    return Ok(());
+                }
                 self.calls.push(Call {
                     id: call,
                     prompt,

@@ -212,16 +212,18 @@ impl Backend for GtkBackend {
         });
     }
 
-    fn navigate(&mut self, view: u64, generation: u64, navigation: Navigation) {
+    fn navigate(&mut self, view: u64, generation: u64, navigation: Navigation) -> bool {
         self.send(Command::Navigate {
             view,
             generation,
             navigation,
         });
+        true
     }
 
-    fn evaluate(&mut self, view: u64, call: u64, script: String) {
+    fn evaluate(&mut self, view: u64, call: u64, script: String) -> bool {
         self.send(Command::Evaluate { view, call, script });
+        true
     }
 
     fn destroy(&mut self, view: u64) {

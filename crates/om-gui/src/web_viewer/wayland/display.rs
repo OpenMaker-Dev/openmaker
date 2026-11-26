@@ -181,8 +181,11 @@ struct State {
     wake: Box<dyn Fn() + Send>,
     /// The view the pointer is over.
     pointer_view: Option<u64>,
-    /// The buttons the pointer holds down, as the pages heard them.
+    /// The buttons the pointer holds down, as the pages heard them, and
+    /// the view the first of them was pressed on, which has them until the
+    /// last goes up (the pointer's grab), wherever the pointer is.
     buttons: Vec<u32>,
+    pressed_on: Option<u64>,
 }
 
 /// The display's loop. The socket and its private directory go once the
@@ -242,6 +245,7 @@ fn run(
             wake,
             pointer_view: None,
             buttons: Vec::new(),
+            pressed_on: None,
         };
         Ok((event_loop, state, Rc::new(RefCell::new(display))))
     })();
@@ -367,6 +371,7 @@ impl State {
             return;
         };
         let time = self.millis();
+        self.pressed_on = None;
         for code in std::mem::take(&mut self.buttons) {
             pointer.button(
                 self,
@@ -443,9 +448,15 @@ impl State {
                     return;
                 };
                 if pressed {
+                    if self.buttons.is_empty() {
+                        self.pressed_on = Some(view);
+                    }
                     self.buttons.push(code);
                 } else {
                     self.buttons.retain(|held| *held != code);
+                    if self.buttons.is_empty() {
+                        self.pressed_on = None;
+                    }
                 }
                 pointer.button(
                     self,
@@ -533,13 +544,11 @@ impl CompositorHandler for State {
         if let (Some(view), Some(data)) = (view, buffer.data::<shm::Buffer>()) {
             let (width, height) = (data.width as usize, data.height as usize);
             // From the sizes the buffer declares, before anything is read.
-            let admitted = self.frames.lock().is_ok_and(|slots| {
-                let waiting: usize = slots
-                    .frames
-                    .iter()
-                    .filter(|(other, _)| **other != view)
-                    .map(|(_, frame)| frame.rgba.len())
-                    .sum();
+            // The view's frame still waiting goes first: this one replaces
+            // it, and both would otherwise be held while this one is read.
+            let admitted = self.frames.lock().is_ok_and(|mut slots| {
+                slots.frames.remove(&view);
+                let waiting: usize = slots.frames.values().map(|f| f.rgba.len()).sum();
                 shm::admits(data, slots.max_side, waiting, FRAME_BUDGET)
             });
             if let Some(rgba) = admitted.then(|| data.rgba()).flatten() {
@@ -608,8 +617,10 @@ impl XdgShellHandler for State {
         self.toplevels.retain(|t| t != &surface);
         self.views.retain(|_, s| s != surface.wl_surface());
         // The buttons pressed on a view that goes are let go of, so that
-        // the pointer holds none when it comes to another.
-        if gone.is_some() && gone == self.pointer_view {
+        // the pointer holds none when it comes to another; also when the
+        // pointer already left it (a layout change sends Leave before
+        // Destroy).
+        if gone.is_some() && (gone == self.pressed_on || gone == self.pointer_view) {
             self.release_pointer();
         }
     }

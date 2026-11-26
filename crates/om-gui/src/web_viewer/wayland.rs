@@ -129,6 +129,19 @@ struct Hosted {
     /// that one), and the scale its window draws at.
     generation: u64,
     scale: i32,
+    /// Whether the host was sent its Create: one whose first address was
+    /// too long to send is made, empty, by its next load.
+    created: bool,
+    interactive: bool,
+    scripts: bool,
+}
+
+/// Why a command was not sent.
+enum Unsent {
+    /// Its line would pass [`MAX_COMMAND`]; the host is fine.
+    TooLong,
+    /// The host ended, or was stopped; its views fail (`poll`).
+    HostGone,
 }
 
 pub(crate) struct WaylandBackend {
@@ -314,29 +327,28 @@ impl WaylandBackend {
         })
     }
 
-    /// Send `command`; `false` when it was refused as too long (the host is
-    /// fine, the command fails).
-    fn send(&mut self, command: &HostCommand) -> bool {
-        let Some(line) = encode(command) else {
-            return false;
-        };
+    /// Send `command` to the host.
+    fn send(&mut self, command: &HostCommand) -> Result<(), Unsent> {
+        let line = encode(command).ok_or(Unsent::TooLong)?;
         let Some(commands) = self.commands.as_ref() else {
-            return true;
+            return Err(Unsent::HostGone);
         };
         // A host this far behind is not taking its commands.
         let length = line.len();
         if self.in_flight.fetch_add(length, Ordering::SeqCst) + length > COMMAND_BUDGET {
             self.stop();
-            return true;
+            return Err(Unsent::HostGone);
         }
         match commands.try_send(line) {
-            Ok(()) => {}
-            // A host this far behind is not taking its commands: it goes,
-            // and its views fail (`poll`).
-            Err(TrySendError::Full(_)) => self.stop(),
-            Err(TrySendError::Disconnected(_)) => self.commands = None,
+            Ok(()) => Ok(()),
+            // A host this far behind is not taking its commands, and one
+            // whose writer stopped is not reading them: it goes, and its
+            // views fail (`poll`).
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
+                self.stop();
+                Err(Unsent::HostGone)
+            }
         }
-        true
     }
 
     /// Whether the host still runs: one that ended is gone, and its views
@@ -391,7 +403,7 @@ impl WaylandBackend {
             if let Some(hosted) = self.views.get_mut(&view) {
                 hosted.size = size;
             }
-            self.send(&HostCommand::Resize {
+            let _ = self.send(&HostCommand::Resize {
                 view,
                 width: size[0],
                 height: size[1],
@@ -409,6 +421,41 @@ impl WaylandBackend {
             generation,
             reason: "the page's address is too long".into(),
         });
+    }
+
+    /// A navigation not sent fails: a refused one here, one to a host that
+    /// went with its views (`poll`).
+    fn unsent(&mut self, view: u64, generation: u64, why: Unsent) -> bool {
+        if let Unsent::TooLong = why {
+            self.refused(view, generation);
+        }
+        false
+    }
+
+    /// Make the host's view for `view` if its Create was never sent, empty
+    /// (its first address was too long), before a load: without it the
+    /// host would ignore the view's commands.
+    fn make(&mut self, view: u64) -> Result<(), Unsent> {
+        let Some(hosted) = self.views.get(&view) else {
+            return Err(Unsent::HostGone);
+        };
+        if hosted.created {
+            return Ok(());
+        }
+        let create = HostCommand::Create {
+            view,
+            url: "about:blank".into(),
+            width: hosted.size[0],
+            height: hosted.size[1],
+            zoom: hosted.zoom,
+            interactive: hosted.interactive,
+            scripts: hosted.scripts,
+        };
+        self.send(&create)?;
+        if let Some(hosted) = self.views.get_mut(&view) {
+            hosted.created = true;
+        }
+        Ok(())
     }
 }
 
@@ -460,6 +507,9 @@ impl Backend for WaylandBackend {
                 zoom: spec.geometry.zoom,
                 generation: 0,
                 scale,
+                created: false,
+                interactive: spec.interactive,
+                scripts: spec.scripts,
             },
         );
         self.follow_scale();
@@ -476,8 +526,15 @@ impl Backend for WaylandBackend {
             interactive: spec.interactive,
             scripts: spec.scripts,
         });
-        if !sent {
-            self.refused(view, 0);
+        match sent {
+            Ok(()) => {
+                if let Some(hosted) = self.views.get_mut(&view) {
+                    hosted.created = true;
+                }
+            }
+            Err(why) => {
+                self.unsent(view, 0, why);
+            }
         }
     }
 
@@ -500,7 +557,7 @@ impl Backend for WaylandBackend {
         if hosted.size != size || (hosted.zoom - geometry.zoom).abs() > f64::EPSILON {
             hosted.size = size;
             hosted.zoom = geometry.zoom;
-            self.send(&HostCommand::Resize {
+            let _ = self.send(&HostCommand::Resize {
                 view,
                 width: size[0],
                 height: size[1],
@@ -509,45 +566,43 @@ impl Backend for WaylandBackend {
         }
     }
 
-    fn navigate(&mut self, view: u64, generation: u64, navigation: Navigation) {
+    fn navigate(&mut self, view: u64, generation: u64, navigation: Navigation) -> bool {
         if !self.alive() {
             self.pending.push(Event::Failed {
                 view,
                 generation,
                 reason: "the page host ended".into(),
             });
-            return;
+            return false;
         }
         if let Some(hosted) = self.views.get_mut(&view) {
             hosted.generation = generation;
         }
-        if !self.send(&HostCommand::Navigate {
-            view,
-            generation,
-            navigation,
-        }) {
-            self.refused(view, generation);
+        let made = match &navigation {
+            Navigation::Load(_) => self.make(view),
+            // Reloading, or going back or forward in, a view the host never
+            // had: its address is still the one too long to send.
+            _ if self.views.get(&view).is_some_and(|h| !h.created) => Err(Unsent::TooLong),
+            _ => Ok(()),
+        };
+        let sent = made.and_then(|()| {
+            self.send(&HostCommand::Navigate {
+                view,
+                generation,
+                navigation,
+            })
+        });
+        match sent {
+            Ok(()) => true,
+            Err(why) => self.unsent(view, generation, why),
         }
     }
 
-    fn evaluate(&mut self, view: u64, call: u64, script: String) {
-        if !self.alive() {
-            // No result: the call fails.
-            self.pending.push(Event::Evaluated {
-                view,
-                call,
-                result: String::new(),
-            });
-            return;
-        }
-        if !self.send(&HostCommand::Evaluate { view, call, script }) {
-            // No result: the call fails.
-            self.pending.push(Event::Evaluated {
-                view,
-                call,
-                result: String::new(),
-            });
-        }
+    fn evaluate(&mut self, view: u64, call: u64, script: String) -> bool {
+        self.alive()
+            && self
+                .send(&HostCommand::Evaluate { view, call, script })
+                .is_ok()
     }
 
     fn destroy(&mut self, view: u64) {
@@ -556,7 +611,7 @@ impl Backend for WaylandBackend {
             slots.frames.remove(&view);
         }
         self.follow_scale();
-        self.send(&HostCommand::Destroy { view });
+        let _ = self.send(&HostCommand::Destroy { view });
     }
 
     fn release_focus(&mut self, _parent: NativeParent) {

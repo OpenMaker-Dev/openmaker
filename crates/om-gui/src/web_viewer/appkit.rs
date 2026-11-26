@@ -514,16 +514,18 @@ impl Backend for AppKitBackend {
         });
     }
 
-    fn navigate(&mut self, view: u64, generation: u64, navigation: Navigation) {
+    fn navigate(&mut self, view: u64, generation: u64, navigation: Navigation) -> bool {
         self.command(Command::Navigate {
             view,
             generation,
             navigation,
         });
+        true
     }
 
-    fn evaluate(&mut self, view: u64, call: u64, script: String) {
+    fn evaluate(&mut self, view: u64, call: u64, script: String) -> bool {
         self.command(Command::Evaluate { view, call, script });
+        true
     }
 
     fn destroy(&mut self, view: u64) {

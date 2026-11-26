@@ -15,6 +15,8 @@ struct Recorded {
     events: Vec<Event>,
     frames: Vec<PageFrame>,
     unavailable: bool,
+    /// Commands the backend cannot send (too long for its page host).
+    refused: bool,
     started: usize,
 }
 
@@ -50,17 +52,19 @@ impl Backend for Recording {
             geometry.frame, geometry.content
         ));
     }
-    fn navigate(&mut self, view: u64, _generation: u64, navigation: Navigation) {
-        self.0
-            .borrow_mut()
+    fn navigate(&mut self, view: u64, _generation: u64, navigation: Navigation) -> bool {
+        let mut recorded = self.0.borrow_mut();
+        recorded
             .commands
             .push(format!("navigate {view} {navigation:?}"));
+        !recorded.refused
     }
-    fn evaluate(&mut self, view: u64, call: u64, script: String) {
-        self.0
-            .borrow_mut()
+    fn evaluate(&mut self, view: u64, call: u64, script: String) -> bool {
+        let mut recorded = self.0.borrow_mut();
+        recorded
             .commands
             .push(format!("evaluate {view} {call} {script}"));
+        !recorded.refused
     }
     fn destroy(&mut self, view: u64) {
         self.0.borrow_mut().commands.push(format!("destroy {view}"));
@@ -317,7 +321,8 @@ fn a_painted_page_gets_the_pointer_input_over_it() {
 
 /// Once the backend can no longer draw pages (the Wayland backend's page
 /// host ended), Set Web Viewer and Perform JavaScript fail as unavailable
-/// commands, error 3, rather than seem to work.
+/// commands, error 3, rather than seem to work; so does a Set Web Viewer
+/// the backend could not send (an address too long for the page host).
 #[test]
 fn steps_on_a_backend_that_ended_fail_as_unavailable() {
     let (mut viewers, recorded) = viewers();
@@ -333,6 +338,20 @@ fn steps_on_a_backend_that_ended_fail_as_unavailable() {
             prompt,
             result: Err(UNAVAILABLE),
         })
+    );
+    {
+        let mut recorded = recorded.borrow_mut();
+        recorded.unavailable = false;
+        recorded.refused = true;
+    }
+    viewers.command(3, &window(), set_url("https://example.com/"));
+    let answers: Vec<Outcome> = viewers.poll();
+    assert_eq!(
+        answers,
+        [Outcome::Answer {
+            prompt: 3,
+            result: Err(UNAVAILABLE),
+        }]
     );
 }
 

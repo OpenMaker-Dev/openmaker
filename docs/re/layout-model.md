@@ -2355,8 +2355,9 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
     display reads each buffer through its pool's file rather than mapping
     it, which needs no `unsafe` code, and only once the sizes the buffer
     declares fit: sides no larger than the app's largest texture, and what
-    reading and converting it take within 256 MiB beside the frames waiting
-    for the app. Each view keeps only its newest frame.
+    reading and converting it take within 256 MiB beside the other views'
+    frames waiting for the app. Each view keeps only its newest frame: the
+    one waiting goes before its replacement is read.
   - **Painting.** Browse paints each view's newest frame as a texture in its
     object's place among the layout's objects. Objects stacked above a web
     viewer, menus, popovers and dialogs draw over the page, where the X11
@@ -2370,9 +2371,12 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
     the clipboard do not reach it yet.
   - **The host is another process.** Both ways are bounded. A command
     line longer than 16 MiB (a page's address, a function's parameters) is
-    refused as it is written, and that load or call fails. Commands wait
-    in a queue bounded by number and bytes, and the host holds one at a
-    time. Its event lines are bounded too, and its events are checked as
+    refused as it is written, and that load or call fails; the Set Web
+    Viewer or Perform JavaScript in Web Viewer that asked for it fails with
+    error 3 [I, OpenMaker's choice; FileMaker unmeasured]. A view whose
+    first address was refused is made, empty, by its next load. Commands
+    wait in a queue bounded by number and bytes, and the host holds one at
+    a time. Its event lines are bounded too, and its events are checked as
     any page's are. A host that ends fails its views, as a native view
     whose browser went away does. Set Web Viewer and Perform JavaScript in
     Web Viewer then fail with error 3 [I, OpenMaker's choice; FileMaker's
