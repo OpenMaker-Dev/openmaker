@@ -425,6 +425,10 @@ pub(crate) struct CanvasState {
     /// A layout read again no longer has objects that unsaved control or
     /// text changes were made to; the changes are kept.
     orphaned_drafts: bool,
+    /// The objects of the layout as last read (kept while it is read
+    /// again): an object is deleted when a read lacks one of them, not when
+    /// a read is older than an object just placed.
+    known_keys: BTreeSet<u64>,
 }
 
 /// A part boundary being dragged: the part's place in the layout's parts
@@ -1068,6 +1072,7 @@ impl CanvasState {
                 self.drop_controls();
                 self.drop_words();
                 self.drop_width();
+                self.known_keys.clear();
             }
             self.identity = Some((
                 session.target.host.clone(),
@@ -1083,7 +1088,9 @@ impl CanvasState {
             // change if the words changed, and its editor closes. The window
             // is told (`take_orphaned_drafts`).
             if let Some(geometry) = &self.geometry {
-                let gone = |key: &u64| !geometry.objects.iter().any(|o| o.key == *key);
+                let present: BTreeSet<u64> = geometry.objects.iter().map(|o| o.key).collect();
+                let known = std::mem::replace(&mut self.known_keys, present);
+                let gone = |key: &u64| known.contains(key) && !self.known_keys.contains(key);
                 if let Some(done) = self.retyping.take_if(|r| gone(&r.key)) {
                     keep_words(&mut self.words, done);
                 }
