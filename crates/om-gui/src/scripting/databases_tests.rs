@@ -762,6 +762,48 @@ fn script(mut steps: Vec<ScriptStep>) -> Script {
         ..Default::default()
     }
 }
+/// Answers every alert the script shows with Continue, and returns each
+/// alert's message, its second line (`detail`) and whether it offered
+/// Cancel once the script ends.
+fn collect_alerts(c: &mut Client) -> std::thread::JoinHandle<Vec<(String, String, bool)>> {
+    let events = std::mem::replace(&mut c.events, mpsc::channel().1);
+    let jobs = c._keep_jobs.clone();
+    std::thread::spawn(move || {
+        let mut alerts = Vec::new();
+        while let Ok(response) = events.recv_timeout(std::time::Duration::from_secs(30)) {
+            match response.reply {
+                worker::Reply::Script(ScriptEvent::Prompt {
+                    id,
+                    prompt:
+                        crate::scripting::Prompt::Alert {
+                            message,
+                            detail,
+                            can_cancel,
+                            ..
+                        },
+                }) => {
+                    alerts.push((message, detail, can_cancel));
+                    jobs.send(Job {
+                        epoch: 1,
+                        window: 1,
+                        ctx: Default::default(),
+                        request: Request::Answer {
+                            prompt: id,
+                            answer: crate::scripting::Answer::Alert(
+                                om_data::runtime::AlertChoice::Continue,
+                            ),
+                        },
+                    })
+                    .unwrap();
+                }
+                worker::Reply::Script(ScriptEvent::Finished { .. }) => break,
+                _ => {}
+            }
+        }
+        alerts
+    })
+}
+
 struct Client {
     session: ScriptSession,
     provider: Box<dyn DataProvider>,
@@ -2595,6 +2637,68 @@ fn desktop_related_current_layout_keeps_the_caller_when_the_file_shows_a_window(
             );
         }
     }
+}
+
+/// A step's alert gives the provider's reason for its error on its second
+/// line, as Print Setup's does (#818): here Go to Related Record into a
+/// file whose found set cannot be read. Words an error capture kept from
+/// an earlier step, the provider's or the step's own, are not shown under
+/// a later step's alert, nor do they take the place of its own.
+#[test]
+fn a_steps_alert_gives_its_providers_reason_and_no_earlier_one() {
+    // Print Setup [Restore] of a scale OpenMaker refuses: 3, with words of
+    // its own.
+    let mut setup = ScriptStep::new(42);
+    setup.flags = flag::RESTORE | flag::NO_INTERACT;
+    let mut format = crate::page_setup::tests::A4.to_vec();
+    format[9..13].copy_from_slice(&0.5f32.to_be_bytes());
+    setup.set_data_leaf(0x87, Some(om_data::scripts::bytes_node(&[0x87], &format)));
+    let mut navigate = ScriptStep::new(74);
+    navigate.value = 1;
+    navigate.flags |= flag::RESTORE | flag::MENU_SELECTION | flag::OPTION;
+    navigate.set_slot_child(
+        0,
+        0x11,
+        Some(OwnedNode::leaf(
+            [0x11],
+            om_data::formula::Key::from_id(90).0,
+        )),
+    );
+    let mut root = ScriptStep::new(123);
+    root.value = 1;
+    root.flags |= flag::MENU_SELECTION;
+    root.set_calculation(0, Some(&calc("\"Root\"")));
+    let mut c = Client::new(
+        vec![
+            open("Peer", false),
+            root,
+            // Captured: no alerts.
+            setup,
+            navigate.clone(),
+            // Set Error Capture [ Off ].
+            ScriptStep::new(86),
+            // Fails with no reason of its own.
+            call("Missing"),
+            navigate,
+            exit("Get ( LastError )"),
+        ],
+        vec![],
+    );
+    {
+        let mut server = c.server.lock().unwrap();
+        server.related = true;
+        server.peer_found_fails = true;
+    }
+    let alerts = collect_alerts(&mut c);
+    c.run();
+    assert_eq!(c.result(), "802");
+    let details: Vec<_> = alerts
+        .join()
+        .unwrap()
+        .into_iter()
+        .map(|(_, detail, _)| detail)
+        .collect();
+    assert_eq!(details, ["", "The found set could not be read."]);
 }
 
 #[test]
