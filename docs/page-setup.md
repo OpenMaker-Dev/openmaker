@@ -86,9 +86,10 @@ Nothing is written when:
 - the file stores a setup OpenMaker cannot read, or its schema was not read,
   so what it stores is not known: it is kept as it is;
 - the file's setup holds a record Pro may not make again: a custom paper
-  or a named printer in `M_PM`, or a record other than `Comm`, `M_PM` and
-  `MMod`, a Windows one say. It is also kept when it is not stored as Pro
-  stores it, or changed since it was read;
+  or a named printer in `M_PM`, an `M_PM` not written as plain text (an
+  entity or character reference, CDATA, a comment), or a record other than
+  `Comm`, `M_PM` and `MMod`, a Windows one say. It is also kept when it is
+  not stored as Pro stores it, or changed since it was read;
 - the file is hosted. FileMaker Pro sent nothing for a hosted file, and
   reopening it showed the setup it had ([write path](re/write-path.md)
   5.9; whether Pro kept the accepted one until the file closed was not
