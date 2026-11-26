@@ -1246,8 +1246,8 @@ over every layout of the six English starter solutions [O]:
 | 4 | Icon at left, text at right | 10, all labelled and left-aligned: the 9 Details layouts' back buttons (a chevron left of "Assets", "Contacts" and so on, in the top navigation part) and Add Assignee's "Add Assignee" |
 | 5 | Text at left, icon at right | none |
 
-Claris documents the order, not the numbers. The starters use only 0, 1 and
-4, and two of them are measured:
+Claris's documentation lists the choices in order. The starter
+measurements cover selectors 1 and 4:
 - **1 is Image only [O].** FileMaker Pro 26.0.3's PDF of Task Details ([#201](https://github.com/OpenMaker-Dev/openmaker/issues/201),
   2026-11-13) draws the "Add Assignee" button, type 1 with that label stored,
   as its 13-point "+" icon centered in the 291-point frame (icon at 523-536,
@@ -1255,16 +1255,23 @@ Claris documents the order, not the numbers. The starters use only 0, 1 and
   stored label is kept but not shown.
 - **4 is Icon at left, text at right [O].** Pro's Preview and PDF of the Add
   Assignee layout show the "+" left of "Add Assignee" ([#201](https://github.com/OpenMaker-Dev/openmaker/issues/201), 14:27Z).
-- 0, 2, 3 and 5 follow from Claris's order [I].
 
-That Pro's Browse also hides a type 1 label is inferred from its Preview and
-PDF; Browse was not captured.
+A local FileMaker Pro 26.1.1 Browse check with a 100 × 90 pt frame,
+a 48 pt icon and a short label confirmed all four placement selectors
+and that an image-only button hides its label [O]. The vertical
+arrangements center the icon and label together, with the label across
+the frame's width. The gap between the icon and the text line box is
+about 8 pt [I from visible glyph bounds]. The left and right arrangements
+wrap the label beside the icon. A narrower 70 pt frame and longer label
+clip the text while the icon keeps its size. A popover button with the
+icon above matched the ordinary button.
+[Native Browse check](https://github.com/OpenMaker-Dev/openmaker/issues/1016#issuecomment-7185360328).
 
-OpenMaker's Browse and reports draw a type 1 button's icon alone and
-centered, and leave its stored label out. It stays the button's accessible
-name in Browse. Both draw a type 4 icon left of its label. Browse draws the
-other placements as icon left of label, and reports refuse them
-(portable-pdf.md, Buttons and groups).
+OpenMaker's Browse and Layout mode share these placement directions for
+buttons and popover buttons. Browse supplies evaluated calculated icons.
+Layout mode supplies stored library icons. An image-only button keeps its
+stored label as its accessible name in Browse. Reports support types 1
+and 4 (portable-pdf.md, Buttons and groups).
 
 ### 5.7 Anchoring (autosizing)
 
