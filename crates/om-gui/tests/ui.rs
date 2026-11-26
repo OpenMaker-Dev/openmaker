@@ -681,9 +681,14 @@ fn objects_pane_reveals_an_offscreen_layout_object() {
     connect_to_mock(&mut app);
     click(&mut app, "Edit Layout");
     click(&mut app, "Objects");
+    for _ in 0..2 {
+        open_menu(&mut app, "View");
+        click(&mut app, "Zoom In");
+    }
     click(&mut app, "Corner 1");
     app.run_steps(4);
     let rect = app.get_by_label("Corner (object 1)").rect();
+    assert_eq!(rect.size(), egui::vec2(180.0, 60.0));
     assert!(
         app.ctx.content_rect().contains_rect(rect),
         "selected object is revealed: {rect:?}"
