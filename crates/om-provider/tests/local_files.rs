@@ -1237,6 +1237,8 @@ fn name_of(provider: &mut dyn DataProvider, layout: u32, id: i64) -> Option<Stri
 fn a_variable_source_opens_on_first_read_and_keeps_its_file() {
     use om_data::calc::{eval::Variables, Value};
     use om_data::host::CalcNeed;
+    use om_hbam::slot::uint_segment;
+    use om_layout::{encode, Rect};
 
     let folder = Folder::new("variable-source");
     let root_path = folder.file("Root.fmp12", PASSWORD, |root| {
@@ -1247,6 +1249,26 @@ fn a_variable_source_opens_on_first_read_and_keeps_its_file() {
             "Peer",
             &[("", "", "$$RelatedPath")],
         );
+        let layout_key = uint_segment(fixture::LAYOUT);
+        let path = [&[4][..], &[5], &layout_key, &[7]];
+        let store = root
+            .at(&path)
+            .and_then(|node| node.value.as_deref())
+            .unwrap_or_default();
+        let field = encode::field_object(
+            420,
+            &Rect {
+                left: 20.0,
+                top: 20.0,
+                right: 120.0,
+                bottom: 38.0,
+                ..Default::default()
+            },
+            om_data::layout_placement::serial_value(PEER_ROWS).unwrap(),
+            om_data::layout_placement::serial_value(fixture::NAME).unwrap(),
+        );
+        let store = encode::append_to_store(store, &[420], &[field]);
+        root.put(&path, om_hbam::OwnedNode::leaf(Vec::new(), store));
     });
     folder.file("First.fmp12", PASSWORD, |_| {});
     folder.file("Second.fmp12", PASSWORD, |_| {});
@@ -1256,6 +1278,23 @@ fn a_variable_source_opens_on_first_read_and_keeps_its_file() {
     assert!(root.calc_schema().unwrap().unwrap().is_pending(PEER_ROWS));
     assert!(root.related_file_warnings().is_empty());
     assert!(!root.references_peer("First").unwrap());
+
+    root.record_capabilities_for_layout(fixture::LAYOUT as u32, true)
+        .unwrap();
+    assert!(root.related_file_warnings().is_empty());
+    assert!(root
+        .render_script_layout(fixture::LAYOUT as u32)
+        .unwrap()
+        .is_some());
+    assert!(root.related_file_warnings().is_empty());
+    assert!(root
+        .render_layout(fixture::LAYOUT as u32)
+        .unwrap()
+        .is_some());
+    assert!(root
+        .related_file_warnings()
+        .iter()
+        .any(|warning| warning.contains("$$RelatedPath")));
 
     let mut variables = Variables::new();
     variables.set("$$RelatedPath", 1, Value::text("file:First.fmp12"));

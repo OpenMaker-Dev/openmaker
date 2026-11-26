@@ -163,6 +163,10 @@ Whether a file holds the one being closed is asked by host, port and name
 the same name on another host does not hold it, and one through an
 `fmnet` path to another host does ([#272](https://github.com/OpenMaker-Dev/openmaker/issues/272)).
 Related-reader connections remain independent of desktop ownership.
+Scripted navigation through a local layout defers opening related objects'
+variable-only sources while their path variable is unset. A manual layout
+switch or a related read can still demand the source.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/988)
 Connection loss stops affected execution and keeps its UI drafts; queued
 close continuations retain the existing loss protections. A close queued
 during opening cancels further opening work at network-operation
