@@ -1402,7 +1402,7 @@ impl NativeProvider {
             &plan,
             entry,
             cells,
-            false,
+            om_data::RecordCreation::NewRecord,
             (context, None, Some(layout_id)),
         )
     }
@@ -1420,7 +1420,7 @@ impl NativeProvider {
         plan: &om_data::rules::RecordPlan,
         entry: Entry,
         mut cells: Cells,
-        script: bool,
+        creation: om_data::RecordCreation,
         (context, prepared, layout): (WriteContext, Option<om_data::PreparedId>, Option<u32>),
     ) -> Result<Record, DataError> {
         plan.check_creation_context(&context)?;
@@ -1432,7 +1432,7 @@ impl NativeProvider {
             }
             self.leave_single_root_recovery()?;
             let environment = self.rule_environment(table.id, plan, context.clone())?;
-            self.new_record_defaults(plan, entry, &environment)?
+            self.new_record_defaults(plan, entry, &environment, creation)?
         } else {
             self.begin_single_root_proof(table.id, cells.keys().copied().collect(), layout);
             records::NewGlobals::default()
@@ -1504,7 +1504,7 @@ impl NativeProvider {
         if let Some(transaction) = &mut self.transaction {
             transaction.serials.insert((table.id, record), serials);
         }
-        self.hold(table.id, record, Change::New(cells), script, context);
+        self.hold(table.id, record, Change::New(cells), entry.script, context);
         let Some(held) = self
             .transaction
             .as_mut()
@@ -1719,6 +1719,7 @@ impl NativeProvider {
         };
         let prepared = origin.prepared;
         let layout = origin.layout;
+        let creation = origin.creation;
         // A new record a refused commit parked, named by its next write.
         if let Some(id) = record.and_then(|id| u64::try_from(id).ok()) {
             self.unpark(table.id, id);
@@ -1731,7 +1732,7 @@ impl NativeProvider {
                 &plan,
                 entry,
                 cells.clone(),
-                true,
+                creation,
                 (context, prepared, layout),
             ),
             Some(id) => self.hold_edit(&table, id, cells.clone(), true, (context, layout)),

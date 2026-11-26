@@ -3772,7 +3772,13 @@ impl DataProvider for NativeProvider {
                 // number is not answered there, and the owner's own session
                 // says whose set is current.
                 let context = owner.write_context(&plan, None, records::CurrentSet::Account)?;
-                owner.insert_table_record(&table, &plan, &changes, context)
+                owner.insert_table_record(
+                    &table,
+                    &plan,
+                    &changes,
+                    context,
+                    om_data::RecordCreation::Other,
+                )
             })?;
             return self.with_calculations(layout_id, record);
         }
@@ -4197,6 +4203,7 @@ impl DataProvider for NativeProvider {
                     set: records::CurrentSet::Step(privilege_set.clone()),
                     record_number: None,
                     prepared: None,
+                    creation: om_data::RecordCreation::Other,
                     single_field_step: false,
                 },
             )?;
@@ -4270,6 +4277,14 @@ impl DataProvider for NativeProvider {
     }
 
     fn write_record(&mut self, write: &om_data::ScriptWrite) -> Result<Record, DataError> {
+        self.write_record_with_creation(write, om_data::RecordCreation::Other)
+    }
+
+    fn write_record_with_creation(
+        &mut self,
+        write: &om_data::ScriptWrite,
+        creation: om_data::RecordCreation,
+    ) -> Result<Record, DataError> {
         self.refuse_while_unsettled()?;
         self.require_writable()?;
         self.require_script_layout_records(write.layout)?;
@@ -4363,13 +4378,14 @@ impl DataProvider for NativeProvider {
                         set: records::CurrentSet::Account,
                         record_number: write.record_number,
                         prepared,
+                        creation: om_data::RecordCreation::Other,
                         single_field_step: false,
                     },
                 )?;
                 owner.script_table_record(
                     &table,
                     &plan,
-                    (write.record, prepared),
+                    (write.record, prepared, om_data::RecordCreation::Other),
                     (&cells, &write.typed),
                     write.skip_validation,
                     context,
@@ -4399,6 +4415,11 @@ impl DataProvider for NativeProvider {
                 set: records::CurrentSet::Step(write.privilege_set.clone()),
                 record_number: write.record_number,
                 prepared: write.prepared,
+                creation: if write.table.is_none() && write.record.is_none() {
+                    creation
+                } else {
+                    om_data::RecordCreation::Other
+                },
                 single_field_step: write.single_field_step && write.table.is_none(),
             },
         )?;

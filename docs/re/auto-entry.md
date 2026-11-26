@@ -780,8 +780,20 @@ case on FileMaker Server 26.0.3 followed the same sequence in the open
 session. After reopening, the hosted global was empty again.
 [O, disposable FileMaker Pro runs](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7183655256).
 
-Unknowns include a second New Record with a nonempty global and a
-calculated default configured to keep an existing value.
+A second local run started each variant with an empty global, created
+and committed a record, set the global to `Y`, then created and committed
+another record. The second New Record entered `X` for a constant or a
+replacing calculation, retained `Y` for a calculation with replacement
+off, and entered `2` for the creation serial with an increment of 1.
+All steps returned 0 and the resulting globals survived a local reopen.
+[O, second New Record](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7184310177).
+
+Closed copies read back the serial's next-value member `0c` as `1`
+before creation, `2` after one creation, and `3` after two. The resulting
+records had no cell for the global field. This measures the counter
+persisted at close. The timing of the counter write before close and
+the result of reverting a newly created record were not measured.
+[O, closed-file readback](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7185027447).
 
 ## A stored calculation before the commit
 
