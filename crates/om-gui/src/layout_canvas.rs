@@ -16,15 +16,14 @@ use egui::scroll_area::{DragScroll, ScrollSource};
 use egui::{
     pos2, vec2, Align2, CornerRadius, Pos2, Rect, Role, Sense, Stroke, StrokeKind, Ui, WidgetInfo,
 };
-use om_data::{
-    layout_selection::{SelectAll, Target as SelectionTarget},
-    GeomRect, LayoutGeometry, ObjectGeom, PartGeom,
-};
+use om_data::{GeomRect, LayoutGeometry, ObjectGeom, PartGeom};
 
 use crate::app::LayoutTool;
 use crate::document::{zoom, DocumentState};
 use crate::session::{Geometry, Session};
 use crate::theme;
+
+use om_data::layout_selection::{SelectAll, Target as SelectionTarget};
 
 mod history;
 pub(crate) use history::DraftEdit;
@@ -301,16 +300,17 @@ struct Drag {
 }
 
 #[derive(Default)]
-struct Selection {
-    members: BTreeSet<usize>,
-    notice: Option<&'static str>,
-    all: bool,
-}
+struct Selection(
+    BTreeSet<usize>,
+    Option<&'static str>,
+    // Whether to paint the separate Select All overlays.
+    bool,
+);
 
 impl Selection {
     fn single(&self) -> Option<usize> {
-        if self.members.len() == 1 {
-            self.members.first().copied()
+        if self.0.len() == 1 {
+            self.0.first().copied()
         } else {
             None
         }
@@ -321,18 +321,27 @@ impl Selection {
     }
 
     fn replace(&mut self, indices: impl IntoIterator<Item = usize>) {
-        self.notice = None;
-        self.all = false;
-        self.members.clear();
-        self.members.extend(indices);
+        self.1 = None;
+        self.2 = false;
+        self.0.clear();
+        self.0.extend(indices);
+    }
+
+    fn select_all(&mut self, indices: impl IntoIterator<Item = usize>) {
+        self.replace(indices);
+        self.2 = true;
+    }
+
+    fn uses_select_all_overlay(&self) -> bool {
+        self.2
     }
 
     fn start_drag(&mut self, index: usize, shift: bool) {
-        if !self.members.contains(&index) {
+        if !self.0.contains(&index) {
             if shift {
-                self.members.insert(index);
-                self.notice = None;
-                self.all = false;
+                self.0.insert(index);
+                self.1 = None;
+                self.2 = false;
             } else {
                 self.set(Some(index));
             }
@@ -340,11 +349,11 @@ impl Selection {
     }
 
     fn click(&mut self, index: Option<usize>, shift: bool) {
-        self.notice = None;
-        self.all = false;
+        self.1 = None;
+        self.2 = false;
         if let Some(index) = index.filter(|_| shift) {
-            if !self.members.remove(&index) {
-                self.members.insert(index);
+            if !self.0.remove(&index) {
+                self.0.insert(index);
             }
         } else {
             self.set(index);
@@ -791,7 +800,7 @@ impl CanvasState {
             contents.reveal(object.key, &mut self.front_panels);
         }
         self.selected.click(index, shift);
-        self.scroll_to_selected = !self.selected.members.is_empty();
+        self.scroll_to_selected = !self.selected.0.is_empty();
     }
 
     pub(crate) fn clear_selection(&mut self) {
@@ -819,8 +828,7 @@ impl CanvasState {
             &[]
         };
         self.selected
-            .replace(selectable_frames(geometry, fields, shown).map(|(index, _)| index));
-        self.selected.all = true;
+            .select_all(selectable_frames(geometry, fields, shown).map(|(index, _)| index));
         self.scroll_to_selected = false;
     }
 
@@ -842,10 +850,10 @@ impl CanvasState {
             &self.moved,
             &self.deleted,
         ) else {
-            self.selected.notice = Some(CANNOT_MOVE_SELECTION);
+            self.selected.1 = Some(CANNOT_MOVE_SELECTION);
             return false;
         };
-        self.selected.notice = None;
+        self.selected.1 = None;
         let delta = selection_delta(&frames, direction.delta());
         if delta == (0.0, 0.0) {
             return false;
@@ -861,11 +869,11 @@ impl CanvasState {
     }
 
     pub(crate) fn selection_notice(&self) -> Option<&'static str> {
-        self.selected.notice
+        self.selected.1
     }
 
     pub(crate) fn is_selected(&self, index: usize) -> bool {
-        self.selected.members.contains(&index)
+        self.selected.0.contains(&index)
     }
 
     pub(crate) fn selection_count(&self, session: &Session) -> usize {
@@ -875,7 +883,7 @@ impl CanvasState {
         if !self.selection_matches(session, geometry) {
             return 0;
         }
-        self.selected.members.len()
+        self.selected.0.len()
     }
 
     /// The selected objects Arrange's Align, Distribute and Resize To
@@ -890,7 +898,7 @@ impl CanvasState {
         let geometry = self.geometry.as_ref()?;
         geometry.revision?;
         self.selected
-            .members
+            .0
             .iter()
             .map(|index| {
                 let object = geometry.objects.get(*index)?;
@@ -965,7 +973,7 @@ impl CanvasState {
 
     pub(crate) fn can_delete_selection(&self, session: &Session) -> bool {
         self.selection_count(session) > 0
-            && self.selected.members.iter().all(|index| {
+            && self.selected.0.iter().all(|index| {
                 let geometry = self.geometry.as_ref().expect("checked selection");
                 if let Some(object) = geometry.objects.get(*index) {
                     object.deletable && object.key != 0 && geometry.revision.is_some()
@@ -984,7 +992,7 @@ impl CanvasState {
         let geometry = self.geometry.as_ref().expect("checked selection");
         let stored = geometry.objects.len();
         let revision = geometry.revision;
-        let indices: Vec<_> = self.selected.members.iter().copied().collect();
+        let indices: Vec<_> = self.selected.0.iter().copied().collect();
         let keys: Vec<_> = indices
             .iter()
             .filter_map(|i| geometry.objects.get(*i).map(|o| o.key))
@@ -1864,7 +1872,7 @@ fn draw(
                 let response = ui.interact(
                     hit,
                     ui.scope_id().with(("layout_object", index)),
-                    if movable || (selection_tool && selected.members.len() > 1) {
+                    if movable || (selection_tool && selected.0.len() > 1) {
                         Sense::click_and_drag()
                     } else if selection_tool {
                         Sense::click()
@@ -1885,7 +1893,7 @@ fn draw(
                             selected, geometry, new.fields, moved, deleted, from,
                         );
                         if selection_drag.is_none() {
-                            selected.notice = Some(CANNOT_MOVE_SELECTION);
+                            selected.1 = Some(CANNOT_MOVE_SELECTION);
                         }
                     }
                 }
@@ -1894,7 +1902,7 @@ fn draw(
                     WidgetInfo::selected(
                         Role::Button,
                         selection_tool,
-                        selected.members.contains(&index),
+                        selected.0.contains(&index),
                         &label,
                     )
                 });
@@ -1908,7 +1916,7 @@ fn draw(
                 // A double click on a text with plain words types into it.
                 if response.double_clicked()
                     && selection_tool
-                    && selected.members.len() == 1
+                    && selected.0.len() == 1
                     && object.key != 0
                 {
                     if let Some(stored) = (texts.stored)(object.key) {
@@ -1955,7 +1963,7 @@ fn draw(
                     selected.start_drag(selected_index, ui.input(|i| i.modifiers.shift));
                     draft_drag = press.or(response.interact_pointer_pos()).map(at);
                 }
-                if selected.members.contains(&selected_index) {
+                if selected.0.contains(&selected_index) {
                     painter.rect_stroke(
                         response.rect,
                         CornerRadius::ZERO,
@@ -1968,7 +1976,7 @@ fn draw(
                 *selection_drag =
                     begin_selection_drag(selected, geometry, new.fields, moved, deleted, from);
                 if selection_drag.is_none() {
-                    selected.notice = Some(CANNOT_MOVE_SELECTION);
+                    selected.1 = Some(CANNOT_MOVE_SELECTION);
                 }
             }
             if let Some(text) = new.text.as_mut() {
@@ -2014,22 +2022,23 @@ fn draw(
                 );
             }
 
+            let show_all_selection = selected.uses_select_all_overlay();
             let selection_frame = |object: &ObjectGeom| {
-                if selected.all {
+                if show_all_selection {
                     present(object)
                 } else {
                     shown(object)
                 }
             };
-            if selected.members.len() > 1 {
+            if selected.0.len() > 1 {
                 let mut bounds = Rect::NOTHING;
                 let mut unlocked = false;
-                for &index in &selected.members {
+                for &index in &selected.0 {
                     let Some(object) = geometry.objects.get(index) else {
                         if let Some(field) = new
                             .fields
                             .get(index - geometry.objects.len())
-                            .filter(|_| selected.all)
+                            .filter(|_| show_all_selection)
                         {
                             let rect = object_rect(origin, &geom_rect(field.frame()));
                             if rect.is_finite() {
@@ -2047,7 +2056,7 @@ fn draw(
                         continue;
                     }
                     draw_selection_outline(&painter, rect, object.locked);
-                    if selected.all {
+                    if show_all_selection {
                         // Inactive children have outlines but do not extend
                         // the handles around the objects on screen.
                         if visible(object.key) {
@@ -2223,7 +2232,7 @@ fn movable_frames(
     deleted: &DeletedObjects,
 ) -> Option<Vec<(usize, GeomRect)>> {
     let frames = selected
-        .members
+        .0
         .iter()
         .map(|index| {
             let frame = if let Some(object) = geometry.objects.get(*index) {
@@ -3190,13 +3199,7 @@ mod tests {
             ]);
             app.step();
             assert_eq!(
-                app.state()
-                    .0
-                    .selected
-                    .members
-                    .iter()
-                    .copied()
-                    .collect::<Vec<_>>(),
+                app.state().0.selected.0.iter().copied().collect::<Vec<_>>(),
                 expected
             );
             assert_eq!(app.state().0.moved(), &moves);
@@ -3313,7 +3316,7 @@ mod tests {
         assert!(app.query_by_label(&first).is_none());
         assert!(app.query_by_label(&second).is_some());
         app.state_mut().0.select_all(&session, SelectAll::Layout);
-        assert_eq!(app.state().0.selected.members, BTreeSet::from([0, 1]));
+        assert_eq!(app.state().0.selected.0, BTreeSet::from([0, 1]));
         assert_eq!(app.state().0.front_panels.get(&1), Some(&4));
         assert!(!app.state().0.unsaved());
 
@@ -3336,7 +3339,7 @@ mod tests {
         state.synchronize(&session);
         assert!(state.selected_index().is_none());
         state.select_all(&session, SelectAll::Layout);
-        assert_eq!(state.selected.members, BTreeSet::from([0, 1]));
+        assert_eq!(state.selected.0, BTreeSet::from([0, 1]));
         assert!(state.front_panels.is_empty());
     }
 
