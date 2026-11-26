@@ -365,6 +365,25 @@ pub enum WriteLayout {
     Number(u64),
 }
 
+/// The source of a write's `Get ( RecordNumber )` answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordNumber {
+    /// A window position for auto-entry or validation, such as an
+    /// unsorted portal creation row or a duplicate.
+    Window(u64),
+    /// The position at ordinary New Record in an unsorted window of a
+    /// local file. A stored Number calculation can also use this answer.
+    LocalNewRecord(u64),
+}
+
+impl RecordNumber {
+    pub fn value(self) -> u64 {
+        match self {
+            Self::Window(number) | Self::LocalNewRecord(number) => number,
+        }
+    }
+}
+
 /// What the operation making a write knows that its formulas may read
 /// ([`CONTEXT_SELECTORS`]). A value left out refuses a write whose
 /// evaluated formula reads it; it is never answered empty in its place.
@@ -380,11 +399,9 @@ pub struct WriteContext {
     /// `Get ( CurrentHostTimestamp )`: the clock of the host serving the
     /// file, in the storage form of [`RecordEnvironment::timestamp`].
     pub host_timestamp: Option<String>,
-    /// `Get ( RecordNumber )` of the written record, as its window answers
-    /// it at the save (#1038): only where FileMaker's answer is known (a row
-    /// typed into an unsorted portal's creation row: its place among the
-    /// related records), never a position this planner infers.
-    pub record_number: Option<u64>,
+    /// `Get ( RecordNumber )` as the operation answers it. A stored
+    /// calculation requires [`RecordNumber::LocalNewRecord`].
+    pub record_number: Option<RecordNumber>,
 }
 
 impl WriteContext {
@@ -729,7 +746,7 @@ pub(crate) struct Evaluation {
     /// The session's global values ([`RecordEnvironment::globals`]).
     globals: Option<Arc<RecordValues>>,
     /// `Get ( RecordNumber )` ([`WriteContext::record_number`]).
-    record_number: Option<u64>,
+    record_number: Option<RecordNumber>,
     /// [`RecordEnvironment::related_needs`].
     related_needs: Option<Arc<RelatedNeeds>>,
     /// The written record ([`Lookups::written`]) and its stored row, empty
@@ -1781,7 +1798,7 @@ impl RecordPlan {
     /// tables, occurrences or custom functions).
     #[cfg(test)]
     pub fn from_schema(table: &Table, tree: &KeyTree<'_>) -> Result<Self, DataError> {
-        Self::plan(table, tree, None, false)
+        Self::plan(table, tree, None, false, false)
     }
 
     /// The rules of `table` from its current definitions in `tree`, within
@@ -1792,17 +1809,19 @@ impl RecordPlan {
         tree: &KeyTree<'_>,
         file: &CalcSchema,
     ) -> Result<Self, DataError> {
-        Self::plan(table, tree, Some(file), false)
+        Self::plan(table, tree, Some(file), false, false)
     }
 
     /// The desktop's provider handles the session-global side of New
     /// Record explicitly; the other planner callers only write rows.
+    /// `local` permits a stored Number to use the local creation position.
     pub fn from_desktop_file_schema(
         table: &Table,
         tree: &KeyTree<'_>,
         file: &CalcSchema,
+        local: bool,
     ) -> Result<Self, DataError> {
-        Self::plan(table, tree, Some(file), true)
+        Self::plan(table, tree, Some(file), true, local)
     }
 
     fn plan(
@@ -1810,6 +1829,7 @@ impl RecordPlan {
         tree: &KeyTree<'_>,
         file: Option<&CalcSchema>,
         global_defaults: bool,
+        local: bool,
     ) -> Result<Self, DataError> {
         let mut schema = file
             .cloned()
@@ -1996,6 +2016,18 @@ impl RecordPlan {
                     FormulaUse::RecordOnly
                 };
                 let formula = formula_at(FIELD_FORMULA, usage)?;
+                if matches!(usage, FormulaUse::StoredNumber)
+                    && matches!(formula.formula.polish, Expr::Get(selector::RECORD_NUMBER))
+                    && !local
+                {
+                    return Err(DataError::with_code(
+                        error::UNAVAILABLE,
+                        format!(
+                            "Field {}: a stored record number requires a local desktop file.",
+                            field.name
+                        ),
+                    ));
+                }
                 if auto_enters_global
                     && (!formula.dependencies.is_empty() || !formula.related.is_empty())
                 {
@@ -5048,7 +5080,7 @@ impl RecordPlan {
             // portal row's does; the record's position in this one-record
             // source is no answer. Without one, a formula reading it was
             // refused above.
-            portal_row_number: session.record_number,
+            portal_row_number: session.record_number.map(RecordNumber::value),
             ..Context::default()
         };
         let result = evaluate_formula_with_calculation_budget(
@@ -5160,6 +5192,23 @@ impl RecordPlan {
         session: &Evaluation,
         remaining: &mut u64,
     ) -> Result<(Value, String), RunError> {
+        if matches!(
+            expression.formula.polish,
+            Expr::Get(selector::RECORD_NUMBER)
+        ) && !matches!(session.record_number, Some(RecordNumber::LocalNewRecord(_)))
+            && self
+                .fields
+                .get(&id)
+                .is_some_and(PlannedField::stored_calculation)
+        {
+            return Err(RunError::Unread(DataError::with_code(
+                error::UNAVAILABLE,
+                format!(
+                    "Field {}: a stored record number requires ordinary New Record in an unsorted local window.",
+                    self.fields[&id].name
+                ),
+            )));
+        }
         let def = self
             .schema
             .table(self.table)
@@ -7363,7 +7412,7 @@ mod tests {
         formulas: &[(u64, u64, &str)],
         leaves: &[(u64, u64, Vec<u8>)],
     ) -> Result<RecordPlan, DataError> {
-        plan_with(table, formulas, leaves, Vec::new())
+        plan_with(table, formulas, leaves, Vec::new(), true)
     }
 
     /// [`plan_of`] with other keys of the file (value lists).
@@ -7372,6 +7421,7 @@ mod tests {
         formulas: &[(u64, u64, &str)],
         leaves: &[(u64, u64, Vec<u8>)],
         mut entries: Vec<(Vec<Vec<u8>>, Vec<u8>)>,
+        local: bool,
     ) -> Result<RecordPlan, DataError> {
         let path = |field: u64, rest: &[u64]| -> Vec<Vec<u8>> {
             [table.id, 3, 5, field]
@@ -7394,7 +7444,7 @@ mod tests {
             tree.insert(&segments, om_hbam::slot::ChunkKind::Leaf, Some(value))
                 .unwrap();
         }
-        RecordPlan::from_schema(table, &tree)
+        RecordPlan::plan(table, &tree, None, false, local)
     }
 
     const INITIALS: &str = "Case ( not IsEmpty ( Field2 ) ; Left ( Field2 ; 1 ) ; \
@@ -7474,19 +7524,23 @@ mod tests {
         let plan = plan_of(&table, &formulas, &[]).unwrap();
         let changes = BTreeMap::from([(1, Some("Ada".into()))]);
         let mut at_creation = environment();
-        at_creation.context.record_number = Some(3);
+        at_creation.context.record_number = Some(RecordNumber::LocalNewRecord(3));
         let created = plan
             .prepare(WriteMode::Create, &BTreeMap::new(), &changes, &at_creation)
             .unwrap();
         assert_eq!(decoded(&created, 23).as_deref(), Some("3"));
-        assert!(plan
-            .prepare(
-                WriteMode::Create,
-                &BTreeMap::new(),
-                &changes,
-                &environment()
-            )
-            .is_err());
+        for number in [None, Some(RecordNumber::Window(3))] {
+            at_creation.context.record_number = number;
+            let error = plan
+                .prepare(WriteMode::Create, &BTreeMap::new(), &changes, &at_creation)
+                .err()
+                .unwrap();
+            assert_eq!(error.code, Some(error::UNAVAILABLE));
+        }
+        let hosted = plan_with(&table, &formulas, &[], Vec::new(), false)
+            .err()
+            .unwrap();
+        assert_eq!(hosted.code, Some(error::UNAVAILABLE));
 
         let mut row = existing();
         row.insert(23, "3".into());
@@ -7497,6 +7551,16 @@ mod tests {
             !edited.values.contains_key(&23),
             "preserve the stored number"
         );
+
+        for (data_type, source) in [
+            (DataType::Number, "Get ( RecordNumber ) + 0"),
+            (DataType::Text, "Get ( RecordNumber )"),
+        ] {
+            *table.fields.last_mut().unwrap() =
+                field(23, FieldKind::Calculation, data_type, 0, 0x80000, 0);
+            *formulas.last_mut().unwrap() = (23, 5, source);
+            assert!(plan_of(&table, &formulas, &[]).is_err(), "{source}");
+        }
     }
 
     /// `Get ( LayoutNumber )`, `Get ( RecordNumber )`,
@@ -7562,7 +7626,7 @@ mod tests {
             host_timestamp: host.clone(),
             // A row typed after two related rows of an unsorted portal
             // (#1038).
-            record_number: Some(3),
+            record_number: Some(RecordNumber::Window(3)),
         };
         let created = write(known.clone(), WriteMode::Create).unwrap();
         assert_eq!(
@@ -8386,7 +8450,7 @@ mod tests {
         let start = definition.len() - om_scsu::encode_counted(" ").len() - 3;
         definition.splice(start..start + 1, [4, 3, 0xd0, 0, 2]);
         lists.extend(related);
-        let plan = plan_with(&table, &base_formulas(), &leaves, lists).unwrap();
+        let plan = plan_with(&table, &base_formulas(), &leaves, lists, true).unwrap();
         let script = Entry::script(false, false);
         let rep = |field: u64, n: u64| field * 256 + n;
         let check =

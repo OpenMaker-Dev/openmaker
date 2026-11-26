@@ -577,7 +577,8 @@ one descending sorted set, New Record produced a stored 2 and window
 position 2. The closed copies held the stored numbers across unrelated
 edits and reopening. All script steps returned 0 with no alerts. Timing
 before the first read and the general sorted insertion rule remain
-unmeasured, as do portals and hosted files for this stored formula.
+unmeasured, as do duplicates, portals and hosted files for this stored
+formula.
 
 Two cases [O: FileMaker Pro 26.0.3, a local disposable pair made in the
 native UI, #1038, relayed sanitized].

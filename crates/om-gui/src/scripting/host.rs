@@ -2073,7 +2073,9 @@ impl<'a> WorkerHost<'a> {
             // provider's found set as it is now, not the window's last
             // read of it. A sorted found set's is unmeasured: the copy has
             // none, and such a calculation refuses the save (3).
-            let record_number = window.next_unsorted_record_number(provider);
+            let record_number = window
+                .next_unsorted_record_number(provider)
+                .map(om_data::rules::RecordNumber::Window);
             window.make_new_record(
                 provider,
                 session,
