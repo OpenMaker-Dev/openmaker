@@ -783,6 +783,16 @@ but for a lookup's, which would write into it: a stray `0x80`
 (auto-entry.md) leaves the table writable. A stored calculation's unknown
 bits keep it read-only.
 
+An ordinary local Number auto-entry calculation can use `Self` as its
+only field input. It reads the proposed value at unsorted New Record or on an
+explicit write, including an empty value on a clear. A nonempty explicit
+assignment keeps its value when replacement is disabled. This covers
+stored results and new-record previews. During a held edit of an existing
+record, calculations read the entered value until save. Other creation
+paths with auto-entry active and unmeasured Self formulas refuse an
+evaluation with error 3. Unrelated existing-record edits are available.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1059)
+
 A local table accepts ordinary record writes to its other fields when a
 Container awaits transfer to embedded storage. This covers a
 single-repetition field marked `0x6000` (external Open storage) and a

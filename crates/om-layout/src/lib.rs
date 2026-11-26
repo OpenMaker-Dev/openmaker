@@ -610,28 +610,30 @@ fn literal_text(bytes: &[u8]) -> Option<String> {
 
 fn split_merge_text(text: &str, fields: &[String]) -> Vec<TextRun> {
     let mut out = Vec::new();
-    let mut at = 0;
     let mut literal = 0;
-    let mut field = fields.iter();
-    while let Some(start) = text[at..].find("<<").map(|i| i + at) {
-        let Some(end) = text[start + 2..].find(">>").map(|i| i + start + 2) else {
-            break;
-        };
-        at = end + 2;
-        if object::merge_field_spec(&text[start + 2..end]).is_none() {
-            continue;
-        }
-        let Some(name) = field.next() else { break };
-        if start > literal {
-            out.push(TextRun::Literal(text[literal..start].to_owned()))
+    for (range, name) in merge_field_ranges(text).zip(fields) {
+        if range.start > literal {
+            out.push(TextRun::Literal(text[literal..range.start].to_owned()));
         }
         out.push(TextRun::MergeField(name.clone()));
-        literal = end + 2;
+        literal = range.end;
     }
     if literal < text.len() {
-        out.push(TextRun::Literal(text[literal..].to_owned()))
+        out.push(TextRun::Literal(text[literal..].to_owned()));
     }
     out
+}
+
+fn merge_field_ranges(text: &str) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+    let mut at = 0;
+    std::iter::from_fn(move || loop {
+        let start = text[at..].find("<<")? + at;
+        let end = text[start + 2..].find(">>")? + start + 2;
+        at = end + 2;
+        if object::merge_field_spec(&text[start + 2..end]).is_some() {
+            return Some(start..at);
+        }
+    })
 }
 
 #[cfg(test)]

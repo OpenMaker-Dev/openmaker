@@ -8,10 +8,58 @@ use egui::{
     text::{Galley, LayoutJob},
     Align, Color32, FontData, FontId, Stroke, TextFormat,
 };
+use om_data::host::layout::TextSubstitution;
 use om_layout::{CharacterStyle, Color, ResolvedStyle, StyledText};
 use skrifa::MetadataProvider;
 
 use crate::theme;
+
+/// Keep stored runs on literal text. A replacement uses the style at its
+/// opening delimiter, so boundaries inside it move to the end of the
+/// displayed value (layout-model.md 8.2).
+pub(super) fn substitute(
+    rich: &StyledText,
+    shown: &str,
+    substitutions: &[TextSubstitution],
+) -> StyledText {
+    fn boundary(at: usize, substitutions: &[TextSubstitution]) -> usize {
+        let passed = substitutions.partition_point(|s| s.source.end <= at);
+        if let Some(s) = substitutions.get(passed).filter(|s| s.source.start < at) {
+            return s.display.end;
+        }
+        if passed == 0 {
+            at
+        } else {
+            let last = &substitutions[passed - 1];
+            last.display.end + (at - last.source.end)
+        }
+    }
+
+    fn runs<T: Clone>(
+        runs: &[om_layout::StyledRun<T>],
+        source: &str,
+        display: &str,
+        substitutions: &[TextSubstitution],
+    ) -> Vec<om_layout::StyledRun<T>> {
+        runs.iter()
+            .filter_map(|run| {
+                source.get(run.range.clone())?;
+                let start = boundary(run.range.start, substitutions);
+                let end = boundary(run.range.end, substitutions);
+                (start < end && display.get(start..end).is_some()).then(|| om_layout::StyledRun {
+                    range: start..end,
+                    style: run.style.clone(),
+                })
+            })
+            .collect()
+    }
+
+    StyledText {
+        text: shown.to_owned(),
+        character_runs: runs(&rich.character_runs, &rich.text, shown, substitutions),
+        paragraph_runs: runs(&rich.paragraph_runs, &rich.text, shown, substitutions),
+    }
+}
 
 /// Calculation values keep their own styles as text is sliced or replaced.
 /// Convert those runs rather than borrowing a layout label's unrelated runs.
@@ -731,6 +779,71 @@ mod tests {
         assert_eq!(job.sections[0].format.font_id.size, 14.0);
         assert_eq!(job.sections[1].format.font_id.size, 8.0);
         assert_eq!(job.sections[1].format.color, Color32::RED);
+    }
+
+    #[test]
+    fn merge_substitutions_keep_styles_on_both_sides_of_the_replacement() {
+        let text = "é {{1032}} | <<$$Empty>> Ω";
+        let shown = "é Ad\rmin |  Ω";
+        let size = |points| CharacterStyle {
+            font_size: Some(points),
+            ..Default::default()
+        };
+        let rich = StyledText {
+            text: text.into(),
+            character_runs: vec![
+                StyledRun {
+                    range: 0..3,
+                    style: size(12.0),
+                },
+                StyledRun {
+                    range: 3..5,
+                    style: size(18.0),
+                },
+                StyledRun {
+                    range: 5..11,
+                    style: size(8.0),
+                },
+                StyledRun {
+                    range: 14..25,
+                    style: size(7.0),
+                },
+                StyledRun {
+                    range: 25..text.len(),
+                    style: size(10.0),
+                },
+            ],
+            ..Default::default()
+        };
+        let painted = substitute(
+            &rich,
+            shown,
+            &[
+                TextSubstitution {
+                    source: 3..11,
+                    display: 3..9,
+                },
+                TextSubstitution {
+                    source: 14..25,
+                    display: 12..12,
+                },
+            ],
+        );
+        let job = layout_job(shown, &ResolvedStyle::default(), Some(&painted), 100.0);
+        let styles: Vec<_> = job
+            .sections
+            .iter()
+            .map(|section| {
+                (
+                    &job.text[section.byte_range.start.0..section.byte_range.end.0],
+                    section.format.font_id.size,
+                )
+            })
+            .collect();
+        assert_eq!(
+            styles,
+            [("é ", 12.0), ("Ad\nmin", 18.0), (" | ", 14.0), (" Ω", 10.0)]
+        );
     }
 
     #[test]
