@@ -528,6 +528,10 @@ struct LoadedLayout {
     id: u64,
     name: String,
     member: OwnedNode,
+    /// The layout catalog's index `[4, 1]`, from the same download as
+    /// `member`: its entry holds the layout's words when the member does not
+    /// (`layout_catalog::layout_word`, #977).
+    index: Option<OwnedNode>,
     revision: Revision,
     /// The occurrence it shows records of, and that occurrence's table of
     /// this file.
@@ -3463,18 +3467,24 @@ impl Service {
     fn layout_setup(&mut self, params: &LayoutSetupParams) -> Result<Value, AuthorError> {
         use layout_catalog::{general, printing, views, LayoutWord, MENU_HIDDEN};
         let expected = parse_revision(&params.expected_revision)?;
-        let mut layout = self.load_layout(&LayoutParams {
+        let layout = self.load_layout(&LayoutParams {
             layout: params.layout.clone(),
             layout_name: params.layout_name.clone(),
         })?;
         let layout_ref = self.layout_ref(layout.id);
         // The flags as the host's Layout Setup reads them: the member's, else
         // the index entry's, so a request keeps what only the entry holds
-        // (#977).
-        let index = layout.opened.layout_index().map_err(Self::read_error)?;
+        // (#977). Both come from one download. A concurrent change to a word
+        // only the entry holds is not covered by the member's revision; see
+        // docs/authoring.md, "Layout Setup".
         let stored = |word| {
-            layout_catalog::layout_word(Some(&layout.member), index.as_ref(), layout.id, word)
-                .unwrap_or(0)
+            layout_catalog::layout_word(
+                Some(&layout.member),
+                layout.index.as_ref(),
+                layout.id,
+                word,
+            )
+            .unwrap_or(0)
         };
         let invalid = |message: String| AuthorError::new(ErrorKind::InvalidRequest, message);
         let view = |name: &str| match name {
@@ -3588,12 +3598,16 @@ impl Service {
             layout: Some(layout_ref.clone()),
             layout_name: None,
         }) {
-            Ok(mut fresh) => {
+            Ok(fresh) => {
                 // As the request read them: the member's, else the entry's.
-                let index = fresh.opened.layout_index().map_err(Self::read_error)?;
                 let read_word = |word| {
-                    layout_catalog::layout_word(Some(&fresh.member), index.as_ref(), fresh.id, word)
-                        .unwrap_or(0)
+                    layout_catalog::layout_word(
+                        Some(&fresh.member),
+                        fresh.index.as_ref(),
+                        fresh.id,
+                        word,
+                    )
+                    .unwrap_or(0)
                 };
                 let read = (
                     layout_catalog::member_name(&fresh.member),
@@ -3861,7 +3875,8 @@ impl Service {
     fn load_layout(&self, params: &LayoutParams) -> Result<LoadedLayout, AuthorError> {
         let file = self.file();
         let mut opened = self.open()?;
-        let members = opened.layout_members().map_err(Self::read_error)?;
+        let snapshot = opened.layout_catalog_snapshot().map_err(Self::read_error)?;
+        let (members, index) = (snapshot.members, snapshot.index);
         let listed: Vec<_> = members
             .iter()
             .map(|(&id, member)| {
@@ -3932,6 +3947,7 @@ impl Service {
             id,
             name,
             member,
+            index,
             occurrence,
             table,
             schema,
@@ -4032,10 +4048,9 @@ impl Service {
         let def = decoded.def.clone().unwrap_or_default();
         // The flags as Layout Setup reads them: the member's, else the
         // index entry's (#977), else the definition's.
-        let index = layout.opened.layout_index().map_err(Self::read_error)?;
         let view_flags = layout_catalog::layout_word(
             Some(&layout.member),
-            index.as_ref(),
+            layout.index.as_ref(),
             layout.id,
             layout_catalog::LayoutWord::ViewFlags,
         )

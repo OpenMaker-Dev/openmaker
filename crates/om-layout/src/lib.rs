@@ -37,7 +37,7 @@ pub use calcs::{CfCondition, ConditionalFormat, ObjectCalcs};
 pub use data_format::{
     DataFormat, DateFormat, GraphicAlign, GraphicFormat, NumberFormat, TimeFormat,
 };
-pub use layout::{occurrence_id, BreakField, LayoutDef, Part, PartKind};
+pub use layout::{occurrence_id, stored_layout_word, BreakField, LayoutDef, Part, PartKind};
 pub use library::{LibraryImage, LibraryImageFormat};
 pub use object::{
     sliding, ButtonObject, ExternalObject, FieldEntry, FieldObject, FieldSpec, GraphicObject,
@@ -162,16 +162,15 @@ impl Layout {
         // member key 0xf1, not in `LayoutDef.flags` (layout-model.md 4.1,
         // 4.2); the protobuf's usual zero would lose the default and allowed
         // views. FileMaker keeps a copy in the catalog index's entry
-        // `[4, 1, 7, L]`, read when the member has none, as the host's Layout
-        // Setup reads it (`om_data::layout_catalog::layout_word`): a dialog
-        // started from 0 would drop what only the entry holds (#977).
-        let flags = |node: Option<&om_hbam::Node<'_>>| {
-            node.and_then(|n| n.assembled())
-                .filter(|bytes| bytes.len() == 8)
-                .and_then(|bytes| om_hbam::slot::be_uint(&bytes))
-        };
-        if let Some(flags) = flags(node.get(0xf1)).or_else(|| flags(tree.at(&[4, 1, 7, id, 0xf1])))
-        {
+        // `[4, 1, 7, L]`, read when the member has none, by the same rule as
+        // the host's Layout Setup (`stored_layout_word`): a dialog started
+        // from 0 would drop what only the entry holds (#977).
+        let bytes_at = |node: Option<&om_hbam::Node<'_>>| node.and_then(|n| n.assembled());
+        let (member, entry) = (
+            bytes_at(node.get(0xf1)),
+            bytes_at(tree.at(&[4, 1, 7, id, 0xf1])),
+        );
+        if let Some(flags) = stored_layout_word(member.as_deref(), entry.as_deref()) {
             if let Some(def) = &mut layout.def {
                 def.flags = flags;
             }
@@ -727,9 +726,10 @@ mod tests {
         let mut tree = KeyTree::default();
         let definition = [0x10, 0x82, 0x81, 0x41];
         let entry = 0x10f3_084d_u64.to_be_bytes();
+        // In key order, as the tree takes slots: the index before members.
         for (path, value) in [
-            (vec![&[4u8][..], &[5], &[2], &[2]], &definition[..]),
-            (vec![&[4], &[1], &[7], &[2], &[0xf1]], &entry[..]),
+            (vec![&[4u8][..], &[1], &[7], &[2], &[0xf1]], &entry[..]),
+            (vec![&[4], &[5], &[2], &[2]], &definition[..]),
         ] {
             let path: Vec<KeySegment<'_>> = path.into_iter().map(KeySegment).collect();
             tree.insert(&path, om_hbam::slot::ChunkKind::Leaf, Some(value))
@@ -737,6 +737,10 @@ mod tests {
         }
         let layout = Layout::decode_from_tree(&tree, 2).unwrap().unwrap();
         assert_eq!(layout.def.unwrap().flags, 0x10f3_084d);
+        // A member's word of fewer than 8 bytes is its word, as the host
+        // reads it: the entry's does not show through it.
+        assert_eq!(stored_layout_word(Some(&[0]), Some(&entry)), Some(0));
+        assert_eq!(stored_layout_word(None, Some(&entry)), Some(0x10f3_084d));
     }
     #[test]
     fn standalone_protobuf_flags_remain_available_without_member_metadata() {

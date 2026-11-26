@@ -1172,9 +1172,10 @@ pub enum LayoutWord {
 
 /// Layout `layout`'s `word` as Layout Setup reads it: its member's
 /// (`[4, 5, L]`), else its entry's in the catalog's index `index`
-/// (`[4, 1]`, its entries `[4, 1, 7, L]`). FileMaker keeps both; a request
+/// (`[4, 1]`, its entries `[4, 1, 7, L]`), by the one rule every reader
+/// uses (`om_layout::stored_layout_word`). FileMaker keeps both; a request
 /// built from the member alone would drop what only the entry holds when
-/// [`plan_setup`] writes it to both (#977).
+/// [`plan_setup`], the one writer, writes it to both (#977).
 pub fn layout_word(
     member: Option<&OwnedNode>,
     index: Option<&OwnedNode>,
@@ -1185,9 +1186,11 @@ pub fn layout_word(
         LayoutWord::ViewFlags => VIEW_FLAGS,
         LayoutWord::MemberFlags => KIND,
     };
-    let value = |node: Option<&OwnedNode>| node.and_then(|n| n.value.as_deref()).and_then(be_uint);
-    value(member.and_then(|m| m.child(&[key])))
-        .or_else(|| value(index.and_then(|i| i.at(&[&[ENTRIES], &uint_segment(layout), &[key]]))))
+    let value = |node: Option<&OwnedNode>| node.and_then(|n| n.value.as_deref());
+    om_layout::stored_layout_word(
+        value(member.and_then(|m| m.child(&[key]))),
+        value(index.and_then(|i| i.at(&[&[ENTRIES], &uint_segment(layout), &[key]]))),
+    )
 }
 
 /// A layout's member and index after Layout Setup ([`plan_setup`]).
@@ -1231,12 +1234,9 @@ pub fn plan_setup(
             "The layout catalog's index has no entry for layout {layout}."
         ))
     })?;
-    let word = |node: &OwnedNode, k: u8| {
-        node.child(&[k])
-            .and_then(|n| n.value.as_deref())
-            .and_then(be_uint)
-    };
-    let kind = word(&entry, KIND).unwrap_or(0);
+    // As every reader takes it: the member's, else the entry's (#977).
+    let kind =
+        layout_word(Some(member), Some(&index), layout, LayoutWord::MemberFlags).unwrap_or(0);
     if kind & NOT_A_LAYOUT != 0 || member.child(&[DEFINITION]).is_none() {
         return Err(unsupported(
             "This member of the layout catalog is a folder or a separator; Layout Setup sets \
