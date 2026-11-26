@@ -125,7 +125,8 @@ const MAX_PATHS: usize = 16;
 /// FileMaker's `kFileNotFound`, which FileMaker Server answers for a file it
 /// does not host (network-protocol.md 5.5) and OpenMaker Server answers
 /// since #914 of github.com/OpenMaker-Dev/openmaker; and 4, which OpenMaker
-/// Servers answered before it.
+/// Server answers for a hosted file it is not serving (closing, closed or
+/// opening) and answered for a missing name before #914.
 const NOT_HOSTED: [u16; 2] = [4, 0x4fb5];
 
 /// Keep a bounded alert while counting problems omitted from it.

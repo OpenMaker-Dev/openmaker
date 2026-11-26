@@ -1122,7 +1122,7 @@ follows it.
 | status | FileMaker name | Open observation |
 |--------|----------------|------------------|
 | `0x4fb3` | `kSpecification` | Not identified in a live Open reply; the older "cannot open" gloss had no evidence. |
-| `0x4fb5` | `kFileNotFound` | FileMaker Server 26.0.3 answered this when the requested file name was not hosted: relay capture of FileMaker Pro 26.1.1 on a FileMaker Server test VM, 2026-11-26, a hosted solution whose data source names a file the server does not host; FileMaker Pro sent Open for `<name>.fmp12` and then `<name>`, six such pairs, each answered GIOP OK with status `0x4fb5`, and showed no alert ([#914](https://github.com/OpenMaker-Dev/openmaker/issues/914)). Seen before in the desktop only. Whether a hosted but closed file answers the same is unknown; OpenMaker Server answers it for those too. |
+| `0x4fb5` | `kFileNotFound` | FileMaker Server 26.0.3 answered this when the requested file name was not hosted: relay capture of FileMaker Pro 26.1.1 on a FileMaker Server test VM, 2026-11-26, a hosted solution whose data source names a file the server does not host; FileMaker Pro sent Open for `<name>.fmp12` and then `<name>`, six such pairs, each answered GIOP OK with status `0x4fb5`, and showed no alert ([#914](https://github.com/OpenMaker-Dev/openmaker/issues/914)). Seen before in the desktop only. Whether a hosted but closed file answers the same is unknown ([#939](https://github.com/OpenMaker-Dev/openmaker/issues/939)); OpenMaker Server answers it for a name it does not host, and 4 for a hosted file that is closing, closed or opening, its earlier choice. |
 | `0x507c` | `kInstallCodeConflict` | An absent or invalid license key was refused at Open without a message string in the captured reply (F26). |
 | `0x0666` | `kHostBlockNewUsersEnabled` | Block New Users refusal captured in 5.6.4. |
 | `0x0004` | `kUnknownCommand` | No observed Open reply; it is not "file missing". |
@@ -1300,7 +1300,8 @@ one's session there, related files and the files a script opens alike
 Login. No empty-password Login is sent [I: OpenMaker's choice, until what
 it stands for is known]. Otherwise:
 - An Open answered 0x4fb5 (`kFileNotFound`, above), or 4, which OpenMaker
-  Servers answered before #914, moves on to the next path.
+  Server answers for a hosted file it is not serving (and answered for a
+  name it does not host before #914), moves on to the next path.
 - The first file the host has, or a file already open (the opened file
   included), is the data source's file.
 - A host that could not be reached (no connection: host lookup, connect

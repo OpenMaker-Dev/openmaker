@@ -100,12 +100,12 @@ const FIRST_CALL_ID: u32 = 3;
 /// capture (network-protocol.md 5.5).
 const OPEN_FILE_MISSING: u16 = 0x4fb5;
 
-/// Open status for a hosted file that is closing, closed or opening: the
-/// same `kFileNotFound`, OpenMaker's choice. What FileMaker Server answers
-/// for a closed file is unmeasured (spec 5.5); 4, which OpenMaker answered
-/// for both before, is FileMaker's `kUnknownCommand`, never seen in an Open
-/// reply.
-const OPEN_FILE_NOT_SERVED: u16 = 0x4fb5;
+/// Open status for a hosted file that is closing, closed or opening: 4,
+/// OpenMaker's earlier choice for a file it does not serve, kept until
+/// FileMaker Server's answer is measured (spec 5.5;
+/// [#939](https://github.com/OpenMaker-Dev/openmaker/issues/939)). The
+/// capture that gave `0x4fb5` covers names that are not hosted only.
+const OPEN_FILE_NOT_SERVED: u16 = 4;
 
 /// Open (op78) status under Block New Users: FileMaker's error 1638, "The
 /// host is not allowing new connections" (spec 5.6.4, 6.5).

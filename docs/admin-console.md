@@ -668,9 +668,11 @@ message, grace })` closes a file as FileMaker Server does for `PATCH
 open file is closed; the message, grace time and unknown files are checked
 as for a disconnect, and a file in another state fails with
 `FileError::NotAllowed` (the Admin API's 1709). The file is `CLOSING`, and
-an Open of it is refused with status `0x4fb5` (`kFileNotFound`) as for a
-file the server does not host (OpenMaker's choice: what FileMaker Server
-answers for a closing file is unmeasured). Each connection that has the file open takes the steps for its
+an Open of it is refused with status 4, OpenMaker's earlier choice for a
+file it does not serve (a name it does not host gets `0x4fb5`,
+`kFileNotFound`, as FileMaker Server answers it; what FileMaker Server
+answers for a closing file is unmeasured,
+[#939](https://github.com/OpenMaker-Dev/openmaker/issues/939)). Each connection that has the file open takes the steps for its
 client within its read poll:
 
 1. The request to close the file (`0x0040`, its countdown 30), naming it by

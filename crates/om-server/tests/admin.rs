@@ -946,9 +946,9 @@ fn closing_a_file_asks_its_clients_and_opening_it_loads_it_again() {
     let mut late = connect(port, "Late");
     match late.open_file("127.0.0.1", FILE) {
         Err(SessionError::Protocol(error)) => {
-            assert!(error.ends_with("server error code 0x4fb5"), "{error}")
+            assert!(error.ends_with("server error code 0x0004"), "{error}")
         }
-        other => panic!("expected kFileNotFound, got {other:?}"),
+        other => panic!("expected error 4, got {other:?}"),
     }
 
     // Each client is asked to close it by the id it registered (-4).
