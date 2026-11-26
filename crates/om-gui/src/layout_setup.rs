@@ -348,10 +348,11 @@ impl LayoutSetup {
     fn changed_margins(&self) -> Option<om_layout::Rect> {
         let [top, bottom, left, right] = self.margins;
         let box_changed = self.fixed != (self.stored & printing::FIXED_PAGE_MARGINS != 0);
-        let changed = match self.stored_margins {
-            Some(stored) => stored != self.margins || box_changed,
-            None => self.fixed,
-        };
+        let edited = self.margins != self.stored_margins.unwrap_or([36.0; 4]);
+        // With the box changed, operation 23 even for the same margins, so
+        // a host without it says so; turned on over no stored margins, the
+        // shown ones are stored. Otherwise only an edit sends them.
+        let changed = edited || (box_changed && (self.stored_margins.is_some() || self.fixed));
         changed.then_some(om_layout::Rect {
             top,
             left,
@@ -393,8 +394,15 @@ impl LayoutSetup {
                     .on_disabled_hover_text(NOT_YET);
             });
         }
+        let columns = self.columns.0;
         place(ui, content(61.0, 156.0, 180.0, 18.0), &mut |ui| {
-            ui.checkbox(&mut self.fixed, "Use fixed page margins");
+            ui.add_enabled(
+                !columns,
+                egui::Checkbox::new(&mut self.fixed, "Use fixed page margins"),
+            )
+            .on_disabled_hover_text(
+                "OpenMaker keeps the page margins of a layout that prints in columns.",
+            );
         });
         let printer = om_layout::paper::printer_margins();
         let shown = if self.fixed {

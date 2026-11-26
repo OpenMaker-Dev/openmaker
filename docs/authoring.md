@@ -974,8 +974,12 @@ unmeasured); whether they leave room on the paper is checked when the
 layout prints. Margins the layout holds already change nothing. FileMaker
 Pro also recomputes `printColumnWidth` from the paper and the margins on
 its Layout Setup save; OpenMaker keeps it as stored, as the starter
-layouts keep 0 beside their margins, and so refuses to change the margins
-of a layout printing in columns (`0x400`). `get_layout` reports a layout's
+layouts keep 0 beside their margins, and so refuses to change the margins,
+or "Use fixed page margins", of a layout printing in columns (`0x400`).
+"Use fixed page margins" turned on for a layout that stores no margins is
+refused without them, since it would print within the printer's;
+`layout_setup` then sends 36 points each, as the desktop's dialog shows
+them and every new layout stores them. `get_layout` reports a layout's
 `fixed_page_margins` and `page_margins`.
 
 ### Buttons on layouts

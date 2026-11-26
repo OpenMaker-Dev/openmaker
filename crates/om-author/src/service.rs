@@ -3523,13 +3523,23 @@ impl Service {
                 flags &= !printing::FIXED_PAGE_MARGINS;
             }
         }
-        let margins = params.page_margins.map(|m| om_layout::Rect {
-            top: m.top,
-            left: m.left,
-            bottom: m.bottom,
-            right: m.right,
-            ..Default::default()
-        });
+        // A layout that stores no margins gets 36 points with "Use fixed
+        // page margins", as the desktop's dialog shows them and every new
+        // layout stores them: the host refuses the box without margins.
+        let none_stored = layout_placement::definition(&layout.member)
+            .is_ok_and(|def| def.custom_margins.is_none());
+        let margins = params
+            .page_margins
+            .map(|m| (m.top, m.left, m.bottom, m.right))
+            .or((params.fixed_page_margins == Some(true) && none_stored)
+                .then_some((36.0, 36.0, 36.0, 36.0)))
+            .map(|(top, left, bottom, right)| om_layout::Rect {
+                top,
+                left,
+                bottom,
+                right,
+                ..Default::default()
+            });
         let hidden = params
             .include_in_layout_menus
             .map_or(word(&layout.member, 0xf0) & MENU_HIDDEN != 0, |include| {

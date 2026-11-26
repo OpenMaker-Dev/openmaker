@@ -2523,8 +2523,11 @@ operation `om-author`'s `layout_setup` uses (`DataProvider::set_layout_setup`;
 [authoring](authoring.md), "Layout Setup"); every window of the file then
 reads its layouts again. The margins are edited in points (OpenMaker's
 choice: Pro's fields show the ruler's units), and are sent only when
-changed. With the box off they are not offered and show the printer's,
-18 / 40 / 18 / 18, as Pro's do (re/layout-model.md 4.2). The General
+they or the box changed, with the setup in one commit. With the box off
+they are not offered and show the printer's, 18 / 40 / 18 / 18, as Pro's
+do (re/layout-model.md 4.2). On a layout printing in columns neither the
+box nor the margins are offered: Pro works the columns' width out from
+them, which OpenMaker does not. The General
 tab's Show records from and Menu Set, and the Printing tab's columns and
 Facing Pages, show the layout's values and are not offered, nor are Reset
 Quick Find, the Script Triggers tab or Manage Layouts' Edit. It is refused while the layout has unsaved
