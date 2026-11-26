@@ -1235,7 +1235,7 @@ impl LookupSource<'_> {
     }
 
     /// `table`'s records, the related table's narrowed by the value index
-    /// of its first match field.
+    /// of the first equality predicate.
     fn narrowed(&self, table: u64) -> Result<Arc<[u64]>, om_calc::CalcError> {
         self.check()?;
         let all = self.inner.records(table)?;
@@ -2166,9 +2166,20 @@ impl RecordPlan {
                     .as_ref()
                     .is_some_and(|e| std::ptr::eq(e, expression));
                 for (occurrence, read) in &expression.related {
-                    let hop = related_hop(&schema, &fields, context, *occurrence, *read).map_err(
-                        |reason| DataError::new(format!("Field {}: {reason}", field.name)),
-                    )?;
+                    let first_auto_enter = own
+                        && !field.stored_calculation()
+                        && !field.options.calculation_replaces_existing()
+                        && expression.uses.get(occurrence).is_some_and(|uses| {
+                            uses.first && !uses.placed && uses.aggregated.is_empty()
+                        });
+                    let hop = related_hop(
+                        &schema,
+                        &fields,
+                        context,
+                        (*occurrence, *read),
+                        first_auto_enter,
+                    )
+                    .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
                     if own {
                         matches.extend(hop);
                     }
@@ -3120,10 +3131,15 @@ impl RecordPlan {
             .schema
             .path(from, to)
             .ok_or_else(crate::host::relationship_missing)?;
-        let key = path
-            .first()
-            .and_then(|hop| hop.predicates.first())
-            .map(|p| (p.right, keys.first().cloned().unwrap_or_default()));
+        // Only equality can use an exact value-index lookup. A preceding
+        // inequality is checked by the scan over those candidates.
+        let key = path.first().and_then(|hop| {
+            hop.predicates
+                .iter()
+                .zip(keys)
+                .find(|(predicate, _)| predicate.op == crate::meta::JoinOp::Equal)
+                .map(|(predicate, value)| (predicate.right, value.clone()))
+        });
         let overlay = LookupSource {
             inner: source,
             table: self.table,
@@ -4571,6 +4587,8 @@ impl RecordPlan {
         if session.written == Written::Unknown {
             return Ok(false);
         }
+        let path = self.schema.path(context, occurrence);
+        let hop = path.as_ref().and_then(|path| path.first());
         // An empty match value relates nothing (file-metadata.md 4.3, rule
         // 2 [O]): with a match field on the record's side
         // empty, as the write computes it, the related set is empty, the
@@ -4579,18 +4597,14 @@ impl RecordPlan {
         // of a key left out is left out itself, and one read with other keys
         // is not answered. Only a field the record's row holds counts (not a
         // global or unstored calculation, whose value is not in it).
-        let empty_key = self
-            .schema
-            .path(context, occurrence)
-            .and_then(|path| path.first().cloned())
-            .is_some_and(|hop| {
-                hop.predicates.iter().any(|p| {
-                    self.fields.get(&p.left).is_some_and(PlannedField::in_row)
-                        && self
-                            .cells(p.left)
-                            .all(|cell| row.get(&cell).is_none_or(String::is_empty))
-                })
-            });
+        let empty_key = hop.is_some_and(|hop| {
+            hop.predicates.iter().any(|p| {
+                self.fields.get(&p.left).is_some_and(PlannedField::in_row)
+                    && self
+                        .cells(p.left)
+                        .all(|cell| row.get(&cell).is_none_or(String::is_empty))
+            })
+        });
         if empty_key && found.is_empty() {
             return Ok(true);
         }
@@ -4598,12 +4612,13 @@ impl RecordPlan {
         // pending deletes. s47 read committed membership, so a new row
         // with held peers cannot use these reads, even in the fallbacks
         // that are independent of the written row's own membership.
-        if let Written::New(own) = session.written {
+        let unequal = hop.is_some_and(grouped_unequal_self_join);
+        if unequal || matches!(session.written, Written::New(_)) {
             let others = session.others_held.contains(&self.table)
                 || session
                     .held
                     .as_ref()
-                    .is_some_and(|held| held.holds_other(self.table, own));
+                    .is_some_and(|held| held.holds_other(self.table, session.written.id()));
             if others {
                 return Ok(false);
             }
@@ -4615,15 +4630,11 @@ impl RecordPlan {
                     && (f.given() || f.expression.is_some() && session.settled.contains(field))
             })
         };
-        let final_keys = self
-            .schema
-            .path(context, occurrence)
-            .and_then(|path| path.first().cloned())
-            .is_some_and(|hop| {
-                hop.predicates
-                    .iter()
-                    .all(|p| final_value(&p.left) && final_value(&p.right))
-            });
+        let final_keys = hop.is_some_and(|hop| {
+            hop.predicates
+                .iter()
+                .all(|p| final_value(&p.left) && final_value(&p.right))
+        });
         // Measured: a new record's auto-entry reading a one-hop self-join
         // by final match fields on both sides reads the other records
         // committed with its key, never itself. #1035's native cases (a
@@ -4637,12 +4648,8 @@ impl RecordPlan {
         // first related record read them in creation order. Not measured:
         // reads by place, sorted or non-equality joins with matches, and
         // the stored result when auto-entry keeps its creation-time value.
-        if let (Some(replaces), Written::New(own)) = (auto_entry, session.written) {
-            let hop = self
-                .schema
-                .path(context, occurrence)
-                .and_then(|path| path.first().cloned());
-            let unsorted_equal = hop.as_ref().is_some_and(|hop| {
+        if let (false, Some(replaces), Written::New(own)) = (unequal, auto_entry, session.written) {
+            let unsorted_equal = hop.is_some_and(|hop| {
                 !hop.sorted()
                     && hop
                         .predicates
@@ -4658,7 +4665,7 @@ impl RecordPlan {
                 && !uses.placed
                 && !uses.aggregated.is_empty()
                 && unsorted_equal
-                && hop.as_ref().is_some_and(|hop| {
+                && hop.is_some_and(|hop| {
                     hop.predicates.iter().any(|p| {
                         self.fields
                             .get(&p.left)
@@ -4696,6 +4703,12 @@ impl RecordPlan {
         if related.is_empty() && final_keys {
             return Ok(true);
         }
+        // For the grouped unequal case (#297), the record must be
+        // excluded both as written and as stored. Do not infer its
+        // membership from the cases measured for equality-only joins.
+        if unequal {
+            return Ok(false);
+        }
         let earlier = match session.written {
             Written::New(None) => !found.is_empty(),
             Written::New(Some(id)) | Written::Stored(id) => {
@@ -4703,11 +4716,7 @@ impl RecordPlan {
             }
             Written::Unknown => false,
         };
-        let sorted = self
-            .schema
-            .path(context, occurrence)
-            .and_then(|path| path.first().map(|hop| hop.sorted()))
-            .unwrap_or(true);
+        let sorted = hop.is_none_or(crate::host::Hop::sorted);
         let empty = |field: &u64| {
             row.get(field).is_none_or(String::is_empty)
                 && session.stored.get(field).is_none_or(String::is_empty)
@@ -6285,13 +6294,15 @@ fn parse_formula(
 /// type, text or number: this table's a stored field, not global, which the
 /// write itself may compute (it is read again with that value, #1035), the
 /// other table's a stored one, auto-entered or not (its stored value is
-/// matched; a serial key, #187). Otherwise why not.
+/// matched; a serial key, #187). A keep-existing auto-entry can also read
+/// the first row through the grouped unequal self-join when the membership
+/// check in [`RecordPlan::answers_own`] can settle it. Otherwise why not.
 fn related_hop(
     schema: &CalcSchema,
     fields: &BTreeMap<u64, PlannedField>,
     context: u64,
-    occurrence: u64,
-    field: u64,
+    (occurrence, field): (u64, u64),
+    first_auto_enter: bool,
 ) -> Result<Vec<u64>, &'static str> {
     use crate::host::FieldClass;
     use crate::meta::JoinOp;
@@ -6323,7 +6334,14 @@ fn related_hop(
             "calculations over related fields through more than one relationship are unsupported.",
         );
     };
-    if hop.predicates.is_empty() || hop.predicates.iter().any(|p| p.op != JoinOp::Equal) {
+    let grouped_unequal = first_auto_enter
+        && schema
+            .occurrence(context)
+            .is_some_and(|from| from.table == to.table)
+        && grouped_unequal_self_join(hop);
+    if hop.predicates.is_empty()
+        || (!grouped_unequal && hop.predicates.iter().any(|p| p.op != JoinOp::Equal))
+    {
         return Err(
             "calculations over related fields through other than = predicates are unsupported.",
         );
@@ -6362,9 +6380,26 @@ fn related_hop(
                  number, stored, not global on this table's side.",
             );
         }
+        if grouped_unequal && ours != Some(ValueType::Text) {
+            return Err("auto-entry through an unequal self-join needs stored text match fields.");
+        }
         matches.push(predicate.left);
     }
     Ok(matches)
+}
+
+/// Unsorted, same-field predicates on a group key and a distinct row key.
+/// The caller establishes that both occurrences are of the same table.
+fn grouped_unequal_self_join(hop: &crate::host::Hop) -> bool {
+    use crate::meta::JoinOp::{Equal, NotEqual};
+    let [a, b] = hop.predicates.as_slice() else {
+        return false;
+    };
+    !hop.sorted()
+        && matches!((a.op, b.op), (Equal, NotEqual) | (NotEqual, Equal))
+        && a.left == a.right
+        && b.left == b.right
+        && a.left != b.left
 }
 
 /// The sort language whose text order OpenMaker's collation does not
