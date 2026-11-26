@@ -65,9 +65,8 @@ const AUTO_ENTRY_OPTIONS: u32 = 0x38f;
 /// A serial number generated when the record is committed, set instead of
 /// `0x2` (schema-path.md 5.9, E41).
 const SERIAL_ON_COMMIT: u32 = 0x200;
-/// The auto-entered values of which a field has one at most: a creation
-/// or modification value, a serial number on creation, a constant, a
-/// calculation, a serial number on commit (schema-path.md 5.9, E40).
+/// Auto-entry sources (schema-path.md 5.9, E40). The planner rejects
+/// multiple sources except for Creation Date with a calculated value.
 const AUTO_ENTRY_MODES: u32 = 0x20f;
 /// Auto-enter options measured on global Text fields (#987): a constant,
 /// a calculation or a serial generated on creation.
@@ -1010,6 +1009,9 @@ struct PlannedField {
     editable: bool,
     /// A stored calculation or an auto-enter calculation.
     expression: Option<Expression>,
+    /// Creation Date supplies the value on create. The calculation's
+    /// dependencies identify updates with an unmeasured result.
+    creation_date_with_calculation: bool,
     /// Auto-entered constant data (`0d`).
     constant: Option<String>,
     validation: Option<Expression>,
@@ -1901,6 +1903,15 @@ impl RecordPlan {
             let unstored =
                 kind == FieldKind::Calculation && (options.options & UNSTORED != 0 || global);
             let auto_calculation = options.auto_entry_calculation();
+            // FileMaker used the creation date at New Record even with
+            // calculation replacement on. The test had editing allowed.
+            let creation_date_with_calculation = !global
+                && field.data_type == DataType::Date
+                && options.max_repetitions == 1
+                && options.options & AUTO_ENTRY_MODES == 0x9
+                && options.options & ALWAYS_EVALUATE == 0
+                && !options.auto_entry_editing_prohibited()
+                && options.auto_entry_variable() == Some(EntryVariable::CreationDate);
             let looked_up = options.options & LOOKUP != 0;
             let allowed = match kind {
                 // An unstored calculation is computed when read, and
@@ -2113,7 +2124,9 @@ impl RecordPlan {
                     ));
                 }
             }
-            if (options.options & AUTO_ENTRY_MODES).count_ones() > 1 {
+            if (options.options & AUTO_ENTRY_MODES).count_ones() > 1
+                && !creation_date_with_calculation
+            {
                 return Err(error("multiple auto-entry modes are unsupported."));
             }
             if options.validation_unique() || options.validation_options & VALIDATE_EXISTING != 0 {
@@ -2222,6 +2235,7 @@ impl RecordPlan {
                     data_type: field.data_type,
                     editable,
                     expression,
+                    creation_date_with_calculation,
                     constant,
                     validation,
                     message,
@@ -4308,6 +4322,7 @@ impl RecordPlan {
         let mut deferred = BTreeSet::new();
         let mut evaluated = BTreeSet::new();
         let mut probed = BTreeSet::new();
+        let mut supplied_dependencies = None;
         let (mut row, mut dirty) = self.written(existing, changes, entry)?;
         // A write that changes nothing changes nothing, unless it sets a
         // lookup's match field: FileMaker performs the lookup then, also on
@@ -4467,7 +4482,10 @@ impl RecordPlan {
             let Some(expression) = &field.expression else {
                 continue;
             };
-            if !field.stored_calculation() && (entry.skip_auto_enter || entry.keeps(changes, *id)) {
+            let combined_create = field.creation_date_with_calculation && mode == WriteMode::Create;
+            if !field.stored_calculation()
+                && (entry.skip_auto_enter || (entry.keeps(changes, *id) && !combined_create))
+            {
                 continue;
             }
             let depends_on_deferred = expression
@@ -4483,9 +4501,44 @@ impl RecordPlan {
             if !should_evaluate || !can_replace {
                 continue;
             }
+            if combined_create {
+                // New Record alone uses the creation date. A held create
+                // can also carry later edits before the first commit. Only
+                // those supplied inputs, not creation defaults, make this
+                // an unmeasured re-evaluation.
+                let affected = supplied_dependencies.get_or_insert_with(|| {
+                    self.computed_from(
+                        changes
+                            .keys()
+                            .filter_map(|cell| self.cell_field(*cell))
+                            .map(|(field, _)| field)
+                            .collect(),
+                    )
+                });
+                if !expression
+                    .dependencies
+                    .iter()
+                    .any(|dep| dep != id && affected.contains(dep))
+                {
+                    continue;
+                }
+            }
             if depends_on_deferred {
                 deferred.insert(*id);
                 continue;
+            }
+            if field.creation_date_with_calculation {
+                if !validate {
+                    deferred.insert(*id);
+                    continue;
+                }
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: recalculating the auto-entry combined with Creation Date is unsupported for this write. No values were changed.",
+                        field.name
+                    ),
+                ));
             }
             let globals = self.session_globals(*id, expression, &session)?;
             let mut remaining = session.calculation_budget();
@@ -7493,6 +7546,142 @@ mod tests {
                 .unwrap();
         }
         RecordPlan::from_schema(table, &tree)
+    }
+
+    #[test]
+    fn creation_date_is_used_with_a_calculated_auto_entry_value() {
+        // The closed FileMaker Pro copies held both option words with
+        // selector 0 and a saved formula.
+        for options in [0x0000_0009, 0x0000_0089] {
+            let mut table = table();
+            table
+                .fields
+                .push(field(20, FieldKind::Normal, DataType::Date, 0, options, 0));
+            let mut formulas = base_formulas();
+            formulas.push((20, 5, "Date ( 1 ; 15 ; 2030 )"));
+            let plan = plan_of(&table, &formulas, &[]).unwrap();
+            let environment = environment();
+            let created = plan
+                .prepare(
+                    WriteMode::Create,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &environment,
+                )
+                .unwrap();
+            assert_eq!(
+                decoded(&created, 20).as_deref(),
+                Some(environment.date.as_str())
+            );
+
+            let explicit = "3/3/2031";
+            let saved = plan
+                .prepare_entry(
+                    WriteMode::Create,
+                    &BTreeMap::new(),
+                    &BTreeMap::from([(20, Some(explicit.into()))]),
+                    &environment,
+                    Entry {
+                        keep_written: true,
+                        ..Entry::script(false, false)
+                    },
+                )
+                .unwrap();
+            assert_eq!(decoded(&saved, 20).as_deref(), Some(explicit));
+
+            for extra in [ALWAYS_EVALUATE, 0x100] {
+                *table.fields.last_mut().unwrap() =
+                    field(20, FieldKind::Normal, DataType::Date, 0, options | extra, 0);
+                assert!(plan_of(&table, &formulas, &[])
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("multiple auto-entry modes"));
+            }
+        }
+    }
+
+    #[test]
+    fn combined_creation_date_refuses_inputs_set_before_first_commit() {
+        let mut table = table();
+        table.fields.retain(|field| field.id <= 2);
+        table.fields.extend([
+            field(20, FieldKind::Normal, DataType::Date, 0, 0x0000_0089, 0),
+            field(21, FieldKind::Calculation, DataType::Number, 0, 0, 0),
+        ]);
+        let environment = environment();
+        let entry = Entry {
+            keep_written: true,
+            ..Entry::script(false, false)
+        };
+        for expression in [
+            "Date ( 1 ; 15 ; 2030 ) + Length ( Field1 )",
+            "Date ( 1 ; 15 ; 2030 ) + Field21",
+        ] {
+            let formulas = [(20, 5, expression), (21, 5, "Length ( Field1 )")];
+            let plan = plan_of(&table, &formulas, &[]).unwrap();
+            let created = plan
+                .prepare_entry(
+                    WriteMode::Create,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &environment,
+                    entry,
+                )
+                .unwrap();
+            assert_eq!(
+                decoded(&created, 20).as_deref(),
+                Some(environment.date.as_str())
+            );
+
+            let result = plan.prepare_entry(
+                WriteMode::Create,
+                &BTreeMap::new(),
+                &BTreeMap::from([(1, Some("abc".into()))]),
+                &environment,
+                entry,
+            );
+            assert_eq!(
+                result.err().and_then(|error| error.code),
+                Some(error::UNAVAILABLE)
+            );
+        }
+    }
+
+    #[test]
+    fn combined_creation_date_refuses_updates_that_would_run_its_calculation() {
+        for (options, target_update, should_refuse) in [
+            (0x0000_0089, (1, Some("abc".into())), true),
+            (0x0000_0009, (20, None), true),
+            (0x0000_0009, (1, Some("abc".into())), false),
+            (0x0000_0089, (2, Some("unrelated".into())), false),
+        ] {
+            let mut table = table();
+            table.fields.retain(|field| field.id <= 2);
+            table
+                .fields
+                .push(field(20, FieldKind::Normal, DataType::Date, 0, options, 0));
+            let formulas = [(
+                20,
+                5,
+                "If ( IsEmpty ( Field20 ) ; Date ( 1 ; 15 ; 2030 ) ; \
+                 Date ( 1 ; 15 ; 2030 ) + Length ( Field1 ) )",
+            )];
+            let plan = plan_of(&table, &formulas, &[]).unwrap();
+            let stored = BTreeMap::from([(1, "previous".into()), (20, "11/26/2026".into())]);
+            let result = plan.prepare_entry(
+                WriteMode::Update,
+                &stored,
+                &BTreeMap::from([target_update]),
+                &environment(),
+                Entry::script(false, false),
+            );
+            if should_refuse {
+                assert_eq!(result.err().unwrap().code, Some(error::UNAVAILABLE));
+            } else {
+                assert_eq!(decoded(&result.unwrap(), 20), None, "date is unchanged");
+            }
+        }
     }
 
     const INITIALS: &str = "Case ( not IsEmpty ( Field2 ) ; Left ( Field2 ; 1 ) ; \
