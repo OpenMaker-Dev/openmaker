@@ -2180,6 +2180,20 @@ Inferred paint order per object [I]: outer box shadow, background layers,
 border (or border image), inner shadow, `inner_border` component, content
 (text, icon, image), then child objects.
 
+[O, FileMaker Pro 26.1.1 on macOS] On solid square rectangles and
+buttons, an opaque outer shadow at horizontal +6 pt, vertical +3 pt, blur
+4 pt and spread 2 pt extends about 0 pt left, 2-2.5 pt up, 11-11.25 pt
+right and 8-8.4 pt down beyond the visible border. The inset shadow is
+clipped at the inside edge of the border to layout-point precision, below
+the button text and glyph. The two effects can be enabled together.
+The matching outer rectangle property is 122 with one field-19 shadow
+of type 1, inset 0, alpha 1 and the four lengths in points. [Native
+measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1034#issuecomment-7202993034)
+
+[I] The outer extents fit an offset rectangle expanded by the spread,
+with the blur extending about one blur distance beyond that edge.
+The samples do not identify FileMaker's exact blur kernel.
+
 ### 9.3 Graphics backends
 
 | | Mac | Windows |

@@ -625,6 +625,12 @@ Slide panel contents use their own fill and border and clip their children
 to the contents frame.
 Browse shows no authoring part tabs or object kind captions.
 
+- Browse draws a single opaque outer shadow behind the fill and border of
+  an opaque, square, unrotated top-level rectangle. The offset and spread
+  come from the stored style, with egui edge feathering approximating the
+  measured blur (layout-model.md 9.2). An accompanying inset is still
+  omitted. Buttons, multiple outer layers, translucent shadows or fills,
+  rounded shapes and nested objects remain outside this support.
 - Text objects in Browse draw an edge only when its style resolves to a
   line. A width and color alone leave the edge hidden.
 - Styled layout labels keep the stored formatting of literal text around
