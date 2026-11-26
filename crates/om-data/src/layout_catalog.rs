@@ -1029,11 +1029,14 @@ pub mod views {
 }
 
 /// Layout Setup's General options in a layout's flags `f1`, as FileMaker
-/// Pro 26.0.3 sets them from their checkboxes (layout-model.md 10.11): the
+/// Pro sets them from their checkboxes (layout-model.md 4.2, 10.11): the
 /// option's name as `om-author` takes it, its label, its bit, and whether
 /// the bit set means the option is on.
 pub mod general {
-    pub const OPTIONS: [(&str, &str, u64, bool); 5] = [
+    /// Show the field-entry alerts controlled by Layout Setup in Pro 26.1.1.
+    pub const SHOW_FIELD_ALERTS: u64 = 0x2000;
+
+    pub const OPTIONS: [(&str, &str, u64, bool); 6] = [
         (
             "save_record_changes",
             "Save record changes automatically",
@@ -1058,9 +1061,23 @@ pub mod general {
             0x1000_0000,
             false,
         ),
+        (
+            "show_field_alerts",
+            "Show alerts when field isn't modifiable or no records are present",
+            SHOW_FIELD_ALERTS,
+            true,
+        ),
         ("enable_quick_find", "Enable Quick Find", 0x8000, false),
     ];
-    pub const ALL: u64 = 0x10 | 0x20 | 0x1 | 0x1000_0000 | 0x8000;
+    pub const ALL: u64 = 0x10 | 0x20 | 0x1 | 0x1000_0000 | SHOW_FIELD_ALERTS | 0x8000;
+
+    /// The click refusal observed on an edit box in an empty Browse Form.
+    /// The found-set count must be known before a click can report it empty.
+    pub fn empty_field_alert(flags: u64, found_count: Option<u64>) -> Option<&'static str> {
+        (flags & SHOW_FIELD_ALERTS != 0 && found_count == Some(0)).then_some(
+            "No records are present. To create a new record choose the New Record menu command.",
+        )
+    }
 }
 
 /// Layout Setup's Printing options that OpenMaker sets, as bits of a
