@@ -67,19 +67,21 @@ with the dialog and Restore off.
   still stores what the decision was made on, uploads it and reads it
   back. FileMaker Pro reads such a page setup whole, in its Page Setup sheet
   and its output, and adds its own platform records at its next OK.
-- **Platform records:** those the file stored (`M_PM`, `MMod`, any other)
-  go with a change. Kept beside a new `Comm`, Pro's sheet would show their
-  old settings while its output used the new ones, and its next OK would
-  return to them.
+- **Platform records:** the file's `MMod` copies, and its `M_PM` when it
+  is an Any Printer record for one of the printer's papers, go with a
+  change: Pro makes those again from `Comm` (file-format.md 3.8). Kept
+  beside a new `Comm`, Pro's sheet would show their old settings while its
+  output used the new ones, and its next OK would return to them.
 
 Nothing is written when:
 - the file's setup already reads as the accepted paper, so an OK without
   changes keeps Pro's records;
 - the file stores a setup OpenMaker cannot read, or its schema was not read,
   so what it stores is not known: it is kept as it is;
-- the file's setup holds a record other than `Comm`, `M_PM` and `MMod`, a
-  Windows one say, whose use is unmeasured, or it changed since it was read:
-  it is kept;
+- the file's setup holds a record Pro may not make again: a custom paper
+  or a named printer in `M_PM`, or a record other than `Comm`, `M_PM` and
+  `MMod`, a Windows one say. It is also kept when it is not stored as Pro
+  stores it, or changed since it was read;
 - the file is hosted. FileMaker Pro sends nothing for a hosted file ([write path](re/write-path.md)
   5.9): the setup lasts while the file is open in that client, and so it
   does in OpenMaker;

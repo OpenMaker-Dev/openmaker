@@ -56,7 +56,11 @@ impl NativeProvider {
         match session.lock(&path, txn, false) {
             Ok(LockReply::Granted { .. }) => {}
             Ok(_) => return Err(in_use()),
-            Err(e) => return Err(failure("lock the page setup", e)),
+            Err(e) => {
+                // The host may have granted a lock whose answer was not read.
+                let _ = session.kill_all_locks(txn);
+                return Err(failure("lock the page setup", e));
+            }
         }
         let mut held = LOCK_WRITE;
         let stored = (|| {
@@ -66,8 +70,9 @@ impl NativeProvider {
                 Err(e) => return Err(failure("lock the page setup", e)),
             }
             // What the file stores now, under the lock: only what the
-            // caller decided on, and only records FileMaker Pro makes again
-            // from `Comm`, are replaced (AGENTS.md rule 5).
+            // caller decided on, stored as Pro stores it, and only records
+            // FileMaker Pro makes again from `Comm`, are replaced (AGENTS.md
+            // rule 5).
             match current(session, &path)? {
                 StoredPageFormat::Unreadable => {
                     return Err(DataError::with_code(
@@ -109,10 +114,9 @@ impl NativeProvider {
         if released.is_err() || stored.is_err() {
             let killed = session.kill_all_locks(txn);
             if let (Ok(true), Err(_), Err(error)) = (&stored, &released, killed) {
-                return Err(failure(
-                    "The page setup was saved, but its lock could not be released",
-                    error,
-                ));
+                // Saved and read back: the caller is told so, or its next
+                // save would expect what the file no longer stores.
+                log::warn!("The page setup was saved, but its lock could not be released: {error}");
             }
         }
         stored

@@ -185,15 +185,12 @@ impl WorkerHost<'_> {
     }
 }
 
-/// Whether a stored setup, read back from its f32s, is `paper`: the same
-/// orientation, and the same scale and sheet at the f32 precision a page
-/// format holds them in. A setup read from the file and not edited is equal
-/// to it; FileMaker Pro's A4 (595 x 842) is not OpenMaker's (595.28 x
-/// 841.89). A sheet OpenMaker saved, read back as the difference of two
-/// f32s, can miss by one f32 step; it is then saved again, unchanged.
+/// Whether a stored setup, read back from its f32s, is `paper`: equal, as
+/// a setup read from the file and not edited is, or with the same
+/// orientation, scale and sheet once encoded, the f32 coordinates a page
+/// format holds (the printable size follows from them). A setup OpenMaker
+/// saved reads back so, and an edit a page format can hold differs.
+/// FileMaker Pro's A4 (595 x 842) is not OpenMaker's (595.28 x 841.89).
 fn same_paper(stored: &PaperSettings, paper: &PaperSettings) -> bool {
-    stored.orientation == paper.orientation
-        && stored.scale as f32 == paper.scale as f32
-        && stored.width as f32 == paper.width as f32
-        && stored.height as f32 == paper.height as f32
+    stored == paper || stored.common_format()[..25] == paper.common_format()[..25]
 }
