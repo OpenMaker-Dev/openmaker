@@ -1422,11 +1422,15 @@ mod tests {
         )
         .unwrap();
         let other = Tree::open(&store, other).unwrap();
-        let mut walk = other.walk(&[t.clone()]);
+        let mut walk = other.walk(std::slice::from_ref(&t));
         walk.nth(700).unwrap().unwrap();
         places.push(walk.place());
         assert!(places.iter().filter(|p| p.is_some()).count() > 40);
-        let mut bounds = vec![Vec::new(), key::encode(&[t.clone()]), vec![0xff; 3]];
+        let mut bounds = vec![
+            Vec::new(),
+            key::encode(std::slice::from_ref(&t)),
+            vec![0xff; 3],
+        ];
         for s in segments.iter().step_by(7) {
             let at = child(s);
             let mut past = at.clone();

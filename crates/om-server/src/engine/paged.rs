@@ -423,7 +423,7 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
         let tree = &self.tree;
         if path.is_empty() {
             return Ok(Some(Head {
-                list: self.root_has_children(&tree)?,
+                list: self.root_has_children(tree)?,
                 value: None,
             }));
         }
@@ -437,7 +437,7 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
     ) -> Result<Option<Cow<'_, OwnedNode>>, ReadError> {
         let tree = &self.tree;
         Ok(self
-            .build(&tree, path, Limit::Memory(limit))?
+            .build(tree, path, Limit::Memory(limit))?
             .map(Cow::Owned))
     }
 
@@ -451,7 +451,7 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
         work: om_query::program::Size,
     ) -> Result<Option<Cow<'_, OwnedNode>>, ReadError> {
         let tree = &self.tree;
-        Ok(self.build(&tree, path, Limit::Work(work))?.map(Cow::Owned))
+        Ok(self.build(tree, path, Limit::Work(work))?.map(Cow::Owned))
     }
 
     fn children_page<'v>(
@@ -517,7 +517,7 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
             };
             let mut child_path = path.to_vec();
             child_path.push(&segment);
-            match self.build(&tree, &child_path, Limit::Memory(limit)) {
+            match self.build(tree, &child_path, Limit::Memory(limit)) {
                 Ok(Some(node)) => out.push(Cow::Owned(node)),
                 Ok(None) => return Err(orphan(&child_path)),
                 // A subtree past the limit fails the page, as the file
@@ -556,7 +556,7 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
                         depth: 0,
                         segment: Cow::Owned(Vec::new()),
                         head: Head {
-                            list: self.root_has_children(&tree)?,
+                            list: self.root_has_children(tree)?,
                             value: None,
                         },
                     });
