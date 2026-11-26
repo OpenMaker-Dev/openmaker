@@ -1173,6 +1173,12 @@ record's place in what the rules read:
   `If ( IsEmpty ( Self ) ; 0 ; Self )` (`0x80000008`, no validation).
   The related draft shows 0 on creation and keeps a nonempty assignment
   made before Commit.
+  The measured unindexed, replacing
+  `If ( IsEmpty ( Self ) ; 0 ; Self + 1 )` (`0x00000088`, no validation)
+  also starts at 0 in this relationship. An assigned 25 shows and stores
+  26, including when the script commits the new match before assigning
+  the Number. The pending read evaluates the proposed value, and Commit
+  uses that same proposal to avoid applying the increment twice.
   The parent's record is already stored and otherwise unedited. The
   matching key and position are checked again at save.
   The same field definition refuses writes
