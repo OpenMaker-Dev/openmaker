@@ -1209,19 +1209,6 @@ fn related_file_layouts_browse_and_expose_only_supported_edit_capabilities() {
     };
     let values = om_data::FieldChanges::from([("Name".to_string(), Some("Changed".to_string()))]);
     assert!(provider.supports_record_import());
-    // Import (new or existing rows) stays refused; New Record is owned.
-    for record in [None, Some(1)] {
-        refused(
-            provider
-                .import_record(
-                    layout,
-                    record,
-                    &[(NAME, Some("Changed".into()))].into(),
-                    true,
-                )
-                .map(drop),
-        );
-    }
     provider.begin_transaction(Default::default()).unwrap();
     assert_eq!(
         provider
@@ -1998,6 +1985,89 @@ fn a_related_files_globals_are_its_session_values() {
         shown(host.open(RELATED).records(own, 0, 1).unwrap(), "Setting"),
         "child-global"
     );
+}
+
+/// Import Records on a layout of another file's table imports into that
+/// table (#43): the owning file creates a new row's record, with its own
+/// auto-entry, and updates an existing one, and the window's found set takes
+/// the new record. Inside a script's transaction it is refused (3) before
+/// anything is sent. Root's table of the same ids is untouched.
+#[test]
+fn imported_layout_import_records_go_to_the_owning_file() {
+    let mut files = files();
+    files[0].1.put(
+        &[&[4], &[5], &[2], &[2]],
+        OwnedNode::leaf([], layout_def(REMOTE)),
+    );
+    let host = Host::new("layout-import", files);
+    let mut provider = host.open(ROOT);
+    let layout = fixture::NOTES_LAYOUT as u32;
+    let rows = |file: &str| -> Vec<(i64, String, String)> {
+        let mut file = host.open(file);
+        let page = file.records(fixture::LAYOUT as u32, 0, 10).unwrap();
+        let at = |name: &str| page.fields.iter().position(|f| f.name == name).unwrap();
+        page.records
+            .iter()
+            .map(|r| {
+                let text = |name| r.values[at(name)].clone().unwrap_or_default();
+                (r.id, text("Name"), text("Creator"))
+            })
+            .collect()
+    };
+    let ids = |provider: &mut NativeProvider| {
+        provider
+            .records(layout, 0, 10)
+            .unwrap()
+            .records
+            .iter()
+            .map(|r| r.id)
+            .collect::<Vec<_>>()
+    };
+    let row = |id, name: &str, creator: &str| (id, name.to_owned(), creator.to_owned());
+    let root = rows(ROOT);
+    provider
+        .change_found_set(layout, om_data::found::FoundSetChange::Records(vec![2]))
+        .unwrap();
+
+    // A new row, and an update of record 1.
+    let new = provider
+        .import_record(
+            layout,
+            None,
+            &[(NAME, Some("Imported".into()))].into(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(new, 3);
+    assert_eq!(
+        provider
+            .import_record(
+                layout,
+                Some(1),
+                &[(NAME, Some("Updated".into()))].into(),
+                true
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(ids(&mut provider), [2, 3]);
+    let stored = rows(RELATED);
+    assert_eq!(stored[0].1, "Updated");
+    assert_eq!(stored[2], row(3, "Imported", ACCOUNT));
+
+    // Refused inside a script's transaction, before any request.
+    provider.begin_transaction(Default::default()).unwrap();
+    let before = host.captures.transactions().len();
+    for record in [None, Some(1)] {
+        let error = provider
+            .import_record(layout, record, &[(NAME, Some("Held".into()))].into(), true)
+            .unwrap_err();
+        assert_eq!(error.code, Some(3), "{error}");
+    }
+    assert_eq!(host.captures.transactions().len(), before);
+    provider.revert_transaction().unwrap();
+    assert_eq!(rows(RELATED).len(), 3);
+    assert_eq!(rows(ROOT), root);
 }
 
 /// Root's Tasks::Code is validated Always by value list 5, the values of

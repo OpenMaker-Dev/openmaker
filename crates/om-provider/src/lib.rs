@@ -3719,8 +3719,23 @@ impl DataProvider for NativeProvider {
         // Even a lost write reply may have changed the host. Draft and
         // transaction outcome handling remains with the existing write path.
         self.invalidate_calc_data();
-        let id = self.import_native_record(layout_id, record, cells, auto_enter)?;
         let layout = self.decoded_layout(layout_id)?;
+        if self.table_for_layout(&layout).is_err() {
+            // Inside a transaction, refused before that file is opened or
+            // asked for its table (#933).
+            if self.in_transaction() {
+                return Err(Self::unsupported_peer_transaction());
+            }
+            // A layout of another file's table: that file imports the row
+            // into its table (related_owner.rs, #43).
+            let table = self.read_table_for_layout(&layout)?.id;
+            if self.external.route(table).is_some() {
+                let id = self.import_routed(table, record, cells, auto_enter)?;
+                return i64::try_from(id)
+                    .map_err(|_| DataError::new("Record ID exceeds the supported range."));
+            }
+        }
+        let id = self.import_native_record(layout_id, record, cells, auto_enter)?;
         let table = self.table_for_layout(&layout)?.id;
         if record.is_none() {
             self.found_add(table, id);

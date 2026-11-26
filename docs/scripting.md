@@ -346,12 +346,19 @@ host refusing a later file, after an earlier file's commit leaves that earlier
 file committed (record-writes.md, "A script's transaction across files").
 A script's Delete Record inside one is held there too; the user's own edits
 and deletions on such a layout while the script is paused are refused
-([#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)), the user's
-typing into a later repetition there too, in any window while a script's
-transaction is open; the draft is kept.
-Import and writes to the layout's related records in other tables remain
-refused on these layouts
-([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). A global of
+([#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)), and so is the
+user's typing into a later repetition there when its save would enter a
+script's open transaction; the draft is kept.
+Writes to the layout's related records in other tables remain refused on
+these layouts ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)).
+Import Records on such a layout imports into its table through the owning
+file, as that file's own Import Records would, and a new row's record joins
+the window's found set. The layout is none of the owning file's, so an
+auto-entry reading `Get ( LayoutNumber )` has no number there and refuses the
+row, as for the owning file's other writes from this file. Inside a script's
+transaction each row is refused (3) before anything is written, so Import
+Records counts every row as skipped and adds none (729), for now
+([#933](https://github.com/OpenMaker-Dev/openmaker/issues/933)). A global of
 another file's table, set by Set Field from any layout or typed on such a
 layout, is that file's session value (record-writes.md, "A related file's
 globals"). The owning file
