@@ -10,6 +10,7 @@ use egui::{
     vec2, CornerRadius, Id, Key, KeyboardShortcut, Modifiers, RichText, Ui, ViewportCommand,
 };
 use om_data::found::FindRequest;
+use om_data::layout_move::{Delta, NudgeDirection, NudgeStep};
 use om_data::scripts::save_records::{Format as SaveFormat, SaveRecords};
 use om_data::{DataError, DataProvider, LocalOpen};
 
@@ -18,7 +19,6 @@ use crate::content;
 use crate::content::PartsSent;
 use crate::icons::{self, Icon};
 use crate::layout_bar::{self, LayoutBarContext};
-use crate::layout_canvas::NudgeDirection;
 use crate::layout_setup::{LayoutSetup, LayoutSetupAnswer};
 use crate::licensing::{LicenseAction, LicenseDialog, LicenseKey, LicenseOperation};
 use crate::manage_layouts::{ManageLayouts, ManageLayoutsResult};
@@ -651,7 +651,7 @@ pub(crate) enum Action {
     /// Edit > Select All in Layout mode changes the window's selection.
     SelectAllLayoutObjects,
     /// An arrow key moves the selection in the current layout draft.
-    NudgeLayoutObjects(NudgeDirection),
+    NudgeLayoutObjects(Delta),
     /// Delete or Edit > Clear in Layout mode: delete the selected object,
     /// as a change Save Layout stores.
     DeleteLayoutObject,
@@ -4039,7 +4039,16 @@ impl OpenMakerApp {
                         {
                             Action::EditLayoutDraft(DraftEdit::Undo)
                         }
-                        _ if layout_keys && has_selection && modifiers.is_none() => {
+                        Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown
+                            if layout_keys && has_selection =>
+                        {
+                            let step = match *modifiers {
+                                Modifiers::NONE => NudgeStep::OnePoint,
+                                Modifiers::SHIFT => NudgeStep::TenPoints,
+                                #[cfg(target_os = "macos")]
+                                Modifiers::ALT => NudgeStep::OnePoint,
+                                _ => return true,
+                            };
                             let direction = match key {
                                 Key::ArrowLeft => NudgeDirection::Left,
                                 Key::ArrowRight => NudgeDirection::Right,
@@ -4047,7 +4056,7 @@ impl OpenMakerApp {
                                 Key::ArrowDown => NudgeDirection::Down,
                                 _ => return true,
                             };
-                            Action::NudgeLayoutObjects(direction)
+                            Action::NudgeLayoutObjects(direction.delta(step))
                         }
                         _ => return true,
                     };
@@ -5532,10 +5541,10 @@ impl OpenMakerApp {
                     ctx.request_repaint();
                 }
             }
-            Action::NudgeLayoutObjects(direction) => {
+            Action::NudgeLayoutObjects(delta) => {
                 if self.layout_selection_session(ctx).is_some() {
                     let session = self.w.session.as_ref().expect("checked layout");
-                    self.w.layout_workspace.nudge_selection(session, direction);
+                    self.w.layout_workspace.nudge_selection(session, delta);
                     ctx.request_repaint();
                 }
             }
@@ -9531,8 +9540,16 @@ mod tests {
             events: vec![
                 key(Key::A, Modifiers::COMMAND),
                 key(Key::ArrowRight, Modifiers::NONE),
-                key(Key::ArrowRight, Modifiers::NONE),
+                key(
+                    Key::ArrowRight,
+                    if cfg!(target_os = "macos") {
+                        Modifiers::ALT
+                    } else {
+                        Modifiers::NONE
+                    },
+                ),
                 key(Key::ArrowUp, Modifiers::SHIFT),
+                key(Key::ArrowLeft, Modifiers::CTRL),
             ],
             ..Default::default()
         };
@@ -9558,18 +9575,21 @@ mod tests {
         assert_eq!(app.w.layout_workspace.selection_count(session), 1);
         assert!(app.w.layout_workspace.moved().frames.is_empty());
         assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 50.0);
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().top, 30.0);
 
         ctx.memory_mut(|m| m.surrender_focus(editor));
         frame(&mut app, input(), false);
         let session = app.w.session.as_ref().unwrap();
         assert_eq!(app.w.layout_workspace.selection_count(session), 2);
         assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 52.0);
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().top, 20.0);
         assert_eq!(
             app.w.layout_workspace.moved().frames[&1],
             om_data::GeomRect {
                 left: 22.0,
+                top: 20.0,
                 right: 42.0,
-                ..old_frame
+                bottom: 50.0,
             }
         );
         let undo = key(Key::Z, shortcuts::UNDO.modifiers);
@@ -9582,8 +9602,9 @@ mod tests {
             },
             false,
         );
-        assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 51.0);
-        assert_eq!(app.w.layout_workspace.moved().frames[&1].left, 21.0);
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().top, 30.0);
+        assert_eq!(app.w.layout_workspace.moved().frames[&1].top, 30.0);
+        assert_eq!(app.w.layout_workspace.moved().frames[&1].left, 22.0);
         frame(
             &mut app,
             egui::RawInput {
@@ -9593,7 +9614,9 @@ mod tests {
             false,
         );
         assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 52.0);
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().top, 20.0);
         assert_eq!(app.w.layout_workspace.moved().frames[&1].left, 22.0);
+        assert_eq!(app.w.layout_workspace.moved().frames[&1].top, 20.0);
 
         app.apply(&ctx, Action::RevertLayout);
         assert!(!app.w.layout_workspace.has_changes());
@@ -9612,7 +9635,7 @@ mod tests {
                 actions,
                 [
                     Action::SelectAllLayoutObjects,
-                    Action::NudgeLayoutObjects(NudgeDirection::Right),
+                    Action::NudgeLayoutObjects(Delta { dx: 1.0, dy: 0.0 }),
                     Action::SaveLayout
                 ]
             );
@@ -9651,7 +9674,7 @@ mod tests {
             },
         );
         for _ in 0..2 {
-            app.apply(&ctx, Action::NudgeLayoutObjects(NudgeDirection::Right));
+            app.apply(&ctx, Action::NudgeLayoutObjects(Delta { dx: 1.0, dy: 0.0 }));
         }
         assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 22.0);
         app.apply(&ctx, Action::SaveLayout);

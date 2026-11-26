@@ -1344,10 +1344,10 @@ impl LayoutWorkspace {
     pub(crate) fn nudge_selection(
         &mut self,
         session: &Session,
-        direction: crate::layout_canvas::NudgeDirection,
+        delta: om_data::layout_move::Delta,
     ) {
         let before = self.canvas.checkpoint();
-        if self.canvas.nudge_selection(session, direction) {
+        if self.canvas.nudge_selection(session, delta) {
             self.canvas.record_command(before);
         }
     }

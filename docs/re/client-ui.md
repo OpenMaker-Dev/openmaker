@@ -455,9 +455,18 @@ documents moving the selection by one point per arrow key press. See
 [layout-model.md 10.7](layout-model.md#107-an-objects-position) for how a
 move is stored.
 
-**Unknowns:** Which nested objects Select All and a layout-level box select,
-how they treat locked objects, and whether a modifier changes the arrow
-step. These gestures were not observed in a running FileMaker Pro window.
+### Arrow-key steps
+
+[O] In FileMaker Pro 26.1.1 on macOS, a selected rectangle at Actual Size
+moved one layout point with Right or Down, ten points with Shift+Right or
+Shift+Down, and one point with Option+Right. The Position Inspector supplied
+the offsets on a synthetic Form layout ([#910](https://github.com/OpenMaker-Dev/openmaker/issues/910)).
+Other zoom levels, modifier combinations, and locked and grouped selections
+were not measured.
+
+**Selection unknowns:** Which nested objects Select All and a layout-level
+box select and how they treat locked objects remain outside the arrow-key
+measurement.
 
 ### Artwork and boundaries
 

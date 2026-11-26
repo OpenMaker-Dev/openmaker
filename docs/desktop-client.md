@@ -2264,9 +2264,12 @@ stored tab order.
   member adds it rather than replacing the selection (OpenMaker's choice;
   native Shift-drag axis constraints are not measured). If any member
   cannot move, the selection stays put and Inspector states why.
-  Unmodified arrow keys nudge the selection by one layout point, through
-  the same whole-point frame and draft checks as a drag. A focused text
-  editor keeps its keys. Delete and Edit > Clear validate the whole
+  An arrow key nudges the selection by one layout point, Shift+arrow by
+  ten, and Option+arrow on macOS by one. All three use the same whole-point
+  frame and draft checks as a drag. The distances were measured in FileMaker
+  Pro on macOS at Actual Size. OpenMaker uses layout points at every zoom
+  and also applies the plain and Shift steps on other desktop platforms.
+  A focused text editor keeps its keys. Delete and Edit > Clear validate the whole
   selection before staging deletions;
   an unsupported member refuses the whole action, without deleting peers.
   These changes stay unsaved until Save; Revert/Discard clears additions,

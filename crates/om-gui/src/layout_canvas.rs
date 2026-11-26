@@ -331,27 +331,6 @@ impl Selection {
     }
 }
 
-/// An unmodified arrow key moves the draft selection by one layout point.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NudgeDirection {
-    Left,
-    Right,
-    Up,
-    Down,
-}
-
-impl NudgeDirection {
-    fn delta(self) -> layout_move::Delta {
-        let (dx, dy) = match self {
-            Self::Left => (-1.0, 0.0),
-            Self::Right => (1.0, 0.0),
-            Self::Up => (0.0, -1.0),
-            Self::Down => (0.0, 1.0),
-        };
-        layout_move::Delta { dx, dy }
-    }
-}
-
 /// Every member starts from the same pointer position, so moving a mixed
 /// stored/draft selection preserves its spacing even at the layout's edges.
 struct SelectionDrag {
@@ -801,7 +780,7 @@ impl CanvasState {
 
     /// Stage one arrow-key move on the current layout. Like a drag, this
     /// refuses the whole selection if any member cannot be moved.
-    pub(crate) fn nudge_selection(&mut self, session: &Session, direction: NudgeDirection) -> bool {
+    pub(crate) fn nudge_selection(&mut self, session: &Session, delta: layout_move::Delta) -> bool {
         if self.selection_count(session) == 0
             || self.drag.is_some()
             || self.selection_drag.is_some()
@@ -820,8 +799,7 @@ impl CanvasState {
             self.selected.1 = Some(CANNOT_MOVE_SELECTION);
             return false;
         };
-        let Ok(plan) = layout_move::plan(frames.iter().map(|(_, frame)| *frame), direction.delta())
-        else {
+        let Ok(plan) = layout_move::plan(frames.iter().map(|(_, frame)| *frame), delta) else {
             self.selected.1 = Some(CANNOT_MOVE_SELECTION);
             return false;
         };
@@ -2966,7 +2944,7 @@ mod tests {
         });
         let mut state = CanvasState::default();
         state.select_all(&session);
-        state.nudge_selection(&session, NudgeDirection::Left);
+        state.nudge_selection(&session, layout_move::Delta { dx: -1.0, dy: 0.0 });
         assert!(state.moved().frames.is_empty());
     }
 
@@ -3410,7 +3388,7 @@ mod tests {
             Pos2::ZERO
         )
         .is_none());
-        state.nudge_selection(&session, NudgeDirection::Right);
+        state.nudge_selection(&session, layout_move::Delta { dx: 1.0, dy: 0.0 });
         assert_eq!(state.selection_notice(), Some(CANNOT_MOVE_SELECTION));
         assert!(state.moved().frames.is_empty());
         assert_eq!(state.fields()[0].left, 20.0);
