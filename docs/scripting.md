@@ -832,8 +832,9 @@ Open items:
   ([#96](https://github.com/OpenMaker-Dev/openmaker/issues/96)). Set
   Web Viewer and Perform JavaScript in Web Viewer need a native web viewer
   (the `web-viewer` feature on Linux, under X11 or, on a Wayland session,
-  XWayland, and on macOS; Browse in Form or List view; layout-model.md
-  9.6); elsewhere
+  XWayland, and on macOS; Browse in Form or List view, or in Table view
+  in a part its Table View Properties include; layout-model.md 9.6);
+  elsewhere
   they fail with 116 (no live web
   viewer) rather than succeed. The error codes for a page still loading (5),
   a missing or throwing function (5) and a viewer that is not shown (116)
