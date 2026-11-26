@@ -827,6 +827,18 @@ preview treats a formula over a calculation that draws `Random`, the clock
 or a UUID, and a skip that calculation's value decides, as not known until
 the commit.
 
+A single-repetition Date field with both Creation Date and a calculated
+auto-entry value uses the creation-date rule on creation. An explicit
+assignment during scripted creation keeps the assigned date. A held create
+that also sets another input to the calculation returns error 3 when the
+calculation could replace the date. Updates that would run the calculation
+also return 3. FileMaker Pro measured re-evaluation after commit, and the
+desktop has yet to implement that path. The combined options with Prohibit
+modification or with evaluation enabled for all-empty inputs are
+unsupported. FileMaker Pro measured creation in a local file. Applying
+the same creation rule on a host is inferred.
+[Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7184309937).
+
 **A custom message** is shown for any rule of its field that a write
 breaks, not empty included. One stored as a calculation (`0x8000` with
 `0x80`, the formula in `20`: how FileMaker Pro 26 writes every custom
@@ -1785,9 +1797,10 @@ the starting occurrence, must be as FileMaker Pro writes them. It holds:
   in Japanese.
   The record's match fields may be supported stored Text calculations
   of one repetition, nonglobal, with complete dependencies (#1194), plain
-  fields without auto-entry, or keys whose only auto-entry is
-  `Get ( UUID )` (#657). Unstored/global keys, unsupported or unavailable
-  dependencies and dependency cycles remain refused.
+  fields without auto-entry, or ordinary Text keys with a supported
+  calculated auto-enter. A calculated auto-enter key can read the same row.
+  Unstored/global keys, unsupported or unavailable dependencies and
+  dependency cycles remain refused.
 
 How OpenMaker performs it:
 - A write that sets a match field, also to the value it had, reads the
@@ -1809,6 +1822,15 @@ How OpenMaker performs it:
   behavior, general related calculations, same-value input writes, or
   `0xa0000000` all-empty behavior. Same-value input relookup remains
   inference, as does extending the native result to those conditions.
+- When auto-entry changes a Text key, OpenMaker reads the lookup with that
+  final key. An input edit that retains the key under "Do not replace
+  existing value" also retains the prior looked-up value. FileMaker Pro
+  exposes those changes at New Record and Set Field, and OpenMaker uses
+  the commit-time lookup path. A same-value write to the input of an
+  auto-entered key does not rerun its lookup. OpenMaker refuses Relookup
+  Field Contents through that input with error 3. FileMaker has not been
+  measured for these two cases.
+  [Native measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1036#issuecomment-7185794524).
 - A write that sets the lookup field itself keeps that value. Which came
   last is not known; this is OpenMaker's choice.
 - A write that fires a lookup it could not read is refused with error 3.
@@ -1971,9 +1993,23 @@ application creation plan.
     the self-join, and the commit refuses that read with 3. An empty
     match key is still answered as above.
     [#297](https://github.com/OpenMaker-Dev/openmaker/issues/297)
-  - **What is unmeasured:** sorted or non-equality joins with matches,
-    stored and validation formulas, portal rows made in one commit, and
-    the original solution's context.
+  - **An unsorted group join with unequal row keys** supports direct
+    first-related field reads in do-not-replace auto-entry at commit. The
+    predicates compare two Text fields with themselves across occurrences
+    of the same table, one with equality and the other with inequality.
+    On a local file, creation may leave the group key empty. An
+    existing record may join a group when one field-setting step assigns
+    its previously empty group key and the written and stored row keys
+    are single-line. Both versions of the row must be excluded by the
+    relationship's comparison. FileMaker enters the result at Set Field.
+    OpenMaker stores it at commit for this sequence. A later input edit
+    or clearing the key before commit could otherwise store a different
+    value, so those sequences return error 3. Hosted and routed writes
+    using the grouped self-join return 3.
+    [Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7184309703).
+  - **What is unmeasured:** sorted and other non-equality joins with
+    matches, stored and validation formulas, and portal rows made in one
+    commit.
   - **Its stored row is never read as a related record.** Every write names
     its record (`rules::Written`): new, as reserved by New Record, or
     stored. The stored row holds the values the write replaces.

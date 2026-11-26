@@ -130,6 +130,8 @@ pub(crate) struct Uncommitted {
     /// The cells scripts set, repetitions too (first repetitions are also
     /// drafts by name, which the UI shows).
     pub cells: Cells,
+    /// Exactly one script step set a field in an otherwise clean edit.
+    pub single_field_step: bool,
     /// Related records changed, created or deleted through the record.
     pub related: Vec<RelatedDraft>,
     /// New Record made the record: Revert Record removes it. The fields
@@ -625,6 +627,8 @@ impl Window {
         }
         if let Some(name) = name {
             self.set(provider, name, text.clone())?;
+        } else {
+            self.state.uncommitted.single_field_step = false;
         }
         self.state
             .uncommitted
@@ -700,6 +704,11 @@ impl Window {
             BTreeSet::new(),
             [field.to_owned()].into_iter().collect(),
         )?;
+        let open = &mut self.state.uncommitted;
+        open.single_field_step = !open.new
+            && self.state.drafts.is_empty()
+            && open.cells.is_empty()
+            && open.related.is_empty();
         self.state
             .drafts
             .insert(field.to_owned(), (!text.is_empty()).then_some(text));
@@ -902,6 +911,10 @@ impl Window {
             let pinned = own
                 .and_then(|draft| draft.version.map(|version| (draft.table, version)))
                 .filter(|(table, version)| provider.retain_related_record(*table, id, *version));
+            let single_field_step = open.single_field_step
+                && typed.is_empty()
+                && cells.len() == 1
+                && open.related.is_empty();
             let result = provider.write_record(&ScriptWrite {
                 layout,
                 table: None,
@@ -915,6 +928,7 @@ impl Window {
                 // auto-entered Get ( RecordNumber ) was given then (#526).
                 record_number: open.new.then_some(open.record_number).flatten(),
                 prepared: None,
+                single_field_step,
             });
             if let Some((table, _)) = pinned {
                 provider.release_related_record(table, id);
@@ -991,6 +1005,7 @@ impl Window {
                     .as_ref()
                     .filter(|_| reserved.is_none())
                     .map(|prepared| prepared.id),
+                single_field_step: false,
             };
             let mut written = provider.write_record(&write);
             if write.prepared.is_some()
@@ -1509,6 +1524,7 @@ impl Window {
             privilege_set,
             record_number,
             prepared: None,
+            single_field_step: false,
         };
         let (record, saved) = match provider.write_record(&write) {
             Ok(record) => (record, !session && !provider.transaction_open()),

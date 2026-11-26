@@ -75,7 +75,7 @@ keyring = { version = "3.6.3", features = ["apple-native"] }
 # The system menu bar (Apache-2.0 OR MIT).
 muda = { version = "0.21", default-features = false }
 # The `web-viewer` feature's backend (wry: MIT OR Apache-2.0).
-wry = { version = "0.57", default-features = false, features = ["os-webview"], optional = true }
+wry = { version = "0.58", default-features = false, features = ["os-webview"], optional = true }
 # AppKit (the versions wry uses; MIT): the views web viewers place pages
 # in, the open and save panels (`file_panel`), and the Edit menu's text
 # pasteboard.
@@ -101,13 +101,13 @@ x11rb = "0.13"
 # (accesskit_unix), with its blocking calls (MIT).
 zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
 # The `web-viewer` feature's backend (wry and gtk-rs: MIT OR Apache-2.0).
-wry = { version = "0.57", default-features = false, features = ["os-webview"], optional = true }
-gtk = { version = "0.18", optional = true }
-gdkx11 = { version = "0.18", optional = true }
+wry = { version = "0.58", default-features = false, features = ["os-webview"], optional = true }
+gtk = { version = "0.19", optional = true }
+gdkx11 = { version = "0.19", optional = true }
 # The page's message handler, pinned to the versions wry uses (wry's own
 # IPC drops messages from pages whose URL has no authority, as data: URLs).
-webkit2gtk = { version = "=2.0.2", features = ["v2_38"], optional = true }
-javascriptcore-rs = { version = "=1.1.2", features = ["v2_28"], optional = true }
+webkit2gtk = { version = "=3.0.0", features = ["v2_38"], optional = true }
+javascriptcore-rs = { version = "=2.0.0", features = ["v2_28"], optional = true }
 # The libraries winit's X11 backend opens, looked for before choosing it (the
 # loaders and versions winit uses; MIT).
 x11-dl = { version = "2.19.1", optional = true }

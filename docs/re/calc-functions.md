@@ -977,7 +977,7 @@ s33)", says otherwise. Answers that only a hosted file gives are marked
 | 43 | RecordAccess | `2` | `2` [=] | `0` | FileMaker Pro 6.3 (O1); server s31 |
 | 44 | HighContrastState | `0` | `0` [=] | empty | FileMaker Pro 6.3 (O1); server s31 |
 | 45 | SystemAppearance | `Aqua` | empty [=] | empty | FileMaker Pro 6.3 (O1); server s31 |
-| 46 | StatusAreaState | `1` toolbar shown, `0` hidden | `1` [=] | empty | FileMaker Pro 6.3 (O1); server s31 |
+| 46 | StatusAreaState | `1` shown, `0` hidden, `2` shown and locked, `3` hidden and locked | `1` [=] | empty | FileMaker Pro 6.3 (O1) and [26.1.1 toolbar comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1040#issuecomment-7188552787); server s31 |
 | 47 | LayoutViewState | the window's view: `0` form, `1` list, `2` table | `0` / `1` [=] | empty | FileMaker Pro 6.3 (O3); server s31 |
 | 48 | WindowName | the window's name: New Window's or Set Window Title's, else the file's; each window its own | `work` [=] | empty | Claris reference / spec; server s31, s35 (13.25) |
 | 49 | WindowHeight | outer height in points (`900`; `848` after hiding the toolbar) | `480` [=] | empty | FileMaker Pro 6.3 (O1); server s31 |
