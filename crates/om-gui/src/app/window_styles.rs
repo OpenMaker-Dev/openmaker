@@ -541,9 +541,21 @@ mod tests {
         app.apply(&ctx, Action::SelectWindow(2));
         assert_eq!(app.w.id, 3);
         assert!(app.docs().all(|d| !d.hidden));
+        let epoch = app.epoch;
+        // The worker's answer to Show Window comes after any hide a script
+        // sent before it took the request, and shows the window again.
+        app.w.hidden = true;
+        app.on_response(
+            &ctx,
+            Response {
+                epoch,
+                window: 1,
+                reply: Reply::WindowShown(3),
+            },
+        );
+        assert!(!app.w.hidden);
         let mut stale = app.window_state();
         stale.title = Some("Stale".into());
-        let epoch = app.epoch;
         app.on_response(
             &ctx,
             Response {

@@ -6683,7 +6683,13 @@ impl OpenMakerApp {
         }
         self.w.connection_lost = Some(err.message.clone());
         let file = self.w.file_id;
-        for id in self.window_ids() {
+        // Hidden ones too, which Window > Show Window can show.
+        let ids: Vec<u32> = self
+            .docs()
+            .filter(|d| d.file_id == file)
+            .map(|d| d.id)
+            .collect();
+        for id in ids {
             self.with_window(id, |app| {
                 if app.w.file_id != file {
                     return;
@@ -6801,6 +6807,7 @@ impl OpenMakerApp {
             Reply::ConnectionLost(_)
             | Reply::HostMessages(_)
             | Reply::Reconnected(_)
+            | Reply::WindowShown(_)
             | Reply::Released => {}
             // Unwrapped for the file's windows in `on_response`; here, this
             // window's file takes the schema before the answer.
@@ -8064,7 +8071,11 @@ mod tests {
             })
             .unwrap();
         }
+        // A hidden window of the file is lost too (Window > Show Window
+        // can show it).
+        app.windows[0].hidden = true;
         app.lose_connection(&DataError::connection_lost("The host went away."));
+        assert!(app.docs().all(|d| d.connection_lost.is_some()));
         assert_eq!(app.w.id, 1, "the front window is unchanged");
         for (index, ctx) in contexts.iter().enumerate() {
             app.with_window(index as u32 + 1, |app| {

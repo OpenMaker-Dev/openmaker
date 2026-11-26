@@ -854,6 +854,15 @@ impl OpenMakerApp {
                 });
             }
             Reply::Script(ScriptEvent::CloseWindow(id)) => self.remove_window(id),
+            // After any hide a script sent before the worker took the
+            // request, as the scripts have it (`show_window`).
+            Reply::WindowShown(id) => {
+                for doc in std::iter::once(&mut self.w).chain(&mut self.windows) {
+                    if doc.id == id {
+                        doc.hidden = false;
+                    }
+                }
+            }
             // A script that stopped, or closed its file, after its window
             // went: the app's script state ends all the same (else every
             // window's actions would wait behind it), and the front window
