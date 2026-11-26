@@ -225,6 +225,10 @@ pub(crate) enum Request {
         layout_id: u32,
         record: Option<i64>,
     },
+    /// Window > Show Window showed this hidden window: the scripts'
+    /// windows show it too (`Shared::observe`); the provider has nothing
+    /// to do.
+    ShowWindow(u32),
     Close,
 }
 
@@ -1515,6 +1519,7 @@ fn answer(
             });
             Reply::Released
         }
+        Request::ShowWindow(_) => Reply::Released,
         Request::ReleaseRecords(records) => {
             for (layout, record) in records {
                 let _ = contain(provider, |p| {

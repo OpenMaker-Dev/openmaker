@@ -404,6 +404,45 @@ impl OpenMakerApp {
         true
     }
 
+    /// Window > Show Window's windows: every open file's, front first, then
+    /// from the most recently in front, hidden ones too, each with its
+    /// title and whether it is hidden. Cards are left out, as the Window
+    /// menu leaves them out, and so is Home's empty window.
+    pub(super) fn show_window_list(&self) -> Vec<(u32, String, bool)> {
+        std::iter::once(&self.w)
+            .chain(self.windows.iter().rev())
+            .filter(|d| d.session.is_some() && d.style.card().is_none())
+            .map(|d| (d.id, self.doc_title(d), d.hidden))
+            .collect()
+    }
+
+    /// Window > Show Window (and the Window menu's list): window `id` comes
+    /// to the front, and is shown if it was hidden, as a file a script
+    /// opened hidden is (a close trigger's too, which leaves the file open
+    /// behind Home, #679). The scripts' windows are told, so that
+    /// `WindowNames` and Select Window find it shown. Over Home, which no
+    /// file holds, the window takes Home's place rather than opening a
+    /// window of its own beside it. False when it stays behind
+    /// ([`Self::switch_blocked`]) or there is no window `id`.
+    pub(super) fn show_window(&mut self, ctx: &egui::Context, id: u32) -> bool {
+        let home = self.front_doc().session.is_none();
+        if !self.bring_to_front(id) {
+            return false;
+        }
+        // `bring_to_front` keeps the window that was in front last.
+        if home
+            && self.w.session.is_some()
+            && self.windows.last().is_some_and(|d| d.session.is_none())
+        {
+            self.windows.pop();
+        }
+        if self.w.hidden {
+            self.w.hidden = false;
+            self.request(ctx, crate::worker::Request::ShowWindow(self.w.id));
+        }
+        true
+    }
+
     /// Restore the Script Workspace when its file comes back to the front.
     pub(super) fn unpark_workspace(&mut self) {
         self.workspace = self.parked_workspaces.remove(&self.w.file_id);

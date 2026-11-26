@@ -515,6 +515,14 @@ impl Shared {
             Request::UpdateRecord { .. } | Request::DeleteRecord { .. } => {
                 *self.file.cache.get_mut() = CalcData::default();
             }
+            // The request goes to the window's file, which is current here.
+            Request::ShowWindow(id) => {
+                for window in std::iter::once(&mut self.file.window).chain(&mut self.file.others) {
+                    if window.id() == *id {
+                        window.state.hidden = false;
+                    }
+                }
+            }
             _ => {}
         }
     }

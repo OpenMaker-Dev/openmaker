@@ -1004,6 +1004,26 @@ fn desktop_open_file_reuses_hidden_peers_and_resolves_a_cycle_to_root() {
     );
     assert_eq!(c.files.peers.len(), 1);
     assert!(c.files.peers.values().all(|f| f.state.window.state.hidden));
+    // Window > Show Window showed the peer's window: scripts find it shown.
+    let window = c.files.peers.values().next().unwrap().state.window.id();
+    let mut store = Store;
+    c.session.handle(
+        &mut Io {
+            provider: &mut c.provider,
+            files: &mut c.files,
+            store: &mut store,
+            jobs: &c.jobs,
+            responses: &c.responses,
+        },
+        Job {
+            epoch: 1,
+            window,
+            ctx: Default::default(),
+            request: Request::ShowWindow(window),
+        },
+    );
+    assert_eq!(c.session.s.file.window.id(), window);
+    assert!(!c.session.s.file.window.state.hidden);
 }
 
 #[test]

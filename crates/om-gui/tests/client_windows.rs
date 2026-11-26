@@ -19,6 +19,8 @@ mod common;
 #[path = "../../om-server/tests/fixtures/tasks.rs"]
 mod fixture;
 mod hosted;
+#[path = "../../om-provider/tests/common/related.rs"]
+mod related;
 
 use std::path::Path;
 
@@ -583,8 +585,6 @@ fn closing_the_file_from_a_window_behind_the_front_one_closes_every_window() {
 /// presentation request. A hidden open and a later explicit selection differ.
 #[test]
 fn a_visible_peer_open_is_presented_even_when_the_script_returns_to_its_caller() {
-    #[path = "../../om-provider/tests/common/related.rs"]
-    mod related;
     use om_hbam::OwnedNode;
     let open = |hidden| {
         let mut s = ScriptStep::new(33);
@@ -769,4 +769,105 @@ fn a_visible_peer_open_is_presented_even_when_the_script_returns_to_its_caller()
     });
     // Answered there, the caller stays in front (as after any prompt).
     assert_eq!(app.state().window_name(), "Root (127.0.0.1)");
+}
+
+/// A file's OnLastWindowClose that opens another file hidden leaves that
+/// file open behind Home once the first one closes, where every command
+/// that would open a file says other files are open (#679). Window > Show
+/// Window lists the hidden file's window in parentheses; choosing it shows
+/// it in Home's place, File > Close closes it, and Home's commands work
+/// again.
+#[test]
+fn show_window_shows_a_file_a_close_trigger_left_open_hidden() {
+    use om_hbam::OwnedNode;
+    let mut open_hidden = ScriptStep::new(33);
+    open_hidden.set_calculation(0, Some(&calc("\"Peer\"")));
+    open_hidden.flags |= flag::OPTION;
+    let mut root = fixture::tree(
+        &[fixture::script(1, "Open peer hidden", vec![open_hidden])],
+        true,
+    );
+    // The document preferences with OnLastWindowClose running script 1,
+    // ending after the default layout (file-metadata.md 3.1).
+    root.put(
+        &[&[2], &[0x18]],
+        OwnedNode::leaf([], vec![0, 0, 4, 3, 0, 0, 0, 2, 1, 1, 0]),
+    );
+    let files: Vec<(&str, OwnedNode)> = vec![
+        ("Root.fmp12", root),
+        ("Peer.fmp12", fixture::tree(&[], true)),
+    ];
+    let host = related::Host::new("hidden-peer-show-window", files);
+    let provider = Box::new(host.provider());
+    let connection = host.connection("Root.fmp12");
+    let folder = tempfile::tempdir().unwrap();
+    let settings = folder.path().join("settings.json");
+    let mut app = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1060.0, 760.0))
+        .renderer(common::renderer())
+        .build_eframe(move |_cc| {
+            om_gui::OpenMakerApp::with_license_store(provider, Box::new(common::NoLicense))
+                .with_settings_file(settings)
+                .with_home()
+                .open_on_launch(connection)
+        });
+    common::wait_until(&mut app, "root", |a| a.state().is_settled());
+    assert_eq!(app.state().window_name(), "Root (127.0.0.1)");
+
+    common::open_menu(&mut app, "File");
+    app.get_by_role_and_label(egui::Role::Button, "Close")
+        .click();
+    app.run_steps(2);
+    common::wait_until(&mut app, "Home", |a| {
+        !a.state().is_open() && !a.state().script_running()
+    });
+    assert_eq!(app.state().error(), None);
+    // Behind Home, the hidden file refuses Show Hosts, and the alert says
+    // where it is.
+    common::open_menu(&mut app, "File");
+    common::click(&mut app, "Hosts");
+    common::click(&mut app, "Show Hosts...");
+    assert!(
+        app.state()
+            .error()
+            .is_some_and(|e| e.contains("Window > Show Window")),
+        "{:?}",
+        app.state().error()
+    );
+    common::click(&mut app, "OK");
+    assert_eq!(app.state().error(), None);
+
+    common::open_menu(&mut app, "Window");
+    common::click(&mut app, "Show Window");
+    common::click(&mut app, "(Peer (127.0.0.1))");
+    common::wait_until(&mut app, "the hidden file shown", |a| {
+        a.state().is_settled()
+    });
+    // In Home's place: the file's window is the only one.
+    assert_eq!(app.state_mut().window_titles(), ["Peer (127.0.0.1)"]);
+    // Shown, it is listed without parentheses.
+    common::open_menu(&mut app, "Window");
+    common::click(&mut app, "Show Window");
+    assert!(app.query_by_label("(Peer (127.0.0.1))").is_none());
+    assert_eq!(
+        app.query_all(By::new().role(egui::Role::Button).label("Peer (127.0.0.1)"))
+            .count(),
+        2,
+        "Show Window's row and the window list's"
+    );
+    app.key_press(egui::Key::Escape);
+    app.run_steps(2);
+
+    common::open_menu(&mut app, "File");
+    app.get_by_role_and_label(egui::Role::Button, "Close")
+        .click();
+    app.run_steps(2);
+    common::wait_until(&mut app, "the file to close", |a| {
+        !a.state().is_open() && !a.state().script_running()
+    });
+    common::open_menu(&mut app, "File");
+    common::click(&mut app, "Hosts");
+    common::click(&mut app, "Show Hosts...");
+    common::wait_for_label(&mut app, "Add Host...");
+    assert_eq!(app.state().error(), None);
 }
