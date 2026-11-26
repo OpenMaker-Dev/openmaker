@@ -612,9 +612,13 @@ list shows them.
   as FileMaker Server lists it no more.
 
 A snapshot takes only the registry's lock, and sizes come from the file
-system, so it never waits for a file that a request is using. The `appType`
-byte is passed on as it is; the console maps FileMaker's application types
-(re/calc-functions.md 6) to the client families of re 7.
+system, so it never waits for a file that a request is using. A row reads
+its file's size before it looks at the file's slot, and the look keeps
+nothing of the file, so a size read from a mount that does not answer
+keeps no close from finishing (`CLOSED` waits until nothing holds the
+file, below). The `appType` byte is passed on as it is; the console maps
+FileMaker's application types (re/calc-functions.md 6) to the client
+families of re 7.
 
 **Disconnect.** `ServerHandle::disconnect_client` marks the connection and
 returns at once. The mark is checked at every read of the client's socket,

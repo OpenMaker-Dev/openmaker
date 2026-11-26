@@ -1998,13 +1998,14 @@ pub struct Slot {
     state: Mutex<SlotState>,
 }
 
-/// A slot as one look saw it ([`Slot::seen`]).
+/// A slot as one look saw it ([`Slot::seen`]), without its file.
 pub struct SlotSeen {
     pub status: FileStatus,
-    /// Why the file is closed: its last open failed.
+    /// Why the file is closed (its last open failed), or, while it is
+    /// served, why it takes no more changes ([`Hosted::writes_refused`]).
     pub error: Option<String>,
-    /// The file, while it is served.
-    pub file: Option<Arc<Hosted>>,
+    /// Why the served file is read-only ([`Hosted::read_only_cause`]).
+    pub read_only: Option<crate::store::ReadOnlyCause>,
 }
 
 #[derive(Debug)]
@@ -2045,16 +2046,26 @@ impl Slot {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The file's status, why it is closed and the file while it is served,
-    /// from one look at the slot, so that they agree with each other: a
-    /// close that finishes meanwhile is seen whole or not at all (the
-    /// administrator's list of files, `ServerHandle::files`).
+    /// The file's status, why it is closed or takes no more changes, and
+    /// why it is read-only, from one look at the slot, so that they agree
+    /// with each other: a close that finishes meanwhile is seen whole or
+    /// not at all (the administrator's list of files,
+    /// `ServerHandle::files`). The file is read under the slot's lock and
+    /// not handed out: a close finishes only once nothing else holds it
+    /// ([`Slot::finish_close_if_drained`]), so a list that kept it, while
+    /// it read a size from a mount that does not answer, would keep the
+    /// file closing. Both causes are read without the store's lock, which
+    /// a save holds through its write and flush.
     pub fn seen(&self) -> SlotSeen {
         let state = self.state();
+        let file = state.file.as_deref();
         SlotSeen {
             status: state.status,
-            error: state.error.clone(),
-            file: state.file.clone(),
+            error: state
+                .error
+                .clone()
+                .or_else(|| file.and_then(|file| file.writes_refused().map(str::to_owned))),
+            read_only: file.and_then(Hosted::read_only_cause),
         }
     }
 
