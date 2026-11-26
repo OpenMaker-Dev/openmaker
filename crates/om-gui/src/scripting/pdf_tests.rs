@@ -514,13 +514,11 @@ fn static_pictures_embed_once_in_pdf_and_fake_print_and_bad_images_refuse_atomic
         c.run_in(window());
         assert_eq!(c.result(), "3|3|9");
         assert!(
-            c.session
-                .s
-                .failure
+            crate::scripting::host::last_failure()
                 .as_deref()
                 .is_some_and(|f| f.starts_with(reason)),
             "{:?}",
-            c.session.s.failure
+            crate::scripting::host::last_failure()
         );
         assert_eq!(std::fs::read(&path).unwrap(), saved);
         assert_eq!(fake.jobs.lock().unwrap().len(), 1);
@@ -1278,10 +1276,7 @@ fn sliding_address_blocks_close_up_and_resize_parts_in_pdf_print_and_preview_pag
     c.session.s.file.rendered.clear();
     c.run_in(state);
     assert!(c.result().starts_with("3|3|3|"), "{}", c.result());
-    assert!(c
-        .session
-        .s
-        .failure
+    assert!(crate::scripting::host::last_failure()
         .as_deref()
         .is_some_and(|f| f.contains("slide left and up in one part")));
     assert_eq!(std::fs::read(&path).unwrap(), saved);
@@ -1886,7 +1881,12 @@ fn conditional_formatting_prints_on_the_records_where_it_holds() {
         index: 2,
         ..Default::default()
     });
-    assert_eq!(c.result(), "0", "{:?}", c.session.s.failure);
+    assert_eq!(
+        c.result(),
+        "0",
+        "{:?}",
+        crate::scripting::host::last_failure()
+    );
     let saved = std::fs::read(&path).unwrap();
     let layout = &conditional_document().layout;
     let paper = om_layout::pagination::PageSize::for_layout(layout).unwrap();
@@ -2457,7 +2457,12 @@ fn tab_controls_print_their_front_panel_and_tabs() {
         panels: [((1, 50), 51)].into(),
         ..Default::default()
     });
-    assert_eq!(c.result(), "0", "{:?}", c.session.s.failure);
+    assert_eq!(
+        c.result(),
+        "0",
+        "{:?}",
+        crate::scripting::host::last_failure()
+    );
     let saved = std::fs::read(&path).unwrap();
     let pdf = String::from_utf8_lossy(&saved).into_owned();
     // Nine records, one body a page: the first page's body shows Alpha's.
@@ -4357,7 +4362,12 @@ fn report_calculations_read_the_running_scripts_variables() {
         index: 2,
         ..Default::default()
     });
-    assert_eq!(c.result(), "0|Ada|Lovelace", "{:?}", c.session.s.failure);
+    assert_eq!(
+        c.result(),
+        "0|Ada|Lovelace",
+        "{:?}",
+        crate::scripting::host::last_failure()
+    );
     let pdf = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
     // Twice each record, over the three pages: Signed and Queried.
     assert_eq!(text_origins(&pdf, 3, "Ada / Lovelace").len(), 18);
@@ -4999,7 +5009,7 @@ fn layout_symbols_print_as_browse_shows_them() {
     let [error, user, before, after] = result.split('|').collect::<Vec<_>>()[..] else {
         panic!("{result}");
     };
-    assert_eq!(error, "0", "{:?}", c.session.s.failure);
+    assert_eq!(error, "0", "{:?}", crate::scripting::host::last_failure());
     let pdf = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
     // Each record's once, in found-set order over the three pages.
     let pages: Vec<usize> = (1..=9)

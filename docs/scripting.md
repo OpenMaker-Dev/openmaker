@@ -315,9 +315,13 @@ FileMaker XML refuses the option, whose XML shape is not recorded.
 Root-file layouts backed by a readable related hosted table can edit existing
 records. Browse and Set Field write their ordinary stored text, number, date,
 time, timestamp and container fields, a container's data going to the owning
-file's library (record-writes.md, Limits). Set Field also writes each
-repetition of such a field that repeats, as on a local table; Browse does
-not offer a repeating field there yet. The
+file's library (record-writes.md, Limits). Set Field and Browse also write
+each repetition of such a text, number, date, time or timestamp field that
+repeats, up to the 255th, as on a local table: Browse enters a later
+repetition by its cell, and the owning file checks and writes it with the
+record. A container's later repetitions are not written, as on a local
+table; nor is a field whose later repetition's cell is another field's id,
+as a malformed file can make it. The
 owning provider supplies field rules, auto-entry, custom functions, stored
 calculations, version checks, locks, commit and verified readback. The root
 layout and script remain the caller's context, and returned calculations and
@@ -342,10 +346,22 @@ host refusing a later file, after an earlier file's commit leaves that earlier
 file committed (record-writes.md, "A script's transaction across files").
 A script's Delete Record inside one is held there too; the user's own edits
 and deletions on such a layout while the script is paused are refused
-([#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)).
-Import, writes to the layout's related records in other tables, globals and
-Browse entry of repeating fields remain refused on these layouts
-([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). The owning file
+([#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)), and so is the
+user's typing into a later repetition there when its save would enter a
+script's open transaction; the draft is kept.
+Writes to the layout's related records in other tables remain refused on
+these layouts ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)).
+Import Records on such a layout imports into its table through the owning
+file, as that file's own Import Records would, and a new row's record joins
+the window's found set. The layout is none of the owning file's, so an
+auto-entry reading `Get ( LayoutNumber )` has no number there and refuses the
+row, as for the owning file's other writes from this file. Inside a script's
+transaction each row is refused (3) before anything is written, so Import
+Records counts every row as skipped and adds none (729), for now
+([#933](https://github.com/OpenMaker-Dev/openmaker/issues/933)). A global of
+another file's table, set by Set Field from any layout or typed on such a
+layout, is that file's session value (record-writes.md, "A related file's
+globals"). The owning file
 is reached through its data source's paths, on its own host
 (desktop-files.md); native FileMaker acceptance is unmeasured.
 

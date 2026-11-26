@@ -2765,9 +2765,9 @@ fn query(
                     run_query(file, read, program, late, &context)
                 };
                 let ran = if repeatable {
-                    reading.serve(&mut run)
+                    reading.serve_find(&mut run)
                 } else {
-                    reading.serve_once(&mut run)
+                    reading.serve_find_once(&mut run)
                 };
                 match ran {
                     // Read-only by the time the program runs: refused as it
@@ -3028,6 +3028,89 @@ fn run_query(
     Ran::Answered(Queried(outcome), source.issued.into_inner())
 }
 
+/// A table's record list `[T, 0d]` as `view` lists its entries, never held
+/// as a tree (`om_query::Source::record_ids`).
+pub(crate) fn listed_record_ids(
+    view: &dyn crate::engine::View,
+    table: &[u8],
+) -> om_hbam::Result<RidList> {
+    let path: [&[u8]; 2] = [table, &[0x0d]];
+    let mut ids = RidList::new();
+    for entry in view.children(&path, std::ops::Bound::Unbounded, Direction::Forward) {
+        let entry = entry?;
+        ids.add_entry(
+            &entry.segment,
+            entry.head.value.as_deref().unwrap_or_default(),
+        )?;
+    }
+    Ok(ids)
+}
+
+/// A node's children listed through a view a page of heads at a time
+/// ([`crate::engine::View::children_page`]), each child read with its
+/// subtree only by its key, as a find reads a field's index: the keys from
+/// a bound, an entry's records only when an instruction takes them, never
+/// the index whole (`om_query::Listing`; docs/server-storage.md 5,
+/// "Views").
+pub(crate) struct ViewListing<'v> {
+    view: &'v dyn crate::engine::View,
+    path: Vec<Vec<u8>>,
+}
+
+impl<'v> ViewListing<'v> {
+    /// The listing of the node at `path`, `None` when there is no node.
+    pub(crate) fn of(
+        view: &'v dyn crate::engine::View,
+        path: &[&[u8]],
+    ) -> om_hbam::Result<Option<om_query::Children<'v>>> {
+        if view.node(path)?.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(om_query::Children::Listed(Box::new(ViewListing {
+            view,
+            path: path.iter().map(|s| s.to_vec()).collect(),
+        }))))
+    }
+}
+
+impl om_query::Listing for ViewListing<'_> {
+    fn keys<'a>(
+        &'a self,
+        from: std::ops::Bound<&[u8]>,
+        direction: om_query::Direction,
+        max: usize,
+        out: &mut Vec<Cow<'a, [u8]>>,
+    ) -> om_hbam::Result<bool> {
+        let path: Vec<&[u8]> = self.path.iter().map(Vec::as_slice).collect();
+        let direction = match direction {
+            om_query::Direction::Forward => Direction::Forward,
+            om_query::Direction::Backward => Direction::Backward,
+        };
+        let mut page = Vec::new();
+        let more = self
+            .view
+            .children_page(&path, from, direction, max, &mut page)?;
+        out.extend(page.into_iter().map(|child| child.segment));
+        Ok(more)
+    }
+
+    /// The entry within the work its reader has left
+    /// ([`crate::engine::View::subtree_within`]): the store engine counts
+    /// each node as the reader counts it and refuses at the first past
+    /// either counter, so that an entry past what the program may still read
+    /// is never built whole; the file engine lends it, and the reader counts
+    /// it.
+    fn entry<'a>(
+        &'a self,
+        key: &[u8],
+        limit: om_query::program::Size,
+    ) -> om_hbam::Result<Option<Cow<'a, OwnedNode>>> {
+        let mut path: Vec<&[u8]> = self.path.iter().map(Vec::as_slice).collect();
+        path.push(key);
+        Ok(self.view.subtree_within(&path, limit)?)
+    }
+}
+
 /// A hosted file as a query source, read through a view and its derived
 /// state. Restricted accounts see account-member parents, other whole
 /// members and the `04` and `06` children as missing; their own whole
@@ -3053,6 +3136,22 @@ struct QuerySource<'s> {
     failed: std::cell::RefCell<Option<ViewError>>,
 }
 
+impl QuerySource<'_> {
+    /// Whether what the source answers at `path`, or below it, may differ
+    /// from what the view holds there: a credential path a restricted
+    /// account reads, its own account's member, or a path the view limits
+    /// filter ([`crate::views::ViewFilter::filters`]).
+    fn filtered(&self, path: &[&[u8]]) -> bool {
+        let segments = || path.iter().copied();
+        (self.restricted
+            && (credential_path(segments())
+                || self
+                    .account_key
+                    .is_some_and(|key| account_member_path(segments(), key))))
+            || self.view.as_ref().is_some_and(|view| view.filters(path))
+    }
+}
+
 impl om_query::Source for QuerySource<'_> {
     fn catalog(&self) -> om_hbam::Result<om_hbam::Catalog> {
         Ok(self.read.derived.catalog().clone())
@@ -3063,6 +3162,11 @@ impl om_query::Source for QuerySource<'_> {
             .account_key
             .is_some_and(|key| self.restricted && account_member_path(path.iter().copied(), key));
         if self.restricted && credential_path(path.iter().copied()) && !own {
+            return Ok(None);
+        }
+        // What the view limits hide is not read at all: a view-limited
+        // table's index is absent, not read whole and then dropped.
+        if self.view.as_ref().is_some_and(|view| view.withholds(path)) {
             return Ok(None);
         }
         let node = self.read.view.subtree(path, NO_LIMIT)?;
@@ -3084,31 +3188,61 @@ impl om_query::Source for QuerySource<'_> {
         })
     }
 
+    /// The node alone, as [`om_query::Source::node`] would give it, read
+    /// from the view's head and never from a subtree: a credential path a
+    /// restricted account may not read is missing; its own account's
+    /// member keeps only its metadata's children (`account_metadata`),
+    /// which leaves its head as it is (a node with children is a list,
+    /// pushed, in either engine, so it stays one whatever children go); and
+    /// the view limits answer from the head ([`crate::views::ViewFilter::head`]).
+    fn head(&self, path: &[&[u8]]) -> om_hbam::Result<Option<om_query::Head>> {
+        let own = self
+            .account_key
+            .is_some_and(|key| self.restricted && account_member_path(path.iter().copied(), key));
+        if self.restricted && credential_path(path.iter().copied()) && !own {
+            return Ok(None);
+        }
+        if self.view.as_ref().is_some_and(|view| view.withholds(path)) {
+            return Ok(None);
+        }
+        let Some(head) = self.read.view.node(path)? else {
+            return Ok(None);
+        };
+        let head = match &self.view {
+            Some(view) if view.filters(path) => view.head(self.read, path, head)?,
+            _ => Some(head),
+        };
+        Ok(head.map(|head| om_query::Head {
+            list: head.list,
+            value: head.value.map(Cow::into_owned),
+        }))
+    }
+
+    /// A node's children listed through the view a page at a time
+    /// ([`ViewListing`]: a field's index, which a find reads an entry at a
+    /// time), when nothing the source filters reaches the node; through
+    /// [`om_query::Source::node`], whole, otherwise (and not read where the
+    /// view limits hide it: a view-limited table's index is absent).
+    fn children(&self, path: &[&[u8]]) -> om_hbam::Result<Option<om_query::Children<'_>>> {
+        if self.filtered(path) {
+            return Ok(self.node(path)?.map(om_query::Children::Whole));
+        }
+        ViewListing::of(self.read.view, path)
+    }
+
     /// The record list's entries as the view lists them, never held as a
     /// tree, when no view limit filters what the account reads; through
     /// [`om_query::Source::node`] otherwise. No credential path is a
     /// record list.
     fn record_ids(&self, table: &[u8]) -> om_hbam::Result<RidList> {
-        let path: [&[u8]; 2] = [table, &[0x0d]];
         if self.view.is_some() {
+            let path: [&[u8]; 2] = [table, &[0x0d]];
             return Ok(match self.node(&path)? {
                 Some(node) => RidList::from_owned(&node)?,
                 None => RidList::new(),
             });
         }
-        let mut ids = RidList::new();
-        for entry in self
-            .read
-            .view
-            .children(&path, std::ops::Bound::Unbounded, Direction::Forward)
-        {
-            let entry = entry?;
-            ids.add_entry(
-                &entry.segment,
-                entry.head.value.as_deref().unwrap_or_default(),
-            )?;
-        }
-        Ok(ids)
+        listed_record_ids(self.read.view, table)
     }
 
     fn index_on_demand(
@@ -4284,6 +4418,192 @@ fn exception(request_id: u32, name: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A query source's head of a node is what its node would give, read
+    /// from the view's head and never from a subtree, for every path of a
+    /// small file (and paths it does not hold): for full access; for a
+    /// restricted account (the credential paths it may not read, its own
+    /// account's member kept to its metadata); and with view limits (a
+    /// table whose records the account may not view: the table, its
+    /// records, a record and a cell of it, its index container, a field's
+    /// indexes and an entry, its container library; a table with a field
+    /// without access: its globals and a hidden cell; the file's library
+    /// and a member of it; the root).
+    #[test]
+    fn a_head_is_the_head_of_the_node_the_source_would_give() {
+        use crate::scripts::fixture;
+        use om_data::containers::LIBRARY;
+        use om_hbam::slot::uint_segment;
+        let mut root = fixture::tree(&[], true);
+        let (tasks, notes) = (uint_segment(fixture::TABLE), uint_segment(fixture::NOTES));
+        let name = uint_segment(fixture::NAME);
+        let ids = |ids: &[u64]| ids.iter().copied().collect::<RidList>();
+        for (key, records) in [
+            (b"\x01ship".as_slice(), ids(&[2])),
+            (b"\x01write", ids(&[1])),
+        ] {
+            root.put(
+                &[&tasks, &[1], &name, &[0], key],
+                records.to_node(Vec::new()),
+            );
+        }
+        root.put(
+            &[&tasks, &[1], &name, &[0x10]],
+            OwnedNode::leaf(Vec::new(), vec![0; 16]),
+        );
+        for (table, member) in [(&tasks[..], [1u8]), (&notes[..], [2])] {
+            root.put(
+                &[table, &[LIBRARY], &[5], &member],
+                OwnedNode::leaf(Vec::new(), b"data".to_vec()),
+            );
+        }
+        root.put(
+            &[&[LIBRARY], &[5], &[1]],
+            OwnedNode::leaf(Vec::new(), b"file's".to_vec()),
+        );
+        root.put(
+            &[&[LIBRARY], &[0x10]],
+            OwnedNode::leaf(Vec::new(), b"named".to_vec()),
+        );
+        for (field, value) in [([1u8], b"hidden".as_slice()), ([2], b"shown")] {
+            root.put(
+                &[&notes, &[8], &field],
+                OwnedNode::leaf(Vec::new(), value.to_vec()),
+            );
+        }
+        root.put(
+            &[&notes, &[5], &[1], &[1]],
+            OwnedNode::leaf(Vec::new(), b"a note".to_vec()),
+        );
+        let store = crate::store::tests::store_of(root.clone());
+        let tree = store.tree_view();
+        let read = FileRead {
+            view: &tree,
+            derived: store.derived(),
+            waiting: store.waiting(),
+            read_only: false,
+            writes_refused: None,
+        };
+        // Every path of the file, and some it does not hold.
+        let mut paths: Vec<Vec<Vec<u8>>> = Vec::new();
+        let mut stack: Vec<(Vec<Vec<u8>>, &OwnedNode)> = vec![(Vec::new(), &root)];
+        while let Some((path, node)) = stack.pop() {
+            for child in &node.children {
+                let mut below = path.clone();
+                below.push(child.segment.clone());
+                stack.push((below, child));
+            }
+            paths.push(path);
+        }
+        for missing in [
+            vec![vec![LIBRARY], vec![9]],
+            vec![tasks.clone(), vec![1], vec![9]],
+            vec![tasks.clone(), vec![1], name.clone(), vec![0], vec![9]],
+            vec![vec![23], vec![1], vec![5], vec![9]],
+        ] {
+            paths.push(missing);
+        }
+        let hidden: crate::views::HiddenFields =
+            [(notes.clone(), [vec![1u8]].into_iter().collect())]
+                .into_iter()
+                .collect();
+        let source = |restricted: bool, view: bool| QuerySource {
+            read,
+            issued: Default::default(),
+            restricted,
+            account_key: Some(&[3][..]),
+            late: false,
+            view: view
+                .then(|| crate::views::ViewFilter::of([(tasks.clone(), None)], hidden.clone())),
+            built: Default::default(),
+            failed: Default::default(),
+        };
+        let mut compared = 0;
+        for (restricted, view) in [(false, false), (true, false), (false, true), (true, true)] {
+            let source = source(restricted, view);
+            for path in &paths {
+                let path: Vec<&[u8]> = path.iter().map(Vec::as_slice).collect();
+                let whole = om_query::Source::node(&source, &path).unwrap();
+                let expected = whole.map(|node| om_query::Head::of(&node));
+                let head = om_query::Source::head(&source, &path).unwrap();
+                assert_eq!(
+                    head, expected,
+                    "restricted {restricted}, view {view}: {path:02x?}"
+                );
+                compared += 1;
+            }
+        }
+        assert!(compared > 200, "{compared}");
+    }
+
+    /// A head read of a record a view limit withholds notes the record
+    /// withheld, as a read of it does (its own node is what the session is
+    /// served); a head read of the records list, the table or the root
+    /// serves no record and notes none (OpenMaker's choice,
+    /// `views::ViewFilter::head`). The limit is a formula, `Count = 3`, true
+    /// for record 1 and false for record 2.
+    #[test]
+    fn a_head_of_a_withheld_record_notes_it_and_one_of_its_table_does_not() {
+        use crate::scripts::fixture;
+        use crate::views::{ViewFilter, Withheld};
+        use om_hbam::slot::uint_segment;
+        let root = fixture::tree(&[], true);
+        let bytes =
+            om_hbam::writer::rebuild(&root, &om_hbam::new_superblock("Tasks").unwrap()).unwrap();
+        let store = crate::store::Store::load(
+            &om_hbam::HbamFile::from_bytes(bytes).unwrap(),
+            fixture::FILE,
+        )
+        .unwrap();
+        let tree = store.tree_view();
+        let read = FileRead {
+            view: &tree,
+            derived: store.derived(),
+            waiting: store.waiting(),
+            read_only: false,
+            writes_refused: None,
+        };
+        let tasks = uint_segment(fixture::TABLE);
+        let code = fixture::calculated_calc("Count = 3").polish.unwrap();
+        let limit = crate::derived::record_limit(&tree, store.derived(), &tasks, &code)
+            .unwrap()
+            .unwrap();
+        let source = QuerySource {
+            read,
+            issued: Default::default(),
+            restricted: false,
+            account_key: Some(&[3][..]),
+            late: false,
+            view: Some(ViewFilter::of(
+                [(tasks.clone(), Some(limit))],
+                Default::default(),
+            )),
+            built: Default::default(),
+            failed: Default::default(),
+        };
+        let noted = |path: &[&[u8]]| {
+            assert!(
+                om_query::Source::head(&source, path).unwrap().is_some(),
+                "{path:02x?}"
+            );
+            let mut withheld = Withheld::default();
+            withheld.note(source.view.as_ref().unwrap());
+            [1u64, 2].map(|id| withheld.contains(&tasks, &om_hbam::serial::encode(id)))
+        };
+        let (one, two) = (om_hbam::serial::encode(1), om_hbam::serial::encode(2));
+        assert_eq!(noted(&[]), [false, false]);
+        assert_eq!(noted(&[&tasks]), [false, false]);
+        assert_eq!(noted(&[&tasks, &[5]]), [false, false]);
+        assert_eq!(noted(&[&tasks, &[5], &one]), [false, false]);
+        assert_eq!(noted(&[&tasks, &[5], &two]), [false, true]);
+        // A whole read of the records notes the one it withholds, as before.
+        assert!(om_query::Source::node(&source, &[&tasks, &[5]])
+            .unwrap()
+            .is_some());
+        let mut withheld = Withheld::default();
+        withheld.note(source.view.as_ref().unwrap());
+        assert!(withheld.contains(&tasks, &two) && !withheld.contains(&tasks, &one));
+    }
 
     #[test]
     fn host_time_is_a_timestamp_key() {

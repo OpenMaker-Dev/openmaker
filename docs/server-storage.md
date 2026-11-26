@@ -449,23 +449,60 @@ The readers that read through views:
   key selects what walking it beside the children did before;
 - op86 (`connection::run_query`, `QuerySource`): `om_query::Source` over
   a read. Its catalog is the derived state's; a node is the view's
-  subtree, filtered as before; an index built on demand reads each record
-  as the view lists it (`derived::index_on_demand`); GenerateMemberKey
-  reads the catalog's index nodes (`derived::issue_member_key`).
-  `Source` gained `record_ids`, a table's record list read entry by entry
-  (`[T, 0d]`); its default, which the other sources (`HbamFile`, a server
-  script's `FindSource`) keep, decodes `Source::node`'s node.
-  What `om-query` still asks of `Source::node` whole: a field's index (`Indexes::load`: `Index` finds keys by position,
-  checks their order once and reads entries by position, so it needs the
-  entries at hand), a record's cell (`Indexes::stored_text`), the node
-  NodeExists and GetKey name, of which only its own value is read
-  (`exec::file_node`), and each node on the destination of
-  UploadMultiple, which is measured whole as the program's work
+  subtree, filtered as before; a field's index is listed (below); an
+  index built on demand reads each record as the view lists it
+  (`derived::index_on_demand`); GenerateMemberKey reads the catalog's
+  index nodes (`derived::issue_member_key`). `Source` gained
+  `record_ids`, a table's record list read entry by entry (`[T, 0d]`;
+  its default, which `HbamFile` keeps, decodes `Source::node`'s node), and
+  `children`: a node's children listed a page of keys at a time in key
+  order from a bound, and a child with what is below it only by its key
+  (`om_query::Listing`, through `View::children_page`, heads only, and
+  `View::subtree` of the one entry: `connection::ViewListing`), where no
+  account filter reaches the node (`QuerySource::filtered`), and the node
+  whole through `Source::node` otherwise; and `head`, a node without its
+  children, always from `View::node`: where a filter reaches the node,
+  from what the filter would leave of it (`ViewFilter::head`: missing, or
+  without its value where the filter empties it; a node with children is
+  a pushed list in either engine, so removing children leaves it one),
+  never from its subtree, but for the record a view limit at or below a
+  record is evaluated on. A record is noted withheld for the session (the
+  guard of #670 on its later edits, `views::Withheld`) when it is served
+  that record without its values: by a read of the record or of anything
+  below it whose limit is false, a head read of the record included (its
+  own node is what it is served). A head read of the records list, the
+  table or the root serves no record and notes none, where a whole read
+  of them notes each record it withholds; OpenMaker's choice.
+  `om_query::Index` reads a field's index so: a lookup by key is one page
+  of one key and reads no entry's records, a range or a full read pages
+  through the keys it passes (8 a page, growing to 256), an entry's
+  records are read only when an instruction takes that entry, within the
+  work the program has left (`View::subtree_within`: the store engine
+  counts each node as the program counts it and refuses at the first past
+  either counter, so that an entry past the work left is never built
+  whole, and the program fails at its work limit; the file engine lends
+  the entry and the program's count refuses it; `Noted` keeps no such
+  refusal as a failed read), and no instruction needs an entry by its
+  position (the module doc of `om-query`'s `index`). An index held
+  whole (a file on disk, a source without listings, an index built on
+  demand) is read as before, its order checked once, its keys found by
+  binary search, and its work counted as before, instruction for
+  instruction (`exec::tests::whole_indexes_count_what_they_counted_before_listings`).
+  What a view limit hides (a view-limited table's indexes and container
+  library, below the file's own library: `ViewFilter::withholds`) is not
+  read at all. NodeExists and GetKey read the node they name alone
+  (`Source::head`; `exec::file_node`). What `om-query` still asks of
+  `Source::node` whole: a record's cell (`Indexes::stored_text`), a node a
+  filter reaches, and each node on the destination of UploadMultiple,
+  read whole (a long value's pieces included) to refuse a write beneath a
+  value and counted as one node and its own key and value
   (`exec::upload_multiple`). The view filter evaluates a view limit on
   the record as stored (`ViewFilter::viewable`, a record whole);
 - a server script's find (`scripts::host::FindSource`): `om_query::Source`
   over a read, its catalog the derived state's, a node the view's
-  subtree, an index built on demand as op86's, and no GenerateMemberKey;
+  subtree, a field's index and a table's record list listed as op86's
+  (no account filter applies), an index built on demand as op86's, and
+  no GenerateMemberKey;
   a find inside a transaction reads an overlay of the version ("The
   overlay view", below);
 - op80 (`connection::login`): the account the login names, looked up in
@@ -629,7 +666,15 @@ other reader its derived state holds no accounts, so one that read them
 without asking would fail its check
 (`engine::tests::the_test_view_reads_the_accounts_only_for_a_reader_of_them`),
 and the test view copies no password verifier for it (Describe Security
-included). The test servers of `om-server`, `om-provider` and
+included). For a find (`Reading::serve_find`: op86's program, a server
+script's find and its related records' lookup) it also refuses a subtree
+at or above a field's index `[T, 01, F, kind]`, a page of subtrees that
+would give one, and a page of an index's entries each with its records
+(a find lists the keys and reads an entry by its key), so that a find
+that read an index whole, or the records of entries it does not take,
+answers otherwise than the file engine and fails the test that made it
+(`engine::copies::tests::the_test_view_refuses_a_find_an_index_read_whole`).
+The test servers of `om-server`, `om-provider` and
 `om-author` and of `om-gui`'s hosted-file tests, and the private hosts
 `om-server`'s local-file tests open, are switched to it; the private
 hosts the desktop opens for itself in `om-provider`'s and `om-gui`'s
@@ -1371,7 +1416,9 @@ clients and why not, whether it takes no more changes at all, and which
 file on disk the engine last read or saved for it. The engine offers them
 itself (`engine::state`, on `FileEngine`), not through a view or `Store`:
 `read_only(file)` (the first cause: opened read-only, content the writer
-cannot write, deferred work refused), `writes_refused(file)` (a save
+cannot write, deferred work refused, a file the server's user may not
+write or whose folder does not allow a save's new copy),
+`writes_refused(file)` (a save
 whose outcome was unknown) and `file_on_disk(file)` (its device and
 inode). They describe the engine's hold of the file on disk and of its
 clients, not the content of a version. Two versions with the same tree
@@ -1426,6 +1473,69 @@ records, a slot's file on disk for backups (`Slot::saved_file`) and for a close
 the same file (`hosting::hosted_as`). Whether a file is closing, and which
 slot serves it, are the hosting's (`Slot`), as before.
 
+**A file the server may not write.** A save writes a new copy beside the
+file and renames it over the file, which needs write access to the folder
+only, so a file the server's user may not write (mode 444 in a writable
+folder) would be replaced all the same. An engine that saves to the file
+it loaded (the file engine; `EngineRef::saves_to_source`) asks, as it hosts
+a file and before anything is saved (deferred work included), the
+two questions the desktop's host asks as it opens one
+(`store::save_refused`, `local::open_file`), of the file's folder and its
+entry as a save finds them, never through a link and without opening the
+file (so nothing is copied up from a lower layer, no lease is broken and no
+time changes): whether the entry may be read and written
+(`ReadOnlyCause::NotWritable` when refused or on a read-only file system),
+and whether the folder allows the new copy
+(`ReadOnlyCause::FolderNotWritable`), each on Unix by the process's
+effective ids, as the save's writes are checked (`faccessat`, with
+`AT_EACCESS` only when the real and effective ids differ, so that the
+ordinary case needs no `faccessat2`); a file named without a folder is in
+the current folder. The
+entry must first be the regular file just read (its device and inode).
+When it is another file, or a question could not be asked (an `faccessat`
+that answers neither yes nor no, as `ENOSYS` from a kernel before 5.8 when
+the real and effective ids differ), the file is held read-only all the
+same, for a cause that says so (`ReadOnlyCause::Unchecked`), the detail in
+the log and the alert, with no second try. So with differing real and
+effective ids, a kernel without `faccessat2` leaves the check unmade
+(`Unchecked`), and a seccomp profile that refuses it with `EPERM` makes it
+answer "may not" (`NotWritable`): either holds the file read-only. Any of these holds the file
+read-only, with an error in the log, an alert (`Database "<name>" is
+served read-only: <why>.`), the startup event 18 `Opened database "<name>"
+read only.`, and the cause in the Admin Console's list of files, which
+reads it without the store's lock (`Hosted::read_only_cause`), as it reads
+whether a file takes no more changes. It is decided when the file is
+hosted, as the other causes are: a file whose permissions change while it
+is hosted is served as it was hosted until it is closed and opened again
+or the server restarts (a file made unwritable is still replaced by the
+next save; a folder made unwritable fails the next save, as any save that
+cannot write its copy does). On Windows the entry has no identity here, so
+it is not verified to be the file loaded, and only the read-only attributes
+of the file and of its folder are looked at; the access control lists are
+not read ([#851](https://github.com/OpenMaker-Dev/openmaker/issues/851)).
+Serving read-only a file the server's user may not write is what FileMaker
+Server does [O]: FileMaker Server 26.0.3 opened a file of mode 444 owned by
+its user with event 18 `Opened database "<name>" read only.`, listed it
+with status `Normal`, and left its bytes unchanged, where the same file
+writable opened with event 184 (re/server-logs.md 4,
+[#790](https://github.com/OpenMaker-Dev/openmaker/issues/790#issuecomment-7176757453)).
+The store engine never writes its source (section 11): it answers no, so a
+source the server's user may not write raises no alert there, nothing at
+the save's copy name is warned about, and its files keep their own cause
+(`ReadOnlyCause::StoreEngine`), which the list shows the same way. The
+folder cause (`FolderNotWritable`) and the `Unchecked` cause are
+OpenMaker's own, for its own way of saving, a new copy renamed over the
+file. FileMaker Server writes a file in place, and a folder its user may
+not write does not matter to it as it opens the file [O]: FileMaker Server
+26.0.3 opened a writable file in such a folder with event 184 and status
+`Normal`, as it opens any writable file (re/server-logs.md 4); a client's
+change to that file was not tried. The Read-only mark in the Admin
+Console's list is OpenMaker's own too. FileMaker Server also writes the
+`fmapp` extended privilege into a file no account of which has it as it
+opens the file (event 655), and on a file it may not write cannot, says so
+(654) and opens it unshared; OpenMaker does neither
+([#863](https://github.com/OpenMaker-Dev/openmaker/issues/863)).
+
 **A file hosted read-only at Open.** The Open reply says that the file is
 hosted read-only, whatever holds it so (`Engine::read_only`), as FileMaker
 Server says it (re/network-protocol.md 5.6.4). FileMaker Pro then refuses
@@ -1440,11 +1550,12 @@ read-only, and no Login has been accepted since). Any other Open of a
 file the session has open (a writable file, an Open after a Login, another
 handle, a file that became read-only after its first reply) ends what the
 session held in the file, its Login, locks and staged records, and starts
-it anew, as before (FileMaker Server's answer there is unmeasured). A file that becomes read-only after a client opened
-it is not announced to that client: the Open reply is the only place the
-protocol is known to say it, so the client's writes meet the refusals
-below. No lock is refused for it: FileMaker Server granted the one lock
-FileMaker Pro took on a file it hosts read-only.
+it anew, as before (FileMaker Server's answer there is unmeasured). A
+file that becomes read-only after a client opened it is not announced to
+that client: the Open reply is the only place the protocol is known to
+say it, so the client's writes meet the refusals below. No lock is
+refused for it: FileMaker Server granted the one lock FileMaker Pro took
+on a file it hosts read-only.
 
 **Writes to a file hosted read-only.** No request that would change a
 file hosted read-only is answered with the reply of a change that
@@ -2011,11 +2122,19 @@ first, each with the test view's runs of its tests:
      entries by key, and `Store::index_agrees`, which checks an index
      whole once), and stores, counts and releases container data. The
      verified-index marks it reads and keeps are by version now ("The
-     verified-index marks", above). Needs: `om-query`'s `Index` over a
-     seekable listing instead of a whole index
+     verified-index marks", above). Needs: the indexes' upkeep moved onto
+     the reads `om_query::upkeep` gives over the listing a find reads an
+     index through
      ([#783](https://github.com/OpenMaker-Dev/openmaker/issues/783)), so
-     that the indexes' upkeep reads and writes index entries through the
-     transaction;
+     that it reads and writes index entries through the transaction: a
+     commit's entries by key (`entries_at`), whether an index holds more
+     entries than a move leaves (`holds_more_than`: keys only, in pages no
+     larger than the keys still wanted), the check of an index against one
+     built from the records in one pass that stops at the first
+     difference, an entry's records read only when its key agrees
+     (`holds_exactly`), and a sweep's entries in key order (`entries`);
+     which fields have which indexes from the heads of `[T, 01, F]`'s
+     children, and an index node's own value from its head;
    - op73's field work and the deferred work a file is opened with
      (`Store::update_table`, `Store::recover`): every record of a table,
      listed with each record whole, the bases of stored calculations (by
@@ -2032,9 +2151,10 @@ first, each with the test view's runs of its tests:
      engine's state of a file", above).
 
 For finds, what `om-query` still asks whole (see "Views") moves with the
-store engine: a `Source` method for the head NodeExists and GetKey read,
-a measure of a subtree for UploadMultiple's work without holding it, and
-an index read by key and position over `children` listings.
+store engine: a measure of a subtree for UploadMultiple's work without
+holding it ([#810](https://github.com/OpenMaker-Dev/openmaker/issues/810)).
+A field's index is read through listings, and NodeExists and GetKey read
+a head (`Source::head`; "Views", op86).
 
 **The file engine behind it.** `FileEngine::submit` takes what each request
 took before the interface: the store's write lock for op70, op71, op72,
@@ -2514,9 +2634,9 @@ of the save's new copy. Nothing in OpenMaker removes the entry, or
 anything else at that name: a file it did not create in the same call is
 never unlinked.
 
-- OpenMaker Server hosts a file opened with anything at its save's copy
-  name as it hosts any file, and raises an alert that names the entry's
-  path (`Event::save_copy_in_the_way`; `hosting::load_hosted`,
+- OpenMaker Server's file engine hosts a file opened with anything at its
+  save's copy name as it hosts any file, and raises an alert that names
+  the entry's path (`Event::save_copy_in_the_way`; `hosting::load_file`,
   `store::copy_beside`, which looks in the file's folder without
   following a link, and counts an entry it cannot look at). Every change
   then fails at its save as above, loudly, and that ends by itself when
@@ -2524,7 +2644,9 @@ never unlinked.
   to close and open the file. Deferred field work found as the file is
   opened ends as the recovery rule says: its save fails, the work is
   taken back and the file is served read-only, as its disk holds it
-  (above, "finishing deferred work").
+  (above, "finishing deferred work"). The store engine never saves to the
+  file it hosts (`EngineRef::saves_to_source`, section 11): it has neither
+  the alert nor these save failures.
 - The desktop opens such a file read-only (`ReadOnly::CopyInTheWay`), as
   at #715's head, says why in the window and logs the entry's path. It
   looks with `symlink_metadata` on the path, so an entry it cannot look

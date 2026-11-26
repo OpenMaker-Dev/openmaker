@@ -726,6 +726,8 @@ fn an_imported_layout_edits_commits_corrects_and_reverts_on_the_peer() {
         0x19,
         "Length ( Self ) <= 20",
     );
+    // Its Count repeats twice (#43).
+    fixture::set_field_repetitions(&mut child, TABLE, fixture::COUNT, 2);
     let host = related::Host::new(
         "gui-imported-layout",
         vec![("Root.fmp12", root), ("Related.fmp12", child)],
@@ -837,6 +839,13 @@ fn an_imported_layout_edits_commits_corrects_and_reverts_on_the_peer() {
         a.state().error().is_some() || (a.state().is_settled() && !common::editing(a))
     });
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    // A repeating field of the peer's table is edited there too (#43).
+    replace(&mut app, "Count", "12");
+    common::save_record(&mut app);
+    common::wait_until(&mut app, "repeating peer field saved", |a| {
+        a.state().error().is_some() || (a.state().is_settled() && !common::editing(a))
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
     common::open_menu(&mut app, "Scripts");
     common::click(&mut app, "Edit peer");
     common::wait_until(&mut app, "root caller script saved peer", |a| {
@@ -913,6 +922,8 @@ fn an_imported_layout_edits_commits_corrects_and_reverts_on_the_peer() {
         .collect();
     assert_eq!(stored.len(), 3, "{stored:?}");
     assert_eq!(stored[2], (3, Some("Short new".to_owned())));
+    let count = page.fields.iter().position(|f| f.name == "Count").unwrap();
+    assert_eq!(page.records[0].values[count].as_deref(), Some("12"));
 }
 
 #[test]
@@ -2490,7 +2501,7 @@ fn a_partly_saved_record_is_checked_and_resumed_from_its_bar() {
 /// other files saves each, one after the other (#1006).
 #[test]
 fn set_field_creates_and_edits_another_files_related_record() {
-    use fixture::{COUNT, NAME, OCCURRENCE};
+    use fixture::{COUNT, NAME, OCCURRENCE, SETTING};
     use om_data::DataProvider;
     use om_scripts::ScriptStep;
     const REMOTE: u64 = 0xd0_0040;
@@ -2501,7 +2512,24 @@ fn set_field_creates_and_edits_another_files_related_record() {
     show.set_text(0, Some("OK"));
     show.set_calculation(
         1,
-        Some(&fixture::calc("\"result:\" & $a & \"|\" & $b & \"|\" & $c")),
+        Some(&fixture::calc(
+            "\"result:\" & $a & \"|\" & $b & \"|\" & $c & \"|\" & $d",
+        )),
+    );
+    let mut names = fixture::names();
+    names.add_occurrence(REMOTE, "Remote Tasks", TABLE);
+    let mut cx = om_formula::Context::new(&names);
+    cx.occurrence = Some(OCCURRENCE);
+    let read =
+        om_formula::compile("Get ( LastError ) & \"/\" & Remote Tasks::Setting", &cx).unwrap();
+    let mut startup = ScriptStep::new(141);
+    startup.set_text(0, Some("$d"));
+    startup.set_calculation(
+        1,
+        Some(&om_scripts::Calculation::new(
+            Some(om_formula::formatted::encode(&read.tokens)),
+            om_formula::polish::encode(&read.expr),
+        )),
     );
     let script = fixture::script(
         1,
@@ -2518,6 +2546,10 @@ fn set_field_creates_and_edits_another_files_related_record() {
             fixture::set_field_in(OTHER, NAME, "\"Both\""),
             ScriptStep::new(75),
             fixture::set_variable("$c", "Get ( LastError )"),
+            // A related file's global, as a startup script sets one: that
+            // file's session value (#43).
+            fixture::set_field_in(REMOTE, SETTING, "\"startup\""),
+            startup,
             show,
         ],
     );
@@ -2583,7 +2615,7 @@ fn set_field_creates_and_edits_another_files_related_record() {
     common::wait_until(&mut app, "root loaded", |a| a.state().is_settled());
     common::open_menu(&mut app, "Scripts");
     common::click(&mut app, "Write related");
-    common::wait_for_label(&mut app, "result:0|0|0");
+    common::wait_for_label(&mut app, "result:0|0|0|0/startup");
     common::click(&mut app, "OK");
     common::wait_until(&mut app, "script ended", |a| {
         !a.state().script_running() && a.state().is_settled()

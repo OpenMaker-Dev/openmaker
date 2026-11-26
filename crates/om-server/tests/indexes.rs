@@ -91,6 +91,90 @@ fn a_find_on_a_missing_index_builds_it_first_unless_builds_are_late() {
     assert!(name_index_on_disk(&file).is_empty());
 }
 
+/// A hosted file this server's user may not write (mode 444), or whose
+/// folder does not allow the new copy a save writes beside it (mode 555), is
+/// served read-only (#827 of github.com/OpenMaker-Dev/openmaker): the
+/// administrator's list of files says why, and a find on a field without an
+/// index, which stores the index it builds on a writable file, and an edit,
+/// which is refused, leave the file's bytes as they were. Permissions do
+/// not bind root (or a user with its override): a case whose forbidden
+/// write succeeds all the same says so on standard error and is skipped.
+/// The permissions are put back and the folder removed however a case ends.
+#[cfg(unix)]
+#[test]
+fn a_file_its_user_may_not_write_is_served_read_only() {
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    /// The case's folder: writable again and removed when it is dropped.
+    struct Folder(PathBuf);
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = mode(&self.0, 0o755);
+            let _ = mode(&self.0.join("Tasks.fmp12"), 0o644);
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn mode(path: &Path, mode: u32) -> std::io::Result<()> {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+    }
+    for (case, why) in [
+        (
+            "file",
+            "the server's user may not write the file, or its file system is read-only",
+        ),
+        (
+            "folder",
+            "its folder does not allow the new copy a save writes beside it",
+        ),
+    ] {
+        let folder = Folder(std::env::temp_dir().join(format!(
+            "om-read-only-{case}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        )));
+        std::fs::create_dir_all(&folder.0).unwrap();
+        let path = folder.0.join("Tasks.fmp12");
+        fixture::write_tree(&path, &fixture::tree(&[], true));
+        // The forbidden write, tried: a case it does not forbid is skipped.
+        let binds = match case {
+            "file" => {
+                mode(&path, 0o444).unwrap();
+                std::fs::OpenOptions::new().write(true).open(&path).is_err()
+            }
+            _ => {
+                mode(&folder.0, 0o555).unwrap();
+                let probe = folder.0.join("probe");
+                let made = std::fs::File::create_new(&probe).is_ok();
+                let _ = std::fs::remove_file(&probe);
+                !made
+            }
+        };
+        if !binds {
+            let _ = writeln!(
+                std::io::stderr(),
+                "a_file_its_user_may_not_write_is_served_read_only: the {case} case is \
+                 skipped: this user writes where its permissions forbid it (root?)"
+            );
+            continue;
+        }
+        let file = fixture::TempFile(path);
+        let before = std::fs::read(&file.0).unwrap();
+        let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+        let path = std::path::absolute(&file.0).unwrap();
+        let listed = handle.files().into_iter().find(|f| f.path == path).unwrap();
+        assert_eq!(listed.read_only, Some(why), "{case}");
+        for (_, found) in find_ship_twice(port) {
+            assert_eq!(found, [2], "{case}");
+        }
+        assert_eq!(std::fs::read(&file.0).unwrap(), before, "{case}: the finds");
+        let (mut session, _) = server::logged_in(port, "read-only file");
+        assert!(commit_cells(&mut session, 1, &[(fixture::NAME, "Changed")]).is_err());
+        session.disconnect().unwrap();
+        assert_eq!(std::fs::read(&file.0).unwrap(), before, "{case}: the edit");
+    }
+}
+
 /// A read that fails, as reads that reach a damaged page fail
 /// (docs/server-storage.md 5, "Views", and 6.12), reaches the client as an
 /// error, never as a reply that looks whole: a download that reaches it
@@ -143,6 +227,138 @@ fn a_failed_read_reaches_the_client_as_an_error() {
         "the find fails"
     );
     assert!(session.download(&[&table, &[5], &one]).is_ok());
+    session.disconnect().unwrap();
+}
+
+/// Finds of Tasks::Name `==Ship` (its value index) on a session's
+/// connection: the program.
+fn ship_finder(file_id: u32) -> Vec<u8> {
+    let finders: Vec<Vec<u8>> = find::finders(
+        fixture::TABLE,
+        fixture::NAME,
+        DataType::Text,
+        "==Ship",
+        DateOrder::MonthDayYear,
+    )
+    .unwrap()
+    .into_iter()
+    .map(|finder| finder.bytes)
+    .collect();
+    find::program(file_id, fixture::TABLE, &finders, None)
+}
+
+/// A find by an account whose set may view no record of Tasks reads Name's
+/// index as absent without reading it, and NodeExists and GetKey answer
+/// for the table, its index container and the index from their heads:
+/// under the test view, which refuses a find an index, or a node above
+/// one, read whole (`Server::checking_reads`), each answers as the file
+/// engine does, where the index or a node above it read whole and then
+/// filtered by the view limits failed the comparison.
+#[test]
+fn a_find_on_a_table_the_account_may_not_view_reads_no_index() {
+    use om_hbam::slot::uint_segment;
+    let mut root = fixture::tree(&[], true);
+    fixture::add_custom_clerk(&mut root);
+    // Temp's set: no Tasks record created, viewed, edited or deleted.
+    let tasks = uint_segment(fixture::TABLE);
+    root.put(
+        &[&[23], &[2], &[5], &[4], &[5], &tasks, &[2]],
+        om_hbam::OwnedNode::leaf(Vec::new(), vec![0x00, 0x03]),
+    );
+    let file = fixture::TempFile::from_tree("hidden-index", &root);
+    let port = server::start_configured(&file, |server| server.admitting_custom_sets());
+    // Admin's find builds and stores Name's index.
+    let (mut admin, admin_file) = server::logged_in(port, "admin");
+    let reply = admin.query(&ship_finder(admin_file)).unwrap();
+    assert_eq!(
+        find::found(&reply.slots)
+            .unwrap()
+            .iter()
+            .collect::<Vec<_>>(),
+        [2]
+    );
+    let (mut temp, temp_file) = server::logged_in_as(
+        port,
+        "temp",
+        fixture::FILE,
+        fixture::TEMP,
+        fixture::TEMP_PASSWORD,
+    );
+    for _ in 0..2 {
+        let reply = temp.query(&ship_finder(temp_file)).unwrap();
+        assert!(find::found(&reply.slots).unwrap().is_empty());
+    }
+    // The table and its index container are there for it, the container
+    // emptied, and Name's index is not: answered from the nodes' heads,
+    // never from what is below them, which the test view refuses a find.
+    use om_query::program::opcode::{GET_KEY, NODE_EXISTS};
+    let name = uint_segment(fixture::NAME);
+    let container: [&[u8]; 2] = [&tasks, &[1]];
+    let index: [&[u8]; 4] = [&tasks, &[1], &name, &[0]];
+    let mut answer = |op, path: &[&[u8]]| file_node_answer(&mut temp, temp_file, op, path);
+    assert_eq!(answer(NODE_EXISTS, &container), Some(vec![1, 1]));
+    assert_eq!(answer(GET_KEY, &container), None);
+    assert_eq!(answer(NODE_EXISTS, &index), Some(vec![1, 0]));
+    assert_eq!(answer(NODE_EXISTS, &[&tasks]), Some(vec![1, 1]));
+    temp.disconnect().unwrap();
+    admin.disconnect().unwrap();
+}
+
+/// What NodeExists (`op`, or GetKey) answers at `path` for `session`: the
+/// value at the result spot's `00`.
+fn file_node_answer(
+    session: &mut om_session::Session,
+    file_id: u32,
+    op: u8,
+    path: &[&[u8]],
+) -> Option<Vec<u8>> {
+    use om_hbam::OwnedNode;
+    use om_query::program::leaf;
+    let path: Vec<u8> = path
+        .iter()
+        .flat_map(|segment| std::iter::once(segment.len() as u8).chain(segment.iter().copied()))
+        .collect();
+    let mut query = OwnedNode::list(Vec::new(), Vec::new());
+    for (key, value) in [
+        (leaf::OPCODE, vec![op]),
+        (leaf::SRC, path),
+        (leaf::DEST, vec![1, 3, 1, 1]),
+        (leaf::FILE_ID, file_id.to_be_bytes().to_vec()),
+    ] {
+        query.put(&[&[1], &[1], &[key]], OwnedNode::leaf(Vec::new(), value));
+    }
+    let slots = session.query(&query.to_wire().unwrap()).unwrap().slots;
+    let tree = om_hbam::KeyTree::from_slots(om_hbam::SlotReader::new(&slots)).unwrap();
+    tree.node(&[&[1], &[0]])
+        .and_then(|node| node.value.map(<[u8]>::to_vec))
+}
+
+/// NodeExists and GetKey of Name's value index read the node alone, not
+/// the index under it: under the test view, which refuses a find an index
+/// read whole (`Server::checking_reads`), they answer as the file engine
+/// does (the index exists; it is a node, so GetKey gives no value).
+#[test]
+fn node_exists_on_an_index_reads_its_node_alone() {
+    use om_hbam::slot::uint_segment;
+    use om_query::program::opcode;
+    let file = fixture::TempFile::new("index-node", &[], true);
+    let port = server::start(&file);
+    let (mut session, file_id) = server::logged_in(port, "index-node");
+    let reply = session.query(&ship_finder(file_id)).unwrap();
+    assert_eq!(
+        find::found(&reply.slots)
+            .unwrap()
+            .iter()
+            .collect::<Vec<_>>(),
+        [2]
+    );
+    let table = uint_segment(fixture::TABLE);
+    let name = uint_segment(fixture::NAME);
+    let index: [&[u8]; 4] = [&table, &[1], &name, &[0]];
+    let answer =
+        |session: &mut om_session::Session, op: u8| file_node_answer(session, file_id, op, &index);
+    assert_eq!(answer(&mut session, opcode::NODE_EXISTS), Some(vec![1, 1]));
+    assert_eq!(answer(&mut session, opcode::GET_KEY), None);
     session.disconnect().unwrap();
 }
 
@@ -321,7 +537,8 @@ fn commit_name(session: &mut om_session::Session, id: u64, name: &str) {
 }
 
 /// [`commit_name`] of a record holding `cells` of Tasks, its new content
-/// (the upload is the whole record), with the commit's outcome.
+/// (the upload is the whole record), with the outcome of the upload and the
+/// commit.
 fn commit_cells(
     session: &mut om_session::Session,
     id: u64,
@@ -349,9 +566,11 @@ fn commit_cells(
             .collect()
     };
     let record = OwnedNode::list(serial::encode(id), leaves(true));
-    session.upload_records(&table, vec![record]).unwrap();
     let changed = OwnedNode::list(serial::encode(id), leaves(false));
-    let committed = session.commit_records(&table, vec![changed], 0x31);
+    // On a file served read-only the upload is refused already.
+    let committed = session
+        .upload_records(&table, vec![record])
+        .and_then(|_| session.commit_records(&table, vec![changed], 0x31));
     session.kill_all_locks(0x31).unwrap();
     committed
 }
