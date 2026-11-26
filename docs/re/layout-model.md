@@ -186,7 +186,9 @@ Rendering consequences [I, from public FileMaker behavior and the part model]:
 form view draws one record (body once); list view repeats the body part per
 record inside a scrolling area, with header and footer fixed; table view is
 generated from the layout's fields (`Draco::TableLayoutBuilder`, which builds
-columns, grid lines from `tableGridStyle`, and summary rows).
+columns, grid lines from `tableGridStyle`, and summary rows), with the top
+navigation, header, footer and bottom navigation parts its Table View
+Properties include around it (below).
 
 Sub-summary parts in Browse [documented]: they "appear in Table View and List
 View when sorted by break fields, and update dynamically when you change data
@@ -297,6 +299,49 @@ Two of these bits are Layout Setup's field delineation options:
 | `0x20` | Show field frames when record is active | [O] FileMaker Pro 26.0.3's Layout Setup sets it (10.11); Task List reads it off, and the bit is clear |
 
 With `0x1` set, a field's borders and fill show on the current record only. Claris documents that they then do not show "when you print, print to PDF, or preview" [Claris: "Showing field borders and fill for the current record"]. FileMaker Pro 26.0.3 prints none of the starter lists' field underlines [O, #263, 2026-11-13]. Its Task Details PDF draws the `fill-secondary-popup` pop-ups and the `fill-container` photo field with no fill or border operations at all, only their clip paths and text [O, [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201), 2026-11-13]. Fields in header, footer, summary and navigation parts never show borders and fill [Claris, same page].
+
+**Table View Properties** (Layout Setup > Views > Table > Properties)
+keep their options in the same flag word. Evidence: the third-party table
+above, FileMaker Pro 26.0.2's Save as XML read one option at a time
+[O, third party]. No option has been set in FileMaker Pro and read back
+from a saved file here [U].
+
+| Bit | Option |
+|---|---|
+| `0x10000`, `0x20000` | Grid: Horizontal, Vertical |
+| `0x40000` | Include header part |
+| `0x80000` | Include footer part |
+| `0x100000` | Include column headers |
+| `0x200000`, `0x400000` | Resizable columns, Reorderable columns |
+| `0x800000` | Sort data when selecting column |
+| `0x4000000` | named `customColumnOrder` there; no option of the dialog has this name [U] |
+| `0x20000000` | Include top navigation part |
+| `0x40000000` | Include bottom navigation part |
+| `0x1_0000_0000` to `0x8_0000_0000` | macOS: System appearance, Comfortable formatting, Alternating row colors, Row numbers |
+
+- **The four parts:** Claris's help says to "Select the parts to display:
+  top navigation, header, footer, and bottom navigation", and that "These
+  settings matter only if you have defined the parts for the layout, and
+  they're only in effect in Table View"
+  ([Setting up form, list, and table views for a layout](https://help.claris.com/en/pro-help/content/form-list-table-views.html)).
+  [Layout part types](https://help.claris.com/en/pro-help/content/layout-part-types.html)
+  says each of the four shows in Table view only when its option is on.
+  The System appearance options apply "only to the table, not to any of
+  the selected layout parts" [Claris, the first page].
+- **The starter layouts:** their `0xf30000` is the two grids and the four
+  column options on, and the four parts off [O].
+- **A large third-party CRM solution** (355 layouts) [O, 2026-11-25]:
+  `0x40000` is set on 31 layouts, `0x80000` on 12, `0x20000000` on one
+  and `0x40000000` on none. Of its 181 layouts with a header part that
+  offer Table view, 20 set the header bit, and 10 layouts set it with no
+  header part. That fits an option kept whether or not the part exists,
+  but proves no meaning.
+- **Not measured** [U]: whether FileMaker Pro 26.0.3 stores the options
+  in these bits of the `0xf1` members (10.11 measured the General
+  options' bits there), and how its Table view places the parts: the
+  footer at the window's bottom or after the last row, whether the parts
+  zoom or scroll sideways with the table, and whether Tab reaches their
+  fields.
 
 ### 4.3 Parts
 
@@ -2196,8 +2241,12 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   slide panel, and containers whose hide condition shows them on the
   layout's record. A viewer on a popover inside a portal shows nothing,
   since OpenMaker opens no popover inside a portal; FileMaker shows it,
-  when the popover is open, in the portal's first record's context. Table
-  parts ([#306](https://github.com/OpenMaker-Dev/openmaker/issues/306)) remain unsupported.
+  when the popover is open, in the portal's first record's context. In
+  Table view the parts its Table View Properties include (4.2) show their
+  web viewers, one page each that follows the current record, as a List's
+  header and footer do; the table's own rows show none
+  ([#306](https://github.com/OpenMaker-Dev/openmaker/issues/306)). Pro's
+  page there is unmeasured.
   Synthetic painter tests check each List row's own placement and address
   and the portal viewers' single placements (not under a closed popover or
   an inactive panel), and the registry test that commands reach the current
@@ -2515,8 +2564,9 @@ With no style given, FMUpgradeTool wrote FileMaker's defaults:
 
 The flags were stored as given (`0x10f3080d`, Contact Details' Form-only
 flags). A second patch, a copy of Contact Details' element without
-objects, kept its styles and got `0x14f3080d`; what bit `0x4000000` means
-is [U].
+objects, kept its styles and got `0x14f3080d`. The third-party table of
+4.2 names bit `0x4000000` `customColumnOrder`, a Table View option [O,
+third party]; what it does is [U].
 
 [O] The stored catalogs number layouts without gaps (the six English
 starter solutions: positions 1 to n, ids 1 to n, `04` = n). Layout names

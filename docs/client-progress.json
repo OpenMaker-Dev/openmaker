@@ -535,7 +535,7 @@
       "previous_status": "Implemented",
       "status": "Implemented",
       "scope": "Form, List and Table views of native records and layout geometry, with virtualized rows, List sub-summary groups, sideways scrolling in Table view, the view kept per layout, and container pictures in Browse ([Browse mode](desktop-client.md#browse-mode)).",
-      "remaining": "Table view shows no sub-summary rows [#147](https://github.com/OpenMaker-Dev/openmaker/issues/147), every field instead of the layout's table columns [#270](https://github.com/OpenMaker-Dev/openmaker/issues/270), and no header or footer [#306](https://github.com/OpenMaker-Dev/openmaker/issues/306).",
+      "remaining": "Table view shows no sub-summary rows [#147](https://github.com/OpenMaker-Dev/openmaker/issues/147) and every field instead of the layout's table columns [#270](https://github.com/OpenMaker-Dev/openmaker/issues/270).",
       "issues": [
         36,
         147,

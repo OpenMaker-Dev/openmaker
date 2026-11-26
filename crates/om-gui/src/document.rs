@@ -3845,6 +3845,92 @@ fn show_list(
     ui.spacing_mut().item_spacing.y = spacing;
 }
 
+/// Browse's Table view of a drawn layout: the found set's `grid` between the
+/// parts the layout's Table View Properties include (layout-model.md 4.2),
+/// the top navigation and header parts above it and the footer and bottom
+/// navigation parts below, at the window's bottom, as List view places
+/// them [I: FileMaker's placement is unmeasured]. They show the current
+/// record, and their web viewers one page each that follows it, as List
+/// view's header and footer do.
+///
+/// The grid paints first: a field focus asked by name finds its cell
+/// before a part's copy. A part's objects come after it, over it where
+/// they reach past their part (an open popover). The parts add no Tab
+/// stops and do not take New Record's focus: Tab goes through the
+/// table's cells, as it does without them [I: whether Pro's Tab reaches
+/// them is unmeasured].
+pub(crate) fn show_table(
+    ui: &mut Ui,
+    session: &Session,
+    document: &RenderLayout,
+    state: &mut DocumentState,
+    calc: Option<&Evaluator<'_>>,
+    actions: &mut Vec<Action>,
+    grid: impl FnOnce(&mut Ui, &mut DocumentState, &mut Vec<Action>),
+) {
+    use om_layout::PartKind;
+    let layout = &document.layout;
+    let included = |part: &&om_layout::Part| {
+        layout
+            .def
+            .as_ref()
+            .is_some_and(|def| def.table_view_includes(part.kind()))
+    };
+    let parts: Vec<&om_layout::Part> = layout.parts.iter().filter(included).collect();
+    let below = |part: &om_layout::Part| {
+        matches!(part.kind(), PartKind::Footer | PartKind::BottomNavigation)
+    };
+    let area = ui.max_rect();
+    let width = finite_size(layout.width()).max(area.width());
+    let mut placed = Vec::with_capacity(parts.len());
+    let mut top = area.top();
+    for part in parts.iter().filter(|part| !below(part)) {
+        let height = finite_size(part.height);
+        placed.push((
+            *part,
+            Rect::from_min_size(pos2(area.left(), top), vec2(width, height)),
+        ));
+        top += height;
+    }
+    let footer: f32 = parts
+        .iter()
+        .filter(|part| below(part))
+        .map(|part| finite_size(part.height))
+        .sum();
+    // The grid takes what the parts leave, however little.
+    let grid_bottom = (area.bottom() - footer).max(top);
+    let mut bottom = grid_bottom;
+    for part in parts.iter().filter(|part| below(part)) {
+        let height = finite_size(part.height);
+        placed.push((
+            *part,
+            Rect::from_min_size(pos2(area.left(), bottom), vec2(width, height)),
+        ));
+        bottom += height;
+    }
+    let rows = Rect::from_x_y_ranges(area.x_range(), top..=grid_bottom);
+    ui.scope_builder(UiBuilder::new().max_rect(rows), |ui| {
+        grid(ui, state, actions);
+    });
+    let focus_first = std::mem::take(&mut state.focus_first);
+    let stops = state.tab_stops.len();
+    for (part, rect) in placed {
+        paint_part(
+            ui,
+            session,
+            document,
+            state,
+            calc,
+            part,
+            rect,
+            session.current,
+            actions,
+        );
+    }
+    state.tab_stops.truncate(stops);
+    state.focus_first = focus_first;
+}
+
 /// Why List view shows no sub-summary parts, above its records.
 fn list_notice(ui: &mut Ui, width: f32, text: &str) {
     let (rect, response) = ui.allocate_exact_size(vec2(width, 22.0), Sense::hover());
