@@ -2029,6 +2029,13 @@ template carries copies of `com.filemaker.theme.universal_touch` and
   and right-to-left text (`direction`, `unicode-bidi`) are part of the model [O].
 - ICU 76 is bundled (Windows `icu*76.dll`, imported by Support) [O].
 
+[O, FileMaker Pro 26.1.1] At Actual Size, a 104 × 22 pt Text object
+using Helvetica Neue 16 pt displays the complete label `Top edge only`.
+A 102 × 22 pt control with the same style displays `All four edges`.
+Both fit on one line. The point sizes and family come from the same
+closed synthetic layout.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1104)
+
 ### 8.1 Stored character-style masks
 
 [O, FileMaker Pro 26.0.3 Mac Support] `CharacterStyle::Read` (0x1f7fdc)

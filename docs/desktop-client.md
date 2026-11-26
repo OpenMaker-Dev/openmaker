@@ -621,6 +621,9 @@ from the current record page. Stored anchors resize objects within their
 containers. Record changes keep the user's selected panels. Browse shows no
 authoring part tabs or object kind captions.
 
+- On macOS, a saved Helvetica Neue selection uses the installed document
+  font. OpenMaker's bundled fonts cover documents when the family is
+  unavailable.
 - A text, number, date, time or timestamp value stored with character
   styles (a chunked value beside a style subtree `ff`, calc-values.md
   implementation notes) shows its text; a nested form the provider cannot
