@@ -6749,20 +6749,21 @@ mod tests {
         use om_data::layout_selection::{marquee, Coverage, MarqueeFrame, Scope, SelectAll};
         use om_layout::{LayoutObject, ObjectKind, ObjectStore, Rect};
 
-        let object = |id, object_type, flags, children, [left, top, right, bottom]| LayoutObject {
-            id,
-            object_type,
-            flags,
-            children,
-            bounds: Some(Rect {
-                left,
-                top,
-                right,
-                bottom,
+        let object =
+            |id, object_type, flags, children, [left, top, right, bottom]: [f64; 4]| LayoutObject {
+                id,
+                object_type,
+                flags,
+                children,
+                bounds: Some(Rect {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        };
+            };
         let store = ObjectStore {
             root: vec![1, 2, 3, 6],
             objects: vec![
@@ -6816,7 +6817,7 @@ mod tests {
                 visible: !matches!(object.key, 9 | 10),
             })
             .collect();
-        let select_box = |[left, top, right, bottom], coverage| {
+        let select_box = |[left, top, right, bottom]: [f64; 4], coverage| {
             let selected = marquee(
                 GeomRect {
                     left,
@@ -6832,11 +6833,7 @@ mod tests {
                 .into_iter()
                 .map(|i| geometry[i].key)
                 .collect::<Vec<_>>();
-            let controls = selected
-                .tab_controls
-                .into_iter()
-                .map(|i| geometry[i].key)
-                .collect::<Vec<_>>();
+            let controls = selected.tab_controls.into_keys().collect::<Vec<_>>();
             (keys, selected.aggregate, controls)
         };
         let group = [70.0, 80.0, 245.0, 160.0];

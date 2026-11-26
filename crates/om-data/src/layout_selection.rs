@@ -120,7 +120,7 @@ pub struct MarqueeSelection {
     pub aggregate: bool,
     /// Outer frames for fully selected tab controls. The controls themselves
     /// are represented in the selection by their panels.
-    pub tab_controls: BTreeSet<usize>,
+    pub tab_controls: BTreeMap<u64, usize>,
 }
 
 /// Select from the finite frames provided by the window. A group is one
@@ -162,7 +162,7 @@ pub fn marquee(
                 {
                     result.indices.insert(frame.index);
                     result.aggregate = true;
-                    result.tab_controls.insert(enclosed_tabs[&key]);
+                    result.tab_controls.insert(key, enclosed_tabs[&key]);
                 }
             }
             MarqueeRole::TabControl
@@ -198,8 +198,8 @@ pub fn marquee(
     }
     // A legacy or damaged control with no selectable panel frames can still
     // be picked by its own frame.
-    for &index in enclosed_tabs.values() {
-        if !result.tab_controls.contains(&index) {
+    for (key, index) in enclosed_tabs {
+        if !result.tab_controls.contains_key(&key) {
             result.indices.insert(index);
         }
     }

@@ -24,7 +24,7 @@ use crate::session::{Geometry, Session};
 use crate::theme;
 
 use om_data::layout_selection::{
-    self, Coverage, MarqueeFrame, SelectAll, Target as SelectionTarget,
+    self, Coverage, MarqueeFrame, MarqueeRole, SelectAll, Target as SelectionTarget,
 };
 
 mod history;
@@ -307,7 +307,7 @@ struct Selection(BTreeSet<usize>, Option<&'static str>, SelectionOverlay);
 #[derive(Default)]
 struct SelectionOverlay {
     aggregate: bool,
-    tab_controls: BTreeSet<usize>,
+    tab_controls: BTreeMap<u64, usize>,
 }
 
 impl Selection {
@@ -1868,7 +1868,12 @@ fn draw(
                         painter.rect_stroke(rect, CornerRadius::ZERO, outline, StrokeKind::Inside);
                     }
                 }
-                if !painted && rect.width() >= 1.0 && rect.height() >= 1.0 {
+                let tab_label_overlay = design.is_some() && (
+                    selected.2.tab_controls.contains_key(&object.key)
+                    || matches!(object.marquee, MarqueeRole::OnTab(key)
+                        if object.selection == SelectionTarget::Panel && selected.2.tab_controls.contains_key(&key))
+                );
+                if !painted && !tab_label_overlay && rect.width() >= 1.0 && rect.height() >= 1.0 {
                     let stored_words = (!texts.words.objects.contains_key(&object.key))
                         .then(|| (texts.stored)(object.key))
                         .flatten();
@@ -2054,7 +2059,7 @@ fn draw(
             if selected.0.len() > 1 || !selected.2.tab_controls.is_empty() {
                 let mut bounds = Rect::NOTHING;
                 let mut unlocked = false;
-                for &index in &selected.2.tab_controls {
+                for &index in selected.2.tab_controls.values() {
                     let Some((object, frame)) = geometry
                         .objects
                         .get(index)
