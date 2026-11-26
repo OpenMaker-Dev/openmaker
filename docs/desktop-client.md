@@ -621,6 +621,8 @@ from the current record page. Stored anchors resize objects within their
 containers. Record changes keep the user's selected panels. Browse shows no
 authoring part tabs or object kind captions.
 
+- Text objects in Browse draw an edge only when its style resolves to a
+  line. A width and color alone leave the edge hidden.
 - Styled layout labels keep the stored formatting of literal text around
   a merge symbol or field. The replacement takes the styling at its
   opening delimiter. OpenMaker also applies this rule to merge variables
