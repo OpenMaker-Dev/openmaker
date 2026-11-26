@@ -823,6 +823,10 @@ pub trait ScriptHost:
     /// server session's copy of a schema another client saved.
     fn before_step(&mut self) {}
 
+    /// The owning file's globals after a step, before its delayed actions
+    /// and triggers read a data source.
+    fn file_variables_changed(&mut self, _file: FileId, _variables: &Variables) {}
+
     /// An error that ends the run, which the host met before or while the
     /// last step ran, taken: a server session's read of its file that
     /// failed (OpenMaker's rule for a storage failure). Asked before and

@@ -213,6 +213,22 @@ key, not its big-endian reading (docs/scripting.md open item).
   path selection and the listed files' current availability were not
   measured [O: stored paths and OpenMaker report; U: native resolution].
 
+  A local FileMaker Pro 26.1.1 check on disposable files measured a source
+  whose only path is a global variable ([#988](https://github.com/OpenMaker-Dev/openmaker/issues/988#issuecomment-7183655010)).
+  Opening on a layout that reads only local fields showed no alert even
+  with the variable unset. Switching to a layout that read the source
+  then showed a Not Found alert naming the variable and a file chooser
+  in the opening file's folder. Cancel left the related field showing
+  `<File Missing>`.
+  A startup script with error capture on ran hidden Open File on this
+  source with four values: relative `file:Peer.fmp12` and absolute
+  `filemac:` each opened the peer with error 0, unset returned 802, and
+  a missing sibling returned 100. Each continued without an alert or
+  chooser. A related read after setting the variable also opened the peer;
+  assigning another path and rereading still used the first peer in this
+  session [O, one sequence]. The closed source copies were byte-identical
+  to the original [O].
+
 ### 1.2 Field annotation and display names [O, 2026-11-11]
 
 FileMaker 26's Advanced Options for a field ("Add annotation in Data

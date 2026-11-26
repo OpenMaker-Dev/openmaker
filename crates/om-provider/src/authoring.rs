@@ -82,6 +82,15 @@ pub struct ScriptDefinitions {
     pub index: Option<OwnedNode>,
 }
 
+/// The layouts as the host stores them, from one download of `[4]`: the
+/// members `[4, 5, L]` the account may see, by id, and the catalog's index
+/// `[4, 1]` ([`NativeProvider::layout_catalog_snapshot`]).
+#[derive(Clone, Debug, Default)]
+pub struct LayoutCatalogSnapshot {
+    pub members: BTreeMap<u64, OwnedNode>,
+    pub index: Option<OwnedNode>,
+}
+
 /// Why a replacement did not happen, or may not have.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuthoringError {
@@ -373,16 +382,24 @@ impl NativeProvider {
     /// A layout the account's custom set gives no access is left out;
     /// folders, their ends and separators stay (session-identity.md 2.2).
     pub fn layout_members(&mut self) -> Result<BTreeMap<u64, OwnedNode>, DataError> {
+        Ok(self.layout_catalog_snapshot()?.members)
+    }
+
+    /// [`Self::layout_members`] and the catalog's index `[4, 1]` from the
+    /// same download, so a layout's words read from its member, else from
+    /// its index entry (`om_data::layout_catalog::layout_word`, #977),
+    /// describe one observation.
+    pub fn layout_catalog_snapshot(&mut self) -> Result<LayoutCatalogSnapshot, DataError> {
         self.require_open()?;
         let Some(downloaded) = download_node(
             self.session.as_mut().expect("open session"),
             vec![vec![LAYOUTS as u8]],
         )?
         else {
-            return Ok(BTreeMap::new());
+            return Ok(LayoutCatalogSnapshot::default());
         };
         let tree = download_tree(std::slice::from_ref(&downloaded))?;
-        Ok(tree
+        let members = tree
             .at(&[LAYOUTS, LAYOUT_MEMBERS])
             .into_iter()
             .flat_map(|members| &members.children)
@@ -391,7 +408,11 @@ impl NativeProvider {
                 om_data::meta::layout_flags(&tree, *id) & (1 | 2 | 0x10) != 0
                     || self.shows_layout(*id)
             })
-            .collect())
+            .collect();
+        Ok(LayoutCatalogSnapshot {
+            members,
+            index: tree.at(&[LAYOUTS, 1]).map(|index| index.to_owned_node()),
+        })
     }
 
     /// Layout `layout`'s catalog member `[4, 5, L]` as stored on the host,

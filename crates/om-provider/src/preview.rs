@@ -264,13 +264,9 @@ impl NativeProvider {
         let layout_table = self.read_table_for_layout(&layout)?.id;
         let table = write.table.unwrap_or(layout_table);
         if let Some(route) = self.external.route(table) {
-            // A related record of another file's table on a layout of this
-            // file's table, or a new record of a layout of another file's
-            // table (#43), as `write_record` routes them. A related record
-            // of such a layout, whose write is refused, previews nothing.
-            if table != layout_table && self.external.route(layout_table).is_some() {
-                return Ok(None);
-            }
+            // A related record of another file's table, or a new record of
+            // a layout of another file's table (#43), as `write_record`
+            // routes them.
             // Again: the owner's preview this file's id names.
             let again = write.prepared;
             let owned_write;

@@ -135,10 +135,11 @@ pub fn script_parameter(
 /// shows (1000 + its index, calc-functions.md 2), which a text may hold in
 /// the name's place (`{{1002}}`, calc-values.md "Layout calculations"),
 /// and the selector.
-const SYMBOLS: [(&str, u16, &str); 5] = [
+const SYMBOLS: [(&str, u16, &str); 6] = [
     ("CurrentDate", 1002, "Get ( CurrentDate )"),
     ("CurrentTime", 1029, "Get ( CurrentTime )"),
     ("UserName", 1031, "Get ( UserName )"),
+    ("AccountName", 1032, "Get ( AccountName )"),
     ("PageNumber", 1015, "Get ( PageNumber )"),
     ("RecordNumber", 1020, "Get ( RecordNumber )"),
 ];

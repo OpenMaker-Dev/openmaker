@@ -1029,11 +1029,14 @@ pub mod views {
 }
 
 /// Layout Setup's General options in a layout's flags `f1`, as FileMaker
-/// Pro 26.0.3 sets them from their checkboxes (layout-model.md 10.11): the
+/// Pro sets them from their checkboxes (layout-model.md 4.2, 10.11): the
 /// option's name as `om-author` takes it, its label, its bit, and whether
 /// the bit set means the option is on.
 pub mod general {
-    pub const OPTIONS: [(&str, &str, u64, bool); 5] = [
+    /// Show the field-entry alerts controlled by Layout Setup in Pro 26.1.1.
+    pub const SHOW_FIELD_ALERTS: u64 = 0x2000;
+
+    pub const OPTIONS: [(&str, &str, u64, bool); 6] = [
         (
             "save_record_changes",
             "Save record changes automatically",
@@ -1058,9 +1061,23 @@ pub mod general {
             0x1000_0000,
             false,
         ),
+        (
+            "show_field_alerts",
+            "Show alerts when field isn't modifiable or no records are present",
+            SHOW_FIELD_ALERTS,
+            true,
+        ),
         ("enable_quick_find", "Enable Quick Find", 0x8000, false),
     ];
-    pub const ALL: u64 = 0x10 | 0x20 | 0x1 | 0x1000_0000 | 0x8000;
+    pub const ALL: u64 = 0x10 | 0x20 | 0x1 | 0x1000_0000 | SHOW_FIELD_ALERTS | 0x8000;
+
+    /// The click refusal observed on an edit box in an empty Browse Form.
+    /// The found-set count must be known before a click can report it empty.
+    pub fn empty_field_alert(flags: u64, found_count: Option<u64>) -> Option<&'static str> {
+        (flags & SHOW_FIELD_ALERTS != 0 && found_count == Some(0)).then_some(
+            "No records are present. To create a new record choose the New Record menu command.",
+        )
+    }
 }
 
 /// Layout Setup's Printing options that OpenMaker sets, as bits of a
@@ -1151,15 +1168,47 @@ pub fn plan_setup_with_margins(
 /// The view flags `f1` layout `layout` has: its member's, else its index
 /// entry's, as FileMaker keeps both ([`plan_setup`]).
 fn stored_flags(catalog: &OwnedNode, layout: u64) -> Option<u64> {
-    let key = uint_segment(layout);
-    let word = |path: &[&[u8]]| {
-        catalog
-            .at(path)
-            .and_then(|n| n.value.as_deref())
-            .and_then(be_uint)
+    layout_word(
+        catalog.at(&[&[MEMBERS], &uint_segment(layout)]),
+        catalog.child(&[INDEX]),
+        layout,
+        LayoutWord::ViewFlags,
+    )
+}
+
+/// A word Layout Setup reads and writes in both a layout's member and its
+/// index entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutWord {
+    /// `f1`: the views, General and Printing options.
+    ViewFlags,
+    /// `f0`: the member flags, "Include in layout menus" among them
+    /// ([`MENU_HIDDEN`]).
+    MemberFlags,
+}
+
+/// Layout `layout`'s `word` as Layout Setup reads it: its member's
+/// (`[4, 5, L]`), else its entry's in the catalog's index `index`
+/// (`[4, 1]`, its entries `[4, 1, 7, L]`), by the one rule every reader
+/// uses (`om_layout::stored_layout_word`). FileMaker keeps both; a request
+/// built from the member alone would drop what only the entry holds when
+/// [`plan_setup`], the one writer, writes it to both (#977).
+pub fn layout_word(
+    member: Option<&OwnedNode>,
+    index: Option<&OwnedNode>,
+    layout: u64,
+    word: LayoutWord,
+) -> Option<u64> {
+    let key = match word {
+        LayoutWord::ViewFlags => VIEW_FLAGS,
+        LayoutWord::MemberFlags => KIND,
     };
-    word(&[&[MEMBERS], &key, &[VIEW_FLAGS]])
-        .or_else(|| word(&[&[INDEX], &[ENTRIES], &key, &[VIEW_FLAGS]]))
+    let own = member.and_then(|m| m.child(&[key]));
+    let entry = index.and_then(|i| i.at(&[&[ENTRIES], &uint_segment(layout), &[key]]));
+    om_layout::stored_layout_word(
+        own.and_then(|n| n.value.as_deref()),
+        entry.and_then(|n| n.value.as_deref()),
+    )
 }
 
 /// A layout's member and index after Layout Setup ([`plan_setup`]).
@@ -1203,12 +1252,9 @@ pub fn plan_setup(
             "The layout catalog's index has no entry for layout {layout}."
         ))
     })?;
-    let word = |node: &OwnedNode, k: u8| {
-        node.child(&[k])
-            .and_then(|n| n.value.as_deref())
-            .and_then(be_uint)
-    };
-    let kind = word(&entry, KIND).unwrap_or(0);
+    // As every reader takes it: the member's, else the entry's (#977).
+    let kind =
+        layout_word(Some(member), Some(&index), layout, LayoutWord::MemberFlags).unwrap_or(0);
     if kind & NOT_A_LAYOUT != 0 || member.child(&[DEFINITION]).is_none() {
         return Err(unsupported(
             "This member of the layout catalog is a folder or a separator; Layout Setup sets \
