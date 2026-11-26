@@ -3704,6 +3704,11 @@ impl DataProvider for NativeProvider {
         self.invalidate_calc_data();
         let layout = self.decoded_layout(layout_id)?;
         if self.table_for_layout(&layout).is_err() {
+            // Inside a transaction, refused before that file is opened or
+            // asked for its table (#933).
+            if self.in_transaction() {
+                return Err(Self::unsupported_peer_transaction());
+            }
             // A layout of another file's table: that file imports the row
             // into its table (related_owner.rs, #43).
             let table = self.read_table_for_layout(&layout)?.id;

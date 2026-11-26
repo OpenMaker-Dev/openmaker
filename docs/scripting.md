@@ -351,7 +351,8 @@ file's own Import Records would, and a new row's record joins the window's
 found set. The layout is none of the owning file's, so an auto-entry
 reading `Get ( LayoutNumber )` has no number there and refuses the row, as
 for the owning file's other writes from this file. Inside a script's
-transaction the import is refused (3) for now
+transaction each row is refused (3) before anything is written, so Import
+Records counts every row as skipped and adds none (729), for now
 ([#933](https://github.com/OpenMaker-Dev/openmaker/issues/933)). A global of
 another file's table, set by Set Field from any layout or typed on such a
 layout, is that file's session value (record-writes.md, "A related file's
