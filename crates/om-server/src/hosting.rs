@@ -2422,6 +2422,11 @@ fn load_file(
         ));
     }
     loaded.recover(&engine);
+    // A test's server checking reads: the copy its reads are compared on
+    // is made now, before any client can reach the file
+    // (`engine::copies`).
+    #[cfg(debug_assertions)]
+    engine.prepare_store_copy(&loaded);
     Ok(loaded)
 }
 
