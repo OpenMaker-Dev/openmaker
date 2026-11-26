@@ -11,7 +11,7 @@
 //! a record: lookups other than the exact-match form FileMaker Pro
 //! was seen to write (their related values are read by the host first,
 //! [`RecordPlan::read_lookups`]), entry from the previous record, unknown option
-//! or validation bits, repeating calculated fields, calculations that read
+//! or validation bits, most repeating calculations, calculations that read
 //! globals, summaries, unstored calculations or related fields,
 //! plug-in functions, custom functions that read fields, `Get` selectors
 //! that need a window, and cyclic dependencies. A calculation the host cannot
@@ -33,8 +33,8 @@ use om_calc::eval::{
 use om_calc::ops::{self, CompareOp};
 use om_calc::{Ctx, Date, Locale, Number, Time, Timestamp, Value, ValueType};
 use om_collate::DateOrder;
-use om_formula::{DecodeErrorKind, Expr, Formula, Key};
-use om_hbam::catalog::{DataType, FieldKind};
+use om_formula::{DecodeErrorKind, Expr, Formula, Key, Opcode};
+use om_hbam::catalog::{DataType, Field, FieldKind};
 use om_hbam::{EntryVariable, FieldOptions, KeyTree, Node, Table};
 
 use crate::containers::{self, MemberInfo};
@@ -1748,6 +1748,58 @@ pub fn cell_of(field: u64, repetition: u32) -> Option<u64> {
     }
 }
 
+/// The measured repeating auto-entry form: a bare reference to a plain
+/// Container's matching repetition, with no other inputs (auto-entry.md).
+fn repeating_container_filename(
+    table: &Table,
+    target: &Field,
+    options: &FieldOptions,
+    expression: &Expression,
+) -> bool {
+    if target.kind != FieldKind::Normal
+        || target.data_type != DataType::Text
+        || options.max_repetitions != 24
+        || options.options & !(INDEX_OPTIONS | BOOKKEEPING_OPTIONS) != 0x88
+        || options.validation_options != 0
+    {
+        return false;
+    }
+    // Opcode 3500 is GetContainerAttribute (calc-encoding.md).
+    let Expr::Call {
+        op: Opcode(3500),
+        args,
+    } = &expression.formula.polish
+    else {
+        return false;
+    };
+    let [Expr::Field(source), Expr::Text(attribute)] = args.as_slice() else {
+        return false;
+    };
+    if source.flags != 0
+        || source.repetition != 1
+        || source.occurrence.id().is_none()
+        || source.occurrence.id() != expression.formula.occurrence()
+        || !attribute.value.eq_ignore_ascii_case("filename")
+    {
+        return false;
+    }
+    let Some(id) = source.field.id() else {
+        return false;
+    };
+    if expression.dependencies.len() != 1 || !expression.dependencies.contains(&id) {
+        return false;
+    }
+    table.fields.iter().any(|field| {
+        field.id == id
+            && field.kind == FieldKind::Normal
+            && field.data_type == DataType::Container
+            && field.decoded_options().is_some_and(|source| {
+                source.max_repetitions == 24
+                    && (source.options == 0 || source.pending_embedded_container_transfer())
+            })
+    })
+}
+
 /// Whether a value of another record may not be what that record's commit
 /// stores ([`RecordPlan::pending_row`], #1063): by its table, its record,
 /// and its field. With no record (`None`), whether that field is unknown
@@ -2077,11 +2129,6 @@ impl RecordPlan {
                         "only text, number, date and time calculation results are supported.",
                     ));
                 }
-                if options.max_repetitions != 1 {
-                    return Err(error(
-                        "repeating calculated fields are not supported for native writes.",
-                    ));
-                }
                 let usage = if auto_calculation {
                     FormulaUse::Options
                 } else if field.data_type == DataType::Number {
@@ -2090,6 +2137,13 @@ impl RecordPlan {
                     FormulaUse::RecordOnly
                 };
                 let formula = formula_at(FIELD_FORMULA, usage)?;
+                if options.max_repetitions != 1
+                    && !(local && repeating_container_filename(table, field, &options, &formula))
+                {
+                    return Err(error(
+                        "repeating calculated fields are not supported for native writes.",
+                    ));
+                }
                 if matches!(usage, FormulaUse::StoredNumber)
                     && matches!(formula.formula.polish, Expr::Get(selector::RECORD_NUMBER))
                     && !local
@@ -3980,6 +4034,15 @@ impl RecordPlan {
                     ),
                 ));
             }
+            if field.expression.is_some() && field.options.max_repetitions > 1 {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: direct writes to repeated filenames are unsupported.",
+                        field.name
+                    ),
+                ));
+            }
             // A container's text is its host's reference to the data
             // (containers.md 1.4), set by the client for any writer.
             let allowed = if entry.script {
@@ -4548,6 +4611,26 @@ impl RecordPlan {
                 continue;
             };
             if !field.stored_calculation() && (entry.skip_auto_enter || entry.keeps(changes, *id)) {
+                continue;
+            }
+            if field.options.max_repetitions > 1 {
+                match self.repeating_filename_updates(*id, expression, &row, &session, mode) {
+                    Ok(updates) => {
+                        if !updates.is_empty() {
+                            evaluated.insert(*id);
+                        }
+                        for (cell, value) in updates {
+                            assign(&mut row, &mut dirty, cell, value);
+                            if dirty.contains(&cell) {
+                                dirty.insert(*id);
+                            }
+                        }
+                    }
+                    Err(_) if !validate => {
+                        deferred.insert(*id);
+                    }
+                    Err(error) => return Err(error.into_error()),
+                }
                 continue;
             }
             let depends_on_deferred = expression
@@ -5321,6 +5404,62 @@ impl RecordPlan {
         }
         let text = display(&result.value, &host);
         Ok((result.value, text))
+    }
+
+    fn repeating_filename_updates(
+        &self,
+        target: u64,
+        expression: &Expression,
+        row: &BTreeMap<u64, String>,
+        session: &Evaluation,
+        mode: WriteMode,
+    ) -> Result<Vec<(u64, String)>, RunError> {
+        let source = *expression
+            .dependencies
+            .first()
+            .expect("measured one-field rule");
+        let field = &self.fields[&target];
+        let mut budget = session.calculation_budget();
+        let mut updates = Vec::new();
+        for repetition in 1..=u32::from(field.options.max_repetitions) {
+            let cell = |id| {
+                cell_of(id, repetition)
+                    .filter(|cell| self.cell_field(*cell) == Some((id, repetition)))
+                    .ok_or_else(|| {
+                        RunError::Unread(DataError::with_code(
+                            error::UNAVAILABLE,
+                            format!("Field {}: ambiguous repetition cell.", field.name),
+                        ))
+                    })
+            };
+            let input = cell(source)?;
+            let proposed = row.get(&input).map_or("", String::as_str);
+            if mode == WriteMode::Create && !proposed.is_empty() {
+                return Err(RunError::Unread(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: creation with a container already set is unsupported.",
+                        field.name
+                    ),
+                )));
+            }
+            if proposed != session.stored.get(&input).map_or("", String::as_str) {
+                let value = if proposed.is_empty() {
+                    String::new()
+                } else {
+                    self.evaluate_repetition(
+                        target,
+                        repetition,
+                        expression,
+                        row,
+                        session,
+                        &mut budget,
+                    )?
+                };
+                updates.push((cell(target)?, value));
+            }
+        }
+        Ok(updates)
     }
 
     /// The new stored text of repetition `repetition` of calculated field
@@ -7524,6 +7663,92 @@ mod tests {
             .unwrap()
             .to_string()
             .contains("single-cell size"));
+    }
+
+    #[test]
+    fn repeated_filenames_follow_only_the_changed_container_repetition() {
+        struct FileNames;
+        impl ContainerReader for FileNames {
+            fn value(&self, _: u64, text: &str) -> Option<om_calc::Container> {
+                Some(om_calc::Container::file(text, vec![1]))
+            }
+
+            fn data(&self, _: u64, _: &[u8]) -> Option<om_calc::eval::StoredContainer> {
+                None
+            }
+        }
+
+        let mut table = table();
+        table.fields.retain(|field| field.id <= 2);
+        let mut attachment = field(3, FieldKind::Normal, DataType::Container, 0, 0, 0);
+        attachment.options[24..26].copy_from_slice(&24u16.to_be_bytes());
+        let mut filename = field(4, FieldKind::Normal, DataType::Text, 0, 0x2000_0088, 0);
+        filename.options[24..26].copy_from_slice(&24u16.to_be_bytes());
+        table.fields.extend([attachment, filename]);
+        let formulas = [(4, 5, "GetContainerAttribute ( Field3 ; \"Filename\" )")];
+        let plan = plan_of(&table, &formulas, &[]).unwrap();
+        assert!(plan_with(&table, &formulas, &[], Vec::new(), false).is_err());
+        assert!(plan_of(
+            &table,
+            &[(4, 5, "GetContainerAttribute ( Field3 ; \"Width\" )")],
+            &[]
+        )
+        .is_err());
+        let mut env = environment();
+        env.containers = Some(Arc::new(FileNames));
+        let prepare = |mode, row: &BTreeMap<_, _>, changes: &BTreeMap<_, _>| {
+            plan.prepare(mode, row, changes, &env).unwrap()
+        };
+        let title = BTreeMap::from([(1, Some("One".into()))]);
+        let new = prepare(WriteMode::Create, &BTreeMap::new(), &title);
+        assert_eq!(new.changed_fields, [1]);
+
+        let second_attachment = cell_of(3, 2).unwrap();
+        let second_filename = cell_of(4, 2).unwrap();
+        let populated = BTreeMap::from([(3, Some("red.png".into()))]);
+        let refused = plan.prepare(WriteMode::Create, &BTreeMap::new(), &populated, &env);
+        assert_eq!(refused.err().and_then(|e| e.code), Some(error::UNAVAILABLE));
+        let unrelated = BTreeMap::from([(3, "red.png".into()), (4, "red.png".into())]);
+        let inserted = prepare(
+            WriteMode::Update,
+            &unrelated,
+            &BTreeMap::from([(second_attachment, Some("green.png".into()))]),
+        );
+        assert_eq!(
+            inserted.changed_fields,
+            [second_attachment, second_filename]
+        );
+        assert_eq!(
+            decoded(&inserted, second_filename).as_deref(),
+            Some("green.png")
+        );
+
+        let mut two = unrelated;
+        two.extend([
+            (second_attachment, "green.png".into()),
+            (second_filename, "green.png".into()),
+        ]);
+        let replaced = prepare(
+            WriteMode::Update,
+            &two,
+            &BTreeMap::from([(second_attachment, Some("blue.png".into()))]),
+        );
+        assert_eq!(
+            replaced.changed_fields,
+            [second_attachment, second_filename]
+        );
+        assert_eq!(
+            decoded(&replaced, second_filename).as_deref(),
+            Some("blue.png")
+        );
+        let cleared = prepare(
+            WriteMode::Update,
+            &two,
+            &BTreeMap::from([(second_attachment, None)]),
+        );
+        assert_eq!(cleared.changed_fields, [second_attachment, second_filename]);
+        assert_eq!(cleared.values.get(&second_filename), Some(&None));
+        assert_eq!(prepare(WriteMode::Update, &two, &title).changed_fields, [1]);
     }
 
     #[test]
