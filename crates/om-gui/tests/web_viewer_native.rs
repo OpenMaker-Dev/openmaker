@@ -10,7 +10,9 @@
 //!   perform FileMaker scripts", named `wv`, its address the formula under
 //!   attribute `00 00/5`), and its calculated `data:` page (with a `#` that
 //!   automatic URL encoding must keep) opens as a child window of the app's
-//!   window, the object's size.
+//!   window, the object's size. Its inline script calls
+//!   `FileMaker.PerformScript ( "Record" ; "inline" )` as the view's first
+//!   document loads, which must run too.
 //! - OnLayoutEnter calls the page's `show` with Perform JavaScript in Web
 //!   Viewer, until the page has loaded; `show` writes its text parameters
 //!   (quotes, a return, non-ASCII) into the page and calls
@@ -205,7 +207,8 @@ const PAGE: &str = "\"data:text/html,<!doctype html><html><head><title>\" & Reco
     function send() { FileMaker.PerformScriptWithOption('Record', 'clicked:' + \
     document.getElementById('msg').textContent, '0'); }</script></head><body>\
     <p id='msg'>waiting</p><button onclick='send()' style='position:absolute;left:0;\
-    top:100px;width:300px;height:150px'>Send</button></body></html>\"";
+    top:100px;width:300px;height:150px'>Send</button>\
+    <script>FileMaker.PerformScript('Record', 'inline');</script></body></html>\"";
 
 /// The web viewer as FileMaker stores it, decoded by `om-layout`.
 fn web_viewer_layout() -> Layout {
@@ -972,6 +975,11 @@ impl Driver {
         }
         match self.phase {
             Phase::Loading if given == SHOWN => {
+                if !history.iter().any(|v| v == "inline") {
+                    fail(format!(
+                        "the first document's inline call ran nothing: {history:?}"
+                    ));
+                }
                 let children = self.native.children(parent);
                 let [(child, x, y, width, height, true)] = children[..] else {
                     fail(format!("expected one shown child: {children:?}"));
@@ -993,6 +1001,11 @@ impl Driver {
                 let requests = self.frame_requests.lock().unwrap().clone();
                 if let Some(tried) = requests.iter().find(|r| r.starts_with("GET /tried")) {
                     println!("the other origin's frame: {tried}");
+                    if tried.contains(":posted") || tried.contains(":called") {
+                        fail(format!(
+                            "the other origin's frame reached the bridge: {tried}"
+                        ));
+                    }
                     let until = Instant::now() + Duration::from_secs(2);
                     self.phase = Phase::Framed(child, Some(until));
                 }

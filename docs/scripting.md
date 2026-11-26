@@ -837,7 +837,11 @@ Open items:
   they fail with 116 (no live web
   viewer) rather than succeed. The error codes for a page still loading (5),
   a missing or throwing function (5) and a viewer that is not shown (116)
-  are inferred, not measured on FileMaker Pro. On the desktop:
+  are inferred, not measured on FileMaker Pro. A page's
+  `FileMaker.PerformScript` works in its main frame, and in a frame of the
+  page's own origin through `parent.FileMaker`; another site's frame in the
+  page cannot start a script (layout-model.md 9.6; FileMaker Pro's scope
+  for frames is unmeasured). On the desktop:
   - Set Field two or more relationships away creates the far record under
     the first available stored record at each hop. FileMaker's s49 runs
     measured two hops with at most one middle record. A missing middle

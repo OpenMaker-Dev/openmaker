@@ -544,8 +544,9 @@ impl State {
         let [cx, cy, cw, ch] = spec.geometry.content;
         let loads = self.events.clone();
         let messages = self.events.clone();
+        // The page loads once the bridge is in place (below): its first
+        // document gets both halves.
         let mut builder = WebViewBuilder::new()
-            .with_url(spec.url)
             .with_incognito(true)
             .with_devtools(false)
             .with_bounds(wry::Rect {
@@ -611,6 +612,7 @@ impl State {
                 return Err("the page's message handler could not be registered".into());
             }
         }
+        webview.load_url(&spec.url).map_err(|e| e.to_string())?;
         // "Allow interaction with web viewer content" off: the page takes
         // no pointer or keyboard input.
         page.set_sensitive(spec.interactive);

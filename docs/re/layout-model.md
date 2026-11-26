@@ -2135,7 +2135,8 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   the page's own scripts: the `FileMaker` object, in the page's world, and
   in OpenMaker's world a poster, which posts what `FileMaker` hands it
   through an element that only the two hold (it is taken out of the
-  document at once). Another site's frame in the page reaches neither the
+  document at once). A view starts loading only once both halves and the
+  handler are in place. Another site's frame in the page reaches neither the
   handler nor the main frame's `FileMaker`; a frame of the page's own
   origin can call `parent.FileMaker` [I, OpenMaker's choice; FileMaker
   Pro's scope for `FileMaker.PerformScript` in frames is unmeasured].
@@ -2143,7 +2144,8 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   and a page whose Content Security Policy forbids frames still posts.
   `tests/web_viewer_native.rs` embeds a frame from another loopback port,
   which posts to the handler and calls `parent.FileMaker`, and checks that
-  no script runs. On both platforms the bridge's
+  neither reaches the bridge and no script runs, and that the first
+  document's inline call does run. On both platforms the bridge's
   messages are bounded where they arrive, on the thread that hears the page
   and without waiting for the app: only well-formed ones are kept, and one
   longer than 16 MiB, or one that would put more than 256 messages or
