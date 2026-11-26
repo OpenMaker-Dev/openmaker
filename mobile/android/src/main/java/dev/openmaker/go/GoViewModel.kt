@@ -158,7 +158,8 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
                         editor.address,
                         editor.port,
                         editor.name,
-                        editor.certificate.trim(),
+                        // As typed: the engine checks its bounds before anything else.
+                        editor.certificate,
                     )
                 )
             } catch (error: GoException) {

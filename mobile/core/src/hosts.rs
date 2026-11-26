@@ -15,8 +15,12 @@
 //!
 //! **Authorities** are stored as a map from `address:port`, the address as
 //! saved, to PEM text. Earlier versions could keep one under each spelling
-//! of an address; all of them belong to the host. Each value is read
-//! within bounds ([`MAX_PEM_BYTES`], [`MAX_CERTIFICATES`]).
+//! of an address; all of them belong to the host. A host trusts at most
+//! [`MAX_CERTIFICATES`] certificates in [`MAX_PEM_BYTES`]. A save never
+//! drops, truncates or rewrites a stored authority it cannot carry whole:
+//! when the result would pass the bounds, or a value it would replace does
+//! not read whole, it saves nothing and says why. Lookup never truncates
+//! either; connecting refuses a host past the bounds ([`check_bundle`]).
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
@@ -29,6 +33,9 @@ use crate::GoError;
 pub const MAX_PEM_BYTES: usize = 64 * 1024;
 /// The most certificates a host may trust.
 pub const MAX_CERTIFICATES: usize = 16;
+/// The most text a stored value is read from at all: beyond it, a value is
+/// read as nothing, and a save that would replace it is refused.
+const MAX_STORED_BYTES: usize = 1024 * 1024;
 
 /// A host of the Hosts list: its address and port, and the name it is
 /// listed by, empty for its address.
@@ -168,10 +175,11 @@ pub fn former_hosts(
 
 /// The certificate authorities trusted for `address` and `port`: those
 /// kept under any spelling of the address, the one under this spelling
-/// first and the rest in order, each certificate once, at most
-/// [`MAX_CERTIFICATES`], as PEM. What does not read as a certificate a
-/// trust store takes is left out, so one malformed authority kept long ago
-/// cannot stop the others working.
+/// first and the rest in order, each certificate once, as PEM, none left
+/// out for the bounds (connecting refuses a host past them,
+/// [`check_bundle`]). What does not read as a certificate a trust store
+/// takes is left out, so one malformed authority kept long ago cannot stop
+/// the others working.
 #[uniffi::export]
 pub fn trusted_certificate(
     certificates: HashMap<String, String>,
@@ -195,10 +203,26 @@ fn trusted(
         .collect();
     let mut out = Vec::new();
     for pem in spellings.values() {
-        add_unique(&mut out, usable(pem));
+        add_unique(&mut out, stored(pem).certificates);
     }
-    out.truncate(MAX_CERTIFICATES);
     out
+}
+
+/// A host's certificate authorities as the engine is given them, within
+/// the bounds, or what to do about them.
+pub(crate) fn check_bundle(text: &str) -> Result<(), GoError> {
+    if text.len() > MAX_PEM_BYTES || stored(text).certificates.len() > MAX_CERTIFICATES {
+        return Err(too_many());
+    }
+    Ok(())
+}
+
+fn too_many() -> GoError {
+    GoError::failed(format!(
+        "A host can trust at most {MAX_CERTIFICATES} certificate authorities in {} KiB. \
+         Edit the host and remove some.",
+        MAX_PEM_BYTES / 1024
+    ))
 }
 
 /// Save Add Host or Edit Host's `change` into `saved`.
@@ -242,7 +266,7 @@ pub fn save_host(saved: SavedHosts, change: HostChange) -> Result<HostSaved, GoE
     if let Some(old) = &change.replaces {
         let current = hosts.iter().find(|listed| host_of(listed) == host_of(old));
         if current != Some(old)
-            || trusted(&certificates, &old.address, old.port) != usable(&change.loaded)
+            || trusted(&certificates, &old.address, old.port) != stored(&change.loaded).certificates
         {
             return Err(stale());
         }
@@ -268,7 +292,7 @@ pub fn save_host(saved: SavedHosts, change: HostChange) -> Result<HostSaved, GoE
             let exact = format!("{}:{}", old.address, old.port);
             let own = certificates
                 .get(&exact)
-                .map(|pem| usable(pem))
+                .map(|pem| stored(pem).certificates)
                 .unwrap_or_default();
             let all = trusted(&certificates, &old.address, old.port);
             add_unique(
@@ -291,10 +315,9 @@ pub fn save_host(saved: SavedHosts, change: HostChange) -> Result<HostSaved, GoE
             );
         }
     }
-    if kept.len() > MAX_CERTIFICATES {
-        return Err(GoError::failed(format!(
-            "A host can trust at most {MAX_CERTIFICATES} certificate authorities."
-        )));
+    let bundle = pem_of(&kept);
+    if kept.len() > MAX_CERTIFICATES || bundle.len() > MAX_PEM_BYTES {
+        return Err(too_many());
     }
 
     // Replaced under every spelling: the host's identity and the entries it
@@ -305,15 +328,33 @@ pub fn save_host(saved: SavedHosts, change: HostChange) -> Result<HostSaved, GoE
         .filter(|key| !moved || Some(key) != old_key.as_ref())
         .collect();
     gone.dedup();
+    // Nothing it replaces may be lost: every value it would drop or rewrite
+    // must read whole, or nothing is saved.
+    let moved_spelling = change
+        .replaces
+        .as_ref()
+        .filter(|_| moved)
+        .map(|old| format!("{}:{}", old.address, old.port));
+    let replaces_unreadable = certificates.iter().any(|(stored_as, pem)| {
+        let replaced = stored_key(stored_as).is_some_and(|key| gone.contains(&key))
+            || moved_spelling.as_deref() == Some(stored_as.as_str());
+        replaced && !stored(pem).whole
+    });
+    if replaces_unreadable {
+        return Err(GoError::failed(
+            "A certificate authority saved for this host cannot be read, so nothing was saved. \
+             Remove the host and add it again to drop it.",
+        ));
+    }
     let mut certificates: HashMap<String, String> = certificates
         .into_iter()
         .filter(|(stored, _)| !stored_key(stored).is_some_and(|key| gone.contains(&key)))
         .collect();
-    if let (Some(old), true) = (&change.replaces, moved) {
-        certificates.remove(&format!("{}:{}", old.address, old.port));
+    if let Some(spelling) = &moved_spelling {
+        certificates.remove(spelling);
     }
     if !kept.is_empty() {
-        certificates.insert(format!("{}:{}", host.address, host.port), pem_of(&kept));
+        certificates.insert(format!("{}:{}", host.address, host.port), bundle);
     }
 
     let mut list: Vec<ListedHost> = hosts
@@ -375,7 +416,8 @@ fn sections(text: &str) -> (Vec<Section>, bool) {
     let mut out = Vec::new();
     let mut other = false;
     let mut open: Option<Section> = None;
-    for line in text.lines() {
+    // Lines end in LF, CRLF or a CR alone (classic Mac text).
+    for line in text.split(['\n', '\r']) {
         let line = line.trim();
         if let Some(label) = line
             .strip_prefix("-----BEGIN ")
@@ -416,23 +458,35 @@ fn certificate(section: &Section) -> Option<CertificateDer<'static>> {
     takes(&der).then_some(der)
 }
 
-/// The certificates in text kept for a host that a trust store takes,
-/// each once, at most [`MAX_CERTIFICATES`]: the rest are left out. Text
-/// over [`MAX_PEM_BYTES`] is not read at all.
-fn usable(text: &str) -> Vec<CertificateDer<'static>> {
-    if text.len() > MAX_PEM_BYTES {
-        return Vec::new();
+/// A value kept for a host: the certificates in it a trust store takes,
+/// each once, and whether it reads whole (certificates and nothing else).
+/// Text over [`MAX_STORED_BYTES`] is not read at all.
+struct Stored {
+    certificates: Vec<CertificateDer<'static>>,
+    whole: bool,
+}
+
+fn stored(text: &str) -> Stored {
+    if text.len() > MAX_STORED_BYTES {
+        return Stored {
+            certificates: Vec::new(),
+            whole: false,
+        };
     }
-    let mut out = Vec::new();
-    for der in sections(text).0.iter().filter_map(certificate) {
-        if out.len() == MAX_CERTIFICATES {
-            break;
-        }
-        if !out.contains(&der) {
-            out.push(der);
+    let (found, other) = sections(text);
+    let mut whole = !other;
+    let mut certificates = Vec::new();
+    for section in &found {
+        match certificate(section) {
+            Some(der) if !certificates.contains(&der) => certificates.push(der),
+            Some(_) => {}
+            None => whole = false,
         }
     }
-    out
+    Stored {
+        certificates,
+        whole,
+    }
 }
 
 /// Text typed as a certificate authority: empty, or certificates a trust
@@ -450,9 +504,7 @@ pub(crate) fn readable(text: &str) -> Result<Vec<CertificateDer<'static>>, GoErr
         return Err(refused());
     }
     if found.len() > MAX_CERTIFICATES {
-        return Err(GoError::failed(format!(
-            "A host can trust at most {MAX_CERTIFICATES} certificate authorities."
-        )));
+        return Err(too_many());
     }
     let mut out = Vec::new();
     for section in &found {
@@ -502,6 +554,10 @@ fn pem_of(certificates: &[CertificateDer<'_>]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn usable(text: &str) -> Vec<CertificateDer<'static>> {
+        stored(text).certificates
+    }
 
     fn certificate(name: &str) -> String {
         rcgen::generate_simple_self_signed(vec![name.into()])
@@ -731,6 +787,70 @@ mod tests {
         assert!(refused(&many));
         let copies = good.repeat(MAX_PEM_BYTES / good.len() + 1);
         assert!(refused(&copies));
-        assert!(usable(&copies).is_empty());
+        // Kept, it reads (one certificate, repeated), but not to connect.
+        assert_eq!(usable(&copies), usable(&good));
+        assert!(check_bundle(&copies).is_err());
+    }
+
+    /// A save never drops, truncates or rewrites a stored authority it
+    /// cannot carry whole: past the bounds, or with a value under any
+    /// spelling of the host that does not read whole, it saves nothing.
+    /// Lookup gives them all, and connecting refuses past the bounds.
+    #[test]
+    fn a_save_never_drops_what_it_cannot_carry() {
+        let sixteen: Vec<String> = (0..MAX_CERTIFICATES)
+            .map(|i| certificate(&format!("ca{i}.example")))
+            .collect();
+        let seventeenth = certificate("ca16.example");
+        let store = saved(
+            &["server.example"],
+            &[
+                ("server.example:5003", &sixteen.join("\n")),
+                ("SERVER.example:5003", &seventeenth),
+            ],
+        );
+        assert!(add(store.clone(), "server.example", "").is_err());
+        let all = shown(&store, "server.example", 5003);
+        assert_eq!(usable(&all).len(), MAX_CERTIFICATES + 1);
+        assert!(check_bundle(&all).is_err());
+
+        let big = |name: &str| {
+            let names: Vec<String> = (0..1400)
+                .map(|i| format!("{name}-{i:04}.example.com"))
+                .collect();
+            rcgen::generate_simple_self_signed(names)
+                .unwrap()
+                .cert
+                .pem()
+        };
+        let (a, b) = (big("a"), big("b"));
+        assert!(a.len() < MAX_PEM_BYTES && a.len() + b.len() > MAX_PEM_BYTES);
+        let store = saved(&["server.example"], &[("server.example:5003", &a)]);
+        assert!(add(store, "server.example", &b).is_err());
+
+        let broken = format!(
+            "{}\n-----BEGIN CERTIFICATE-----\nnot base64!\n-----END CERTIFICATE-----",
+            certificate("x")
+        );
+        let store = saved(&["server.example"], &[("SERVER.example:5003", &broken)]);
+        assert!(add(store, "server.example", "").is_err());
+    }
+
+    /// A value kept with lines ending in a CR alone reads, and a save
+    /// carries it.
+    #[test]
+    fn lines_ending_in_a_cr_alone_read() {
+        let good = certificate("server.example");
+        let cr = good.replace('\n', "\r");
+        let store = saved(&["server.example"], &[("SERVER.example:5003", &cr)]);
+        assert_eq!(
+            usable(&shown(&store, "server.example", 5003)),
+            usable(&good)
+        );
+        let saved = add(store, "server.example", "").unwrap();
+        assert_eq!(
+            usable(&shown(&saved.saved, "server.example", 5003)),
+            usable(&good)
+        );
     }
 }

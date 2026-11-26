@@ -501,8 +501,8 @@ struct LaunchCenter: View {
       saved: SavedHosts(hosts: before.map(\.listed), certificates: authorities),
       change: HostChange(
         replaces: edit.replaces?.listed, loaded: edit.loaded, address: edit.address,
-        port: edit.port, name: edit.name,
-        certificate: edit.certificate.trimmingCharacters(in: .whitespacesAndNewlines)))
+        // As typed: the engine checks its bounds before anything else.
+        port: edit.port, name: edit.name, certificate: edit.certificate))
     let host = SavedHost(result.host)
     storeHosts(result.saved.hosts.map(SavedHost.init))
     storeAuthorities(result.saved.certificates)

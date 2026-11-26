@@ -155,6 +155,8 @@ fn provider(host: Option<&Host>) -> Result<NativeProvider, GoError> {
         if host.address.trim().is_empty() || host.port == 0 {
             return Err(GoError::failed("Enter a host name and port."));
         }
+        // Past the bounds a host is refused, never cut short (`hosts`).
+        hosts::check_bundle(&host.certificate)?;
         config.additional_ca_pem = host.certificate.as_bytes().to_vec();
         // Saved for this host and port: a file a script opens elsewhere is
         // not verified against it.
