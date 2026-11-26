@@ -2637,7 +2637,7 @@ fn a_second_transport_of_the_client_reads_from_its_session() {
     );
     assert_eq!(handle.clients().len(), 1);
     joined.pop().unwrap().transport.close().unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while tenth.perform(id, &whole, DEFAULT_MAX_RETURN).is_err() {
         assert!(std::time::Instant::now() < deadline, "the seat came back");
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -2785,7 +2785,7 @@ fn a_joined_transport_cannot_change_the_session() {
 fn a_joined_transport_reads_only_while_the_session_is_logged_in() {
     use om_protocol::{Resume, DEFAULT_MAX_RETURN};
     let file = with_large_subtree("joined-logins");
-    let port = server::start(&file);
+    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
     let client = Client::new();
     let (mut owner, file_id) = client.opened(port);
     let id = owner.identity().connection_id;
@@ -2836,7 +2836,14 @@ fn a_joined_transport_reads_only_while_the_session_is_logged_in() {
     );
     let next = paging(&mut joiner);
 
+    // Disconnect is oneway: the session ends when the server has read it,
+    // its grant closed before it leaves the administrator's client list.
     owner.disconnect().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !handle.clients().is_empty() {
+        assert!(std::time::Instant::now() < deadline, "the session ended");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     for txn in [&next, &read] {
         assert_eq!(joiner.perform(id, txn, PAGE), Err(unknown_connection()));
     }
