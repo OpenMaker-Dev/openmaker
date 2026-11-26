@@ -37,6 +37,14 @@ own chrome uses are in [design.md](design.md). Related notes:
   to the front. Elsewhere, and in the GUI tests, which run without a native
   window, the menu bar is drawn inside each window. The window title is the
   platform's own.
+- Show/Hide Toolbars changes the status toolbar and layout bar together.
+  Lock disables View > Status Toolbar and its shortcut in the current
+  window until a script changes the lock. `Get ( StatusAreaState )` returns
+  1 for shown, 0 for hidden, 2 for shown and locked, and 3 for hidden and
+  locked. New windows inherit the current toolbar state, which is
+  unmeasured in FileMaker. OpenMaker keeps the outer frame size when the
+  bars change. The measured FileMaker Pro window changes its outer
+  height ([#1064](https://github.com/OpenMaker-Dev/openmaker/issues/1064)).
 - The Window menu's New Window runs the step. Show Window lists every open
   file's windows but cards, front first, a hidden one in parentheses, and
   scrolls when they do not fit; choosing one brings it to the front, shown

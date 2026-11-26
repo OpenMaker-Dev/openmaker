@@ -1854,6 +1854,7 @@ impl OpenMakerApp {
             home: self.launcher.has_home(),
             find: &self.w.find,
             toolbar: self.w.show_toolbar,
+            toolbar_toggle_available: self.toolbar_toggle_available(),
             formatting: self.w.show_formatting,
             inspector: self.w.inspector,
             objects: self.w.objects,
@@ -2329,6 +2330,7 @@ impl OpenMakerApp {
                         self.w.document.zoom.percent(),
                         &self.w.uuid,
                     );
+                    window.toolbar_locked = self.w.toolbar_locked;
                     window.style = self.w.style.number();
                     window
                 });
@@ -4156,7 +4158,8 @@ impl OpenMakerApp {
                     }
                 }
             }
-            if input.consume_shortcut(&shortcuts::STATUS_TOOLBAR) {
+            if input.consume_shortcut(&shortcuts::STATUS_TOOLBAR) && self.toolbar_toggle_available()
+            {
                 actions.push(Action::ToggleToolbar);
             }
             if self.zooms() {
@@ -4595,6 +4598,10 @@ impl OpenMakerApp {
 
     fn full_menus(&self) -> bool {
         self.menu_commands() == om_data::host::privilege_set::MenuCommands::All
+    }
+
+    fn toolbar_toggle_available(&self) -> bool {
+        !self.w.toolbar_locked && !self.is_card(self.w.id)
     }
 
     /// The status toolbar and the layout bar: usable under Editing only
@@ -5601,7 +5608,11 @@ impl OpenMakerApp {
                 }
             }
             Action::DismissValueLists => self.value_lists = None,
-            Action::ToggleToolbar => self.w.show_toolbar = !self.w.show_toolbar,
+            Action::ToggleToolbar => {
+                if self.toolbar_toggle_available() {
+                    self.w.show_toolbar = !self.w.show_toolbar;
+                }
+            }
             Action::ToggleFormattingBar => self.w.show_formatting = !self.w.show_formatting,
             Action::RefuseTyping(refusal) => {
                 self.error = Some(refusal.message().into());
