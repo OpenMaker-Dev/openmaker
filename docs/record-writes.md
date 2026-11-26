@@ -434,6 +434,11 @@ before the record commit writes it.
   its write naming the preview, outside a transaction or held in one, stores
   what the preview drew, with no layout of the owning file's. So is a
   related record of another file's table on such a layout.
+  Inside a script's transaction the owning file joins it before it
+  previews (`join_owner_transaction`), so that it previews with the
+  transaction's options, as it computes the write it holds there: with
+  Skip auto-enter options, nothing is auto-entered and no serial number
+  is reserved.
 - **The desktop window's use.** OnObjectSave when leaving a changed field
   by clicking the layout's background or using keyboard Commit
   (an ordinary commit, #1070), previews the window's begun rows before its
