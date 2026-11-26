@@ -1757,9 +1757,10 @@ the starting occurrence, must be as FileMaker Pro writes them. It holds:
   in Japanese.
   The record's match fields may be supported stored Text calculations
   of one repetition, nonglobal, with complete dependencies (#1194), plain
-  fields without auto-entry, or keys whose only auto-entry is
-  `Get ( UUID )` (#657). Unstored/global keys, unsupported or unavailable
-  dependencies and dependency cycles remain refused.
+  fields without auto-entry, or ordinary Text keys with a supported
+  calculated auto-enter. A calculated auto-enter key can read the same row.
+  Unstored/global keys, unsupported or unavailable dependencies and
+  dependency cycles remain refused.
 
 How OpenMaker performs it:
 - A write that sets a match field, also to the value it had, reads the
@@ -1781,6 +1782,12 @@ How OpenMaker performs it:
   behavior, general related calculations, same-value input writes, or
   `0xa0000000` all-empty behavior. Same-value input relookup remains
   inference, as does extending the native result to those conditions.
+- When auto-entry changes a Text key, OpenMaker reads the lookup with that
+  final key. An input edit that retains the key under "Do not replace
+  existing value" also retains the prior looked-up value. FileMaker Pro
+  exposes those changes at New Record and Set Field, and OpenMaker uses
+  the commit-time lookup path.
+  [Native measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1036#issuecomment-7185794524).
 - A write that sets the lookup field itself keeps that value. Which came
   last is not known; this is OpenMaker's choice.
 - A write that fires a lookup it could not read is refused with error 3.
