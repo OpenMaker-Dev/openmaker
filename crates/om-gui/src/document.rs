@@ -24,6 +24,7 @@ use crate::{
 
 mod calendar;
 mod container;
+pub(crate) mod design;
 pub(crate) use container::is_media;
 pub use container::PdfViewer;
 pub(crate) mod data_format;
@@ -826,6 +827,16 @@ struct RaisedPopover {
 }
 
 impl DocumentState {
+    pub(crate) fn design_surface<'a>(
+        &'a mut self,
+        session: &'a Session,
+    ) -> (Option<design::Surface<'a>>, &'a mut scroll::Scroll) {
+        (
+            design::Surface::new(session, &self.layout_cache),
+            &mut self.scroll,
+        )
+    }
+
     /// Capture the accepted page identity while text is only an input candidate.
     pub(crate) fn prepare_candidates(
         &mut self,
