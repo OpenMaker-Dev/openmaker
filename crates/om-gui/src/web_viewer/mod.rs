@@ -911,7 +911,11 @@ impl WebViewers {
         // panic): the backend sizes its pages below that.
         let max = ctx.input(|i| i.max_texture_side);
         for (view, frame) in newest {
-            if !self.views.iter().any(|v| v.id == view)
+            // A failed view's late frame paints nothing.
+            if !self
+                .views
+                .iter()
+                .any(|v| v.id == view && v.state != LoadState::Failed)
                 || frame.rgba.len() != frame.size[0] * frame.size[1] * 4
                 || frame.size.iter().any(|side| *side > max || *side == 0)
             {

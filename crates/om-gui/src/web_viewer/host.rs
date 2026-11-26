@@ -7,9 +7,9 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::{BufRead as _, Write as _};
+use std::io::{BufRead as _, Read as _, Write as _};
 use std::process::ExitCode;
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{sync_channel, Receiver};
 use std::sync::{Arc, Mutex};
 
 use gtk::glib;
@@ -19,6 +19,10 @@ use wry::WebViewExtUnix as _;
 use super::wayland::{HostCommand, TITLE};
 use super::webkit::{Events, Page, Spec};
 use super::Event;
+
+/// How many commands wait for GTK at most, and the longest command line.
+const COMMANDS: usize = 16;
+const MAX_COMMAND: u64 = 64 * 1024 * 1024;
 
 struct Hosted {
     window: gtk::Window,
@@ -51,11 +55,21 @@ pub fn serve() -> ExitCode {
         let mut out = out.lock().unwrap_or_else(|e| e.into_inner());
         let _ = out.write_all(&line).and_then(|()| out.flush());
     });
-    let (commands, received) = channel();
+    // A few commands wait for GTK at most: while it is busy, the app's
+    // writes wait instead, and the app bounds those.
+    let (commands, received) = sync_channel(COMMANDS);
     std::thread::spawn(move || {
-        for line in std::io::stdin().lock().lines() {
-            let Ok(line) = line else { break };
-            if let Ok(command) = serde_json::from_str::<HostCommand>(&line) {
+        let mut stdin = std::io::stdin().lock();
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match (&mut stdin).take(MAX_COMMAND).read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                // Longer than any command the app sends.
+                Ok(_) if line.last() != Some(&b'\n') => break,
+                Ok(_) => {}
+            }
+            if let Ok(command) = serde_json::from_slice::<HostCommand>(&line) {
                 if commands.send(command).is_err() {
                     break;
                 }

@@ -8338,7 +8338,8 @@ fn paint_page(
     // A press the page took: its release goes to the page wherever the
     // pointer is, in whichever frame it comes.
     let held_id = response.id.with("pressed");
-    let mut held = ui.data(|d| d.get_temp::<bool>(held_id)).unwrap_or(false);
+    // The buttons it holds, one bit each.
+    let mut held = ui.data(|d| d.get_temp::<u8>(held_id)).unwrap_or(0);
     let mut input = Vec::new();
     let events = ui.input(|i| i.events.clone());
     for event in events.iter().cloned() {
@@ -8360,8 +8361,13 @@ fn paint_page(
                     _ => continue,
                 };
                 // A press on the page, and the release of a press it took.
-                if (pressed && response.hovered()) || (!pressed && (on || held)) {
-                    held = pressed;
+                let bit = 1u8 << button;
+                if (pressed && response.hovered()) || (!pressed && (on || held & bit != 0)) {
+                    if pressed {
+                        held |= bit;
+                    } else {
+                        held &= !bit;
+                    }
                     let (x, y) = at(pos);
                     input.push(PageInput::Button {
                         x,
@@ -8391,10 +8397,10 @@ fn paint_page(
         ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
     }
     ui.data_mut(|d| {
-        if held {
-            d.insert_temp(held_id, true);
+        if held != 0 {
+            d.insert_temp(held_id, held);
         } else {
-            d.remove::<bool>(held_id);
+            d.remove::<u8>(held_id);
         }
     });
     (input, on)

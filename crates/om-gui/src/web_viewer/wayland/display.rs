@@ -79,7 +79,19 @@ pub(crate) enum Request {
 /// Each view's newest picture, which the display replaces as views commit
 /// and the app takes when it draws: a slot per view, not a queue, so a
 /// window that is not drawn holds at most one frame per view.
-pub(crate) type Frames = Arc<std::sync::Mutex<HashMap<u64, Frame>>>;
+pub(crate) type Frames = Arc<std::sync::Mutex<FrameSlots>>;
+
+/// The frames waiting for the app, and the largest side one may have (the
+/// app's largest texture): a buffer larger than that is not even read.
+#[derive(Default)]
+pub(crate) struct FrameSlots {
+    pub frames: HashMap<u64, Frame>,
+    pub max_side: usize,
+}
+
+/// The most bytes the frames waiting for the app may hold together: a
+/// view's new frame that would go beyond waits for its next.
+const FRAME_BUDGET: usize = 256 * 1024 * 1024;
 
 /// A view's newest picture: premultiplied RGBA.
 pub(crate) struct Frame {
@@ -481,15 +493,27 @@ impl CompositorHandler for State {
         };
         let view = toplevel.as_ref().and_then(Self::view_of);
         if let (Some(view), Some(data)) = (view, buffer.data::<shm::Buffer>()) {
-            if let Some(rgba) = data.rgba() {
+            let (width, height) = (data.width as usize, data.height as usize);
+            let fits = self.frames.lock().is_ok_and(|slots| {
+                let waiting: usize = slots
+                    .frames
+                    .iter()
+                    .filter(|(other, _)| **other != view)
+                    .map(|(_, frame)| frame.rgba.len())
+                    .sum();
+                width <= slots.max_side
+                    && height <= slots.max_side
+                    && waiting + width * height * 4 <= FRAME_BUDGET
+            });
+            if let Some(rgba) = data.rgba().filter(|_| fits) {
                 let frame = Frame {
                     view,
-                    width: data.width as usize,
-                    height: data.height as usize,
+                    width,
+                    height,
                     rgba,
                 };
-                if let Ok(mut frames) = self.frames.lock() {
-                    frames.insert(view, frame);
+                if let Ok(mut slots) = self.frames.lock() {
+                    slots.frames.insert(view, frame);
                 }
                 (self.wake)();
             }
