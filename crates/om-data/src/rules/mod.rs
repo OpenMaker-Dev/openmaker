@@ -1847,12 +1847,21 @@ pub fn user_editable(field: &om_hbam::Field) -> bool {
         && !options.auto_entry_editing_prohibited()
 }
 
+fn supports_creation_time_text(locale: &Locale) -> bool {
+    locale.twelve_hour
+        && !locale.pad_hour
+        && !locale.am_pm_before
+        && locale.time_separator == ':'
+        && locale.am == " AM"
+        && locale.pm == " PM"
+}
+
 impl RecordPlan {
     /// The rules of `table` from its definitions in `tree` alone (no other
     /// tables, occurrences or custom functions).
     #[cfg(test)]
     pub fn from_schema(table: &Table, tree: &KeyTree<'_>) -> Result<Self, DataError> {
-        Self::plan(table, tree, None, false, false)
+        Self::plan(table, tree, None, false, false, None)
     }
 
     /// The rules of `table` from its current definitions in `tree`, within
@@ -1863,7 +1872,7 @@ impl RecordPlan {
         tree: &KeyTree<'_>,
         file: &CalcSchema,
     ) -> Result<Self, DataError> {
-        Self::plan(table, tree, Some(file), false, false)
+        Self::plan(table, tree, Some(file), false, false, None)
     }
 
     /// The desktop's provider handles the session-global side of New
@@ -1876,7 +1885,10 @@ impl RecordPlan {
         file: &CalcSchema,
         local: bool,
     ) -> Result<Self, DataError> {
-        Self::plan(table, tree, Some(file), true, local)
+        static SYSTEM: std::sync::LazyLock<Option<Locale>> =
+            std::sync::LazyLock::new(crate::new_file::configured_system_locale);
+        let system = if local { SYSTEM.as_ref() } else { None };
+        Self::plan(table, tree, Some(file), true, local, system)
     }
 
     fn plan(
@@ -1885,6 +1897,7 @@ impl RecordPlan {
         file: Option<&CalcSchema>,
         global_defaults: bool,
         local: bool,
+        system: Option<&Locale>,
     ) -> Result<Self, DataError> {
         let mut schema = file
             .cloned()
@@ -2146,20 +2159,15 @@ impl RecordPlan {
                     _ => DataType::Text,
                 };
                 if field.data_type != expected {
-                    let locale = &schema.locale;
-                    // The local provider's creation clock supplies this exact
-                    // time text. Other formats and conversions are unmeasured.
+                    // Both time formats matched in the local native check.
+                    // The provider gives the formula the file's clock text.
                     let text_creation_time = local
                         && !schema.locale_unreadable
                         && variable == EntryVariable::CreationTime
                         && field.data_type == DataType::Text
                         && options.max_repetitions == 1
-                        && locale.twelve_hour
-                        && !locale.pad_hour
-                        && !locale.am_pm_before
-                        && locale.time_separator == ':'
-                        && locale.am == " AM"
-                        && locale.pm == " PM";
+                        && supports_creation_time_text(&schema.locale)
+                        && system.is_some_and(supports_creation_time_text);
                     if !text_creation_time {
                         return Err(error(
                             "auto-entry variable storage conversion is unsupported.",
@@ -6885,8 +6893,9 @@ mod tests {
             ],
         };
         let tree = KeyTree::default();
-        let mut file = CalcSchema::new("Example", Locale::en_us());
-        let plan = RecordPlan::from_desktop_file_schema(&table, &tree, &file, true).unwrap();
+        let system = Locale::en_us();
+        let mut file = CalcSchema::new("Example", system.clone());
+        let plan = RecordPlan::plan(&table, &tree, Some(&file), true, true, Some(&system)).unwrap();
         let mut clock = environment();
         clock.time = "1:26:37 AM".into();
         let created = plan
@@ -6913,8 +6922,11 @@ mod tests {
 
         assert!(RecordPlan::from_file_schema(&table, &tree, &file).is_err());
         assert!(RecordPlan::from_desktop_file_schema(&table, &tree, &file, false).is_err());
+        let german = Locale::de_de();
+        assert!(RecordPlan::plan(&table, &tree, Some(&file), true, true, Some(&german)).is_err());
+        assert!(RecordPlan::plan(&table, &tree, Some(&file), true, true, None).is_err());
         file.locale.twelve_hour = false;
-        assert!(RecordPlan::from_desktop_file_schema(&table, &tree, &file, true).is_err());
+        assert!(RecordPlan::plan(&table, &tree, Some(&file), true, true, Some(&system)).is_err());
     }
 
     /// A record the window holds unsaved (#1063): its values are known only
@@ -7630,7 +7642,7 @@ mod tests {
             tree.insert(&segments, om_hbam::slot::ChunkKind::Leaf, Some(value))
                 .unwrap();
         }
-        RecordPlan::plan(table, &tree, None, false, local)
+        RecordPlan::plan(table, &tree, None, false, local, None)
     }
 
     const INITIALS: &str = "Case ( not IsEmpty ( Field2 ) ; Left ( Field2 ; 1 ) ; \

@@ -793,8 +793,9 @@ observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
 and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
 
 Local desktop files can auto-enter Creation Time into a single-repetition
-Text field when the file's time format matches the desktop creation clock
-(hours without a leading zero, colon separators and an AM/PM suffix).
+Text field when the file and the desktop's configured system time format
+use hours without a leading zero, colon separators and a trailing AM/PM
+suffix. An unknown or mismatched system format is refused.
 The Text field stores the creation-time string, including seconds. Other
 type conversions and hosted Creation Time into Text remain unsupported.
 [FileMaker Pro measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1035#issuecomment-7185794163).
