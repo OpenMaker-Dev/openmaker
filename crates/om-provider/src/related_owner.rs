@@ -415,7 +415,7 @@ impl NativeProvider {
         let write = match write.prepared {
             Some(id) => {
                 owned = ScriptWrite {
-                    prepared: Some(self.routed_preview(id, table)?),
+                    prepared: Some(self.routed_preview(id, table, write.layout)?),
                     ..write.clone()
                 };
                 &owned

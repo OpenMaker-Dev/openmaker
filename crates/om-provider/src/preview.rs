@@ -54,8 +54,9 @@
 //! holds in the open transaction is refused (3) before anything is sent,
 //! rather than stored with values other than those shown.
 //!
-//! A related record of another file's table is previewed by that file's
-//! provider, through the table's route as `write_record` writes it
+//! A related record of another file's table, and a new record of a layout
+//! of another file's table (#43), are previewed by that file's provider,
+//! through the table's route as `write_record` writes them
 //! (related_owner.rs): the owner keeps the snapshot under an id of its own,
 //! and this file maps its id to it.
 
@@ -119,11 +120,13 @@ pub(crate) struct KeptPreviews(BTreeMap<PreparedId, Preview>);
 enum Preview {
     /// A record of this file's table `snapshot.table`.
     Own(Snapshot),
-    /// A related record of imported table `table`, previewed by the owner
-    /// `route` reaches as its preview `owner`.
+    /// A related record of imported table `table`, or a new record of a
+    /// layout of it, written through this file's `layout` and previewed by
+    /// the owner `route` reaches as its preview `owner`.
     Routed {
         route: external::TableRoute,
         table: u64,
+        layout: u32,
         owner: PreparedId,
     },
 }
@@ -261,10 +264,11 @@ impl NativeProvider {
         let layout_table = self.read_table_for_layout(&layout)?.id;
         let table = write.table.unwrap_or(layout_table);
         if let Some(route) = self.external.route(table) {
-            // Only a related record of another file's table on a layout of
-            // this file's table, as `write_record` routes it; a layout of
-            // another file's table previews nothing.
-            if table == layout_table || self.external.route(layout_table).is_some() {
+            // A related record of another file's table on a layout of this
+            // file's table, or a new record of a layout of another file's
+            // table (#43), as `write_record` routes them. A related record
+            // of such a layout, whose write is refused, previews nothing.
+            if table != layout_table && self.external.route(layout_table).is_some() {
                 return Ok(None);
             }
             // Again: the owner's preview this file's id names.
@@ -273,7 +277,7 @@ impl NativeProvider {
             let write = match again {
                 Some(id) => {
                     owned_write = ScriptWrite {
-                        prepared: Some(self.routed_preview(id, table)?),
+                        prepared: Some(self.routed_preview(id, table, write.layout)?),
                         ..write.clone()
                     };
                     &owned_write
@@ -383,6 +387,7 @@ impl NativeProvider {
                 None => self.previews.insert(Preview::Routed {
                     route,
                     table,
+                    layout: write.layout,
                     owner: preview.id,
                 }),
             };
@@ -965,18 +970,21 @@ impl NativeProvider {
         }
     }
 
-    /// The owner's id of routed preview `id` of imported table `table`.
+    /// The owner's id of routed preview `id` of imported table `table`,
+    /// written through `layout`.
     pub(crate) fn routed_preview(
         &self,
         id: PreparedId,
         table: u64,
+        layout: u32,
     ) -> Result<PreparedId, DataError> {
         match self.previews.held.get(&id) {
             Some(Preview::Routed {
                 table: previewed,
+                layout: through,
                 owner,
                 ..
-            }) if *previewed == table => Ok(*owner),
+            }) if *previewed == table && *through == layout => Ok(*owner),
             Some(_) => Err(refused(
                 "The new record's preview is of another record. No record was written.",
             )),
