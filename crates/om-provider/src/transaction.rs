@@ -325,13 +325,17 @@ pub(crate) struct Held {
 }
 
 impl Held {
-    /// The change as reads see it: a new record's computed values
-    /// (`created`) under its cells.
+    /// The change as reads see it: a new record's supplied and computed values.
     fn shown(&self) -> Change {
         match (&self.change, &self.created) {
             (Change::New(cells), Some(created)) => {
                 let mut values = created.values.clone();
-                values.extend(cells.iter().map(|(cell, value)| (*cell, value.clone())));
+                values.extend(
+                    cells
+                        .iter()
+                        .filter(|(cell, _)| !created.proposed_self.contains(cell))
+                        .map(|(cell, value)| (*cell, value.clone())),
+                );
                 Change::New(values)
             }
             (change, _) => change.clone(),
@@ -1001,6 +1005,7 @@ impl NativeProvider {
                 .as_ref()
                 .is_some_and(|t| t.options.skip_auto_enter),
             keep_written: false,
+            imported: false,
             mapped_cells: None,
         }
     }
@@ -3977,6 +3982,7 @@ impl NativeProvider {
             skip_data_entry_validation: transaction.options.skip_validation || skip_validation,
             skip_auto_enter: transaction.options.skip_auto_enter,
             keep_written: false,
+            imported: false,
             mapped_cells: None,
         };
         let environment = self.record_environment()?;

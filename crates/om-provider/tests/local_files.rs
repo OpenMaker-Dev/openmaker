@@ -2989,6 +2989,52 @@ fn unsupported_stored_record_position_does_not_reserve_a_serial() {
 }
 
 #[test]
+fn held_new_record_shows_the_proposed_self_result_and_commits_it_once() {
+    use fixture::{LAYOUT, OCCURRENCE};
+
+    const AMOUNT: u64 = 40;
+    let folder = Folder::new("held-proposed-self");
+    let path = folder.file("Numbers.fmp12", PASSWORD, |root| {
+        fixture::add_field(root, TABLE, AMOUNT, "Amount", 1, 2, 0, 0x88, 0);
+        fixture::add_formula(
+            root,
+            &fixture::names(),
+            (TABLE, OCCURRENCE),
+            AMOUNT,
+            5,
+            "If ( IsEmpty ( Self ) ; 0 ; Self + 1 )",
+        );
+    });
+    let layout = LAYOUT as u32;
+    let mut provider = opened(&path);
+    let fields = provider.records(layout, 0, 0).unwrap().fields;
+    let amount = fields.iter().position(|f| f.name == "Amount").unwrap();
+    provider.begin_record_commit().unwrap();
+    let created = provider
+        .write_record(&om_data::ScriptWrite {
+            layout,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(created.values[amount].as_deref(), Some("0"));
+    let held = provider
+        .write_record(&om_data::ScriptWrite {
+            layout,
+            record: Some(created.id),
+            cells: BTreeMap::from([(AMOUNT, Some("25".into()))]),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(held.values[amount].as_deref(), Some("26"));
+    provider.commit_record_session(false).unwrap();
+    provider.close();
+
+    let mut reopened = opened(&path);
+    let saved = reopened.record_by_id(layout, created.id).unwrap();
+    assert_eq!(text(&saved, created.id, "Amount"), Some("26"));
+}
+
+#[test]
 fn new_record_auto_enters_the_session_globals() {
     use fixture::{LAYOUT, NAME, OCCURRENCE};
     use om_data::calc::Value;

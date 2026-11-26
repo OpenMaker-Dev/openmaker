@@ -781,6 +781,13 @@ but for a lookup's, which would write into it: a stray `0x80`
 (auto-entry.md) leaves the table writable. A stored calculation's unknown
 bits keep it read-only.
 
+An ordinary local Number auto-entry calculation can use `Self` as its
+only field input. It reads the proposed value at New Record or on an
+explicit write, including an empty value on a clear. A nonempty explicit
+assignment keeps its value when replacement is disabled. This covers
+stored results and new-record previews. Existing-record edits can still
+show the entered value until the save. [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1059)
+
 An ordinary new record can fill an empty single-repetition global Text
 field with its constant, a calculation that reads no fields, or its
 creation serial. That value goes to the session immediately. It never
