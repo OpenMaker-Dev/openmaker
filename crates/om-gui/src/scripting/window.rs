@@ -1305,6 +1305,7 @@ impl Window {
         }
         self.record = None;
         self.state.record = None;
+        self.state.record_version = None;
         self.state.drafts.clear();
         self.stray_session |= self.state.uncommitted.session;
         self.state.uncommitted = Uncommitted::default();
@@ -1843,6 +1844,31 @@ impl Window {
 mod scroll_tests {
     use super::*;
     use om_data::runtime::{ErrorCode, HostError};
+
+    #[test]
+    fn a_new_record_drops_the_previous_records_edit_version() {
+        let mut provider = om_data::mock::MockProvider::new();
+        provider
+            .open(&om_data::Connection {
+                host: "records.test.invalid".into(),
+                port: 5003,
+                file: "Records.fmp12".into(),
+                account: "Admin".into(),
+                password: String::new(),
+            })
+            .unwrap();
+        let mut window = Window::default();
+        window.set_layout(1, Some(0x8002));
+        window.state.record = Some(1);
+        window.state.record_version = Some(12);
+
+        window
+            .new_record(&mut provider, FieldChanges::new(), Cells::new(), None)
+            .unwrap();
+
+        assert!(window.state.record.is_some_and(|id| id != 1));
+        assert_eq!(window.state.record_version, None);
+    }
 
     /// The last sort order is kept per table in a window, as FileMaker Pro
     /// keeps it (#840's reading: Tasks by Task descending and Assignees by
