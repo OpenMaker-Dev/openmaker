@@ -4279,7 +4279,15 @@ impl DataProvider for NativeProvider {
         )?;
         if let Ok(id) = u64::try_from(record.id) {
             match write.record {
-                None => self.found_add(table, id),
+                None => {
+                    let after = match write.record_number {
+                        Some(om_data::rules::RecordNumber::LocalSortedNewRecord {
+                            after, ..
+                        }) => Some(after),
+                        _ => None,
+                    };
+                    self.found_add_after(table, id, after);
+                }
                 Some(_) => self.calc.page.invalidate_record(table, id),
             }
         }

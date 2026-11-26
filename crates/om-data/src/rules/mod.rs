@@ -375,12 +375,16 @@ pub enum RecordNumber {
     /// The position at ordinary New Record in an unsorted window of a
     /// local file. A stored Number calculation can also use this answer.
     LocalNewRecord(u64),
+    /// Ordinary local New Record in a sorted found set. The held row
+    /// follows the current row before any later re-sort.
+    LocalSortedNewRecord { position: u64, after: u64 },
 }
 
 impl RecordNumber {
     pub fn value(self) -> u64 {
         match self {
             Self::Window(number) | Self::LocalNewRecord(number) => number,
+            Self::LocalSortedNewRecord { position, .. } => position,
         }
     }
 }
@@ -3491,7 +3495,10 @@ impl RecordPlan {
     /// Reject an unsupported stored record position before a create or
     /// preview reserves an ID or a serial number.
     pub fn check_creation_context(&self, context: &WriteContext) -> Result<(), DataError> {
-        if matches!(context.record_number, Some(RecordNumber::LocalNewRecord(_))) {
+        if matches!(
+            context.record_number,
+            Some(RecordNumber::LocalNewRecord(_) | RecordNumber::LocalSortedNewRecord { .. })
+        ) {
             return Ok(());
         }
         if let Some(field) = self.fields.values().find(|field| {
@@ -3506,7 +3513,7 @@ impl RecordPlan {
             return Err(DataError::with_code(
                 error::UNAVAILABLE,
                 format!(
-                    "Field {}: a stored record number requires ordinary New Record in an unsorted local window.",
+                    "Field {}: a stored record number requires ordinary New Record in a local window with a known insertion position.",
                     field.name
                 ),
             ));

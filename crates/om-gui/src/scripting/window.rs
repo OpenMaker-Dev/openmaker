@@ -1410,8 +1410,7 @@ impl Window {
             && !cfg!(any(target_os = "ios", target_os = "android"))
             && provider.local_path().is_some()
         {
-            self.next_unsorted_record_number(provider)
-                .map(RecordNumber::LocalNewRecord)
+            self.next_local_new_record(provider)
         } else {
             None
         };
@@ -1435,6 +1434,29 @@ impl Window {
         let (_, found) = provider.records_with_summary(layout, 0, 0, &[]).ok()?;
         let found = found.filter(|found| !found.sorted)?;
         found.found.checked_add(1)
+    }
+
+    fn next_local_new_record(&self, provider: &mut dyn DataProvider) -> Option<RecordNumber> {
+        let layout = self.state.layout?;
+        let (_, found) = provider.records_with_summary(layout, 0, 0, &[]).ok()?;
+        let found = found?;
+        if !found.sorted || found.found == 0 {
+            return found.found.checked_add(1).map(RecordNumber::LocalNewRecord);
+        }
+        if self.state.index >= found.found {
+            return None;
+        }
+        let page = provider
+            .records_with_calculations(layout, self.state.index, ONE, &[])
+            .ok()?;
+        let current = page.records.first()?.id;
+        if self.state.record.is_some_and(|id| id != current) {
+            return None;
+        }
+        Some(RecordNumber::LocalSortedNewRecord {
+            position: self.state.index.checked_add(2)?,
+            after: u64::try_from(current).ok()?,
+        })
     }
 
     /// Open the record session a new record is held in, as FileMaker Pro

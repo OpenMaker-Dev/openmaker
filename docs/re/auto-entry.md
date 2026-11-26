@@ -588,6 +588,14 @@ that saves without a dialog. Hosted behavior is unmeasured.
 
 ## Get ( RecordNumber )
 
+FileMaker Pro 26.1.1 [measured sorted ordinary New Record](https://github.com/OpenMaker-Dev/openmaker/issues/1011)
+with a stored Number calculation consisting of `Get ( RecordNumber )`.
+When sorted, a new row initially follows the current row. When unsorted,
+it goes at the end. A new window kept the found set, sort and current
+record. The stored value held the insertion position across commit and
+later reordering. The live record number changed from 3 to 2 in one
+sorted case while the stored value remained 3.
+
 **Stored Number calculation.** [O: FileMaker Pro 26.1.1, local disposable
 file, [#1011](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7184565879).]
 FileMaker lets a Number calculation whose entire formula is
@@ -600,9 +608,8 @@ the window position while the stored result stayed as first evaluated. In
 one descending sorted set, New Record produced a stored 2 and window
 position 2. The closed copies held the stored numbers across unrelated
 edits and reopening. All script steps returned 0 with no alerts. Timing
-before the first read and the general sorted insertion rule remain
-unmeasured, as do duplicates, portals and hosted files for this stored
-formula.
+before the first read remains unmeasured, as do duplicates, portals and
+hosted files for this stored formula.
 
 Two cases [O: FileMaker Pro 26.0.3, a local disposable pair made in the
 native UI, #1038, relayed sanitized].
