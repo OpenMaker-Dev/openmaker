@@ -46,6 +46,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use om_data::calc::eval::{CalcHost, Context};
 use om_data::calc::Value;
+use om_data::formula::Expr;
+use om_data::host::session::selector;
 use om_data::host::{CalcNeed, CalcSchema, FieldClass, Hop};
 use om_data::meta::{relation_option, JoinOp};
 use om_data::rules::RecordNumber;
@@ -1421,7 +1423,8 @@ impl WorkerHost<'_> {
 
     /// The match fields of the measured local, direct unsorted equality
     /// relationship. The child must belong to a different table in this
-    /// file. Its plain stored key must keep the copied global value.
+    /// file. The copied global value wins even over the measured replacing
+    /// UUID default: the provider keeps explicit cells on a scripted create.
     fn first_related_match_fields(&self, occurrence: u64, table: u64) -> Option<(u64, u64)> {
         let schema = self.schema()?;
         let current = self.s.file.occurrence?;
@@ -1445,17 +1448,40 @@ impl WorkerHost<'_> {
         }
         let from = schema.field(current, predicate.left)?;
         let to = schema.field(occurrence, predicate.right)?;
-        (from.class == FieldClass::Data
-            && from.value_type == om_data::calc::ValueType::Text
-            && from.options == 0x0001_0000
-            && from.repetitions == 1
-            && to.class == FieldClass::Data
-            && to.value_type == om_data::calc::ValueType::Text
-            && !to.global
-            && to.repetitions == 1
-            && to.auto_enter.is_none()
-            && to.options & 0x0000_07ff == 0)
-            .then_some((from.id, to.id))
+        if from.class != FieldClass::Data
+            || from.value_type != om_data::calc::ValueType::Text
+            || from.options != 0x0001_0000
+            || from.repetitions != 1
+            || to.class != FieldClass::Data
+            || to.value_type != om_data::calc::ValueType::Text
+            || to.global
+            || to.repetitions != 1
+        {
+            return None;
+        }
+        let replacing_uuid = to.options == 0xa000_0088
+            && from.validation_options == 0
+            && to.validation_options == 0
+            && to
+                .auto_enter
+                .as_ref()
+                .is_some_and(|formula| matches!(formula.polish, Expr::Get(selector::UUID)));
+        let plain_key = to.auto_enter.is_none() && to.options & 0x0000_07ff == 0;
+        if !plain_key && !replacing_uuid {
+            return None;
+        }
+        // The UUID key was measured together with an indexed Position.
+        let has_position = schema.table(table)?.fields.values().any(|field| {
+            field.class == FieldClass::Calculation
+                && field.stored
+                && field.value_type == om_data::calc::ValueType::Number
+                && field.formula.as_ref().is_some_and(|formula| {
+                    matches!(formula.polish, Expr::Get(selector::RECORD_NUMBER))
+                })
+                && (!replacing_uuid
+                    || field.options == 0x8008_0000 && field.validation_options == 0)
+        });
+        has_position.then_some((from.id, to.id))
     }
 
     fn has_stored_related_parent(&self) -> bool {
@@ -1468,8 +1494,7 @@ impl WorkerHost<'_> {
             && self.s.file.transaction.is_none()
     }
 
-    /// Prepare the early read only for tables that need this position.
-    /// Ordinary related writes keep their existing deferred path.
+    /// Prepare the early read only for the measured first related creation.
     fn first_related_key(
         &mut self,
         occurrence: u64,
@@ -1488,23 +1513,7 @@ impl WorkerHost<'_> {
         if value.is_empty() || value.contains(['\r', '\n']) {
             return None;
         }
-        let needs_position = self.schema()?.table(table)?.fields.values().any(|field| {
-            field.class == FieldClass::Calculation
-                && field.stored
-                && field.value_type == om_data::calc::ValueType::Number
-                && field.formula.as_ref().is_some_and(|formula| {
-                    matches!(
-                        formula.polish,
-                        om_data::formula::Expr::Get(
-                            om_data::host::session::selector::RECORD_NUMBER
-                        )
-                    )
-                })
-        });
-        if !needs_position || self.p().local_path().is_none() {
-            return None;
-        }
-        Some(key)
+        self.p().local_path().is_some().then_some(key)
     }
 
     fn preview_first_related(

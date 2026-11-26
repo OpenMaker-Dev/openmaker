@@ -1164,6 +1164,10 @@ record's place in what the rules read:
   global Text key to a plain stored Text key. The script can read the
   position and count the new match before Commit. With the value index,
   an exact Find for the stored position includes the new record.
+  The measured indexed Position case also supports an indexed Text match
+  key with replacing `Get ( UUID )` (`0xa0000088`, no validation).
+  Related creation uses the copied global as the match value. Direct New
+  Record on the related table still evaluates its UUID default.
   The parent's record is already stored and otherwise unedited. The
   matching key and position are checked again at save.
   The same field definition refuses writes
