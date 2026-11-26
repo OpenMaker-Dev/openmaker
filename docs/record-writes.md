@@ -1055,14 +1055,17 @@ record's place in what the rules read:
 - **Routed writes:** a portal row of another file's table carries the
   calling window's number to that file.
 - A stored Number calculation consisting of `Get ( RecordNumber )` can
-  use the position from ordinary New Record in an unsorted window of a
-  local file, including when earlier rows are omitted. Unrelated edits
-  leave its stored value alone. The same field definition refuses writes
+  use the position from ordinary New Record in a local window, including
+  when earlier rows are omitted. An unsorted set appends the row. A sorted
+  set inserts it immediately after the current row when that row is known.
+  Unrelated edits and later re-sorting leave its stored value alone.
+  Automatic re-sorting after commit is a separate difference.
+  The same field definition refuses writes
   on hosted files and routed tables. Duplicate Record, portal creation
   and other creates without the local New Record position refuse with 3
   ([#1011](https://github.com/OpenMaker-Dev/openmaker/issues/1011)).
-- The number is unavailable for a portal that sorts or filters, new
-  records in a sorted desktop window, and edits of stored records.
+- The number is unavailable for a portal that sorts or filters, a sorted
+  desktop window without a known insertion position, and edits of stored records.
 - **Edits that evaluate no such formula are written.** An auto-entered
   or stored calculation with no field inputs is evaluated only at creation.
 - **The desktop window gives it in the measured shape only**

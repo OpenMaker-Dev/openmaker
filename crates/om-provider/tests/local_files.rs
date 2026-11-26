@@ -3262,6 +3262,54 @@ fn local_new_record_auto_enters_a_file_variable_at_creation() {
 }
 
 #[test]
+fn a_local_sorted_new_record_keeps_its_insertion_position() {
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
+    use om_data::found::{FoundSetChange, SortField, SortOrder};
+    use om_data::rules::RecordNumber;
+
+    const POSITION: u64 = 41;
+    let folder = Folder::new("sorted-stored-position");
+    let path = folder.file("Events.fmp12", PASSWORD, |root| {
+        fixture::add_field(root, TABLE, POSITION, "Position", 2, 2, 0, 0x80000, 0);
+        fixture::add_formula(
+            root,
+            &fixture::names(),
+            (TABLE, OCCURRENCE),
+            POSITION,
+            5,
+            "Get ( RecordNumber )",
+        );
+    });
+    let mut provider = opened(&path);
+    let layout = LAYOUT as u32;
+    let sort = || FoundSetChange::Sort(vec![SortField::new("Name", SortOrder::Descending)]);
+    provider.change_found_set(layout, sort()).unwrap();
+    let first = provider.records(layout, 0, 1).unwrap().records[0].id;
+    provider.copy_window(1, 2);
+    provider.use_window(2);
+    provider.begin_record_commit().unwrap();
+    let created = provider
+        .write_record(&om_data::ScriptWrite {
+            layout,
+            cells: BTreeMap::from([(NAME, Some("Zulu".into()))]),
+            record_number: Some(RecordNumber::LocalSortedNewRecord {
+                position: 2,
+                after: first as u64,
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+    let found = provider.records(layout, 0, 4).unwrap();
+    assert_eq!(found.records[1].id, created.id);
+    assert_eq!(text(&found, created.id, "Position"), Some("2"));
+    provider.commit_record_session(false).unwrap();
+    provider.change_found_set(layout, sort()).unwrap();
+    let reordered = provider.records(layout, 0, 4).unwrap();
+    assert_eq!(reordered.records[0].id, created.id);
+    assert_eq!(text(&reordered, created.id, "Position"), Some("2"));
+}
+
+#[test]
 fn new_record_auto_enters_the_session_globals() {
     use fixture::{LAYOUT, NAME, OCCURRENCE};
     use om_data::calc::Value;
