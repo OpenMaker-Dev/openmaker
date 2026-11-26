@@ -1135,6 +1135,10 @@ fn related_file_layouts_browse_and_expose_only_supported_edit_capabilities() {
         0,
         0,
     );
+    // Two of its fields share a name, as a malformed file can have it.
+    for id in [22, 23] {
+        fixture::add_field(&mut files[1].1, TABLE, id, "Twin", 1, 1, 0, 0, 0);
+    }
     let host = Host::new("writes", files);
     let mut provider = host.open(ROOT);
     provider.calc_schema().unwrap();
@@ -1148,7 +1152,9 @@ fn related_file_layouts_browse_and_expose_only_supported_edit_capabilities() {
     assert!(["Name", "Code", "Setting", "Collides"]
         .iter()
         .all(|name| editable.contains(*name)));
-    assert!(!editable.contains("File Info") && !editable.contains("Due"));
+    assert!(["File Info", "Due", "Twin"]
+        .iter()
+        .all(|name| !editable.contains(*name)));
     assert_eq!(capabilities.globals, ["Setting".to_string()].into());
     let page = provider.records(layout, 0, 1).unwrap();
     let value = |page: &om_data::RecordPage, name: &str| {
@@ -1515,13 +1521,17 @@ fn imported_layout_edits_commit_on_the_owner_and_return_fresh_calculations() {
     assert!(capabilities.editable_fields.unwrap().contains("Count"));
     assert!(capabilities.related[&REMOTE].contains(&COUNT));
     let second = COUNT * 256 + 2;
-    provider
-        .write_record(&om_data::ScriptWrite {
-            cells: [(second, Some("8".into()))].into(),
-            typed: [second].into(),
-            ..write.clone()
-        })
-        .unwrap();
+    let typed = om_data::ScriptWrite {
+        cells: [(second, Some("8".into()))].into(),
+        typed: [second].into(),
+        ..write.clone()
+    };
+    // Inside a script's transaction the user's typing into it is refused, as
+    // the user's other saves on such a layout are (#411).
+    provider.begin_transaction(Default::default()).unwrap();
+    assert_eq!(provider.write_record(&typed).unwrap_err().code, Some(3));
+    provider.revert_transaction().unwrap();
+    provider.write_record(&typed).unwrap();
     let read = provider
         .calc_data(&[CalcNeed::Record {
             table: imported,
