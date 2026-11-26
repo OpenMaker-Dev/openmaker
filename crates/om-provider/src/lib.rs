@@ -4938,6 +4938,7 @@ impl DataProvider for NativeProvider {
                 name: change.name,
                 flags: change.flags,
                 hidden: change.hidden,
+                margins: change.margins.map(|m| [m.top, m.left, m.bottom, m.right]),
             })
             .map(|framed| om_data::layout_objects::FramedObjects {
                 changed: framed.changed,
