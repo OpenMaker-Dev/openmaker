@@ -129,15 +129,22 @@ impl WebViewerSetupDialog {
                     ui.label("Web Address");
                 });
                 place(ui, at(216.0, 30.0, 324.0, 110.0), &mut |ui| {
-                    let edit = ui.add_sized(
-                        [324.0, 110.0],
-                        egui::TextEdit::multiline(&mut self.address)
-                            .hint_text("\"https://\" & Website"),
-                    );
-                    widgets::accessible_label(ui, edit.id, "Web Address");
-                    if edit.changed() {
-                        self.error = None;
-                    }
+                    // A long address scrolls inside its box rather than
+                    // growing over the options.
+                    egui::ScrollArea::vertical()
+                        .id_salt("web_viewer_address")
+                        .max_height(110.0)
+                        .show(ui, |ui| {
+                            let edit = ui.add_sized(
+                                [324.0, 110.0],
+                                egui::TextEdit::multiline(&mut self.address)
+                                    .hint_text("\"https://\" & Website"),
+                            );
+                            widgets::accessible_label(ui, edit.id, "Web Address");
+                            if edit.changed() {
+                                self.error = None;
+                            }
+                        });
                 });
                 for (index, label) in OPTIONS.iter().enumerate() {
                     place(
