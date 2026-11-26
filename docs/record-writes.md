@@ -1204,7 +1204,8 @@ related record is locked when the record is saved, not as typing begins
 (FileMaker Pro locks as editing begins, write-path.md 4.1); a record
 another client changed since the window showed it is refused with 306
 (`DataProvider::retain_related_record`; a transaction's lock now checks
-the version the window kept, as an edit outside one does). A number field
+the version the window kept, as an edit outside one does). When the window
+leaves a record, it drops that record's edit baseline. A number field
 stores the text as typed, with
 no parsing, reformatting or conversion, as Set Field stores it (script
 oracle 13.20: `abc` in a number field is stored as typed). Its entry rules
