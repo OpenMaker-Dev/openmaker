@@ -4868,11 +4868,14 @@ every step it checks:
   leader that has not heard yet may serve with less, section 7.1);
 - that while the network is healthy (no fault drawn, no split, every
   member up, delivery keeping up) and one leader leads the newest term,
-  every follower it does not report behind or blocked reaches the
-  leader's durable entry, as it was when the watch began, within six
-  election timeouts, plus two ticks per batch it lacked, plus ten ticks;
-  the watch starts again from each entry reached, so it holds while
-  writes go on (the progress check);
+  every follower it does not report behind or blocked comes to hold the
+  leader's durable entry, as it was when the watch began, by a deadline:
+  six election timeouts and ten ticks, plus a round trip of the slowest
+  healthy network (four ticks) for each entry of the follower's log past
+  where the two logs meet on the disks, which a probe may have to step
+  back over one at a time, and for each batch it lacks from there; the
+  watch starts again from each entry reached, so it holds while writes go
+  on (the progress check);
 - that every server starts (check 11);
 - that every error a member's store returns follows a fault its disk
   injected during that very call.
@@ -4885,9 +4888,11 @@ every member starts and the client writes on every tick for twenty
 election timeouts, on a network that drops nothing and delays every
 message by one or two ticks. So appends to one follower cross, and no
 answer arrives before the next entry's append has gone out: the history
-in which round 2's rule left a follower behind. The bound is the
-simulator's, not a measured latency: it allows for an election, a probe
-stepping back a run of entries each round trip, and the gap.
+in which round 2's rule left a follower behind. The deadline is the
+simulator's, not a measured latency. It first counted only the entries a
+follower lacked, and a long run found a follower whose log diverged for
+a dozen entries of a dozen terms (leaders churning): each refusal could
+step back one entry, slower than that bound but not stuck.
 
 At the end the faults stop: one leader must serve, and every member must
 hold and publish everything committed or be one the leader reports as

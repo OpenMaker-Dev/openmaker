@@ -361,7 +361,7 @@ const STORMS: [Storm; 4] = [
 type Appended = (ServerId, Echo, Pos, Vec<(u64, [u8; 32])>);
 
 /// A follower watched for progress: since which tick, the leader's durable
-/// entry then and how many entries it lacked, and which leader in which
+/// entry then, the deadline ([`World::deadline`]), and which leader in which
 /// term.
 type Watch = (u64, u64, u64, usize, u64);
 
@@ -1236,10 +1236,9 @@ impl World {
     /// While the network is healthy (no fault drawn, no split, every
     /// member up, delivery keeping up) and one leader leads the newest term
     /// unchanged, every follower it does not report behind or blocked
-    /// reaches the leader's durable entry, as it was when the watch began,
-    /// within `6 * election + 2 * gap / batch + 10` ticks, `gap` being how
-    /// many entries it lacked then. The watch starts again from each
-    /// entry reached, so it holds while writes go on.
+    /// comes to hold the leader's durable entry, as it was when the watch
+    /// began, by a deadline ([`World::deadline`]). The watch starts again
+    /// from each entry reached, so it holds while writes go on.
     fn watch_progress(&mut self) -> Outcome {
         let healthy = self.split.is_none()
             && self.back == Return::Idle
@@ -1262,7 +1261,6 @@ impl World {
             .copied()
             .chain(core.blocked().into_iter().map(|b| b.0))
             .collect();
-        let (election, batch) = (self.timing.0, self.batch.0.max(1));
         for f in 0..self.nodes.len() {
             if f == l || excused.contains(&self.ids[f]) {
                 self.watch[f] = None;
@@ -1276,11 +1274,11 @@ impl World {
                 .durable_entry()
                 .0;
             match self.watch[f] {
-                Some((start, target, gap, wl, wt)) if wl == l && wt == term => {
-                    if durable >= target {
-                        let gap = to_durable.saturating_sub(durable);
-                        self.watch[f] = Some((self.now, to_durable, gap, l, term));
-                    } else if self.now >= start + 6 * election + 2 * gap / batch + 10 {
+                Some((start, target, deadline, wl, wt)) if wl == l && wt == term => {
+                    if durable >= target && self.meet(f, l).is_some_and(|m| m >= target) {
+                        let deadline = self.deadline(f, l, to_durable);
+                        self.watch[f] = Some((self.now, to_durable, deadline, l, term));
+                    } else if self.now >= deadline {
                         let knows = self.core_of(l).progress.get(&self.ids[f]).copied();
                         let fc = self.core_of(f);
                         let (fr, ft, fl) = (fc.role(), fc.term(), fc.last().index);
@@ -1296,12 +1294,33 @@ impl World {
                     }
                 }
                 _ => {
-                    let gap = to_durable.saturating_sub(durable);
-                    self.watch[f] = Some((self.now, to_durable, gap, l, term));
+                    let deadline = self.deadline(f, l, to_durable);
+                    self.watch[f] = Some((self.now, to_durable, deadline, l, term));
                 }
             }
         }
         Ok(())
+    }
+
+    /// By when follower `f` must hold leader `l`'s entry `target`: six
+    /// election timeouts and ten ticks, and four ticks (a round trip of
+    /// the slowest healthy network) for each entry of its log past where
+    /// the two logs meet (a refusal steps back at least one run of a
+    /// term) and for each batch it lacks from there. The disks say where
+    /// the logs meet.
+    fn deadline(&self, f: usize, l: usize, target: u64) -> u64 {
+        let (election, batch) = (self.timing.0, self.batch.0.max(1));
+        let durable = self.nodes[f]
+            .member
+            .as_ref()
+            .unwrap()
+            .store
+            .durable_entry()
+            .0;
+        let meet = self.meet(f, l).unwrap_or(0);
+        let back = durable.saturating_sub(meet) + 1;
+        let forward = target.saturating_sub(meet) / batch + 1;
+        self.now + 6 * election + 4 * (back + forward) + 10
     }
 
     /// Opens member `i`'s store again.
