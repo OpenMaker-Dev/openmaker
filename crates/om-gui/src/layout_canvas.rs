@@ -1126,6 +1126,7 @@ pub(crate) fn show(
                 }
             }
             let factor = state.shown_zoom.factor();
+            let (design, scroll) = document.design_surface(session);
             zoom::show(ui, ui.available_size() / factor, factor, |ui| {
                 let unsaved = state.unsaved();
                 let visible =
@@ -1172,7 +1173,8 @@ pub(crate) fn show(
                     // Frozen, the canvas still paints but takes no drag or click.
                     !frozen,
                     &visible,
-                    &mut document.scroll,
+                    design.as_ref(),
+                    scroll,
                 );
                 if let Some(field) = dropped {
                     state.stage_field(session, field);
@@ -1225,6 +1227,7 @@ pub(crate) fn show(
                 },
                 false,
                 &|_| true,
+                None,
                 &mut document.scroll,
             );
         }
@@ -1319,6 +1322,7 @@ fn draw(
     edges: PartEdges<'_>,
     selectable: bool,
     visible: &dyn Fn(u64) -> bool,
+    design: Option<&crate::document::design::Surface<'_>>,
     scroll_state: &mut crate::document::scroll::Scroll,
 ) -> Option<NewField> {
     let mut dropped = None;
@@ -1425,13 +1429,24 @@ fn draw(
                 }
             }
             let painter = ui.painter().clone();
-            painter.rect_filled(surface, CornerRadius::ZERO, theme::CONTENT_BG);
-            painter.vline(
-                surface.right() - 0.5,
-                surface.y_range(),
-                Stroke::new(1.0, theme::DIVIDER),
+            painter.rect_filled(
+                surface,
+                CornerRadius::ZERO,
+                design
+                    .and_then(|design| design.background())
+                    .unwrap_or(theme::CONTENT_BG),
             );
-
+            if let Some(design) = design {
+                for (part, &(key, _)) in geometry.parts.iter().zip(edges.keys) {
+                    let rect = Rect::from_min_size(
+                        origin + vec2(0.0, part.top as f32),
+                        vec2(width, part.height as f32),
+                    );
+                    if rect.is_finite() && rect.is_positive() && ui.clip_rect().intersects(rect) {
+                        design.paint_part(ui, key, rect);
+                    }
+                }
+            }
             let strip = Rect::from_min_max(area.min, pos2(origin.x, area.bottom()));
             painter.rect_filled(strip, CornerRadius::ZERO, theme::BAR_BG);
             painter.vline(
@@ -1442,6 +1457,7 @@ fn draw(
             for part in &geometry.parts {
                 draw_part(ui, origin, width, part);
             }
+            let mut part_guide = None;
             // A part's lower boundary: the Selection tool drags it to set the
             // part's height, in whole points, down to the lowest object in
             // it; the window sends it when the drag ends.
@@ -1503,19 +1519,7 @@ fn draw(
                     }
                     if let Some(drag) = edges.drag.filter(|d| d.index == index) {
                         let y = origin.y + (part.top + drag.height) as f32;
-                        let painter = ui.painter();
-                        painter.hline(
-                            origin.x..=origin.x + width,
-                            y,
-                            Stroke::new(1.0, theme::SELECTED),
-                        );
-                        painter.text(
-                            pos2(origin.x + 4.0, y - 2.0),
-                            Align2::LEFT_BOTTOM,
-                            format!("{} {} pt", part.kind_name, drag.height),
-                            theme::small(),
-                            theme::SELECTED,
-                        );
+                        part_guide = Some((y, part.kind_name.as_str(), drag.height));
                     }
                 }
             }
@@ -1716,6 +1720,7 @@ fn draw(
                 }
                 shown_frame(object, moved, deleted)
             };
+            let mut marquee = None;
             if let Some(response) = &box_response {
                 let primary = egui::PointerButton::Primary;
                 if response.drag_started_by(primary) {
@@ -1760,14 +1765,7 @@ fn draw(
                         }
                         *box_from = None;
                     } else if response.dragged_by(primary) {
-                        if let Some(rect) = box_rect {
-                            painter.rect_stroke(
-                                rect,
-                                CornerRadius::ZERO,
-                                Stroke::new(1.0, theme::SELECTED),
-                                StrokeKind::Inside,
-                            );
-                        }
+                        marquee = box_rect;
                     } else {
                         *box_from = None;
                     }
@@ -1786,6 +1784,14 @@ fn draw(
                 selected.click(index, ui.input(|i| i.modifiers.shift));
             }
 
+            let mut artwork = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt("design_artwork")
+                    .max_rect(surface),
+            );
+            // Keep the current draft frame for layout and hit testing, but
+            // keep the paint inside the part strip and the width divider.
+            artwork.set_clip_rect(ui.clip_rect().intersect(surface));
             for (index, object) in geometry.objects.iter().enumerate() {
                 let Some(frame) = shown(object) else {
                     continue;
@@ -1802,26 +1808,36 @@ fn draw(
                 } else {
                     Stroke::new(1.0, theme::BUTTON_BORDER)
                 };
-                if rect.width() < 1.0 || rect.height() < 1.0 {
-                    painter.line_segment([rect.min, rect.max], outline);
-                } else {
-                    painter.rect_stroke(rect, CornerRadius::ZERO, outline, StrokeKind::Inside);
-                    // A text shows its words, as typed if not saved yet.
-                    let words = (object.key != 0)
-                        .then(|| {
-                            (texts.words.objects.get(&object.key).cloned())
-                                .or_else(|| (texts.stored)(object.key))
-                        })
+                let field_caption = object
+                    .field_name
+                    .as_deref()
+                    .map(|name| name.find("::").map_or(name, |at| &name[at..]))
+                    .unwrap_or(&object.kind_name);
+                let draft_words = texts.words.objects.get(&object.key).map(String::as_str);
+                let painted = surface.intersects(rect)
+                    && design.is_some_and(|design| {
+                        design.paint_object(
+                            &mut artwork,
+                            object.key,
+                            rect,
+                            field_caption,
+                            draft_words,
+                        )
+                    });
+                if !painted || changed {
+                    if rect.width() < 1.0 || rect.height() < 1.0 {
+                        painter.line_segment([rect.min, rect.max], outline);
+                    } else {
+                        painter.rect_stroke(rect, CornerRadius::ZERO, outline, StrokeKind::Inside);
+                    }
+                }
+                if !painted && rect.width() >= 1.0 && rect.height() >= 1.0 {
+                    let stored_words = (!texts.words.objects.contains_key(&object.key))
+                        .then(|| (texts.stored)(object.key))
                         .flatten();
-                    // A field of another occurrence reads `::Field`, as in
-                    // FileMaker Pro's Layout mode.
-                    let caption = words
-                        .as_deref()
-                        .or(object
-                            .field_name
-                            .as_deref()
-                            .map(|name| name.find("::").map_or(name, |at| &name[at..])))
-                        .unwrap_or(&object.kind_name);
+                    let caption = draft_words
+                        .or(stored_words.as_deref())
+                        .unwrap_or(field_caption);
                     painter
                         .with_clip_rect(rect.shrink(3.0).intersect(ui.clip_rect()))
                         .text(
@@ -1950,6 +1966,35 @@ fn draw(
                 if draw_new_portal(ui, &painter, origin, portal, selectable) {
                     *new.portal_setup = true;
                 }
+            }
+
+            // Guides stay visible over both stored and draft artwork.
+            painter.vline(
+                surface.right() - 0.5,
+                surface.y_range(),
+                Stroke::new(1.0, theme::DIVIDER),
+            );
+            if let Some((y, name, height)) = part_guide {
+                painter.hline(
+                    origin.x..=origin.x + width,
+                    y,
+                    Stroke::new(1.0, theme::SELECTED),
+                );
+                painter.text(
+                    pos2(origin.x + 4.0, y - 2.0),
+                    Align2::LEFT_BOTTOM,
+                    format!("{name} {height} pt"),
+                    theme::small(),
+                    theme::SELECTED,
+                );
+            }
+            if let Some(rect) = marquee {
+                painter.rect_stroke(
+                    rect,
+                    CornerRadius::ZERO,
+                    Stroke::new(1.0, theme::SELECTED),
+                    StrokeKind::Inside,
+                );
             }
 
             if selected.0.len() > 1 {
