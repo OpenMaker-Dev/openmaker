@@ -792,6 +792,14 @@ currently keeps local globals in memory for the session. See the native
 observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
 and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
 
+A local Text auto-enter calculation can read a single-repetition plain
+Text global from another table in the same file, through an unrelated
+occurrence. The field is read from the session, independent of the
+table's records. A missing session read refuses the write. The native
+New Record and storage check remains open.
+[Claris global-field documentation](https://help.claris.com/en/pro-help/content/global-fields.html)
+and [the timing check](https://github.com/OpenMaker-Dev/openmaker/issues/1051).
+
 **An auto-entered or validation formula may read an unstored
 calculation** of its own table ([#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); auto-entry.md, "Formulas over
 an unstored calculation or a summary field"). The calculation is

@@ -355,6 +355,16 @@ several matching records an unsorted relationship gives, container
 fields, Relookup Field Contents, and the next lower or higher value or a
 constant.
 
+## Reading a global from an unrelated table
+
+Claris documents that a calculation can read a global field from any
+context of the same file, including an unrelated table occurrence.
+[Global fields](https://help.claris.com/en/pro-help/content/global-fields.html) and
+[calculation context](https://help.claris.com/en/pro-help/content/calculation-evaluation-context.html).
+The New Record timing and stored outcome with an unrelated occurrence
+remain to be measured.
+[Native check](https://github.com/OpenMaker-Dev/openmaker/issues/1051).
+
 ## Calculations over related fields
 
 **Stored calculated match fields (#1204).** Claris's

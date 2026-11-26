@@ -611,6 +611,8 @@ pub struct Lookups {
     /// that reads them all ([`RelatedRead::whole`]); none when none is
     /// related.
     related: Arc<RelatedRecords>,
+    /// Session globals read by a formula from another table in the file.
+    other_globals: BTreeMap<(u64, u64), String>,
     /// The record the reads were made for ([`Written`]).
     written: Written,
 }
@@ -745,6 +747,7 @@ pub(crate) struct Evaluation {
     related: Arc<RelatedRecords>,
     /// The session's global values ([`RecordEnvironment::globals`]).
     globals: Option<Arc<RecordValues>>,
+    other_globals: BTreeMap<(u64, u64), String>,
     /// `Get ( RecordNumber )` ([`WriteContext::record_number`]).
     record_number: Option<RecordNumber>,
     /// [`RecordEnvironment::related_needs`].
@@ -855,6 +858,7 @@ impl RecordEnvironment {
             limits: self.limits,
             related: self.lookups.related.clone(),
             globals: self.globals.clone(),
+            other_globals: self.lookups.other_globals.clone(),
             record_number: context.record_number,
             related_needs: self.related_needs.clone(),
             written: self.lookups.written,
@@ -1728,6 +1732,9 @@ struct Expression {
     /// one for [`Self::whole`] (auto-entry.md, "Calculations over related
     /// fields").
     related: BTreeSet<(u64, u64)>,
+    /// Readable global fields by base table and field id, separate from
+    /// relationships. Only the local same-file auto-enter case is planned.
+    other_globals: BTreeSet<(u64, u64)>,
     /// The occurrences of which it reads every related record: a related
     /// field passed where a field is required, to `Max`, `Count`, `List`,
     /// `Last`, `GetNthRecord` and the other aggregates (#1036), rather than
@@ -2231,6 +2238,7 @@ impl RecordPlan {
             // Only the auto-entered formula's own reads evaluate it again;
             // a validation calculation's are checked at the write.
             let mut matches = BTreeSet::new();
+            let mut global_refs = BTreeMap::new();
             for expression in field.formulas() {
                 let context = expression.formula.occurrence().unwrap_or_default();
                 let own = field
@@ -2238,6 +2246,32 @@ impl RecordPlan {
                     .as_ref()
                     .is_some_and(|e| std::ptr::eq(e, expression));
                 for (occurrence, read) in &expression.related {
+                    // Claris documents that a global field is readable
+                    // from an unrelated table occurrence in the same file.
+                    let local_auto_enter = local
+                        && own
+                        && field.in_row()
+                        && field.data_type == DataType::Text
+                        && field.options.max_repetitions == 1
+                        && field.options.auto_entry_calculation()
+                        && !expression.whole.contains(occurrence);
+                    let target = schema.table_of(*occurrence).filter(|target| {
+                        local_auto_enter
+                            && target.id != table.id
+                            && schema.table_file(target.id) == schema.table_file(table.id)
+                            && schema.path(context, *occurrence).is_none()
+                            && target.fields.get(read).is_some_and(|def| {
+                                def.class == crate::host::FieldClass::Data
+                                    && def.global
+                                    && def.stored
+                                    && def.repetitions == 1
+                                    && def.value_type == ValueType::Text
+                            })
+                    });
+                    if let Some(target) = target {
+                        global_refs.insert((*occurrence, *read), (target.id, *read));
+                        continue;
+                    }
                     let hop = related_hop(&schema, &fields, context, *occurrence, *read).map_err(
                         |reason| DataError::new(format!("Field {}: {reason}", field.name)),
                     )?;
@@ -2248,6 +2282,10 @@ impl RecordPlan {
             }
             if let Some(expression) = fields.get_mut(&id).and_then(|f| f.expression.as_mut()) {
                 expression.dependencies.extend(matches);
+                expression
+                    .related
+                    .retain(|read| !global_refs.contains_key(read));
+                expression.other_globals.extend(global_refs.into_values());
             }
         }
         // The records read are scanned again by the repetition 1 of each
@@ -2555,9 +2593,11 @@ impl RecordPlan {
 
     /// Whether a field of the table auto-enters a looked-up value.
     pub fn has_lookups(&self) -> bool {
-        self.fields
-            .values()
-            .any(|f| f.lookup.is_some() || f.formulas().any(|e| !e.related.is_empty()))
+        self.fields.values().any(|f| {
+            f.lookup.is_some()
+                || f.formulas()
+                    .any(|e| !e.related.is_empty() || !e.other_globals.is_empty())
+        })
     }
 
     /// The tables (of this file's schema) the write's lookups and related
@@ -2855,6 +2895,36 @@ impl RecordPlan {
         };
         if !self.has_lookups() {
             return Ok(lookups);
+        }
+        let mut global_fields = BTreeMap::<u64, BTreeSet<u64>>::new();
+        for (table, field) in self
+            .fields
+            .values()
+            .flat_map(PlannedField::formulas)
+            .flat_map(|expression| expression.other_globals.iter().copied())
+        {
+            global_fields.entry(table).or_default().insert(field);
+        }
+        for (table, fields) in global_fields {
+            let values = source.globals(table).map_err(|error| {
+                DataError::with_code(
+                    error.code(),
+                    "A global field read by auto-entry could not be read. No values were changed.",
+                )
+            })?;
+            for field in fields {
+                let text = match values.get(field, 1) {
+                    None => String::new(),
+                    Some(Value::Text(value)) if value.is_plain() => value.as_str().to_owned(),
+                    _ => {
+                        return Err(DataError::with_code(
+                            error::UNAVAILABLE,
+                            "A global field read by auto-entry is not plain Text.",
+                        ));
+                    }
+                };
+                lookups.other_globals.insert((table, field), text);
+            }
         }
         let (row, dirty) = self.written(existing, changes, entry)?;
         for (id, field) in &self.fields {
@@ -3302,6 +3372,7 @@ impl RecordPlan {
             }),
             dependencies: BTreeSet::from([id]),
             related: BTreeSet::new(),
+            other_globals: BTreeSet::new(),
             whole: BTreeSet::new(),
             uses: BTreeMap::new(),
             through_unstored: BTreeSet::new(),
@@ -3320,8 +3391,17 @@ impl RecordPlan {
         globals: Option<&RecordValues>,
         remaining: &mut u64,
     ) -> Result<bool, RunError> {
-        if expression.dependencies.is_empty() {
+        if expression.dependencies.is_empty() && expression.other_globals.is_empty() {
             return Ok(false);
+        }
+        for field in &expression.other_globals {
+            let text = session
+                .other_globals
+                .get(field)
+                .ok_or_else(missing_other_globals)?;
+            if !text.is_empty() {
+                return Ok(false);
+            }
         }
         for id in expression
             .dependencies
@@ -5069,6 +5149,20 @@ impl RecordPlan {
         {
             inner.set_globals(self.table, (*globals).clone());
         }
+        let mut global_values = BTreeMap::<u64, RecordValues>::new();
+        for field in &expression.other_globals {
+            let text = session
+                .other_globals
+                .get(field)
+                .ok_or_else(missing_other_globals)?;
+            global_values
+                .entry(field.0)
+                .or_default()
+                .set(field.1, 1, Value::text(text.clone()));
+        }
+        for (table, values) in global_values {
+            inner.set_globals(table, values);
+        }
         let source = RuleSource {
             inner,
             own: self.table,
@@ -5484,6 +5578,13 @@ fn rule_of(list: ValueList) -> Result<ListRule, String> {
             Err("value lists other than custom values or a field's values are unsupported.".into())
         }
     }
+}
+
+fn missing_other_globals() -> RunError {
+    RunError::Unread(DataError::with_code(
+        error::UNAVAILABLE,
+        "Global fields read by auto-entry were not supplied. No values were changed.",
+    ))
 }
 
 fn assign(row: &mut BTreeMap<u64, String>, dirty: &mut BTreeSet<u64>, id: u64, value: String) {
@@ -6436,6 +6537,7 @@ fn parse_formula(code: &[u8], context: &[u8], usage: FormulaUse) -> Result<Expre
         }),
         dependencies,
         related,
+        other_globals: BTreeSet::new(),
         whole,
         uses,
         through_unstored: BTreeSet::new(),
@@ -8661,6 +8763,70 @@ mod tests {
     /// and on (field 3). Any padding in the definition's key buffers reads
     /// the same; other option bytes or a broken buffer keep the table
     /// read-only, and a write that fires a lookup it did not read fails.
+    #[test]
+    fn local_auto_entry_reads_a_global_from_an_unrelated_table_without_records() {
+        use crate::host::FieldDef;
+
+        let table = Table {
+            id: 0x8002,
+            name: "Requests".into(),
+            fields: vec![field(8, FieldKind::Normal, DataType::Text, 0, 0x8, 0)],
+        };
+        let mut file = CalcSchema::new("Example", Locale::en_us());
+        file.add_table(0x8003, "Settings");
+        let mut marker = FieldDef::data(1, "Marker", ValueType::Text);
+        marker.global = true;
+        file.add_field(0x8003, marker);
+        file.add_occurrence(0xd0_0002, "Requests", table.id);
+        file.add_occurrence(0xd0_0003, "Settings", 0x8003);
+
+        let formula =
+            om_formula::polish::encode(&Expr::Field(om_formula::Field::new(0xd0_0003, 1, true)));
+        let mut tree = KeyTree::default();
+        let prefix = [
+            KeySegment(&[0x80, 2]),
+            KeySegment(&[3]),
+            KeySegment(&[5]),
+            KeySegment(&[8]),
+            KeySegment(&[5]),
+        ];
+        for (child, bytes) in [(&[4][..], CONTEXT), (&[6][..], formula.as_slice())] {
+            let mut path = prefix.to_vec();
+            path.push(KeySegment(child));
+            tree.insert(&path, om_hbam::slot::ChunkKind::Leaf, Some(bytes))
+                .unwrap();
+        }
+        let plan = RecordPlan::from_desktop_file_schema(&table, &tree, &file, true).unwrap();
+        let mut source = MemorySource::new();
+        let mut globals = RecordValues::default();
+        globals.set(1, 1, Value::text("alpha"));
+        source.set_globals(0x8003, globals);
+        let existing = BTreeMap::new();
+        let changes = BTreeMap::new();
+        let mut environment = environment();
+        assert_eq!(
+            plan.prepare(WriteMode::Create, &existing, &changes, &environment)
+                .err()
+                .unwrap()
+                .code,
+            Some(error::UNAVAILABLE)
+        );
+        environment.lookups = plan
+            .read_lookups(
+                WriteMode::Create,
+                &existing,
+                &changes,
+                Entry::default(),
+                &source,
+            )
+            .unwrap();
+        let created = plan
+            .prepare(WriteMode::Create, &existing, &changes, &environment)
+            .unwrap();
+        assert_eq!(decoded(&created, 8).as_deref(), Some("alpha"));
+        assert!(RecordPlan::from_desktop_file_schema(&table, &tree, &file, false).is_err());
+    }
+
     #[test]
     fn exact_lookups_copy_the_first_related_value_as_filemaker_pro_did() {
         use crate::host::{FieldDef, JoinOp, JoinPredicate, RelationshipDef};
