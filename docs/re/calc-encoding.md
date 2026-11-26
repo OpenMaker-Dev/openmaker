@@ -719,12 +719,26 @@ All locations share this codec. Owner keys are `Draco::K*` constants
 | object script trigger parameter | `4/5/<L>/5/<O>/48/...` | `KScriptTriggers` 0x30, `KParameter` 0x31 | 3 |
 | layout script trigger parameter | `4/5/<L>/48/5/<trigger>/49` | same | 7 |
 | custom function | `16/5/<id>/35`, no context; `16` name, `32` = `02` + u16 BE parameter count (checked on 218 functions with 0-21 parameters), `33` parameter names joined by `;`, `36` = `01`; 26.1.1's descriptions in `3` (calc-functions.md 6.0) | `KGlobalFunctions` 0x10, `KFunction` 0x23, `KArity` 0x20, `KParamList` 0x21 | 224 |
-| custom menu install-when; menu items | `65/5/<M>/37`; `65/5/<M>/<n>/<item>/<k>` (`n` not given; the starter files' menus have no items, file-format.md 3.7) | `KCustomMenus` 0x41, `KFilter` 0x25 | 4,970 |
+| custom menu install-when; menu items | `65/5/<M>/37`; menu-item formula data below the member at a separate location (see below) | `KCustomMenus` 0x41, `KFilter` 0x25 | 4,970 |
 | privilege set record access calculation, per table; only k = 9 seen, with formulas guarding deletion ("need to be able to delete own record") [I: 9 = delete] | `23/2/5/<P>/5/<T>/<k>` | | 3 |
 | other `K*Calc` constants (not seen in the corpus) | `KTempTextLayoutCalc` 0x8f, `KLayoutCalcs` 0x90, `KImportODBCAuthCalc` 0x91, `KFieldEntryCalc` 0x92, `KUserNameCalc` 0x73, `KPasswordCalc` 0x74, `KItemsCalc` 5 (value lists) | | 0 |
 
 Some FileMaker Server sample files keep layouts under `4/5/<L>/13/5/<O>/...`
 with the same attribute keys [O]. Counts are over all 747 files of section 11.
+
+The custom menu definition at `[41, 5, M, 02]` (hex) is `KType`,
+two big-endian u32s for the base menu ID and flags. Its items have a
+separate `KList` stream at `[41, 5, M, 07]`; the stream starts with a
+big-endian i16 count followed by item records, each with an inline
+script-step descriptor in the custom menu serialization. [O from bin:
+FileMaker Pro 26.1.1 Mac arm64 FMEngine, `FMCustomMenu::LoadMenuItems`
+at `0x544284`, `SaveMenuItems` at `0x544554`,
+`CustomMenuItemList::Save` at `0x5876a8` and
+`CustomMenuItem::Write` at `0x585730`]. The step's keyed parameter data
+is separate from the item stream. The 66 starter files contain no menu
+item list. A populated native save is still needed to check the item
+references and locate their formula and step data in a file
+([file-format.md](file-format.md) 3.7).
 
 ## 9. calc-tokens.csv
 
