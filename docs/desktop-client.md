@@ -2394,8 +2394,15 @@ the changes. A new field drawn meanwhile is placed after them, on the
 layout they made. Revert Layout drops them. While a layout has unsaved
 changes (moved or deleted objects or a new field), another layout, another mode and
 New Layout/Report are refused with an alert asking for Save Layout or
-Revert Layout. Saving them is OpenMaker's choice of UI (FileMaker Pro saves a layout's changes when the user leaves
-it or confirms), and so are the handles' size and the outline.
+Revert Layout. The desktop close controls check the affected drafts. A
+document window's close button checks that window, File > Close checks the
+file's windows, and Quit checks every open file. A layout save awaiting
+the host also keeps the affected windows open. After a connection drops,
+Revert Layout can still discard the local draft so the window can close.
+A script's Close Window step targeting another window can still discard
+its draft ([#978](https://github.com/OpenMaker-Dev/openmaker/issues/978)).
+Explicit saving, the handle sizes and the outline are OpenMaker's choices.
+FileMaker Pro saves layout changes when the user leaves or confirms them.
 
 **Arranging objects.** Arrange > Align (Left Edges, Vertical Centers,
 Right Edges, Top Edges, Horizontal Centers, Bottom Edges), Distribute
