@@ -103,6 +103,14 @@ literal separators for format 1. Formats 2 and 7 call `GetNumericDate`
 year and format 7 a full year. An unused saved element template therefore
 does not change an as-entered date.
 
+A FileMaker Pro 26.1.1 check on macOS in English (United States) observed
+Long System Date format `09` at KFormat byte 60. It showed
+`November 26, 2026` in date fields, merge fields and date symbols,
+including symbols embedded in text. The `hhmm` time preset stored
+`0083` and showed `4:31 AM` or `3:04 PM`, without seconds. All choices
+survived reopen. The long-date output in other system locales is
+unmeasured. [Native results](https://github.com/OpenMaker-Dev/openmaker/issues/1029)
+
 Date element codes follow `file-metadata.md` §2.3. `GetElement`
 (`0x2b5d80`) formats numeric month/day with their own padding styles.
 `AddLeadingChar` (`0x2b48d0`) proves style 0 means no padding, 1 zero
@@ -292,8 +300,9 @@ presentation:
 - numeric: general format (`0x0100`), negative styles other than 0 and 1, a
   negative `decimalDigits`, a nonzero `charStyle`. The negative color
   (`0x1000`) is not drawn.
-- date: a format other than 0, 1, 2 and 7, a nonzero `charStyle`, element
-  codes above 10.
+- date: a format other than 0, 1, 2, 7 or 9, a nonzero `charStyle`, or
+  element codes above 10. Format 9 uses the configured system locale for
+  month-first English. Other system locales keep the original text.
 - time: no hour, minute or second component, word separators, system formats,
   a nonzero `charStyle`, negative times, and fractional seconds when seconds
   are shown. The style stores no digit count for fractions.
