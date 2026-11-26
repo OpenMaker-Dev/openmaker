@@ -712,7 +712,9 @@ for a reply ([#916](https://github.com/OpenMaker-Dev/openmaker/issues/916)).
 The first read takes that copy when it is the one it would make itself
 (the same version, made from the same name, page 0 and desktop flag), and
 otherwise makes its own, so which reads are compared does not depend on
-when the copy was made. Every read at that version is then answered a
+when the copy was made; a copy made in advance while a first read made its
+own is dropped. A load's copies, read or not, go when its close completes.
+Every read at that version is then answered a
 third time, through a `PagedView` of the copy, and must give the same
 answer, byte for byte where the answer is a reply. The third read takes
 the file engine's state of the file that is not a version's (read-only,

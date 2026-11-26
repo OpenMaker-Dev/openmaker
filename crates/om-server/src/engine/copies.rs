@@ -357,6 +357,15 @@ impl super::FileEngine {
         }
     }
 
+    /// Let go of the store copies of `file`'s load, whose close completed
+    /// ([`Switch::release`]), when its reads went through the test view.
+    pub(crate) fn release_store_copies(&self, file: &crate::hosting::Hosted) {
+        if let Some(switch) = self.copies() {
+            let instance = file.read_store().derived().instance();
+            switch.release((file.id, instance));
+        }
+    }
+
     /// The reads compared on a store copy so far, and those that were not
     /// (`ServerHandle::store_comparisons`); none without the test view.
     pub(crate) fn store_comparisons(&self) -> Option<Compared> {
@@ -383,10 +392,16 @@ pub(crate) struct Switch {
     derived: Mutex<HashMap<u32, Computed>>,
     /// Each file's copy in a store, by its id and load
     /// (`Derived::instance`): `None` for a file whose tree the import
-    /// refuses (it holds what the store engine does not host).
+    /// refuses (it holds what the store engine does not host). Taken at the
+    /// file's first read, let go of when the load's close completes
+    /// ([`Switch::release`]).
     stores: Mutex<HashMap<(u32, u64), Copied>>,
     /// Copies made when a file was hosted ([`Switch::prepare`]), by the
-    /// same key, until the file's first read takes one into `stores`.
+    /// same key, until the file's first read takes one into `stores` or the
+    /// load's close completes. Where both locks are held, `stores` is taken
+    /// first ([`Switch::store_copy`], [`Switch::publish`],
+    /// [`Switch::release`]), so a first read and the publishing of a copy
+    /// made in advance happen one after the other.
     prepared: Mutex<HashMap<(u32, u64), Prepared>>,
     /// The test that switched the server (its thread's name), for
     /// `OM_STORE_CHECK_LOG`.
@@ -632,8 +647,20 @@ impl Switch {
     /// are compared on ([`Self::take_prepared`]), so the reads compared are
     /// the same as when it made the copy itself. Nothing is made for a
     /// file a read already took a copy of, or while reads are answered
-    /// through the test view alone (a test told it to fail paths).
+    /// through the test view alone (a test told it to fail paths); nothing
+    /// is kept when a read took a copy while this one was made
+    /// ([`Self::publish`]).
     pub(crate) fn prepare(&self, reading: &Reading<'_>) {
+        if let Some((key, made)) = self.make_prepared(reading) {
+            self.publish(key, made);
+        }
+    }
+
+    /// The copy [`Self::prepare`] makes of the file `reading` reads, by its
+    /// key; `None` for a file a read already took a copy of, or while reads
+    /// are answered through the test view alone. The copy is made under no
+    /// lock of the switch.
+    fn make_prepared(&self, reading: &Reading<'_>) -> Option<((u32, u64), Prepared)> {
         let key = (reading.file().id, reading.derived().instance());
         let taken = self
             .stores
@@ -641,17 +668,51 @@ impl Switch {
             .unwrap_or_else(PoisonError::into_inner)
             .contains_key(&key);
         if taken || !self.checks() {
-            return;
+            return None;
         }
-        let prepared = Prepared {
+        let made = Prepared {
             copy: StoreCopy::of(reading).map(Arc::new),
             version: reading.engine_view().version(),
             from: reading.derived().clone(),
         };
+        Some((key, made))
+    }
+
+    /// Keep `made`, the copy of the file under `key`, for its first read
+    /// to take. A first read that came while the copy was made took one of
+    /// its own into `stores`, and no read would take this one: it is
+    /// dropped. `stores` is looked at and `prepared` written under
+    /// `stores`' lock, taken first as [`Self::store_copy`] takes it, so a
+    /// first read comes either before (and the copy is dropped) or after
+    /// (and takes it).
+    fn publish(&self, key: (u32, u64), made: Prepared) {
+        let stores = self.stores.lock().unwrap_or_else(PoisonError::into_inner);
+        if stores.contains_key(&key) {
+            drop(stores);
+            return;
+        }
         let mut all = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
         // The copy of an earlier load of the file is no longer read.
         all.retain(|&(id, _), _| id != key.0);
-        all.insert(key, prepared);
+        all.insert(key, made);
+    }
+
+    /// Let go of the copies of the load of a file under `key`, whose close
+    /// completed (`Slot::finish_close_if_drained`): the copy its reads were
+    /// compared on, or the one made when it was hosted that no read took.
+    /// No read of that load comes after its close (a file opened again is a
+    /// new load, with a key of its own).
+    pub(crate) fn release(&self, key: (u32, u64)) {
+        let mut stores = self.stores.lock().unwrap_or_else(PoisonError::into_inner);
+        let taken = stores.remove(&key);
+        let unread = self
+            .prepared
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&key);
+        drop(stores);
+        // A copy can be large: dropped outside the locks.
+        drop((taken, unread));
     }
 
     /// The copy [`Self::prepare`] made of the file under `key`, when it is
@@ -870,8 +931,12 @@ fn catalog_of(reading: &Reading<'_>, copies: &Copies<'_>) -> om_hbam::Result<om_
 
 #[cfg(test)]
 mod tests {
+    use super::super::FileEngine;
     use super::*;
+    use crate::admin::FileStatus;
     use crate::engine::view::{wire, TreeView, NO_LIMIT};
+    use crate::hosting::{Hosted, Hosting};
+    use crate::scripts::fixture::{self, TempFile};
 
     /// The test view reads what the tree view reads, copied and in pages of
     /// three, and fails what is at or below a failing path, and a subtree
@@ -1032,18 +1097,10 @@ mod tests {
     /// ([#916](https://github.com/OpenMaker-Dev/openmaker/issues/916)).
     #[test]
     fn the_first_read_takes_the_copy_made_when_the_file_was_hosted() {
-        use crate::config::HostedFile;
-        use crate::hosting::Hosting;
-        use crate::scripts::fixture;
-
-        let engine = super::super::FileEngine::default();
+        let engine = FileEngine::default();
         engine.check_reads();
-        let disk = fixture::TempFile::from_tree("copies-prepared", &fixture::tree(&[], true));
-        let hosted = HostedFile {
-            name: fixture::FILE.into(),
-            path: disk.0.clone(),
-        };
-        let hosting = Hosting::load(&[hosted], false, &Default::default(), &engine).unwrap();
+        let disk = TempFile::from_tree("copies-prepared", &fixture::tree(&[], true));
+        let hosting = host(&engine, &[(fixture::FILE, &disk)]);
         let file = hosting.by_name(fixture::FILE).unwrap();
         let switch = engine.copies().unwrap();
         let key = (file.id, engine.read(&file).derived().instance());
@@ -1051,13 +1108,88 @@ mod tests {
             .copy
             .clone()
             .expect("the copy made when the file was hosted");
-        engine
-            .read(&file)
-            .serve(|read| wire(read.view, &[&[2]]))
-            .unwrap();
+        first_read(&engine, &file);
         let taken = switch.stores.lock().unwrap()[&key].clone().unwrap();
         assert!(Arc::ptr_eq(&made, &taken));
         assert!(switch.prepared.lock().unwrap().is_empty());
         assert_eq!(switch.compared().compared, 1);
+    }
+
+    /// A load's store copies go when its close completes: the one made when
+    /// it was hosted that no read took, and the one its reads were compared
+    /// on. Two files hosted, one of them read, each closed in turn (review
+    /// of [#935](https://github.com/OpenMaker-Dev/openmaker/pull/935)).
+    #[test]
+    fn a_closed_file_lets_go_of_its_store_copies() {
+        let engine = FileEngine::default();
+        engine.check_reads();
+        let tree = fixture::tree(&[], true);
+        let read = TempFile::from_tree("copies-closed-read", &tree);
+        let unread = TempFile::from_tree("copies-closed-unread", &tree);
+        let hosting = host(&engine, &[(fixture::FILE, &read), ("Other.fmp12", &unread)]);
+        let switch = engine.copies().unwrap();
+        let read_id = hosting.slot_named(fixture::FILE).unwrap().id;
+        let unread_id = hosting.slot_named("Other.fmp12").unwrap().id;
+        first_read(&engine, &hosting.by_name(fixture::FILE).unwrap());
+        let ids = |keys: Vec<(u32, u64)>| keys.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+        let held = || {
+            (
+                ids(switch.stores.lock().unwrap().keys().copied().collect()),
+                ids(switch.prepared.lock().unwrap().keys().copied().collect()),
+            )
+        };
+        assert_eq!(held(), (vec![read_id], vec![unread_id]));
+        let close = |id: u32| {
+            let slot = hosting.slot(id).unwrap();
+            slot.change(FileStatus::Open, FileStatus::Closing).unwrap();
+            assert!(slot.finish_close_if_drained(&engine));
+        };
+        close(unread_id);
+        assert_eq!(held(), (vec![read_id], vec![]));
+        close(read_id);
+        assert_eq!(held(), (vec![], vec![]));
+    }
+
+    /// A copy made in advance while the file's first read made one of its
+    /// own is dropped when it is done, not kept where no read takes it
+    /// (review of [#935](https://github.com/OpenMaker-Dev/openmaker/pull/935)).
+    #[test]
+    fn a_copy_a_first_read_overtook_is_not_kept() {
+        let engine = FileEngine::default();
+        let disk = TempFile::from_tree("copies-overtaken", &fixture::tree(&[], true));
+        // Hosted before the switch, so no copy is made as it is hosted.
+        let hosting = host(&engine, &[(fixture::FILE, &disk)]);
+        engine.check_reads();
+        let switch = engine.copies().unwrap();
+        let file = hosting.by_name(fixture::FILE).unwrap();
+        let (key, made) = switch
+            .make_prepared(&engine.read(&file))
+            .expect("a copy to make");
+        // The first read comes after the look and before the publishing.
+        first_read(&engine, &file);
+        assert!(switch.stores.lock().unwrap().contains_key(&key));
+        switch.publish(key, made);
+        assert!(switch.prepared.lock().unwrap().is_empty());
+        assert_eq!(switch.compared().compared, 1);
+    }
+
+    /// `files`, each with the name clients open it by, hosted with `engine`.
+    fn host(engine: &FileEngine, files: &[(&str, &TempFile)]) -> Hosting {
+        let files: Vec<_> = files
+            .iter()
+            .map(|(name, file)| crate::config::HostedFile {
+                name: (*name).into(),
+                path: file.0.clone(),
+            })
+            .collect();
+        Hosting::load(&files, false, &Default::default(), engine).unwrap()
+    }
+
+    /// A first read of `file` through the switch: its status area's.
+    fn first_read(engine: &FileEngine, file: &Hosted) {
+        engine
+            .read(file)
+            .serve(|read| wire(read.view, &[&[2]]))
+            .unwrap();
     }
 }

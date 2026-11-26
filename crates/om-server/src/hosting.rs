@@ -2148,11 +2148,16 @@ impl Slot {
             return false;
         }
         state.status = FileStatus::Closed;
-        state.closed_file = state
-            .file
-            .take()
-            .and_then(|file| engine.file_on_disk(&file));
+        let closed = state.file.take();
+        state.closed_file = closed.as_ref().and_then(|file| engine.file_on_disk(file));
         state.closing = None;
+        drop(state);
+        // A test's server checking reads lets go of the store copies it made
+        // of this load (`engine::copies`): no read of it comes after this.
+        #[cfg(debug_assertions)]
+        if let Some(file) = &closed {
+            engine.release_store_copies(file);
+        }
         true
     }
 

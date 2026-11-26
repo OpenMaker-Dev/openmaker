@@ -289,6 +289,16 @@ impl<'e> EngineRef<'e> {
         }
     }
 
+    /// Let go of the store copies the test view made of `file`'s load,
+    /// whose close completed (`engine::copies`, `Switch::release`): the
+    /// file engine's alone.
+    #[cfg(debug_assertions)]
+    pub(crate) fn release_store_copies(self, file: &Hosted) {
+        if let EngineRef::File(engine) = self {
+            engine.release_store_copies(file);
+        }
+    }
+
     /// Export the version of `file` the engine holds now, as `kind` says.
     /// The store engine writes it from the view whichever kind.
     pub fn export(
