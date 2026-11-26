@@ -2289,6 +2289,15 @@ fn a_committed_untouched_new_record_can_be_edited_in_its_window() {
 /// stored position is visible before Commit and is written with that row.
 #[test]
 fn local_related_position_is_visible_before_commit() {
+    local_related_position(false);
+}
+
+#[test]
+fn local_related_position_keeps_the_copied_uuid_key() {
+    local_related_position(true);
+}
+
+fn local_related_position(uuid_key: bool) {
     use fixture::{BODY, NAME, NOTES, NOTES_OCCURRENCE, OCCURRENCE, TABLE, TASK};
     use om_hbam::{HbamFile, OwnedNode};
     use om_scripts::{flag, Calculation, FieldSpec, ScriptStep, StoredKey};
@@ -2319,7 +2328,7 @@ fn local_related_position_is_visible_before_commit() {
     pending.set_calculation(
         1,
         Some(&calc(
-            "Get ( LastError ) & \"|\" & Count ( Notes::Task ) & \"|\" & Notes::Position",
+            "Get ( LastError ) & \"|\" & Count ( Notes::Task ) & \"|\" & Notes::Position & \"|\" & Notes::Task",
         )),
     );
     let mut commit = ScriptStep::new(75);
@@ -2351,7 +2360,18 @@ fn local_related_position_is_visible_before_commit() {
     let flags = definition.len() - 4;
     definition[flags..].copy_from_slice(&0x10u32.to_be_bytes());
     root.put(relationship, OwnedNode::leaf(Vec::new(), definition));
-    fixture::add_field(&mut root, NOTES, POSITION, "Position", 2, 2, 0, 0x80000, 0);
+    let position_options = if uuid_key { 0x8008_0000 } else { 0x0008_0000 };
+    fixture::add_field(
+        &mut root,
+        NOTES,
+        POSITION,
+        "Position",
+        2,
+        2,
+        0,
+        position_options,
+        0,
+    );
     fixture::add_formula(
         &mut root,
         &names,
@@ -2360,7 +2380,21 @@ fn local_related_position_is_visible_before_commit() {
         5,
         "Get ( RecordNumber )",
     );
-    let folder = Folder::new("related-position");
+    let tag = if uuid_key {
+        fixture::set_field_options(&mut root, NOTES, TASK, 0xa000_0088);
+        fixture::add_formula(
+            &mut root,
+            &names,
+            (NOTES, NOTES_OCCURRENCE),
+            TASK,
+            5,
+            "Get ( UUID )",
+        );
+        "related-position-uuid"
+    } else {
+        "related-position"
+    };
+    let folder = Folder::new(tag);
     fixture::write_tree(&folder.file(), &root);
     let mut app = app();
     common::open_menu(&mut app, "File");
@@ -2370,7 +2404,7 @@ fn local_related_position_is_visible_before_commit() {
     wait_open(&mut app);
     common::open_menu(&mut app, "Scripts");
     common::click(&mut app, "Create first match");
-    common::wait_for_label(&mut app, "0|1|1");
+    common::wait_for_label(&mut app, "0|1|1|fresh key");
     let before_commit = HbamFile::open(folder.file()).unwrap();
     assert!(before_commit
         .records(NOTES)
