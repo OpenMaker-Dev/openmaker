@@ -1,7 +1,33 @@
 use egui::{pos2, vec2, Id, Rect, Sense, Ui};
-use om_layout::{Layout, LayoutObject};
+use om_layout::{Layout, LayoutObject, ObjectKind};
 
-use super::color;
+use super::{color, paint_box};
+
+pub(super) fn paint_contents(
+    ui: &Ui,
+    layout: &Layout,
+    control: &LayoutObject,
+    rect: Rect,
+) -> Option<Rect> {
+    let length = lengths(layout, control);
+    let bottom = if control.shows_slide_dots() {
+        length(8, 119)?
+    } else {
+        // With the navigation row hidden, the measured contents extend
+        // down to the space left for the row's bottom inset.
+        length(27, 119)?
+    };
+    let contents = Rect::from_min_max(
+        rect.min + vec2(length(8, 120).unwrap_or(0.0), length(8, 117).unwrap_or(0.0)),
+        rect.max - vec2(length(8, 118).unwrap_or(0.0), bottom),
+    );
+    if !contents.is_positive() {
+        return None;
+    }
+    let style = layout.object_style(control, 8, 1);
+    paint_box(ui, contents, &style, ObjectKind::Rectangle);
+    Some(contents)
+}
 
 pub(super) fn navigation(
     ui: &Ui,
@@ -21,21 +47,7 @@ pub(super) fn navigation(
         return;
     };
     let active_fill = active.background.unwrap_or(inactive_fill);
-    // For the measured theme the dot margin and its row's bottom inset
-    // use the control's typography. The default is 12 pt in that theme.
-    let font_size = layout.object_style(control, 1, 1).font_size.unwrap_or(12.0);
-    let length = |component, property| {
-        let length = layout
-            .object_property(control, component, 1, property)?
-            .length
-            .as_ref()?;
-        let points = if length.unit == 7 && matches!(length.auto_value, 0 | 1) {
-            length.value * font_size
-        } else {
-            length.points()?
-        } as f32;
-        (points.is_finite() && points >= 0.0).then_some(points)
-    };
+    let length = lengths(layout, control);
     let Some((width, height)) = length(26, 109).zip(length(26, 110)) else {
         return;
     };
@@ -90,5 +102,26 @@ pub(super) fn navigation(
             dot.size() / 2.0,
             color(fill),
         ));
+    }
+}
+
+fn lengths<'a>(
+    layout: &'a Layout,
+    control: &'a LayoutObject,
+) -> impl Fn(i32, i32) -> Option<f32> + 'a {
+    // For the measured theme the dot margin and its row's bottom inset
+    // use the control's typography. The default is 12 pt in that theme.
+    let font_size = layout.object_style(control, 1, 1).font_size.unwrap_or(12.0);
+    move |component, property| {
+        let length = layout
+            .object_property(control, component, 1, property)?
+            .length
+            .as_ref()?;
+        let points = if length.unit == 7 && matches!(length.auto_value, 0 | 1) {
+            length.value * font_size
+        } else {
+            length.points()?
+        } as f32;
+        (points.is_finite() && points >= 0.0).then_some(points)
     }
 }

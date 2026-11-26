@@ -601,6 +601,7 @@ impl<'s, S: PageStore + ?Sized> Tree<'s, S> {
             direction,
             done: false,
             cursor: None,
+            place: None,
         }
     }
 
@@ -700,6 +701,20 @@ pub struct Cursor<'t, 's, S: ?Sized> {
     state: State,
 }
 
+/// Where a cursor stood in one version of a tree: the pages from the root
+/// down to a leaf, with the child (or item) it took at each (#767). A
+/// cursor of the same version started from it ([`Cursor::starting_at`],
+/// [`Children::starting_at`]) seeks its starting bound from these pages, as
+/// [`Cursor::seek`] does, rather than from the root, and reads none of
+/// them again. Its choices are the ones a descent from the root makes, so
+/// it finds what that would. The pages are the version's own, which no
+/// later write changes; a place of another version is ignored.
+#[derive(Clone)]
+pub struct Place {
+    root: Root,
+    stack: Vec<(Arc<Page>, usize)>,
+}
+
 /// Whether every item of a cursor's leaf is within the far bound, as the
 /// leaf's last item (first, going backward) is ([`Cursor::within`]).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -768,6 +783,35 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
             Direction::Backward => self.hi = bound,
         }
         self.state = State::Seek;
+    }
+
+    /// Where the cursor stands, for another cursor of its version to start
+    /// from ([`Place`]): `None` unless it holds the whole way from the root
+    /// to a leaf, as it does after any step that found an item.
+    pub fn place(&self) -> Option<Place> {
+        let whole = self.stack.len() == self.tree.height()
+            && self
+                .stack
+                .last()
+                .is_some_and(|(page, _)| page.kind() == PageKind::Leaf);
+        whole.then(|| Place {
+            root: self.tree.root,
+            stack: self.stack.clone(),
+        })
+    }
+
+    /// The cursor, its starting bound to be sought from `place` rather than
+    /// from the root ([`Place`]); from the root as before when `place` is
+    /// `None` or of another version. Call it before the first step.
+    pub fn starting_at(mut self, place: Option<Place>) -> Self {
+        if self.state != State::Start {
+            return self;
+        }
+        if let Some(place) = place.filter(|place| place.root == self.tree.root) {
+            self.stack = place.stack;
+            self.state = State::Seek;
+        }
+        self
     }
 
     /// Goes to the first item within the starting bound, as
@@ -1086,9 +1130,25 @@ pub struct Children<'t, 's, S: ?Sized> {
     direction: Direction,
     done: bool,
     cursor: Option<Cursor<'t, 's, S>>,
+    /// Where the cursor is to start from ([`Children::starting_at`]).
+    place: Option<Place>,
 }
 
 impl<'t, 's, S: PageStore + ?Sized> Children<'t, 's, S> {
+    /// The listing, its first child to be sought from `place` rather than
+    /// from the root ([`Cursor::starting_at`]).
+    pub fn starting_at(mut self, place: Option<Place>) -> Self {
+        self.place = place;
+        self
+    }
+
+    /// Where the listing stands, for a later cursor of its version to start
+    /// from ([`Cursor::place`]): after a child, at that child's own node, or
+    /// past it where the listing went on to the next.
+    pub fn place(&self) -> Option<Place> {
+        self.cursor.as_ref().and_then(Cursor::place)
+    }
+
     fn step(&mut self) -> Result<Option<(Vec<u8>, Node)>> {
         let forward = self.direction == Direction::Forward;
         let below = Bound::Excluded(self.prefix.as_slice());
@@ -1109,11 +1169,12 @@ impl<'t, 's, S: PageStore + ?Sized> Children<'t, 's, S> {
             }
             None => {
                 let bound = self.bound.as_ref().map(Vec::as_slice);
-                self.cursor.insert(if forward {
+                let cursor = if forward {
                     tree.range(bound, upper, Direction::Forward)
                 } else {
                     tree.range(lower, bound, Direction::Backward)
-                })
+                };
+                self.cursor.insert(cursor.starting_at(self.place.take()))
             }
         };
         // Only keys are read on the way: the node read is the child's own.
@@ -1334,6 +1395,81 @@ mod tests {
             .map(|c| c.unwrap().0)
             .collect();
         assert_eq!(fresh, segments);
+    }
+
+    /// A cursor started from a place ([`Place`]) finds what one started
+    /// from the root finds, whatever the place: in any leaf of the version,
+    /// at a child's own node or inside its subtree, left by a cursor that
+    /// ran past its far bound, none, or another version's (ignored); for
+    /// bounds at, just past, before and beyond the keys, each kind, in both
+    /// directions.
+    #[test]
+    fn a_cursor_from_any_place_finds_what_one_from_the_root_finds() {
+        let store = MemStore::new(Numbering::Sequential);
+        let (root, segments) = wide(&store, 600);
+        let tree = Tree::open(&store, root).unwrap();
+        assert!(tree.height() >= 2, "{}", tree.height());
+        let t = b"t".to_vec();
+        let child = |s: &Vec<u8>| key::encode(&[t.clone(), s.clone()]);
+        let mut places = vec![None];
+        for s in segments.iter().step_by(37) {
+            let mut walk = tree.walk(&[t.clone(), s.clone()]);
+            for _ in 0..3 {
+                walk.next().unwrap().unwrap();
+                places.push(walk.place());
+            }
+        }
+        let mut past = tree.range(
+            Bound::Unbounded,
+            Bound::Excluded(&child(&segments[300])),
+            Direction::Forward,
+        );
+        while past.next().is_some() {}
+        places.push(past.place());
+        let other = apply(
+            &store,
+            root,
+            100,
+            &[Edit::leaf(vec![t.clone(), b"\x00".to_vec()], vec![1; 10])],
+        )
+        .unwrap();
+        let other = Tree::open(&store, other).unwrap();
+        let mut walk = other.walk(std::slice::from_ref(&t));
+        walk.nth(700).unwrap().unwrap();
+        places.push(walk.place());
+        assert!(places.iter().filter(|p| p.is_some()).count() > 40);
+        let mut bounds = vec![
+            Vec::new(),
+            key::encode(std::slice::from_ref(&t)),
+            vec![0xff; 3],
+        ];
+        for s in segments.iter().step_by(7) {
+            let at = child(s);
+            let mut past = at.clone();
+            past.push(0);
+            let mut before = at.clone();
+            before.pop();
+            bounds.extend([at, past, before]);
+        }
+        for place in &places {
+            for k in &bounds {
+                for bound in [Bound::Included(k.as_slice()), Bound::Excluded(k.as_slice())] {
+                    for direction in [Direction::Forward, Direction::Backward] {
+                        let (lo, hi) = match direction {
+                            Direction::Forward => (bound, Bound::Unbounded),
+                            Direction::Backward => (Bound::Unbounded, bound),
+                        };
+                        let first = |cursor: Cursor<'_, '_, MemStore>| -> Vec<Item> {
+                            cursor.take(3).map(Result::unwrap).collect()
+                        };
+                        let from_root = first(tree.range(lo, hi, direction));
+                        let from_place =
+                            first(tree.range(lo, hi, direction).starting_at(place.clone()));
+                        assert_eq!(from_place, from_root, "{bound:?} {direction:?}");
+                    }
+                }
+            }
+        }
     }
 
     /// Re-check of #697: an empty leaf below the root, which these rules
@@ -1627,6 +1763,54 @@ mod tests {
         assert_eq!(listed, sought);
     }
 
+    /// Review of #938, the reviewer's case through a place: on the tree of
+    /// `a_seek_from_a_held_leaf_gives_what_the_root_gives_on_a_tree_out_of_order`
+    /// (leaves `a, z` and `n, o`, the separator `m`), a new cursor started
+    /// from the place a cursor left after `a`, with the bound `n`, and a
+    /// listing started there from the child `n`, give what the same reads
+    /// from the root give, in both directions (their first items: such a
+    /// listing need not end, #998).
+    #[test]
+    fn a_place_gives_what_the_root_gives_on_a_tree_out_of_order() {
+        let store = MemStore::new(Numbering::Sequential);
+        let item = |s: &[u8]| (KIND_VALUE, key_of_segment(s), vec![7; 10]);
+        let separator = key_of_segment(b"m");
+        let leaves = [vec![item(b"a"), item(b"z")], vec![item(b"n"), item(b"o")]];
+        let root = crate::tree::built::tree(&store, &leaves, &[separator.as_slice()]).root;
+        let tree = Tree::open(&store, root).unwrap();
+        let mut after_a = tree.range(Bound::Unbounded, Bound::Unbounded, Direction::Forward);
+        let a = after_a.next().unwrap().unwrap();
+        assert_eq!(a.key.as_bytes(), key_of_segment(b"a"));
+        let place = after_a.place();
+        assert!(place.is_some());
+        let n = key_of_segment(b"n");
+        let root_path: [&[u8]; 0] = [];
+        for direction in [Direction::Forward, Direction::Backward] {
+            for bound in [Bound::Included(&n[..]), Bound::Excluded(&n[..])] {
+                let (lo, hi) = match direction {
+                    Direction::Forward => (bound, Bound::Unbounded),
+                    Direction::Backward => (Bound::Unbounded, bound),
+                };
+                let first = |cursor: Cursor<'_, '_, MemStore>| -> Vec<Vec<u8>> {
+                    cursor
+                        .take(4)
+                        .map(|i| i.unwrap().key.into_bytes())
+                        .collect()
+                };
+                let from_root = first(tree.range(lo, hi, direction));
+                let from_place = first(tree.range(lo, hi, direction).starting_at(place.clone()));
+                assert_eq!(from_place, from_root, "{direction:?} {bound:?}");
+            }
+            let first = |children: Children<'_, '_, MemStore>| -> Vec<Vec<u8>> {
+                children.take(6).map(|child| child.unwrap().0).collect()
+            };
+            let listing = || tree.children(&root_path, Bound::Included(&b"n"[..]), direction);
+            let from_root = first(listing());
+            let from_place = first(listing().starting_at(place.clone()));
+            assert_eq!(from_place, from_root, "the listing {direction:?}");
+        }
+    }
+
     /// A segment of 4,200 bytes `p`, then `tail`: its key is longer than an
     /// item or a separator may keep whole in its page, so it spills, its
     /// first 1,024 bytes, the same for every such segment, in the page,
@@ -1750,7 +1934,8 @@ mod tests {
     /// the root's children from a random bound in either direction, every
     /// child after the first sought from where the one before was found,
     /// against each child sought from the root, as listings did before
-    /// #767.
+    /// #767. Each also through a place (#938): a cursor, and a listing,
+    /// started from where a cursor moved at random stood.
     #[test]
     fn a_cursor_that_seeks_from_what_it_holds_finds_what_one_from_the_root_finds() {
         let mut rng = crate::sim::Rng::new(767);
@@ -1781,6 +1966,7 @@ mod tests {
                 for _ in 0..rng.below(keys.len() as u64 + 1) {
                     held.next();
                 }
+                let place = held.place();
                 held.seek(bound.clone());
                 let start = bound.as_ref().map(Vec::as_slice);
                 let (lo, hi) = match direction {
@@ -1792,6 +1978,14 @@ mod tests {
                     firsts(&mut held),
                     from_root,
                     "tree {t}: {direction:?} {bound:?}"
+                );
+                // The same through a place (#938): a new cursor started from
+                // where the held one stood.
+                let started = &mut tree.range(lo, hi, direction).starting_at(place);
+                assert_eq!(
+                    firsts(started),
+                    from_root,
+                    "tree {t}: a place, {direction:?} {bound:?}"
                 );
                 seeks += 1;
             }
@@ -1835,6 +2029,26 @@ mod tests {
                 assert_eq!(
                     listed, sought,
                     "tree {t}: the listing {direction:?} from {from:?}"
+                );
+                // The same listing started from the place a cursor moved a
+                // random number of items in either direction left (#938).
+                let moved_direction = match rng.one_in(2) {
+                    true => Direction::Forward,
+                    false => Direction::Backward,
+                };
+                let mut moved = tree.range(all, all, moved_direction);
+                for _ in 0..rng.below(keys.len() as u64 + 1) {
+                    moved.next();
+                }
+                let listing = tree.children(&root_path, start, direction);
+                let from_place: Firsts = listing
+                    .starting_at(moved.place())
+                    .take(4)
+                    .map(segment)
+                    .collect();
+                assert_eq!(
+                    from_place, sought,
+                    "tree {t}: the listing from a place {direction:?}"
                 );
                 listings += 1;
             }

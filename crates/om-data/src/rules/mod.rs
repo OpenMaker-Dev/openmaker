@@ -1112,8 +1112,8 @@ pub struct RecordPlan {
     table: u64,
     fields: BTreeMap<u64, PlannedField>,
     evaluation_order: Vec<u64>,
-    /// (auto-entered result, equality key, inequality key) for #297.
-    grouped_self_joins: BTreeSet<(u64, u64, u64)>,
+    /// (auto-entered result, equality key, inequality key, entry mode).
+    grouped_self_joins: BTreeSet<(u64, u64, u64, GroupedAutoEntry)>,
     /// The file's calculation schema with this table's current fields.
     schema: Arc<CalcSchema>,
 }
@@ -1827,6 +1827,45 @@ impl PlannedField {
         options & CALCULATED != 0 && options & !ALLOWED == 0 && self.generated_uuid()
     }
 
+    /// The measured replacing Number calculation reads only the first
+    /// peer's value of the very field being entered (auto-entry.md).
+    fn measured_group_flag(&self, (occurrence, read): (u64, u64), field: u64) -> bool {
+        use om_formula::{Decimal, Number, Opcode};
+        if read != field
+            || self.data_type != DataType::Number
+            || self.options.field_kind != 1
+            || self.options.max_repetitions != 1
+            || self.options.options & !(INDEX_OPTIONS | BOOKKEEPING_OPTIONS) != 0xa8
+        {
+            return false;
+        }
+        let Some(Expr::Call {
+            op: Opcode::IF,
+            args,
+        }) = self.expression.as_ref().map(|e| &e.formula.polish)
+        else {
+            return false;
+        };
+        let [Expr::Call {
+            op: Opcode::EQUAL,
+            args,
+        }, Expr::Number(yes), Expr::Number(no)] = args.as_slice()
+        else {
+            return false;
+        };
+        let [Expr::Field(peer), Expr::Number(expected)] = args.as_slice() else {
+            return false;
+        };
+        let zero = Decimal::parse_literal("0").map(Number::Decimal);
+        let one = Decimal::parse_literal("1").map(Number::Decimal);
+        peer.occurrence.id() == Some(occurrence)
+            && peer.field.id() == Some(read)
+            && peer.repetition == 1
+            && Some(yes) == zero.as_ref()
+            && Some(no) == one.as_ref()
+            && Some(expected) == one.as_ref()
+    }
+
     /// The value is `Get ( UUID )`, which uniqueness checks as a UUID.
     fn generated_uuid(&self) -> bool {
         self.expression
@@ -1944,9 +1983,7 @@ struct Computed {
 struct Expression {
     formula: Arc<Formula>,
     dependencies: BTreeSet<u64>,
-    /// A stored Evaluate reads the fields in its compiled expression but
-    /// only recalculates in response to its explicit trigger fields.
-    evaluate_triggers: Option<BTreeSet<u64>>,
+    stored_evaluate: Option<StoredEvaluate>,
     /// The fields of other occurrences it reads, (occurrence, field): an
     /// auto-entered or validation formula's related fields, read through
     /// one relationship from its context on its first record, or on every
@@ -1974,6 +2011,14 @@ struct Expression {
     /// clock or a UUID in one makes this formula's value change when it is
     /// evaluated again, as one of its own would.
     through_formulas: Vec<Arc<Formula>>,
+}
+
+/// A stored Evaluate reads the fields in its compiled expression, but
+/// recalculates only when a listed field or the expression source changes.
+#[derive(Clone, Debug)]
+struct StoredEvaluate {
+    triggers: BTreeSet<u64>,
+    source: Option<u64>,
 }
 
 /// How a formula reads one related occurrence.
@@ -2264,17 +2309,24 @@ impl RecordPlan {
                     .and_then(|n| n.assembled())
                     .ok_or_else(|| error("calculation code is missing."))?;
                 let polish = decode_rule_code(&code).map_err(|e| error(&e))?;
-                if matches!(usage, FormulaUse::LocalStoredText)
-                    && matches!(&polish, Expr::Evaluate { args, .. } if args.len() > 1)
+                if key == FIELD_FORMULA
+                    && kind == FieldKind::Calculation
+                    && field.data_type == DataType::Text
+                    && matches!(&polish, Expr::Evaluate { .. })
                 {
-                    return parse_literal_evaluate(polish, &context, table, &schema).map_err(
-                        |reason| {
-                            DataError::with_code(
-                                error::UNAVAILABLE,
-                                format!("Field {}: {reason}", field.name),
-                            )
-                        },
-                    );
+                    let parsed = if matches!(usage, FormulaUse::LocalStoredText)
+                        && matches!(&polish, Expr::Evaluate { args, .. } if args.len() > 1)
+                    {
+                        parse_stored_evaluate(polish, &context, table, &schema, &options)
+                    } else {
+                        Err(DYNAMIC_REFERENCES.into())
+                    };
+                    return parsed.map_err(|reason| {
+                        DataError::with_code(
+                            error::UNAVAILABLE,
+                            format!("Field {}: {reason}", field.name),
+                        )
+                    });
                 }
                 analyze_rule(polish, &context, usage).map_err(|e| error(&e))
             };
@@ -2528,28 +2580,43 @@ impl RecordPlan {
                     .and_then(Result::ok)
                     .map(CustomMessage::Text)
             };
-            fields.insert(
-                field.id,
-                PlannedField {
-                    name: field.name.clone(),
-                    options,
-                    data_type: field.data_type,
-                    editable,
-                    expression,
-                    auto_enter_self,
-                    global_text_self,
-                    creation_date_with_calculation,
-                    constant,
-                    validation,
-                    message,
-                    range,
-                    list,
-                    serial,
-                    lookup,
-                    unkeyed_index,
-                    furigana,
-                },
-            );
+            let planned = PlannedField {
+                name: field.name.clone(),
+                options,
+                data_type: field.data_type,
+                editable,
+                expression,
+                auto_enter_self,
+                global_text_self,
+                creation_date_with_calculation,
+                constant,
+                validation,
+                message,
+                range,
+                list,
+                serial,
+                lookup,
+                unkeyed_index,
+                furigana,
+            };
+            // The rule evaluator otherwise sees an empty script-variable
+            // map and can turn a missing input into a plausible saved value.
+            if auto_calculation
+                && !(local && planned.auto_entry_file_variable().is_some())
+                && planned
+                    .expression
+                    .as_ref()
+                    .is_some_and(|expression| reads_script_variable(&expression.formula.polish))
+            {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: script variables in this auto-enter calculation are unsupported.",
+                        field.name
+                    ),
+                ));
+            }
+            fields.insert(field.id, planned);
         }
         // A lookup follows the file's relationships from its own table.
         let looked_up: Vec<u64> = fields
@@ -2631,22 +2698,25 @@ impl RecordPlan {
                         global_refs.insert((*occurrence, *read), (target.id, *read));
                         continue;
                     }
-                    let first_auto_enter = own
-                        && !field.stored_calculation()
-                        && !field.options.calculation_replaces_existing()
+                    let grouped = if !own || field.stored_calculation() {
+                        None
+                    } else if field.measured_group_flag((*occurrence, *read), id) {
+                        Some(GroupedAutoEntry::Replace)
+                    } else if !field.options.calculation_replaces_existing()
                         && expression.uses.get(occurrence).is_some_and(|uses| {
                             uses.first && !uses.placed && uses.aggregated.is_empty()
-                        });
-                    let hop = related_hop(
-                        &schema,
-                        &fields,
-                        context,
-                        (*occurrence, *read),
-                        first_auto_enter,
-                    )
-                    .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
-                    if let Some((group, key)) = hop.grouped_keys {
-                        grouped_self_joins.insert((id, group, key));
+                        })
+                    {
+                        Some(GroupedAutoEntry::Keep)
+                    } else {
+                        None
+                    };
+                    let hop = related_hop(&schema, &fields, context, (*occurrence, *read), grouped)
+                        .map_err(|reason| {
+                            DataError::new(format!("Field {}: {reason}", field.name))
+                        })?;
+                    if let Some((group, key, mode)) = hop.grouped_keys {
+                        grouped_self_joins.insert((id, group, key, mode));
                     }
                     if own {
                         matches.extend(hop.match_fields);
@@ -3043,8 +3113,10 @@ impl RecordPlan {
         serials: &BTreeMap<u64, String>,
     ) -> Result<BTreeSet<u64>, DataError> {
         let (row, mut dirty) = self.written(existing, changes, entry)?;
+        let assigned_groups: BTreeSet<_> = self.replacing_groups_assigned(changes).collect();
         if mode == WriteMode::Update
             && dirty.is_empty()
+            && assigned_groups.is_empty()
             && !self.fields.iter().any(|(id, f)| {
                 f.lookup
                     .as_ref()
@@ -3087,6 +3159,7 @@ impl RecordPlan {
                 let keeps = entry.keeps_calculated(changes, *id, uses_self);
                 (field.stored_calculation() || !entry.skip_auto_enter && !keeps)
                     && (mode == WriteMode::Create
+                        || assigned_groups.contains(id)
                         || uses_self && changes.contains_key(id)
                         || expression.dependencies.iter().any(|d| dirty.contains(d)))
                     && (field.stored_calculation()
@@ -3813,7 +3886,7 @@ impl RecordPlan {
                 polish: Expr::Field(om_formula::Field::new(occurrence, id, true)),
             }),
             dependencies: BTreeSet::from([id]),
-            evaluate_triggers: None,
+            stored_evaluate: None,
             related: BTreeSet::new(),
             other_globals: BTreeSet::new(),
             whole: BTreeSet::new(),
@@ -3872,6 +3945,46 @@ impl RecordPlan {
         Ok(true)
     }
 
+    fn compile_stored_evaluate_source(
+        &self,
+        field: &PlannedField,
+        expression: &Expression,
+        evaluate: &StoredEvaluate,
+        text: &str,
+    ) -> Result<Expression, RunError> {
+        let unavailable = |reason: &str| {
+            RunError::Unread(DataError::with_code(
+                error::UNAVAILABLE,
+                format!("Field {}: {reason}", field.name),
+            ))
+        };
+        let context = &expression
+            .formula
+            .context
+            .as_ref()
+            .ok_or_else(|| unavailable("a stored Evaluate requires a local context."))?
+            .0;
+        let compiled =
+            compile_stored_evaluate_text(text, self.schema.names(), context, |reference| {
+                reference.occurrence.0 == *context
+                    && reference.repetition == 1
+                    && reference.field.id().is_some_and(|id| {
+                        Some(id) != evaluate.source && expression.dependencies.contains(&id)
+                    })
+            })
+            .map_err(|reason| unavailable(&reason))?;
+        if evaluate
+            .triggers
+            .iter()
+            .any(|id| Some(*id) != evaluate.source && !compiled.dependencies.contains(id))
+        {
+            return Err(unavailable(
+                "a listed stored Evaluate trigger must be read by its expression.",
+            ));
+        }
+        Ok(compiled)
+    }
+
     /// Whether field `id` of the table has global storage.
     fn is_global(&self, id: u64) -> bool {
         self.schema
@@ -3927,14 +4040,29 @@ impl RecordPlan {
             })
     }
 
-    /// Reject stored calculations or Self evaluation outside their measured
-    /// creation contexts before a create or preview reserves IDs or serials.
+    /// Reject record rules outside their measured creation contexts
+    /// before a create or preview reserves record IDs or serials.
     pub fn check_creation_context(
         &self,
         context: &WriteContext,
         entry: Entry,
     ) -> Result<(), DataError> {
         let unsorted = matches!(context.record_number, Some(RecordNumber::LocalNewRecord(_)));
+        if !entry.skip_auto_enter && (!unsorted || context.sequence == WriteSequence::Unmeasured) {
+            if let Some((result, _, _, _)) = self
+                .grouped_self_joins
+                .iter()
+                .find(|(_, _, _, entry)| *entry == GroupedAutoEntry::Replace)
+            {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: replacing grouped auto-entry requires ordinary New Record in an unsorted local window.",
+                        self.fields[result].name
+                    ),
+                ));
+            }
+        }
         if let Some(field) = self.fields.values().find(|field| {
             (!entry.skip_auto_enter || field.stored_calculation())
                 && match field.auto_enter_self {
@@ -3971,7 +4099,7 @@ impl RecordPlan {
                     Expr::Get(selector::RECORD_NUMBER)
                 ) {
                 "a stored record number requires ordinary New Record in a local window with a known insertion position."
-            } else if expression.evaluate_triggers.is_some() {
+            } else if expression.stored_evaluate.is_some() {
                 "a stored Evaluate requires ordinary New Record in an unsorted local window."
             } else {
                 continue;
@@ -4385,6 +4513,24 @@ impl RecordPlan {
             .filter(|id| !other.contains(id))
             .copied()
             .collect()
+    }
+
+    /// A replacing grouped formula with an unset group key reads an empty
+    /// set at New Record, even when the preview cannot read other rows.
+    pub fn preview_creation_fields(
+        &self,
+        supplied: &BTreeMap<u64, Option<String>>,
+    ) -> BTreeSet<u64> {
+        let mut fields = self.preview_fields(false);
+        fields.extend(
+            self.grouped_self_joins
+                .iter()
+                .filter_map(|&(result, group, _, entry)| {
+                    (entry == GroupedAutoEntry::Replace && !supplied.contains_key(&group))
+                        .then_some(result)
+                }),
+        );
+        fields
     }
 
     /// Preview known changed values of `fields` and their calculation dependencies.
@@ -4843,6 +4989,20 @@ impl RecordPlan {
         volatile
     }
 
+    /// Replacing grouped auto-entry follows an explicit group assignment,
+    /// even when the stored group value is the same (auto-entry.md).
+    pub fn replacing_groups_assigned<'a>(
+        &'a self,
+        changes: &'a BTreeMap<u64, Option<String>>,
+    ) -> impl Iterator<Item = u64> + 'a {
+        self.grouped_self_joins
+            .iter()
+            .filter_map(|&(result, group, _, entry)| {
+                (entry == GroupedAutoEntry::Replace && changes.contains_key(&group))
+                    .then_some(result)
+            })
+    }
+
     /// Preserve the measured stored result when evaluation is deferred to
     /// commit. A group set and then cleared is still an assignment, even
     /// if it would appear unchanged in the final row.
@@ -4854,33 +5014,46 @@ impl RecordPlan {
         row: &BTreeMap<u64, String>,
         environment: &RecordEnvironment,
     ) -> Result<(), DataError> {
-        for &(result, group, key) in &self.grouped_self_joins {
+        for &(result, group, key, entry) in &self.grouped_self_joins {
             let single_line = [stored, row].into_iter().all(|values| {
                 [group, key]
                     .into_iter()
                     .all(|id| values.get(&id).is_none_or(|value| single_line_key(value)))
             });
-            let stored_group_empty = stored.get(&group).is_none_or(String::is_empty);
             let group_assigned = changes.contains_key(&group);
-            let keeps_result = stored.get(&result).is_some_and(|value| !value.is_empty())
-                && !changes.contains_key(&result);
-            let safe_without_assignment = !group_assigned
-                && !changes.contains_key(&key)
-                && (stored_group_empty || keeps_result);
-            let measured_assignment = mode == WriteMode::Update
-                && environment.context.sequence == WriteSequence::SingleLocalFieldStep
-                && stored_group_empty
+            let group_nonempty = row.get(&group).is_some_and(|value| !value.is_empty());
+            let key_assigned = changes.contains_key(&key);
+            let single_group_step = environment.context.sequence
+                == WriteSequence::SingleLocalFieldStep
                 && group_assigned
-                && changes.len() == 1
-                && row.get(&group).is_some_and(|value| !value.is_empty());
-            if environment.context.sequence == WriteSequence::Unmeasured
-                || !single_line
-                || !(safe_without_assignment || measured_assignment)
+                && group_nonempty
+                && changes.len() == 1;
+            let allowed = match entry {
+                GroupedAutoEntry::Keep => {
+                    let stored_group_empty = stored.get(&group).is_none_or(String::is_empty);
+                    let keeps_result = stored.get(&result).is_some_and(|value| !value.is_empty())
+                        && !changes.contains_key(&result);
+                    mode == WriteMode::Update && stored_group_empty && single_group_step
+                        || !group_assigned && !key_assigned && (stored_group_empty || keeps_result)
+                }
+                GroupedAutoEntry::Replace if !changes.contains_key(&result) => match mode {
+                    WriteMode::Create => {
+                        // The earlier values in the recorded sequence are all
+                        // replaced by the evaluation with the final match keys.
+                        (!group_assigned || group_nonempty)
+                            && (!key_assigned
+                                || row.get(&key).is_some_and(|value| !value.is_empty()))
+                    }
+                    WriteMode::Update => !key_assigned && (!group_assigned || single_group_step),
+                },
+                GroupedAutoEntry::Replace => false,
+            };
+            if environment.context.sequence == WriteSequence::Unmeasured || !single_line || !allowed
             {
                 return Err(DataError::with_code(
                     error::UNAVAILABLE,
                     format!(
-                        "Field {}: this grouped self-join needs a single local group-key assignment with single-line keys. No values were changed.",
+                        "Field {}: this grouped self-join is unmeasured for this write sequence or its keys. No values were changed.",
                         self.fields[&result].name
                     ),
                 ));
@@ -4922,7 +5095,12 @@ impl RecordPlan {
                 .as_ref()
                 .is_some_and(|lookup| self.fires(*id, lookup, mode, &dirty, changes, entry))
         });
-        if mode == WriteMode::Update && dirty.is_empty() && !fires_lookup {
+        let assigned_groups: BTreeSet<_> = self.replacing_groups_assigned(changes).collect();
+        if mode == WriteMode::Update
+            && dirty.is_empty()
+            && !fires_lookup
+            && assigned_groups.is_empty()
+        {
             return Ok(Computed {
                 row,
                 dirty,
@@ -5108,12 +5286,14 @@ impl RecordPlan {
                 .dependencies
                 .iter()
                 .any(|id| deferred.contains(id));
-            let should_evaluate = match &expression.evaluate_triggers {
-                Some(triggers) => triggers
+            let should_evaluate = match &expression.stored_evaluate {
+                Some(evaluate) => evaluate
+                    .triggers
                     .iter()
                     .any(|id| dirty.contains(id) || deferred.contains(id)),
                 None => {
                     mode == WriteMode::Create
+                        || assigned_groups.contains(id)
                         || depends_on_deferred
                         || uses_self && changes.contains_key(id)
                         || expression.dependencies.iter().any(|id| dirty.contains(id))
@@ -5173,18 +5353,33 @@ impl RecordPlan {
             let globals = self.session_globals(*id, expression, &session)?;
             let mut remaining = session.calculation_budget();
             let result = (|| {
+                if let Some(
+                    evaluate @ StoredEvaluate {
+                        source: Some(source),
+                        ..
+                    },
+                ) = &expression.stored_evaluate
+                {
+                    let compiled = self.compile_stored_evaluate_source(
+                        field,
+                        expression,
+                        evaluate,
+                        row.get(source).map_or("", String::as_str),
+                    )?;
+                    return self
+                        .evaluate_repetition(*id, 1, &compiled, &row, &session, &mut remaining)
+                        .map(Some);
+                }
                 if field.options.options & ALWAYS_EVALUATE == 0
-                    && expression
-                        .evaluate_triggers
-                        .as_ref()
-                        .is_some_and(|triggers| {
-                            let empty = |id| row.get(id).is_none_or(String::is_empty);
-                            triggers.iter().all(empty)
-                                && expression
-                                    .dependencies
-                                    .difference(triggers)
-                                    .any(|id| !empty(id))
-                        })
+                    && expression.stored_evaluate.as_ref().is_some_and(|evaluate| {
+                        let triggers = &evaluate.triggers;
+                        let empty = |id| row.get(id).is_none_or(String::is_empty);
+                        triggers.iter().all(empty)
+                            && expression
+                                .dependencies
+                                .difference(triggers)
+                                .any(|id| !empty(id))
+                    })
                 {
                     return Err(RunError::Unread(DataError::with_code(
                         error::UNAVAILABLE,
@@ -5748,24 +5943,43 @@ impl RecordPlan {
                     ),
                 ))
             };
-            let (read_keys, found) = session
-                .related
-                .get(&(context, occurrence))
-                .ok_or_else(unread)?;
+            let empty_group = self
+                .fields
+                .get(&field)
+                .and_then(|field| field.expression.as_ref())
+                .is_some_and(|entry| std::ptr::eq(entry, expression))
+                && self
+                    .grouped_self_joins
+                    .iter()
+                    .any(|&(id, group, _, entry)| {
+                        id == field
+                            && entry == GroupedAutoEntry::Replace
+                            && row.get(&group).is_none_or(String::is_empty)
+                    });
+            let (read_keys, found) = if empty_group {
+                // The equality key is empty, so no peer can participate.
+                (keys.as_slice(), &[][..])
+            } else {
+                let (read_keys, found) = session
+                    .related
+                    .get(&(context, occurrence))
+                    .ok_or_else(unread)?;
+                (read_keys.as_slice(), found.as_slice())
+            };
             let Some(table) = self.schema.table_of(occurrence) else {
                 continue;
             };
             // Read with other keys than the write now leaves: a match field
             // the write computed itself. Only a branch that follows the
             // relationship needs it again.
-            if *read_keys != keys {
+            if read_keys != keys.as_slice() {
                 blocked.insert(occurrence);
                 stale.push(((context, occurrence), keys));
                 continue;
             }
             // A self-join, answered only where the written record's own
             // membership cannot change the result (#1035).
-            if table.id == self.table {
+            if table.id == self.table && !empty_group {
                 let uses = expression
                     .uses
                     .get(&occurrence)
@@ -7077,6 +7291,18 @@ fn walk(expr: &Expr, f: &mut dyn FnMut(&Expr)) {
     }
 }
 
+fn reads_script_variable(expr: &Expr) -> bool {
+    match expr {
+        Expr::Variable(_) => true,
+        // SetVariable reads its value and repetition. Its third argument
+        // is only the destination.
+        Expr::Call { op, args } if *op == om_formula::Opcode::SET_VARIABLE => {
+            args.iter().take(2).any(reads_script_variable)
+        }
+        _ => children(expr).into_iter().any(reads_script_variable),
+    }
+}
+
 /// The direct parts of `expr`, in order.
 fn children(expr: &Expr) -> Vec<&Expr> {
     match expr {
@@ -7165,8 +7391,8 @@ enum FormulaUse {
     /// At creation, a stored Number calculation can capture the record's
     /// position (auto-entry.md, "Get ( RecordNumber )").
     StoredNumber,
-    /// A local stored Text calculation can use a literal Evaluate with
-    /// explicit triggers (auto-entry.md, "Stored Evaluate").
+    /// A local stored Text calculation can use Evaluate with explicit
+    /// triggers (auto-entry.md, "Stored Evaluate").
     LocalStoredText,
     /// An auto-entered or validation formula can read related fields and
     /// the operation's [`CONTEXT_SELECTORS`].
@@ -7305,7 +7531,7 @@ fn analyze_rule(polish: Expr, context: &[u8], usage: FormulaUse) -> Result<Expre
             polish,
         }),
         dependencies,
-        evaluate_triggers: None,
+        stored_evaluate: None,
         related,
         other_globals: BTreeSet::new(),
         whole,
@@ -7315,13 +7541,20 @@ fn analyze_rule(polish: Expr, context: &[u8], usage: FormulaUse) -> Result<Expre
     })
 }
 
-/// Compile the measured local stored Evaluate form once. Its second
-/// argument declares triggers independently of the fields in its text.
-fn parse_literal_evaluate(
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum GroupedAutoEntry {
+    Keep,
+    Replace,
+}
+
+/// Plan the measured local stored Evaluate forms. The listed fields
+/// trigger recalculation independently of the reads in the evaluated text.
+fn parse_stored_evaluate(
     polish: Expr,
     context: &[u8],
     table: &Table,
     schema: &CalcSchema,
+    options: &FieldOptions,
 ) -> Result<Expression, String> {
     let Expr::Evaluate {
         args,
@@ -7330,11 +7563,11 @@ fn parse_literal_evaluate(
     else {
         return Err("unsupported stored Evaluate form.".into());
     };
-    let [Expr::Text(text), triggers @ ..] = args.as_slice() else {
-        return Err("a stored Evaluate requires literal expression text.".into());
+    let [input, listed @ ..] = args.as_slice() else {
+        return Err("a stored Evaluate requires an expression source.".into());
     };
-    if text.style.is_some() || triggers.is_empty() {
-        return Err("a stored Evaluate requires plain text and explicit trigger fields.".into());
+    if listed.is_empty() {
+        return Err("a stored Evaluate requires explicit trigger fields.".into());
     }
     let occurrence = Key(context.to_vec())
         .id()
@@ -7353,7 +7586,7 @@ fn parse_literal_evaluate(
             && options.max_repetitions == 1)
             .then_some(field.id)
     };
-    let triggers = triggers
+    let mut triggers = listed
         .iter()
         .map(|trigger| match trigger {
             Expr::Field(field) | Expr::FieldRef(field) => text_field(field),
@@ -7362,14 +7595,75 @@ fn parse_literal_evaluate(
         .collect::<Option<BTreeSet<_>>>()
         .ok_or("a stored Evaluate trigger must be a local single-repetition Text field.")?;
 
+    let Expr::Text(text) = input else {
+        let Expr::Field(reference) = input else {
+            return Err("unsupported stored Evaluate expression source.".into());
+        };
+        let source = text_field(reference)
+            .ok_or("a stored Evaluate source must be a local single-repetition Text field.")?;
+        // Every permitted data input already has its value before rules
+        // run. Runtime text cannot make this evaluation depend on another
+        // rule, or create a dependency cycle the plan could not check.
+        let given: BTreeSet<u64> = table
+            .fields
+            .iter()
+            .filter(|field| field.kind == FieldKind::Normal && field.data_type == DataType::Text)
+            .filter(|field| {
+                field.decoded_options().is_some_and(|options| {
+                    options.max_repetitions == 1
+                        && options.options & (AUTO_ENTRY_MODES | GLOBAL | UNSTORED | LOOKUP) == 0
+                })
+            })
+            .map(|field| field.id)
+            .collect();
+        if options.options != 0
+            || options.validation_options != 0
+            || !triggers.insert(source)
+            || !triggers.is_subset(&given)
+        {
+            return Err("unsupported stored Evaluate with a field source.".into());
+        }
+        let mut expression = analyze_rule(input.clone(), context, FormulaUse::RecordOnly)?;
+        expression.dependencies = given;
+        expression.stored_evaluate = Some(StoredEvaluate {
+            triggers,
+            source: Some(source),
+        });
+        return Ok(expression);
+    };
+    if text.style.is_some() {
+        return Err("a stored Evaluate requires plain expression text.".into());
+    }
     let mut names = om_formula::NameTable::default();
     names.add_occurrence(occurrence.id, &occurrence.name, table.id);
     for field in &table.fields {
         names.add_field(table.id, field.id, &field.name);
     }
-    let mut parse_context = om_formula::Context::new(&names);
-    parse_context.occurrence = Some(occurrence.id);
-    let compiled = om_formula::compile(&text.value, &parse_context)
+    let mut expression = compile_stored_evaluate_text(&text.value, &names, context, |reference| {
+        text_field(reference).is_some()
+    })?;
+    if !triggers.is_subset(&expression.dependencies) {
+        return Err("a stored Evaluate trigger must be read by its expression.".into());
+    }
+    expression.stored_evaluate = Some(StoredEvaluate {
+        triggers,
+        source: None,
+    });
+    Ok(expression)
+}
+
+fn compile_stored_evaluate_text(
+    text: &str,
+    names: &om_formula::NameTable,
+    context: &[u8],
+    allowed: impl Fn(&om_formula::Field) -> bool,
+) -> Result<Expression, String> {
+    if text.len() > MAX_CODE {
+        return Err("stored Evaluate expression is too large.".into());
+    }
+    let mut parse_context = om_formula::Context::new(names);
+    parse_context.occurrence = Key(context.to_vec()).id();
+    let compiled = om_formula::compile(text, &parse_context)
         .map_err(|_| "cannot compile a stored Evaluate expression.")?;
     let space = om_formula::Decimal::parse_literal("32").map(om_formula::Number::Decimal);
     let mut remaining = MAX_NODES;
@@ -7380,7 +7674,7 @@ fn parse_literal_evaluate(
         }
         remaining -= 1;
         match expr {
-            Expr::Field(reference) if text_field(reference).is_some() => {}
+            Expr::Field(reference) if allowed(reference) => {}
             Expr::Text(text) if text.style.is_none() => {}
             Expr::Call { op, args } if *op == om_formula::Opcode::CONCAT => nodes.extend(args),
             Expr::Call { op, args }
@@ -7390,18 +7684,13 @@ fn parse_literal_evaluate(
             _ => return Err("unsupported expression in a stored Evaluate text join.".into()),
         }
     }
-    let mut expression = analyze_rule(compiled.expr, context, FormulaUse::RecordOnly)?;
-    if !triggers.is_subset(&expression.dependencies) {
-        return Err("a stored Evaluate trigger must be read by its expression.".into());
-    }
-    expression.evaluate_triggers = Some(triggers);
-    Ok(expression)
+    analyze_rule(compiled.expr, context, FormulaUse::RecordOnly)
 }
 
 struct RelatedWriteHop {
     match_fields: Vec<u64>,
     /// The equality and inequality keys of the measured self-join.
-    grouped_keys: Option<(u64, u64)>,
+    grouped_keys: Option<(u64, u64, GroupedAutoEntry)>,
 }
 
 /// The match fields of this table through which a formula of `table`,
@@ -7411,15 +7700,15 @@ struct RelatedWriteHop {
 /// type, text or number: this table's a stored field, not global, which the
 /// write itself may compute (it is read again with that value, #1035), the
 /// other table's a stored one, auto-entered or not (its stored value is
-/// matched; a serial key, #187). A keep-existing auto-entry can also read
-/// the first row through the grouped unequal self-join when the membership
+/// matched; a serial key, #187). Measured auto-entry may also read the
+/// first row through the grouped unequal self-join when the membership
 /// check in [`RecordPlan::answers_own`] can settle it. Otherwise why not.
 fn related_hop(
     schema: &CalcSchema,
     fields: &BTreeMap<u64, PlannedField>,
     context: u64,
     (occurrence, field): (u64, u64),
-    first_auto_enter: bool,
+    grouped: Option<GroupedAutoEntry>,
 ) -> Result<RelatedWriteHop, &'static str> {
     use crate::host::FieldClass;
     use crate::meta::JoinOp;
@@ -7451,13 +7740,14 @@ fn related_hop(
             "calculations over related fields through more than one relationship are unsupported.",
         );
     };
-    let grouped_unequal = first_auto_enter
-        && schema
+    let grouped = grouped.filter(|_| {
+        schema
             .occurrence(context)
             .is_some_and(|from| from.table == to.table)
-        && grouped_unequal_self_join(hop);
+            && grouped_unequal_self_join(hop)
+    });
     if hop.predicates.is_empty()
-        || (!grouped_unequal && hop.predicates.iter().any(|p| p.op != JoinOp::Equal))
+        || (grouped.is_none() && hop.predicates.iter().any(|p| p.op != JoinOp::Equal))
     {
         return Err(
             "calculations over related fields through other than = predicates are unsupported.",
@@ -7470,7 +7760,7 @@ fn related_hop(
              or by a summary or a value list of field values) are unsupported.",
         );
     }
-    let grouped_keys = if grouped_unequal {
+    let grouped_keys = if let Some(entry) = grouped {
         let group = hop
             .predicates
             .iter()
@@ -7486,7 +7776,15 @@ fn related_hop(
         if !fields.get(&group).is_some_and(PlannedField::given) {
             return Err("the group field of an unequal self-join must be written explicitly.");
         }
-        Some((group, key))
+        if entry == GroupedAutoEntry::Replace
+            && !fields.get(&key).is_some_and(|field| {
+                field.fresh_key()
+                    && field.options.options & !(INDEX_OPTIONS | BOOKKEEPING_OPTIONS) == 0x88
+            })
+        {
+            return Err("the row key of this unequal self-join needs a replacing UUID.");
+        }
+        Some((group, key, entry))
     } else {
         None
     };
@@ -7517,7 +7815,7 @@ fn related_hop(
                  number, stored, not global on this table's side.",
             );
         }
-        if grouped_unequal && ours != Some(ValueType::Text) {
+        if grouped.is_some() && ours != Some(ValueType::Text) {
             return Err("auto-entry through an unequal self-join needs stored text match fields.");
         }
         matches.push(predicate.left);
@@ -10118,7 +10416,7 @@ mod tests {
     }
 
     #[test]
-    fn stored_literal_evaluate_recalculates_only_for_a_listed_field() {
+    fn stored_evaluate_recalculates_for_its_listed_fields_and_text_source() {
         const OCCURRENCE: u64 = 0xd0_0002;
         let table = Table {
             id: 0x8002,
@@ -10128,6 +10426,7 @@ mod tests {
                 (2, "Family", FieldKind::Normal, 0),
                 (3, "Note", FieldKind::Normal, 0),
                 (4, "Display", FieldKind::Calculation, 0x80000),
+                (5, "ExpressionText", FieldKind::Normal, 0),
             ]
             .into_iter()
             .map(|(id, name, kind, flags)| {
@@ -10233,12 +10532,127 @@ mod tests {
         assert_eq!(cleared.code, Some(error::UNAVAILABLE));
 
         assert!(RecordPlan::from_file_schema(&table, &tree, &file).is_err());
-        let dynamic_code = code_for(Expr::Field(om_formula::Field::new(OCCURRENCE, 3, false)));
+        let dynamic_code = code_for(Expr::Field(om_formula::Field::new(OCCURRENCE, 5, false)));
         let dynamic = tree_for(&dynamic_code);
-        let error = RecordPlan::from_desktop_file_schema(&table, &dynamic, &file, true)
+        let wrong_options = RecordPlan::from_desktop_file_schema(&table, &dynamic, &file, true)
             .err()
             .unwrap();
-        assert_eq!(error.code, Some(error::UNAVAILABLE));
+        assert_eq!(wrong_options.code, Some(error::UNAVAILABLE));
+        let mut table = table;
+        table.fields[3].options[8..12].copy_from_slice(&0u32.to_be_bytes());
+        let plan = RecordPlan::from_desktop_file_schema(&table, &dynamic, &file, true).unwrap();
+        let hosted = RecordPlan::from_desktop_file_schema(&table, &dynamic, &file, false)
+            .err()
+            .unwrap();
+        assert_eq!(hosted.code, Some(error::UNAVAILABLE));
+        let no_triggers = om_formula::polish::encode(&Expr::Evaluate {
+            args: vec![Expr::Field(om_formula::Field::new(OCCURRENCE, 5, false))],
+            need_field_ref: 0,
+        });
+        let no_triggers =
+            RecordPlan::from_desktop_file_schema(&table, &tree_for(&no_triggers), &file, true)
+                .err()
+                .unwrap();
+        assert_eq!(no_triggers.code, Some(error::UNAVAILABLE));
+        let prepare = |mode, row: &BTreeMap<u64, String>, id, text: &str| {
+            plan.prepare(
+                mode,
+                row,
+                &BTreeMap::from([(id, Some(text.into()))]),
+                &environment,
+            )
+        };
+        let blank = plan
+            .prepare(
+                WriteMode::Create,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &environment,
+            )
+            .unwrap();
+        assert!(decoded(&blank, 4).is_none());
+        let first_source = "Given & Char ( 32 ) & Family";
+        let with_source = prepare(WriteMode::Create, &BTreeMap::new(), 5, first_source).unwrap();
+        assert_eq!(decoded(&with_source, 4).as_deref(), Some(" "));
+
+        existing.insert(4, "Pat Lee".into());
+        existing.insert(5, first_source.into());
+        let kept = prepare(WriteMode::Update, &existing, 3, "new note").unwrap();
+        assert_eq!(kept.changed_fields, [3]);
+        let next_source = "Family & Char ( 32 ) & Given & Char ( 32 ) & Note";
+        let recomputed = prepare(WriteMode::Update, &existing, 5, next_source).unwrap();
+        assert_eq!(decoded(&recomputed, 4).as_deref(), Some("Lee Pat edited"));
+        existing.insert(5, next_source.into());
+        let recomputed = prepare(WriteMode::Update, &existing, 2, "Kim").unwrap();
+        assert_eq!(decoded(&recomputed, 4).as_deref(), Some("Kim Pat edited"));
+        let refused = prepare(
+            WriteMode::Update,
+            &existing,
+            5,
+            "Given & Family & Get ( AccountName )",
+        )
+        .err()
+        .unwrap();
+        assert_eq!(refused.code, Some(error::UNAVAILABLE));
+    }
+
+    #[test]
+    fn calculated_auto_entry_refuses_unavailable_script_variables() {
+        let table = Table {
+            id: 0x8002,
+            name: "Items".into(),
+            fields: vec![field(8, FieldKind::Normal, DataType::Text, 0, 0x8, 0)],
+        };
+        let mut file = CalcSchema::new("Example", Locale::en_us());
+        file.add_occurrence(0xd0_0002, "Items", table.id);
+        let bare = Expr::Variable("$$Marker".into());
+        let compound = Expr::Call {
+            op: om_formula::Opcode::CONCAT,
+            args: vec![
+                bare.clone(),
+                Expr::Text(om_formula::Text {
+                    value: "-x".into(),
+                    style: None,
+                }),
+            ],
+        };
+        let destination_only = Expr::Call {
+            op: om_formula::Opcode::SET_VARIABLE,
+            args: vec![Expr::Empty, Expr::Empty, Expr::Variable("$Target".into())],
+        };
+        for (formula, local, snapshots_file_variables) in [
+            (bare.clone(), true, Some(true)),
+            (bare, false, None),
+            (compound, true, None),
+            (Expr::Variable("$Marker".into()), true, None),
+            (destination_only, true, Some(false)),
+        ] {
+            let formula = om_formula::polish::encode(&formula);
+            let mut tree = KeyTree::default();
+            let prefix = [
+                KeySegment(&[0x80, 2]),
+                KeySegment(&[3]),
+                KeySegment(&[5]),
+                KeySegment(&[8]),
+                KeySegment(&[5]),
+            ];
+            for (key, bytes) in [(&[4][..], CONTEXT), (&[6][..], formula.as_slice())] {
+                let mut path = prefix.to_vec();
+                path.push(KeySegment(key));
+                tree.insert(&path, om_hbam::slot::ChunkKind::Leaf, Some(bytes))
+                    .unwrap();
+            }
+            let plan = RecordPlan::from_desktop_file_schema(&table, &tree, &file, local);
+            if let Some(expected) = snapshots_file_variables {
+                assert_eq!(plan.unwrap().reads_auto_entry_file_variables(), expected);
+            } else {
+                let refusal = plan
+                    .err()
+                    .expect("script-variable formula should be refused");
+                assert_eq!(refusal.code, Some(error::UNAVAILABLE));
+                assert!(refusal.message.contains("script variables"));
+            }
+        }
     }
 
     /// The two lookups FileMaker Pro 26.0.3 saved and ran (auto-entry.md,

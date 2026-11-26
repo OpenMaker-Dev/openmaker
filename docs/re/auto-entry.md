@@ -186,6 +186,8 @@ unset variable produced empty and left out the stored cell. Set Field on
 an unrelated field, Commit and reopening kept those results. The check
 did not change the variable between New Record and Commit.
 [Native results](https://github.com/OpenMaker-Dev/openmaker/issues/1037#issuecomment-7185794811).
+Compound formulas, local script variables and hosted variable reads were
+not part of this comparison.
 
 In this file, a field calculation subtree is `<base-table>/3/5/<field>/5`.
 Child 4 contains its context, child 5 the formatted stream and child 6 the
@@ -654,6 +656,28 @@ The two intervals identify the oldest matching row in this setup. The
 first row retained an empty result after the later rows joined its group.
 [Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7184309703).
 
+A second FileMaker Pro 26.1.1 run used the same unsorted join with an
+ordinary Text group key and a replacing Text `Get ( UUID )` row key
+(low option word `0x88`). A Number field had the replacing calculation
+`If ( Peer::Primary = 1 ; 0 ; 1 )`, where the related field is itself
+(low option word `0xa8`). New Record assigned `1` with the group key
+unset. After assigning group A, the first row kept `1`, and the next
+two, each of which read the first row, became `0` at Set Field. Assigning
+the first row to group B later changed it to `0` at Set Field, reading
+B's first row. A Note edit and reassigning the same group preserved
+the value. An explicit row key in a new record survived its group
+assignment and commit. Other committed rows retained their stored
+values throughout. All actions returned zero and reopened with the
+observed values.
+[Replacing native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7191674029).
+
+The follow-up isolated a row whose stored value, `0`, differed from
+the value its current first peer would give, `1`. Changing Note or
+opening and committing without a write preserved `0`. Assigning the
+same group key entered `1` during Set Field. Commit and reopen kept
+the result and the other rows were unchanged.
+[Native trigger check](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7192013761).
+
 Still unmeasured:
 - sorted joins and other non-equality and multi-predicate joins,
   stored calculations and validation, and portal rows created in one
@@ -688,9 +712,13 @@ New Record left it empty. Changing either listed field recomputed it at
 Set Field. A field the text also read and the list omitted did not trigger
 recalculation. The next listed change read its current value. The
 results persisted through commit and reopen. Reading the expression
-from a field was also allowed and writing the expression field itself
-triggered that variant. The literal definitions used option word
-`0x00080000` and stored their result cells. Hosted files were not compared.
+from a field was also allowed. Setting the source before the other fields
+stored a space from the expression's separator. Changing the source
+later recalculated against the current field values, including the
+unlisted input. In the closed copies, the listed dependency entries are
+`00` and the source's entry is `01`. The literal definitions used
+option word `0x00080000`; the field-source definition used `0x00000000`.
+Both stored the result. Clearing the source and hosted files were not compared.
 [Native results](https://github.com/OpenMaker-Dev/openmaker/issues/1072)
 
 ## Get ( CurrentTimeUTCMilliseconds )

@@ -42,9 +42,13 @@ own chrome uses are in [design.md](design.md). Related notes:
   window until a script changes the lock. `Get ( StatusAreaState )` returns
   1 for shown, 0 for hidden, 2 for shown and locked, and 3 for hidden and
   locked. New windows inherit the current toolbar state, which is
-  unmeasured in FileMaker. OpenMaker keeps the outer frame size when the
-  bars change. The measured FileMaker Pro window changes its outer
-  height ([#1064](https://github.com/OpenMaker-Dev/openmaker/issues/1064)).
+  unmeasured in FileMaker. In a regular macOS Browse window, hiding the
+  bars shortens the frame by 55 pt and adds 25 pt of content height.
+  Showing them reverses the change. Restoring the original frame with
+  the bars hidden gives the content area the full 80 pt.
+  OpenMaker keeps the frame size on Linux and Windows, where the
+  FileMaker comparison is unmeasured.
+  [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1040#issuecomment-7188552787)
 - The Window menu's New Window runs the step. Show Window lists every open
   file's windows but cards, front first, a hidden one in parentheses, and
   scrolls when they do not fit; choosing one brings it to the front, shown
@@ -621,6 +625,8 @@ from the current record page. Stored anchors resize objects within their
 containers. Record changes keep the user's selected panels. Clicking a
 visible navigation dot in Browse selects its slide panel. The dots use
 the slide control's stored sizes, insets and normal and active colors.
+Slide panel contents use their own fill and border and clip their children
+to the contents frame.
 Browse shows no authoring part tabs or object kind captions.
 
 - Text objects in Browse draw an edge only when its style resolves to a

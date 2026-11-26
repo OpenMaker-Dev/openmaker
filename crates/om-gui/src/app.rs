@@ -2269,6 +2269,14 @@ impl OpenMakerApp {
                     toolbar::show(
                         ui,
                         &ToolbarContext {
+                            height: if cfg!(target_os = "macos")
+                                && self.w.mode == Mode::Browse
+                                && self.w.style == crate::scripting::WindowStyle::Document
+                            {
+                                theme::MACOS_BROWSE_TOOLBAR_HEIGHT
+                            } else {
+                                theme::TOOLBAR_HEIGHT
+                            },
                             mode: self.w.mode,
                             session,
                             find: &self.w.find,
@@ -5611,7 +5619,20 @@ impl OpenMakerApp {
             Action::DismissValueLists => self.value_lists = None,
             Action::ToggleToolbar => {
                 if self.toolbar_toggle_available() {
-                    self.w.show_toolbar = !self.w.show_toolbar;
+                    let was_shown = self.w.show_toolbar;
+                    self.w.show_toolbar = !was_shown;
+                    if self.w.style == crate::scripting::WindowStyle::Document
+                        && self.w.mode == Mode::Browse
+                        && self.mobile.is_none()
+                        && !self.w.hidden
+                    {
+                        if let Some(command) = self.w.placement.as_mut().and_then(|placement| {
+                            placement.resize_for_toolbar(was_shown, self.w.show_toolbar)
+                        }) {
+                            self.w.fit = None;
+                            ctx.send_viewport_cmd_to(self.viewport_of(self.w.id), command);
+                        }
+                    }
                 }
             }
             Action::ToggleFormattingBar => self.w.show_formatting = !self.w.show_formatting,
