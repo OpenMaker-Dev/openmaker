@@ -4048,6 +4048,10 @@ impl RecordPlan {
         entry: Entry,
     ) -> Result<(), DataError> {
         let unsorted = matches!(context.record_number, Some(RecordNumber::LocalNewRecord(_)));
+        let sorted = matches!(
+            context.record_number,
+            Some(RecordNumber::LocalSortedNewRecord { .. })
+        );
         if !entry.skip_auto_enter && (!unsorted || context.sequence == WriteSequence::Unmeasured) {
             if let Some((result, _, _, _)) = self
                 .grouped_self_joins
@@ -4067,14 +4071,14 @@ impl RecordPlan {
             (!entry.skip_auto_enter || field.stored_calculation())
                 && match field.auto_enter_self {
                     AutoEntrySelf::Unused => false,
-                    AutoEntrySelf::ProposedNumber => !unsorted,
+                    AutoEntrySelf::ProposedNumber => !unsorted && !sorted,
                     AutoEntrySelf::Unsupported => true,
                 }
         }) {
             return Err(DataError::with_code(
                 error::UNAVAILABLE,
                 format!(
-                    "Field {}: Self requires a supported formula and unsorted local New Record.",
+                    "Field {}: Self requires a supported formula and ordinary local New Record with a known insertion position.",
                     field.name
                 ),
             ));
@@ -4082,10 +4086,6 @@ impl RecordPlan {
         if unsorted {
             return Ok(());
         }
-        let local_position = matches!(
-            context.record_number,
-            Some(RecordNumber::LocalSortedNewRecord { .. })
-        );
         for (field, expression) in self.fields.values().filter_map(|field| {
             field
                 .expression
@@ -4093,7 +4093,7 @@ impl RecordPlan {
                 .filter(|_| field.stored_calculation())
                 .map(|expression| (field, expression))
         }) {
-            let reason = if !local_position
+            let reason = if !sorted
                 && matches!(
                     expression.formula.polish,
                     Expr::Get(selector::RECORD_NUMBER)

@@ -784,8 +784,9 @@ but for a lookup's, which would write into it: a stray `0x80`
 bits keep it read-only.
 
 An ordinary local Number auto-entry calculation can use `Self` as its
-only field input. It reads the proposed value at unsorted New Record or on an
-explicit write, including an empty value on a clear. A nonempty explicit
+only field input. It reads the proposed value at ordinary New Record in
+an unsorted or sorted local desktop window with a known insertion
+position, or on an explicit write, including an empty value on a clear. A nonempty explicit
 assignment keeps its value when replacement is disabled. This covers
 stored results and new-record previews. During a held edit of an existing
 record, calculations read the entered value until save. Other creation
