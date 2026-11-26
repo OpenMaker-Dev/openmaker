@@ -109,10 +109,10 @@ class Library(context: Context) {
      * already in the list at the same address and port, in any case, is
      * that host: it is not listed twice, and the entries it replaces no
      * longer trust anything at their own address. [certificate] is the
-     * certificate authority trusted for it. An empty one removes only one
-     * the editor showed (Edit Host shows the edited host's, Add Host none):
-     * one saved for the host or an entry it replaces is kept. The list and
-     * the certificate authorities change together.
+     * certificate authority trusted for it, and with it any the editor did
+     * not show: Edit Host shows the edited host's, Add Host none, so those
+     * saved for the host or an entry it replaces are added, never dropped.
+     * The list and the certificate authorities change together.
      */
     fun saveHost(replacing: SavedHost?, host: SavedHost, certificate: String) {
         val list = hosts
@@ -131,13 +131,8 @@ class Library(context: Context) {
                     }
                 }
                 .let { if (at == null) it + host else it }
-        val pem =
-            certificate.ifBlank {
-                (listOf(host) + replaced)
-                    .filterNot { replacing?.isHost(it) == true }
-                    .firstNotNullOfOrNull { this.certificate(it.address, it.port).ifBlank { null } }
-                    .orEmpty()
-            }
+        val unseen = (listOf(host) + replaced).filterNot { replacing?.isHost(it) == true }
+        val pem = mergedPem(listOf(certificate) + unseen.map { this.certificate(it.address, it.port) })
         val edit = prefs.edit().putHosts(updated)
         for (old in replaced) edit.trust(old.address, old.port, "")
         edit.trust(host.address, host.port, pem).apply()
@@ -152,17 +147,35 @@ class Library(context: Context) {
     }
 
     /**
-     * The PEM certificate authority trusted for one host and port only, its
-     * address matched in any case, as hosts are.
+     * The PEM certificate authorities trusted for one host and port only,
+     * its address matched in any case, as hosts are. The old Hosts tab could
+     * save one under each spelling of an address: all of them, the one
+     * under this spelling first, then the others in order, each once.
      */
     fun certificate(host: String, port: Int): String {
         val key = caKey(host, port)
-        return prefs.getString(key, null)
-            ?: prefs.all.entries.firstOrNull { it.key.equals(key, ignoreCase = true) }?.value as? String
-            ?: ""
+        return mergedPem(
+            prefs.all.entries
+                .filter { it.key.equals(key, ignoreCase = true) }
+                .sortedWith(compareBy({ it.key != key }, { it.key }))
+                .mapNotNull { it.value as? String }
+        )
     }
 
     private fun caKey(host: String, port: Int) = "$CA_PREFIX$host:$port"
+
+    /**
+     * [pems] as one, each certificate once, in order: the engine trusts
+     * every certificate in the text. Text with no PEM block is kept whole.
+     */
+    private fun mergedPem(pems: List<String>): String {
+        val blocks = LinkedHashSet<String>()
+        for (pem in pems) {
+            val found = PEM_BLOCK.findAll(pem).map { it.value.trim() }.toList()
+            if (found.isNotEmpty()) blocks += found else if (pem.isNotBlank()) blocks += pem.trim()
+        }
+        return blocks.joinToString("\n")
+    }
 
     private fun SharedPreferences.Editor.putHosts(list: List<SavedHost>) =
         putString(HOSTS, JSONArray(list.map { JSONArray().put(it.address).put(it.port).put(it.name) }).toString())
@@ -248,6 +261,7 @@ class Library(context: Context) {
         const val LAST_HOST = "lastHost"
         const val LAST_PORT = "lastPort"
         const val CA_PREFIX = "ca:"
+        val PEM_BLOCK = Regex("-----BEGIN [^-]+-----[\\s\\S]*?-----END [^-]+-----")
         const val MAX_RECENT = 30
         // Room an import leaves on the device for the files it opens.
         const val SPARE_BYTES = 256L shl 20

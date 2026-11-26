@@ -444,12 +444,40 @@ struct LaunchCenter: View {
     certificates = (try? JSONEncoder().encode(saved)) ?? Data()
   }
 
-  /// The certificate authority trusted for one host and port only, its
-  /// address matched in any case, as hosts are.
+  /// The certificate authorities trusted for one host and port only, its
+  /// address matched in any case, as hosts are. The old Hosts tab could
+  /// save one under each spelling of an address: all of them, the one under
+  /// this spelling first, then the others in order, each once.
   private func trusted(_ address: String, _ port: UInt16, in saved: [String: String]? = nil) -> String? {
     let all = saved ?? authorities
     let key = authority(address, port)
-    return all[key] ?? all.first { $0.key.caseInsensitiveCompare(key) == .orderedSame }?.value
+    let spellings = all.keys
+      .filter { $0.caseInsensitiveCompare(key) == .orderedSame }
+      .sorted { ($0 != key ? 1 : 0, $0) < ($1 != key ? 1 : 0, $1) }
+    let pem = mergedPem(spellings.compactMap { all[$0] })
+    return pem.isEmpty ? nil : pem
+  }
+
+  /// `pems` as one, each certificate once, in order: the engine trusts
+  /// every certificate in the text. Text with no PEM block is kept whole.
+  private func mergedPem(_ pems: [String]) -> String {
+    var blocks: [String] = []
+    for pem in pems {
+      var found: [String] = []
+      var rest = pem[...]
+      while let begin = rest.range(of: "-----BEGIN "),
+        let end = rest.range(of: "-----END ", range: begin.upperBound..<rest.endIndex),
+        let close = rest.range(of: "-----", range: end.upperBound..<rest.endIndex)
+      {
+        found.append(String(rest[begin.lowerBound..<close.upperBound]))
+        rest = rest[close.upperBound...]
+      }
+      let trimmed = pem.trimmingCharacters(in: .whitespacesAndNewlines)
+      for block in (found.isEmpty && !trimmed.isEmpty ? [trimmed] : found) where !blocks.contains(block) {
+        blocks.append(block)
+      }
+    }
+    return blocks.joined(separator: "\n")
   }
 
   /// Save `pem` as the certificate authority trusted for a host and port,
@@ -504,11 +532,10 @@ struct LaunchCenter: View {
   /// desktop's Add Host checks one, or throw what to fix. The host goes in
   /// the place of the one it replaces, else of the one at its address and
   /// port in any case, which is not listed twice; the entries it replaces
-  /// no longer trust anything at their own address. An empty certificate
-  /// authority removes only one the editor showed (Edit Host shows the
-  /// edited host's, Add Host none): one saved for the host or an entry it
-  /// replaces is kept. A host whose page is shown stays shown, at its new
-  /// address.
+  /// no longer trust anything at their own address. The certificate
+  /// authorities the editor did not show are added to the one it saves,
+  /// never dropped: Edit Host shows the edited host's, Add Host none. A
+  /// host whose page is shown stays shown, at its new address.
   private func saveHost(_ edit: HostEdit) throws {
     let checked = try checkHost(
       address: edit.address, port: edit.port,
@@ -529,10 +556,7 @@ struct LaunchCenter: View {
     if at == nil { updated.append(host) }
     var saved = authorities
     let unseen = ([host] + replaced).filter { edit.replaces?.isHost($0) != true }
-    let pem =
-      checked.certificate.isEmpty
-      ? unseen.compactMap { trusted($0.address, $0.port, in: saved) }.first ?? ""
-      : checked.certificate
+    let pem = mergedPem([checked.certificate] + unseen.compactMap { trusted($0.address, $0.port, in: saved) })
     for old in replaced { trust(old.address, old.port, "", in: &saved) }
     trust(host.address, host.port, pem, in: &saved)
     storeHosts(updated)
