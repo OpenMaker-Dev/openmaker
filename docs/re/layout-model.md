@@ -2392,9 +2392,11 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   so as to leave the desktop alone), and `tests/web_viewer_windows_native.rs`
   reads a second window's List rows' colors from the system's
   `screencapture`.
-- With `OPENMAKER_WEB_VIEWER_BACKEND=wayland` (opt-in for now,
-  `web_viewer/wayland.rs`), a Linux build keeps its windows where winit
-  puts them (Wayland on a Wayland session), and no view is a window:
+- On a Linux Wayland session, when the page host is beside the program (or
+  anywhere with `OPENMAKER_WEB_VIEWER_BACKEND=wayland`), the Wayland backend
+  (`web_viewer/wayland.rs`) draws the pages: the build keeps its windows
+  where winit puts them (native Wayland windows on a Wayland session), and
+  no view is a window:
   - **The page host.** WebKitGTK runs in `om-gui-webview`, a process of its
     own beside the program (or `OPENMAKER_WEB_VIEWER_HOST`), which takes
     the app's commands and sends its events as JSON lines on its stdin and
@@ -2497,11 +2499,12 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   keys typed in the page's text box, and a `<select>`'s list drawn below
   the page and choosing with Down and Return. An input method, and the
   session's keymap, were not tried (Xvfb has neither).
-- On Linux the X11 backend's views can only be children of X11 windows, so a build with
-  the feature puts its windows on winit's X11 backend whenever an X server
-  answers at startup (`om_gui::native_options`). On a Wayland session, where
-  winit would otherwise choose Wayland, that is XWayland, and no environment
-  variable is needed. When no X server answers (XWayland turned off), or a
+- The X11 backend draws the pages on an X11 session, with
+  `OPENMAKER_WEB_VIEWER_BACKEND=x11`, or on a Wayland session without the
+  page host. Its views can only be children of X11 windows, so the build
+  puts its windows on winit's X11 backend whenever an X server answers at
+  startup (`om_gui::native_options`); on a Wayland session that is
+  XWayland. When no X server answers (XWayland turned off), or a
   library that winit's X11 backend opens is missing (libX11, libX11-xcb,
   libXcursor, libXi, libxkbcommon-x11), the windows stay on Wayland, and
   every web viewer shows "Web viewer: unavailable on this display." Builds without the feature stay on native

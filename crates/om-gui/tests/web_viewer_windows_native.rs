@@ -290,6 +290,9 @@ mod native {
                 println!("skipped: no X display (run under xvfb-run)");
                 return None;
             }
+            // This test is the X11 backend's, which a Wayland session
+            // would not choose by default.
+            std::env::set_var("OPENMAKER_WEB_VIEWER_BACKEND", "x11");
             let (x11, screen) = x11rb::connect(None).expect("X display");
             let root = x11.setup().roots[screen].root;
             Some(Native { x11, root })

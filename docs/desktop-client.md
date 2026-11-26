@@ -834,8 +834,9 @@ Browse shows no authoring part tabs or object kind captions.
   as above.
 - An interactive container's audio and video play on the current record
   in Form or List view outside portal rows. Playback uses the native web
-  viewer in builds with `web-viewer` (WebKitGTK on Linux/X11, including
-  XWayland, or WKWebView on macOS). The audio or video is copied to a
+  viewer in builds with `web-viewer` (WebKitGTK on Linux, painted by the
+  app on a Wayland session and in a child window on X11, or WKWebView on
+  macOS). The audio or video is copied to a
   folder only its user may read and removed with the window. The player
   starts automatically when the container's "Start playback
   automatically" bit is set (`0x0200`, `GraphicFormat::autoplay`,

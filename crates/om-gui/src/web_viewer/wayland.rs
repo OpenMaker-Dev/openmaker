@@ -1,4 +1,5 @@
-//! Web viewers in native Wayland windows (`OPENMAKER_WEB_VIEWER_BACKEND=wayland`):
+//! Web viewers in native Wayland windows (on a Wayland session, or with
+//! `OPENMAKER_WEB_VIEWER_BACKEND=wayland`):
 //! WebKitGTK draws the pages in the page host, a process of its own
 //! (`host.rs`) whose only display is one of the app's (`display.rs`), and
 //! Browse paints each view's newest frame as a texture inside its object,
@@ -172,6 +173,11 @@ pub(crate) struct WaylandBackend {
     gone: bool,
     /// Bridge messages read from the host that the app has not polled.
     budget: MessageBudget,
+}
+
+/// Whether there is a host program to run.
+pub(crate) fn host_available() -> bool {
+    host_program().is_some()
 }
 
 /// The host program to run, if there is one.
