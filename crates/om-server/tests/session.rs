@@ -2420,3 +2420,530 @@ fn container_uploads_need_the_tables_create_or_edit_privilege() {
     mixed.disconnect().unwrap();
     admin.disconnect().unwrap();
 }
+
+/// A client's certificate and key: the one its session's transport
+/// presents, and its other transports again (#968).
+struct Client {
+    cert: String,
+    key: String,
+}
+
+impl Client {
+    fn new() -> Self {
+        let client = rcgen::generate_simple_self_signed(vec!["client".to_string()]).unwrap();
+        Self {
+            cert: client.cert.pem(),
+            key: client.signing_key.serialize_pem(),
+        }
+    }
+
+    /// A session with the fixture's file open, nobody logged in to it, and
+    /// the file's id.
+    fn opened(&self, port: u16) -> (Session, u32) {
+        let mut session = connect_with(port, self.cert.as_bytes(), self.key.as_bytes());
+        let open = session.open_file("127.0.0.1", fixture::FILE).unwrap();
+        (session, open.file_id)
+    }
+
+    /// [`Client::opened`], logged in as Admin.
+    fn logged_in(&self, port: u16) -> (Session, u32) {
+        let (mut session, file_id) = self.opened(port);
+        log_in(&mut session);
+        (session, file_id)
+    }
+
+    /// Another transport of this client: TLS, and no Connect.
+    fn transport(&self, port: u16) -> Joiner {
+        let transport = om_session::Transport::connect(
+            "127.0.0.1",
+            port,
+            self.cert.as_bytes(),
+            self.key.as_bytes(),
+        )
+        .unwrap();
+        Joiner { transport }
+    }
+}
+
+fn log_in(session: &mut Session) {
+    let environment = LoginEnvironment::for_remote_file("127.0.0.1", fixture::FILE);
+    let login = session
+        .login(
+            fixture::ACCOUNT,
+            fixture::PASSWORD,
+            fixture::INTERNAL_CREATION,
+            &environment,
+        )
+        .unwrap();
+    assert!(login.is_success(), "{login:?}");
+}
+
+/// A transport that sends Performs naming a session it did not start, as
+/// FileMaker Pro's second connection does.
+struct Joiner {
+    transport: om_session::Transport,
+}
+
+impl Joiner {
+    /// The whole reply to request `id`, a Perform of `txn` naming `session`.
+    fn raw(&mut self, id: u32, session: u32, txn: &[u8], max_return: u32) -> Vec<u8> {
+        let request = om_protocol::build_perform_with_max(id, session, b"", txn, max_return);
+        self.transport.send(&request).unwrap();
+        self.transport.recv_logical().unwrap()
+    }
+
+    /// The result of a Perform of `txn` naming `session`, or the reply
+    /// whole when it is not one.
+    fn perform(&mut self, session: u32, txn: &[u8], max_return: u32) -> Result<Vec<u8>, Vec<u8>> {
+        let reply = self.raw(2, session, txn, max_return);
+        om_protocol::parse_perform_reply(&reply)
+            .map(|reply| reply.result)
+            .map_err(|_| reply)
+    }
+}
+
+/// What a Perform naming an id no session has is answered with, as request
+/// 2: the answer to every request a joined transport may not send.
+fn unknown_connection() -> Vec<u8> {
+    om_giop::build_system_exception_reply(
+        2,
+        "IDL:omg.org/CORBA/BAD_PARAM:1.0",
+        0,
+        om_giop::Completion::No,
+    )
+}
+
+/// The fixture's file with a subtree of 1.5 MB at `[7e]`, which a
+/// download pages in two ([`download_large`]).
+fn with_large_subtree(tag: &str) -> fixture::TempFile {
+    let mut root = fixture::tree(&[], true);
+    root.set_child(om_hbam::OwnedNode::list(
+        [0x7e],
+        (0..3000u32)
+            .map(|n| om_hbam::OwnedNode::leaf(n.to_be_bytes(), vec![7; 500]))
+            .collect(),
+    ));
+    fixture::TempFile::from_tree(tag, &root)
+}
+
+/// op90 of [`with_large_subtree`]'s subtree, from where `resume` says.
+fn download_large(file_id: u32, resume: om_protocol::Resume) -> Vec<u8> {
+    om_protocol::build_download(&om_protocol::DownloadRequest {
+        transaction_id: 1,
+        file_id,
+        key_path: &[&[0x7e]],
+        resume,
+    })
+}
+
+/// The `maxreturn` FileMaker Pro downloads with.
+const PAGE: u32 = om_protocol::DOWNLOAD_MAX_RETURN;
+
+fn records_path() -> (Vec<u8>, [u8; 1]) {
+    (om_hbam::slot::uint_segment(fixture::TABLE), [5])
+}
+
+/// op90 of the fixture's records, a page of `maxreturn` at most.
+fn download_records(file_id: u32, resume: om_protocol::Resume) -> Vec<u8> {
+    let (table, records) = records_path();
+    om_protocol::build_download(&om_protocol::DownloadRequest {
+        transaction_id: 1,
+        file_id,
+        key_path: &[&table, &records],
+        resume,
+    })
+}
+
+/// A second transport of a session's client, with no Connect of its own,
+/// reads from the session what the session's own transport does: op90,
+/// paged on the transport that started it, and op92; it is not another
+/// client, and its read of a paused file waits for the file to resume.
+/// At most nine transports join one session.
+#[test]
+fn a_second_transport_of_the_client_reads_from_its_session() {
+    use om_protocol::{
+        build_download_list, parse_download_reply, DownloadListRequest, Resume, DEFAULT_MAX_RETURN,
+    };
+    let file = with_large_subtree("joined-reads");
+    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+    let client = Client::new();
+    let (mut owner, file_id) = client.logged_in(port);
+    let id = owner.identity().connection_id;
+    let mut joiner = client.transport(port);
+
+    let whole = download_records(file_id, Resume::start());
+    let owners = owner.perform_with_max(&whole, DEFAULT_MAX_RETURN).unwrap();
+    assert_eq!(joiner.perform(id, &whole, DEFAULT_MAX_RETURN), Ok(owners));
+
+    let (table, records) = records_path();
+    let (one, two) = (om_hbam::serial::encode(1), om_hbam::serial::encode(2));
+    let list = build_download_list(&DownloadListRequest {
+        transaction_id: 1,
+        file_id,
+        key_path: &[&table, &records],
+        keys: &[&one, &two],
+        flag: 0,
+        resume: Resume::start(),
+    });
+    let owners = owner.perform_with_max(&list, DEFAULT_MAX_RETURN).unwrap();
+    assert_eq!(joiner.perform(id, &list, DEFAULT_MAX_RETURN), Ok(owners));
+
+    // Paged: continued on the transport that started it, to the same
+    // bytes; the session's own transport does not know its cursor.
+    let (mut pages, mut resume, mut first) = (Vec::new(), Resume::start(), None);
+    loop {
+        let page = joiner
+            .perform(id, &download_large(file_id, resume.clone()), PAGE)
+            .unwrap();
+        let page = parse_download_reply(&page).unwrap();
+        pages.extend_from_slice(&page.slots);
+        first.get_or_insert(page.resume.clone());
+        if !page.resume.has_more() {
+            break;
+        }
+        resume = page.resume;
+    }
+    assert_eq!(pages, owner.download(&[&[0x7e]]).unwrap().slots);
+    let first = first.unwrap();
+    assert!(first.has_more(), "the records take more than one page");
+    let continued = owner
+        .perform_with_max(&download_large(file_id, first), PAGE)
+        .unwrap();
+    assert!(parse_download_reply(&continued).unwrap().slots.is_empty());
+
+    // A paused file's read waits, as the session's own would.
+    handle.pause_file(file_id).unwrap();
+    let request = om_protocol::build_perform_with_max(4, id, b"", &whole, DEFAULT_MAX_RETURN);
+    joiner.transport.send(&request).unwrap();
+    let waited = joiner.transport.recv_logical_by(
+        std::time::Instant::now() + std::time::Duration::from_millis(400),
+        Some(std::time::Duration::from_secs(30)),
+    );
+    assert!(waited.unwrap_err().is_timeout(), "answered while paused");
+    handle.resume_file(file_id).unwrap();
+    let reply = joiner.transport.recv_logical().unwrap();
+    assert!(om_protocol::parse_perform_reply(&reply).is_ok());
+
+    // Nine transports join; a tenth is refused until one of them leaves.
+    // The client is one client, however many transports it has.
+    let mut joined: Vec<Joiner> = (1..9).map(|_| client.transport(port)).collect();
+    for transport in &mut joined {
+        assert!(transport.perform(id, &whole, DEFAULT_MAX_RETURN).is_ok());
+    }
+    let mut tenth = client.transport(port);
+    assert_eq!(
+        tenth.perform(id, &whole, DEFAULT_MAX_RETURN),
+        Err(unknown_connection())
+    );
+    assert_eq!(handle.clients().len(), 1);
+    joined.pop().unwrap().transport.close().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while tenth.perform(id, &whole, DEFAULT_MAX_RETURN).is_err() {
+        assert!(std::time::Instant::now() < deadline, "the seat came back");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Joining needs what only the session's client has: a transport that
+/// presents another client certificate is refused, for a session of
+/// another client too, with the very reply an id no session has gets, so
+/// that the reply tells nothing of which ids are live.
+#[test]
+fn refuses_a_transport_that_cannot_prove_it_is_the_sessions_client() {
+    use om_protocol::{Resume, DEFAULT_MAX_RETURN};
+    let file = fixture::TempFile::new("joined-proof", &[], true);
+    let port = server::start(&file);
+    let (alice, bob) = (Client::new(), Client::new());
+    let (mut alices, file_id) = alice.logged_in(port);
+    let (bobs, _) = bob.logged_in(port);
+    let (alice_id, bob_id) = (
+        alices.identity().connection_id,
+        bobs.identity().connection_id,
+    );
+    let read = download_records(file_id, Resume::start());
+
+    let mut hers = alice.transport(port);
+    assert!(hers.perform(alice_id, &read, DEFAULT_MAX_RETURN).is_ok());
+
+    // Another certificate from the same address, for her session; her
+    // transport, for his session; anyone, for an id no session has.
+    let mut stranger = Client::new().transport(port);
+    let mut his = bob.transport(port);
+    let unknown = alice_id.wrapping_add(1);
+    for (transport, id) in [
+        (0, alice_id),
+        (1, alice_id),
+        (2, bob_id),
+        (0, unknown),
+        (2, unknown),
+    ] {
+        let transport = match transport {
+            0 => &mut stranger,
+            1 => &mut his,
+            _ => &mut hers,
+        };
+        assert_eq!(
+            transport.raw(2, id, &read, DEFAULT_MAX_RETURN),
+            unknown_connection(),
+            "session 0x{id:08x}"
+        );
+    }
+    // His certificate still joins his session, and hers hers.
+    assert!(his.perform(bob_id, &read, DEFAULT_MAX_RETURN).is_ok());
+    assert!(hers.perform(alice_id, &read, DEFAULT_MAX_RETURN).is_ok());
+    alices.download(&[&[2]]).unwrap();
+}
+
+/// A joined transport reads, and changes nothing of the session: every
+/// other operation it sends is refused as one naming an unknown connection
+/// is (a Disconnect is answered, and ends nothing), and the session stays
+/// logged in, holds no lock it took, and goes on.
+#[test]
+fn a_joined_transport_cannot_change_the_session() {
+    use om_hbam::slot::uint_segment;
+    use om_protocol::write::{self, LockReply};
+    use om_protocol::{Resume, DEFAULT_MAX_RETURN};
+    let file = fixture::TempFile::new("joined-writes", &[], true);
+    let port = server::start(&file);
+    let client = Client::new();
+    let (mut owner, file_id) = client.logged_in(port);
+    let id = owner.identity().connection_id;
+    let mut joiner = client.transport(port);
+    let read = download_records(file_id, Resume::start());
+    assert!(joiner.perform(id, &read, DEFAULT_MAX_RETURN).is_ok());
+
+    let table = uint_segment(fixture::TABLE);
+    let record: [&[u8]; 3] = [&table, &[5], &om_hbam::serial::encode(1)];
+    let header = |opcode: Opcode| {
+        let mut header = om_rctransaction::Header::new(opcode as u8);
+        header.file_id = file_id;
+        om_rctransaction::Builder::with_header(header).finish()
+    };
+    let lock = write::build_lock(
+        7,
+        file_id,
+        &write::Lock {
+            waiter: 0,
+            timeout: 0,
+            want_mod_count: false,
+            path: record.iter().map(|s| s.to_vec()).collect(),
+            argument: 0,
+            host_file: file_id as i32,
+            txn: 7,
+            lock_type: write::LOCK_WRITE,
+        },
+    );
+    let close = write::build_unlock(1, file_id, &write::Unlock::close_file(file_id as i32));
+    let (records, _) = records_path();
+    let from_host = om_protocol::build_download_from_host(&om_protocol::DownloadRequest {
+        transaction_id: 1,
+        file_id,
+        key_path: &[&records, &[5]],
+        resume: Resume::start(),
+    });
+    for txn in [
+        lock,
+        close,
+        from_host,
+        header(Opcode::Logout),
+        header(Opcode::Login),
+        header(Opcode::KillAllLocks),
+        header(Opcode::HostCommit),
+        header(Opcode::HostCreateRecord),
+        header(Opcode::QueryProgram),
+        header(Opcode::PerformScriptOnServer),
+        header(Opcode::OpenFile),
+    ] {
+        assert_eq!(
+            joiner.raw(2, id, &txn, DEFAULT_MAX_RETURN),
+            unknown_connection(),
+            "op{}",
+            txn[0]
+        );
+    }
+    joiner
+        .transport
+        .send(&om_protocol::build_disconnect(2, id, true))
+        .unwrap();
+    joiner.transport.recv_logical().unwrap();
+
+    // The session goes on: logged in, its file open, no lock held, and
+    // the joined transport still reads.
+    assert!(matches!(
+        owner.lock(&record, 0x31, false).unwrap(),
+        LockReply::Granted { .. }
+    ));
+    owner.kill_all_locks(0x31).unwrap();
+    assert!(!owner.download(&record).unwrap().slots.is_empty());
+    assert!(joiner.perform(id, &read, DEFAULT_MAX_RETURN).is_ok());
+}
+
+/// A joined transport reads nothing before the session's Login, after its
+/// Logout (a download it was paging included), or once the session ended;
+/// after a new Login it reads again, but not what it paged under the old.
+#[test]
+fn a_joined_transport_reads_only_while_the_session_is_logged_in() {
+    use om_protocol::{Resume, DEFAULT_MAX_RETURN};
+    let file = with_large_subtree("joined-logins");
+    let port = server::start(&file);
+    let client = Client::new();
+    let (mut owner, file_id) = client.opened(port);
+    let id = owner.identity().connection_id;
+    let mut joiner = client.transport(port);
+    let read = download_records(file_id, Resume::start());
+    let status = om_protocol::build_download(&om_protocol::DownloadRequest {
+        transaction_id: 1,
+        file_id,
+        key_path: &[&[2]],
+        resume: Resume::start(),
+    });
+    // Not even what the session itself may read before Login.
+    owner.download(&[&[2]]).unwrap();
+    for txn in [&status, &read] {
+        assert_eq!(
+            joiner.perform(id, txn, DEFAULT_MAX_RETURN),
+            Err(unknown_connection())
+        );
+    }
+
+    log_in(&mut owner);
+    assert!(joiner.perform(id, &read, DEFAULT_MAX_RETURN).is_ok());
+    let paging = |joiner: &mut Joiner| {
+        let page = joiner
+            .perform(id, &download_large(file_id, Resume::start()), PAGE)
+            .unwrap();
+        let resume = om_protocol::parse_download_reply(&page).unwrap().resume;
+        assert!(resume.has_more());
+        download_large(file_id, resume)
+    };
+    let next = paging(&mut joiner);
+
+    let mut logout = om_rctransaction::Header::new(Opcode::Logout as u8);
+    logout.file_id = file_id;
+    owner
+        .perform(&om_rctransaction::Builder::with_header(logout).finish())
+        .unwrap();
+    for txn in [&next, &read] {
+        assert_eq!(joiner.perform(id, txn, PAGE), Err(unknown_connection()));
+    }
+
+    log_in(&mut owner);
+    assert!(joiner.perform(id, &read, DEFAULT_MAX_RETURN).is_ok());
+    let stale = joiner.perform(id, &next, PAGE).unwrap_err();
+    assert!(
+        om_giop::Reply::parse(&stale).unwrap().status == om_giop::ReplyStatus::SystemException,
+        "a page of the download begun under the old Login"
+    );
+    let next = paging(&mut joiner);
+
+    owner.disconnect().unwrap();
+    for txn in [&next, &read] {
+        assert_eq!(joiner.perform(id, txn, PAGE), Err(unknown_connection()));
+    }
+}
+
+/// Reads on a joined transport while the session's own commits change two
+/// records at once each see both changed or neither, and neither side
+/// waits for the other for good.
+#[test]
+fn a_joined_read_during_commits_sees_each_commit_whole() {
+    use om_hbam::slot::uint_segment;
+    use om_hbam::{serial, KeySegment, KeyTree, OwnedNode, SlotReader};
+    use om_protocol::write::LockReply;
+    use om_protocol::{parse_download_reply, Resume, DEFAULT_MAX_RETURN};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    let file = fixture::TempFile::new("joined-commits", &[], true);
+    let port = server::start(&file);
+    let client = Client::new();
+    let (mut owner, file_id) = client.logged_in(port);
+    let id = owner.identity().connection_id;
+    let mut joiner = client.transport(port);
+    let table = uint_segment(fixture::TABLE);
+    let name = uint_segment(fixture::NAME);
+    let names = {
+        let (table, name) = (table.clone(), name.clone());
+        move |slots: &[u8]| -> (String, String) {
+            let path: [&[u8]; 2] = [&table, &[5]];
+            let base = path.iter().map(|s| KeySegment(s)).collect();
+            let tree = KeyTree::from_slots(SlotReader::with_path(slots, base)).unwrap();
+            let node = tree.node(&path).unwrap();
+            let text = |record: u64| {
+                let key = serial::encode(record);
+                let record = node.children.iter().find(|r| r.segment.0 == key).unwrap();
+                let cell = record
+                    .children
+                    .iter()
+                    .find(|c| c.segment.0 == name.as_slice())
+                    .unwrap();
+                om_hbam::Cell::from_node(cell).text().unwrap().unwrap()
+            };
+            (text(1), text(2))
+        }
+    };
+
+    let done = Arc::new(AtomicBool::new(false));
+    let (finished, finishes) = mpsc::channel();
+    let writing = {
+        let (done, finished, table, name) =
+            (done.clone(), finished.clone(), table.clone(), name.clone());
+        std::thread::spawn(move || {
+            for n in 0..20u32 {
+                let txn = 0x100 + n;
+                for record in [1, 2] {
+                    let key = serial::encode(record);
+                    let path: [&[u8]; 3] = [&table, &[5], &key];
+                    assert!(matches!(
+                        owner.lock(&path, txn, true).unwrap(),
+                        LockReply::Granted { .. }
+                    ));
+                }
+                let text = om_scsu::encode_scsu(&format!("version {n}"));
+                let staged = [1, 2].map(|record| {
+                    OwnedNode::list(
+                        serial::encode(record),
+                        vec![OwnedNode::leaf(name.clone(), text.clone())],
+                    )
+                });
+                owner.upload_records(&table, staged.to_vec()).unwrap();
+                let changed = [1, 2].map(|record| {
+                    OwnedNode::list(
+                        serial::encode(record),
+                        vec![OwnedNode::leaf(name.clone(), [])],
+                    )
+                });
+                owner.commit_records(&table, changed.to_vec(), txn).unwrap();
+                owner.kill_all_locks(txn).unwrap();
+            }
+            done.store(true, Ordering::Release);
+            finished.send("writer").unwrap();
+            owner
+        })
+    };
+    let reading = std::thread::spawn(move || {
+        let read = download_records(file_id, Resume::start());
+        let mut seen = 0;
+        while !done.load(Ordering::Acquire) || seen == 0 {
+            let reply = joiner.perform(id, &read, DEFAULT_MAX_RETURN).unwrap();
+            let (first, second) = names(&parse_download_reply(&reply).unwrap().slots);
+            assert!(
+                first == second || (first.as_str(), second.as_str()) == ("Write tests", "Ship"),
+                "half a commit: {first:?} and {second:?}"
+            );
+            seen += 1;
+        }
+        finished.send("reader").unwrap();
+        seen
+    });
+    for _ in 0..2 {
+        finishes
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the writer and the reader both finish");
+    }
+    let mut owner = writing.join().unwrap();
+    assert!(reading.join().unwrap() > 0);
+    let records = server::records_of(&mut owner, fixture::TABLE);
+    assert_eq!(server::cell(&records, 2, fixture::NAME), Some("version 19"));
+}

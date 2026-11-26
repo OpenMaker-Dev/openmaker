@@ -124,6 +124,7 @@ mod engine;
 mod eventlog;
 mod filelock;
 pub mod hosting;
+mod joins;
 mod library;
 mod local;
 mod locks;

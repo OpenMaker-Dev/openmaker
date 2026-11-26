@@ -583,6 +583,7 @@ pub(super) mod tests {
             custom_sets: Default::default(),
             rng: SystemRandom::new(),
             connection_ids: Default::default(),
+            joins: Default::default(),
             recordings: None,
             mailboxes: Default::default(),
             engine: std::sync::Arc::new(engine),

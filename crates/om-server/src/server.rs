@@ -209,6 +209,7 @@ impl Server {
                 custom_sets: AtomicBool::new(false),
                 rng: SystemRandom::new(),
                 connection_ids: Mutex::new(Default::default()),
+                joins: Default::default(),
                 recordings,
                 mailboxes: Default::default(),
                 engine: Arc::new(engine),
@@ -1126,7 +1127,11 @@ fn handle(
             return;
         }
     }
-    info!("{peer}: connected");
+    let certificate = client_certificate(&conn);
+    info!(
+        "{peer}: connected, {}",
+        tls_summary(&conn, certificate.as_ref())
+    );
     // Wake up regularly to send back-channel calls (callback results) to a
     // quiet client; a read cut by the timeout resumes where it stopped. A
     // write fails once the client has taken nothing for the stall limit:
@@ -1144,6 +1149,7 @@ fn handle(
     let mut stream = StreamOwned::new(conn, ClientSocket::new(tcp, control.clone()));
     Connection::new(shared.clone(), address, control)
         .closed_by_server(closed)
+        .with_client_certificate(certificate)
         .serve(&mut stream, limits);
     // TLS bytes still unsent mean the client stopped taking them: it is
     // not waited for again for a goodbye.
@@ -1152,6 +1158,41 @@ fn handle(
         let _ = stream.conn.complete_io(&mut stream.sock);
     }
     info!("{peer}: disconnected");
+}
+
+/// The SHA-256 of the client certificate `conn`'s handshake verified
+/// (`tls::AnyClientCert`): the one a joining transport must present again
+/// (`crate::joins`).
+fn client_certificate(conn: &ServerConnection) -> Option<[u8; 32]> {
+    let der = conn.peer_certificates()?.first()?;
+    let digest = ring::digest::digest(&ring::digest::SHA256, der.as_ref());
+    digest.as_ref().try_into().ok()
+}
+
+/// What the log says of a connection's TLS: its version, whether its
+/// handshake was full or resumed a session, and its client certificate's
+/// SHA-256, which tells an administrator whether two connections came
+/// from one client (`crate::joins`).
+fn tls_summary(conn: &ServerConnection, certificate: Option<&[u8; 32]>) -> String {
+    let version = conn
+        .protocol_version()
+        .map_or_else(|| "no TLS version".to_owned(), |v| format!("{v:?}"));
+    let handshake = match conn.handshake_kind() {
+        Some(rustls::HandshakeKind::Full) => "full handshake",
+        Some(rustls::HandshakeKind::FullWithHelloRetryRequest) => {
+            "full handshake after a HelloRetryRequest"
+        }
+        Some(rustls::HandshakeKind::Resumed) => "resumed session",
+        None => "handshake of unknown kind",
+    };
+    let certificate = certificate.map_or_else(
+        || "no client certificate".to_owned(),
+        |hash| {
+            let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+            format!("client certificate sha256 {hex}")
+        },
+    );
+    format!("{version}, {handshake}, {certificate}")
 }
 
 /// A socket each read and write of which waits only for the time left
