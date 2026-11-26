@@ -301,12 +301,16 @@ struct Drag {
 }
 
 #[derive(Default)]
-struct Selection(BTreeSet<usize>, Option<&'static str>);
+struct Selection {
+    members: BTreeSet<usize>,
+    notice: Option<&'static str>,
+    all: bool,
+}
 
 impl Selection {
     fn single(&self) -> Option<usize> {
-        if self.0.len() == 1 {
-            self.0.first().copied()
+        if self.members.len() == 1 {
+            self.members.first().copied()
         } else {
             None
         }
@@ -317,16 +321,18 @@ impl Selection {
     }
 
     fn replace(&mut self, indices: impl IntoIterator<Item = usize>) {
-        self.1 = None;
-        self.0.clear();
-        self.0.extend(indices);
+        self.notice = None;
+        self.all = false;
+        self.members.clear();
+        self.members.extend(indices);
     }
 
     fn start_drag(&mut self, index: usize, shift: bool) {
-        if !self.0.contains(&index) {
+        if !self.members.contains(&index) {
             if shift {
-                self.0.insert(index);
-                self.1 = None;
+                self.members.insert(index);
+                self.notice = None;
+                self.all = false;
             } else {
                 self.set(Some(index));
             }
@@ -334,10 +340,11 @@ impl Selection {
     }
 
     fn click(&mut self, index: Option<usize>, shift: bool) {
-        self.1 = None;
+        self.notice = None;
+        self.all = false;
         if let Some(index) = index.filter(|_| shift) {
-            if !self.0.remove(&index) {
-                self.0.insert(index);
+            if !self.members.remove(&index) {
+                self.members.insert(index);
             }
         } else {
             self.set(index);
@@ -784,7 +791,7 @@ impl CanvasState {
             contents.reveal(object.key, &mut self.front_panels);
         }
         self.selected.click(index, shift);
-        self.scroll_to_selected = !self.selected.0.is_empty();
+        self.scroll_to_selected = !self.selected.members.is_empty();
     }
 
     pub(crate) fn clear_selection(&mut self) {
@@ -813,6 +820,7 @@ impl CanvasState {
         };
         self.selected
             .replace(selectable_frames(geometry, fields, shown).map(|(index, _)| index));
+        self.selected.all = true;
         self.scroll_to_selected = false;
     }
 
@@ -834,10 +842,10 @@ impl CanvasState {
             &self.moved,
             &self.deleted,
         ) else {
-            self.selected.1 = Some(CANNOT_MOVE_SELECTION);
+            self.selected.notice = Some(CANNOT_MOVE_SELECTION);
             return false;
         };
-        self.selected.1 = None;
+        self.selected.notice = None;
         let delta = selection_delta(&frames, direction.delta());
         if delta == (0.0, 0.0) {
             return false;
@@ -853,11 +861,11 @@ impl CanvasState {
     }
 
     pub(crate) fn selection_notice(&self) -> Option<&'static str> {
-        self.selected.1
+        self.selected.notice
     }
 
     pub(crate) fn is_selected(&self, index: usize) -> bool {
-        self.selected.0.contains(&index)
+        self.selected.members.contains(&index)
     }
 
     pub(crate) fn selection_count(&self, session: &Session) -> usize {
@@ -867,7 +875,7 @@ impl CanvasState {
         if !self.selection_matches(session, geometry) {
             return 0;
         }
-        self.selected.0.len()
+        self.selected.members.len()
     }
 
     /// The selected objects Arrange's Align, Distribute and Resize To
@@ -957,7 +965,7 @@ impl CanvasState {
 
     pub(crate) fn can_delete_selection(&self, session: &Session) -> bool {
         self.selection_count(session) > 0
-            && self.selected.0.iter().all(|index| {
+            && self.selected.members.iter().all(|index| {
                 let geometry = self.geometry.as_ref().expect("checked selection");
                 if let Some(object) = geometry.objects.get(*index) {
                     object.deletable && object.key != 0 && geometry.revision.is_some()
@@ -976,7 +984,7 @@ impl CanvasState {
         let geometry = self.geometry.as_ref().expect("checked selection");
         let stored = geometry.objects.len();
         let revision = geometry.revision;
-        let indices: Vec<_> = self.selected.0.iter().copied().collect();
+        let indices: Vec<_> = self.selected.members.iter().copied().collect();
         let keys: Vec<_> = indices
             .iter()
             .filter_map(|i| geometry.objects.get(*i).map(|o| o.key))
@@ -1856,7 +1864,7 @@ fn draw(
                 let response = ui.interact(
                     hit,
                     ui.scope_id().with(("layout_object", index)),
-                    if movable || (selection_tool && selected.0.len() > 1) {
+                    if movable || (selection_tool && selected.members.len() > 1) {
                         Sense::click_and_drag()
                     } else if selection_tool {
                         Sense::click()
@@ -1877,7 +1885,7 @@ fn draw(
                             selected, geometry, new.fields, moved, deleted, from,
                         );
                         if selection_drag.is_none() {
-                            selected.1 = Some(CANNOT_MOVE_SELECTION);
+                            selected.notice = Some(CANNOT_MOVE_SELECTION);
                         }
                     }
                 }
@@ -1886,7 +1894,7 @@ fn draw(
                     WidgetInfo::selected(
                         Role::Button,
                         selection_tool,
-                        selected.0.contains(&index),
+                        selected.members.contains(&index),
                         &label,
                     )
                 });
@@ -1900,7 +1908,7 @@ fn draw(
                 // A double click on a text with plain words types into it.
                 if response.double_clicked()
                     && selection_tool
-                    && selected.0.len() == 1
+                    && selected.members.len() == 1
                     && object.key != 0
                 {
                     if let Some(stored) = (texts.stored)(object.key) {
@@ -1947,7 +1955,7 @@ fn draw(
                     selected.start_drag(selected_index, ui.input(|i| i.modifiers.shift));
                     draft_drag = press.or(response.interact_pointer_pos()).map(at);
                 }
-                if selected.0.contains(&selected_index) {
+                if selected.members.contains(&selected_index) {
                     painter.rect_stroke(
                         response.rect,
                         CornerRadius::ZERO,
@@ -1960,7 +1968,7 @@ fn draw(
                 *selection_drag =
                     begin_selection_drag(selected, geometry, new.fields, moved, deleted, from);
                 if selection_drag.is_none() {
-                    selected.1 = Some(CANNOT_MOVE_SELECTION);
+                    selected.notice = Some(CANNOT_MOVE_SELECTION);
                 }
             }
             if let Some(text) = new.text.as_mut() {
@@ -2006,24 +2014,60 @@ fn draw(
                 );
             }
 
-            if selected.0.len() > 1 {
-                for index in &selected.0 {
-                    if let Some((object, frame)) = geometry
-                        .objects
-                        .get(*index)
-                        .and_then(|object| Some((object, present(object)?)))
-                    {
-                        draw_selection(&painter, object_rect(origin, &frame), object.locked);
+            let selection_frame = |object: &ObjectGeom| {
+                if selected.all {
+                    present(object)
+                } else {
+                    shown(object)
+                }
+            };
+            if selected.members.len() > 1 {
+                let mut bounds = Rect::NOTHING;
+                let mut unlocked = false;
+                for &index in &selected.members {
+                    let Some(object) = geometry.objects.get(index) else {
+                        if let Some(field) = new
+                            .fields
+                            .get(index - geometry.objects.len())
+                            .filter(|_| selected.all)
+                        {
+                            let rect = object_rect(origin, &geom_rect(field.frame()));
+                            if rect.is_finite() {
+                                bounds = bounds.union(rect);
+                                unlocked = true;
+                            }
+                        }
+                        continue;
+                    };
+                    let Some(frame) = selection_frame(object) else {
+                        continue;
+                    };
+                    let rect = object_rect(origin, &frame);
+                    if !rect.is_finite() {
+                        continue;
                     }
+                    draw_selection_outline(&painter, rect, object.locked);
+                    if selected.all {
+                        bounds = bounds.union(rect);
+                        unlocked |= !object.locked;
+                    } else if !object.locked {
+                        draw_selection_handles(&painter, rect);
+                    }
+                }
+                if unlocked && bounds.is_finite() {
+                    draw_selection_handles(&painter, bounds);
                 }
             }
             if let Some((object, frame)) = selected
                 .single()
                 .and_then(|index| geometry.objects.get(index))
-                .and_then(|object| Some((object, present(object)?)))
+                .and_then(|object| Some((object, selection_frame(object)?)))
             {
                 let rect = object_rect(origin, &frame);
-                draw_selection(&painter, rect, object.locked);
+                draw_selection_outline(&painter, rect, object.locked);
+                if !object.locked && rect.is_finite() {
+                    draw_selection_handles(&painter, rect);
+                }
                 // A movable object's handles resize it.
                 if selection_tool
                     && visible(object.key)
@@ -2175,7 +2219,7 @@ fn movable_frames(
     deleted: &DeletedObjects,
 ) -> Option<Vec<(usize, GeomRect)>> {
     let frames = selected
-        .0
+        .members
         .iter()
         .map(|index| {
             let frame = if let Some(object) = geometry.objects.get(*index) {
@@ -2741,7 +2785,7 @@ fn object_label(index: usize, object: &ObjectGeom) -> String {
     }
 }
 
-fn draw_selection(painter: &egui::Painter, rect: Rect, locked: bool) {
+fn draw_selection_outline(painter: &egui::Painter, rect: Rect, locked: bool) {
     if !rect.is_finite() {
         return;
     }
@@ -2758,9 +2802,9 @@ fn draw_selection(painter: &egui::Painter, rect: Rect, locked: bool) {
         ),
         StrokeKind::Middle,
     );
-    if locked {
-        return;
-    }
+}
+
+fn draw_selection_handles(painter: &egui::Painter, rect: Rect) {
     for position in [
         rect.left_top(),
         rect.center_top(),
@@ -3142,7 +3186,13 @@ mod tests {
             ]);
             app.step();
             assert_eq!(
-                app.state().0.selected.0.iter().copied().collect::<Vec<_>>(),
+                app.state()
+                    .0
+                    .selected
+                    .members
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>(),
                 expected
             );
             assert_eq!(app.state().0.moved(), &moves);
@@ -3259,7 +3309,7 @@ mod tests {
         assert!(app.query_by_label(&first).is_none());
         assert!(app.query_by_label(&second).is_some());
         app.state_mut().0.select_all(&session, SelectAll::Layout);
-        assert_eq!(app.state().0.selected.0, BTreeSet::from([0, 1]));
+        assert_eq!(app.state().0.selected.members, BTreeSet::from([0, 1]));
         assert_eq!(app.state().0.front_panels.get(&1), Some(&4));
         assert!(!app.state().0.unsaved());
 
@@ -3282,7 +3332,7 @@ mod tests {
         state.synchronize(&session);
         assert!(state.selected_index().is_none());
         state.select_all(&session, SelectAll::Layout);
-        assert_eq!(state.selected.0, BTreeSet::from([0, 1]));
+        assert_eq!(state.selected.members, BTreeSet::from([0, 1]));
         assert!(state.front_panels.is_empty());
     }
 

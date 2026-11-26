@@ -285,6 +285,7 @@ impl DataProvider for DocumentProvider {
                         field_name: fixture.field_bindings.get(&object.id).cloned(),
                         movable: true,
                         deletable: true,
+                        ..Default::default()
                     }
                 })
                 .collect();
