@@ -1104,9 +1104,11 @@ file that owns each record:
 - **Fields.** Ordinary stored text, number, date, time, timestamp and container
   fields are written. Container acquisitions run on the owning file's library
   under the ordinary save's transaction; reference adjustments route there too.
-  Repetitions remain refused with error 3. A global field is no
-  record's: Set Field into one sets that file's session value ("A related
-  file's globals", below).
+  A script's Set Field writes each repetition, by its cell, as the owner
+  checks it (`check_scalar_cells`); Browse offers only fields of one
+  repetition there ([#951](https://github.com/OpenMaker-Dev/openmaker/issues/951)).
+  A global field is no record's: Set Field into one sets that file's
+  session value ("A related file's globals", below).
 - **Transactions.** Inside the window's commit transaction (or a script's
   Open Transaction), the change is held in the owning file's transaction.
   On the opened file's connection the owning file joins the opened file's
