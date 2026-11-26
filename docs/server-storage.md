@@ -1480,8 +1480,11 @@ the save's copy name is warned about, and its files keep their own cause
 (`ReadOnlyCause::StoreEngine`), which the list shows the same way. The
 folder cause (`FolderNotWritable`) and the `Unchecked` cause are
 OpenMaker's own, for its own way of saving, a new copy renamed over the
-file: FileMaker Server writes a file in place, so a folder it may not write
-may not matter to it (unmeasured). The Read-only mark in the Admin
+file. FileMaker Server writes a file in place, and a folder its user may
+not write does not matter to it as it opens the file [O]: FileMaker Server
+26.0.3 opened a writable file in such a folder with event 184 and status
+`Normal`, as it opens any writable file (re/server-logs.md 4); a client's
+change to that file was not tried. The Read-only mark in the Admin
 Console's list is OpenMaker's own too. FileMaker Server also writes the
 `fmapp` extended privilege into a file no account of which has it as it
 opens the file (event 655), and on a file it may not write cannot, says so

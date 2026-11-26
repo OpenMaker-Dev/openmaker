@@ -235,7 +235,11 @@ not observed.
 When the test server wrote events 18, 184, 654 and 655, as it opened a
 copy of a starter file from the command line (obs, 2026-11-25):
 
-- **184** `Opened database "<name>".`: the file writable (mode 664).
+- **184** `Opened database "<name>".`: the file writable (mode 664). The
+  folder does not change it: the same file in a folder the server's user
+  may not write (another user's, mode 755) opened with 184 and status
+  `Normal` as well, its bytes unchanged after open and close (obs,
+  2026-11-26). A client's change to that file was not tried.
 - **18** `Opened database "<name>" read only.`: the server's user may not
   write the file (mode 444). `fmsadmin list files -s` then shows it with
   status `Normal`, and its bytes stay unchanged (the same SHA-256).
