@@ -2302,10 +2302,16 @@ fn local_related_self_is_visible_after_an_intermediate_commit() {
     local_first_related(RelatedProbe::ReplacingAmount);
 }
 
+#[test]
+fn local_related_position_refuses_an_unmeasured_calculated_match_key() {
+    local_first_related(RelatedProbe::CalculatedMatchKey);
+}
+
 enum RelatedProbe {
     Position,
     IndexedPosition,
     ReplacingAmount,
+    CalculatedMatchKey,
 }
 
 fn local_first_related(probe: RelatedProbe) {
@@ -2315,6 +2321,7 @@ fn local_first_related(probe: RelatedProbe) {
 
     const RESULT: u64 = 3;
     let replacing = matches!(probe, RelatedProbe::ReplacingAmount);
+    let refuses = matches!(probe, RelatedProbe::CalculatedMatchKey);
     let result_name = if replacing { "Amount" } else { "Position" };
     let mut names = fixture::calculated_names();
     names.add_field(NOTES, RESULT, result_name);
@@ -2374,6 +2381,11 @@ fn local_first_related(probe: RelatedProbe) {
         steps.extend([set_related(RESULT, "25"), assigned, commit]);
     }
     steps.push(report);
+    if refuses {
+        let mut revert = ScriptStep::new(51);
+        revert.flags |= flag::NO_INTERACT;
+        steps.push(revert);
+    }
     let script = fixture::script(1, "Create first match", steps);
     let mut root = fixture::tree(&[script], true);
     fixture::add_local_accounts(&mut root);
@@ -2392,6 +2404,12 @@ fn local_first_related(probe: RelatedProbe) {
             0x8008_0000,
             "Get ( RecordNumber )",
             "related-position-uuid",
+        ),
+        RelatedProbe::CalculatedMatchKey => (
+            2,
+            0x8008_0000,
+            "Get ( RecordNumber )",
+            "related-position-calculated-key",
         ),
         RelatedProbe::ReplacingAmount => (
             1,
@@ -2427,7 +2445,11 @@ fn local_first_related(probe: RelatedProbe) {
             (NOTES, NOTES_OCCURRENCE),
             TASK,
             5,
-            "Get ( UUID )",
+            if refuses {
+                "\"calculated key\""
+            } else {
+                "Get ( UUID )"
+            },
         );
     }
     let folder = Folder::new(tag);
@@ -2440,25 +2462,34 @@ fn local_first_related(probe: RelatedProbe) {
     wait_open(&mut app);
     common::open_menu(&mut app, "Scripts");
     common::click(&mut app, "Create first match");
-    let initial = if replacing {
+    let initial = if refuses {
+        "0|0||"
+    } else if replacing {
         "0|1|0|fresh key"
     } else {
         "0|1|1|fresh key"
     };
     common::wait_for_label(&mut app, initial);
-    let before_commit = HbamFile::open(folder.file()).unwrap();
-    assert!(before_commit
-        .records(NOTES)
+    let before_commit = HbamFile::open(folder.file())
         .unwrap()
+        .records(NOTES)
+        .unwrap();
+    assert!(before_commit
         .iter()
         .all(|row| { row.text(BODY).transpose().unwrap().as_deref() != Some("linked") }));
-    drop(before_commit);
     common::click(&mut app, "OK");
     if replacing {
         common::wait_for_label(&mut app, "pending|0|26");
         common::click(&mut app, "OK");
     }
-    common::wait_for_label(&mut app, if replacing { "0|26" } else { "0|1" });
+    let committed = if refuses {
+        "3|"
+    } else if replacing {
+        "0|26"
+    } else {
+        "0|1"
+    };
+    common::wait_for_label(&mut app, committed);
     common::click(&mut app, "OK");
     common::wait_until(&mut app, "the script to finish", |app| {
         !app.state().script_running()
@@ -2471,6 +2502,10 @@ fn local_first_related(probe: RelatedProbe) {
     });
     let file = HbamFile::open(folder.file()).unwrap();
     let rows = file.records(NOTES).unwrap();
+    if refuses {
+        assert_eq!(rows, before_commit);
+        return;
+    }
     let child = rows
         .iter()
         .find(|row| row.text(BODY).transpose().unwrap().as_deref() == Some("linked"))
