@@ -568,6 +568,11 @@ fn tasks_tree_for_writes(tag: &str, read_only: bool) -> (TempFile, OwnedNode) {
             transfer::import(&["rows.tab"], &[NAME, COUNT], false),
         ],
     );
+    // An import from a folder of files (the step's value 2), a source this
+    // server does not import: 3 on any file, a read-only one too.
+    let mut from_folder = transfer::import(&["rows"], &[NAME, COUNT], false);
+    from_folder.value = 2;
+    let unsupported_import = stepped(14, "Import a folder", vec![from_folder]);
     // A global set and read in the next step: the session's own value.
     let global = script(
         12,
@@ -588,6 +593,7 @@ fn tasks_tree_for_writes(tag: &str, read_only: bool) -> (TempFile, OwnedNode) {
         serial,
         global,
         import,
+        unsupported_import,
     ];
     let mut root = fixture::tree(&scripts, true);
     fixture::add_photo(&mut root);
@@ -1255,14 +1261,14 @@ fn write_rows(root: &OwnedNode) -> Vec<Row> {
             }),
             engine: true,
         },
-        // Refused with 3 at the step, also when the file becomes read-only
-        // after the script checked it (the engine refuses it first then):
-        // never 800 from a save tried and failed.
+        // Refused with 6, "File is read-only", at the step, also when the
+        // file becomes read-only after the script checked it (the engine
+        // refuses it first then): never 800 from a save tried and failed.
         Row {
             what: "op30 a server script's Set Next Serial Value",
             prepare: none(),
             send: Box::new(|session, _| run_script(session, 11)),
-            refused: |answer| step_failed_with(answer, "3"),
+            refused: |answer| step_failed_with(answer, "6"),
             made: Box::new(|session, answer, _| {
                 !script_failed(answer) && next_serial(session).as_deref() == Some("40")
             }),
@@ -1341,37 +1347,72 @@ fn every_write_to_a_file_hosted_read_only_is_refused() {
 }
 
 /// On a file hosted read-only a server script opens no record for editing:
-/// Set Field fails with 3 where the script sees it (script 4 keeps Set
-/// Field's error before its commit), and a script that sets a field and
-/// ends reports 3, never 0 with its edit dropped when the session ends.
-/// So do the other steps that would change the file.
+/// Set Field fails with 6, "File is read-only", where the script sees it,
+/// and its Commit Records has nothing to commit and answers 0, as on
+/// FileMaker Server (script-runtime.md 13.28; script 4 keeps Set Field's
+/// error before its commit). A script that sets a field and ends reports
+/// 6, never 0 with its edit dropped when the session ends. So do the other
+/// steps that would change the file.
 #[test]
 fn a_server_script_opens_no_record_on_a_file_hosted_read_only() {
     let (read_only, _) = tasks_tree_for_writes("recalc-script-read-only", true);
     let (mut client, _) = server::logged_in(server::start(&read_only), "scripter");
     let edit = run_script(&mut client, 4).unwrap();
     assert!(
-        String::from_utf8_lossy(&edit).ends_with("|3|0"),
+        String::from_utf8_lossy(&edit).ends_with("|6|0"),
         "{}",
         String::from_utf8_lossy(&edit)
     );
     let left_open = run_script(&mut client, 6).unwrap();
     assert!(
-        left_open.starts_with(b"3|"),
+        left_open.starts_with(b"6|"),
         "{}",
         String::from_utf8_lossy(&left_open)
     );
     // New Record, Delete Record, Replace Field Contents, Set Next Serial
-    // Value and Import Records: each step 3, and its commit nothing to do.
+    // Value and Import Records: each step 6, and its commit nothing to do.
     for script in [8, 9, 10, 11, 13] {
         let answer = run_script(&mut client, script).unwrap();
         assert!(
-            answer.ends_with(b"|3|0"),
+            answer.ends_with(b"|6|0"),
             "script {script}: {}",
             String::from_utf8_lossy(&answer)
         );
     }
+    // An import from a source this server does not import answers 3, as on
+    // a writable file, not the file's 6 (script 13's import keeps 6).
+    let unsupported = run_script(&mut client, 14).unwrap();
+    assert!(
+        unsupported.ends_with(b"|3|0"),
+        "{}",
+        String::from_utf8_lossy(&unsupported)
+    );
     assert_eq!(cell(&records_of(&mut client, TABLE), 1, COUNT), Some("3"));
+    assert_eq!(records_of(&mut client, TABLE).len(), 2);
+}
+
+/// On a file hosted read-only, a step into a table whose rules the server
+/// does not enforce (here an auto-entered serial number on Count) answers 6
+/// as on any other table: FileMaker Server's measured answer for a step
+/// that would change a read-only file, which those rules do not change,
+/// and the rules matter only once the server would write, which it never
+/// gets to here (script-runtime.md 13.28). Set Field, New Record, Replace
+/// Field Contents, a supported Import Records and Delete Record each answer
+/// 6. On a writable file the same table answers 3, as before.
+#[test]
+fn a_table_whose_rules_the_server_does_not_enforce_answers_6_on_a_file_hosted_read_only() {
+    let (_, mut root) = tasks_tree_for_writes("recalc-unenforced-base", true);
+    fixture::set_field_options(&mut root, TABLE, COUNT, 0x2);
+    let read_only = TempFile::from_tree("recalc-unenforced-read-only", &root);
+    let (mut client, _) = server::logged_in(server::start(&read_only), "scripter");
+    for script in [4, 8, 10, 13, 9] {
+        let answer = run_script(&mut client, script).unwrap();
+        assert!(
+            answer.ends_with(b"|6|0"),
+            "script {script}: {}",
+            String::from_utf8_lossy(&answer)
+        );
+    }
     assert_eq!(records_of(&mut client, TABLE).len(), 2);
 }
 
