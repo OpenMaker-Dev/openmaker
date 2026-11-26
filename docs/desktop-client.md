@@ -2122,7 +2122,17 @@ apply. The dialog has not been compared with FileMaker Pro's.
 
 ### Layout mode and Manage Layouts
 
-Layout mode renders the provider's `LayoutGeometry` at the window zoom.
+Layout mode uses the provider's `LayoutGeometry` at the window zoom.
+When the decoded layout is available, the canvas uses its stored
+background, part colors, text, shapes, fields, button labels and
+standalone library images. These use Browse's static paint routines in
+their normal style,
+at the current draft frames. Merge text shows its stored markers and
+fields show their design names. The editor draws this artwork without
+evaluating record calculations or running document actions. Pasteboard
+objects, unsupported objects and geometry-only providers still use
+outlines and captions. Button icons, panel visibility and design-time
+web viewer placeholders are separate work ([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
 The scrollable canvas, part tabs, objects and selection handles scale
 together. Placement, movement, resizing and the Inspector use the original
 layout points at every zoom. The toolbar, Objects pane and Inspector keep
@@ -2254,9 +2264,12 @@ editor keeps its own keyboard undo and redo. On leaving the editor, the
 completed edit becomes part of the draft history. A new draft edit drops
 the redo branch. OpenMaker keeps up to 32 steps and clears history if the
 draft exceeds its snapshot budget. Applying a step clears selection.
-Save Layout, Revert Layout, a changed layout revision and leaving the
-layout or mode end the history. Part boundaries, Part Setup and Layout
-Setup are immediate writes outside the draft. FileMaker Pro's precise
+Undo and Redo remain available for a local draft after disconnect.
+History ends when Save Layout queues a write, when the user reverts the
+layout, when the layout revision changes, or when the user leaves the
+layout or mode. A Save Layout refusal before queuing a write keeps the
+history. Part boundaries, Part Setup and Layout Setup are immediate
+writes outside the draft. FileMaker Pro's precise
 menu labels, supported operations and history across Save are unmeasured
 ([#902](https://github.com/OpenMaker-Dev/openmaker/issues/902)).
 
@@ -2489,9 +2502,12 @@ look is OpenMaker's.
 Limits: a stored object cannot be moved between parts or restyled;
 groups, portals, tab and slide controls, popovers and button bars and the
 objects inside them do not move and cannot be deleted, nor can objects
-showing a library image, a field's label or a popover button; only a stored text of one line of plain text can be retyped; and the Text tool places one line of plain text in the theme's text style, with no character styles. The Field, Text, Button and Portal tools place objects; the other tool buttons only select a tool. The provider exposes no
-object styles, autosizing, names or tooltips, so the Inspector does not
-show them, and the other property and arrangement controls stay disabled. Layouts without geometry keep the generic field
+showing a library image, a field's label or a popover button; only a stored text of one line of plain text can be retyped; and the Text tool places one line of plain text in the theme's text style, with no character styles. The Field, Text, Button and Portal tools place objects; the other tool buttons only select a tool. For a stored object, the Inspector shows its
+named style and calls out local styling beyond the object's stored
+rotation. Appearance shows known
+normal-state fill, border and text colors and the base font from Browse's
+style cascade. These properties are read-only. Autosizing, names and
+tooltips are unavailable. Layouts without geometry keep the generic field
 view, which is not inspectable as document objects; they cannot be edited.
 The revision is the one the window read when it opened the file or after
 its last placement: a layout another client changed since is refused at

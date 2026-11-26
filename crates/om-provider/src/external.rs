@@ -124,9 +124,11 @@ const MAX_PATHS: usize = 16;
 /// Open statuses meaning the host does not have the file: 0x4fb5,
 /// FileMaker's `kFileNotFound`, which FileMaker Server answers for a file it
 /// does not host (network-protocol.md 5.5) and OpenMaker Server answers
-/// since #914 of github.com/OpenMaker-Dev/openmaker; and 4, which OpenMaker
-/// Server answers for a hosted file it is not serving (closing, closed or
-/// opening) and answered for a missing name before #914.
+/// since #914 of github.com/OpenMaker-Dev/openmaker, for a closed hosted
+/// file too since #939 there, as FileMaker Server answers it; and 4, which
+/// OpenMaker Server answers for a hosted file that is closing or opening,
+/// and answered for a missing name before #914 and for a closed file before
+/// #939.
 const NOT_HOSTED: [u16; 2] = [4, 0x4fb5];
 
 /// Keep a bounded alert while counting problems omitted from it.
