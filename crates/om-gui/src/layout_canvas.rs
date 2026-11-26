@@ -3195,6 +3195,7 @@ mod tests {
 
         let mut app = egui_kittest::Harness::builder()
             .with_size(vec2(350.0, 200.0))
+            .with_context_setup(crate::theme::install)
             .build_ui_state(
                 |ui, (state, document)| {
                     show(
