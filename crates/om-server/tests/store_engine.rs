@@ -320,8 +320,7 @@ fn a_clients_writes_are_refused_as_on_a_file_hosted_read_only() {
     // A program that deletes the table (op86), with the key the session's
     // connection gives it.
     use om_query::program::{leaf, opcode};
-    for i in 0..2 {
-        let (session, id) = &mut both.sessions[i];
+    for (i, (session, id)) in both.sessions.iter_mut().enumerate() {
         let mut program = OwnedNode::list(Vec::new(), Vec::new());
         for (key, value) in [
             (leaf::OPCODE, vec![opcode::DELETE_TABLE]),

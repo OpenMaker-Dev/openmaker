@@ -81,6 +81,158 @@ pub fn page_format(tree: &KeyTree<'_>) -> Option<Vec<u8>> {
     node.assembled().map(|bytes| bytes.into_owned())
 }
 
+/// What a file stores at [`PAGE_SETUP`], told apart as a writer needs it:
+/// none, a value [`page_format`] reads, or one it does not (too large, or
+/// not reassembled).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StoredPageFormat {
+    None,
+    Readable(Vec<u8>),
+    Unreadable,
+}
+
+/// [`StoredPageFormat`] of `tree`. A value is readable only in the form
+/// FileMaker Pro stores it, and [`page_format_node`] writes it: another
+/// form (a longer chunk header, a plain leaf) holds bytes the value does
+/// not, which a writer replacing it would lose.
+pub fn stored_page_format(tree: &KeyTree<'_>) -> StoredPageFormat {
+    let Some(node) = tree.at(&PAGE_SETUP) else {
+        return StoredPageFormat::None;
+    };
+    let Some(value) = page_format(tree) else {
+        return StoredPageFormat::Unreadable;
+    };
+    let stored = om_hbam::OwnedNode {
+        push: true,
+        ..node.to_owned_node()
+    };
+    if page_format_node(&value).as_ref() != Some(&stored) {
+        return StoredPageFormat::Unreadable;
+    }
+    StoredPageFormat::Readable(value)
+}
+
+/// Whether a page setup `value` may be replaced by another: its tagged
+/// chunks run to its end, and each is one FileMaker Pro makes again from
+/// `Comm` at its next Page Setup OK (file-format.md 3.8): `Comm`, `MMod`,
+/// and an `M_PM` that [`regenerable_mac_page_format`] accepts. Another
+/// chunk, a Windows record say, is of unmeasured use and is not dropped.
+pub fn replaceable_page_format(value: &[u8]) -> bool {
+    let mut rest = value;
+    while !rest.is_empty() {
+        let Some((tag, after)) = rest.split_first_chunk::<4>() else {
+            return false;
+        };
+        let Some((len, after)) = after.split_first_chunk::<4>() else {
+            return false;
+        };
+        let len = u32::from_be_bytes(*len) as usize;
+        let (Some(payload), Some(next)) = (after.get(..len), after.get(len..)) else {
+            return false;
+        };
+        let known = match tag {
+            b"Comm" | b"MMod" => true,
+            b"M_PM" => regenerable_mac_page_format(payload),
+            _ => false,
+        };
+        if !known {
+            return false;
+        }
+        rest = next;
+    }
+    true
+}
+
+/// Whether the macOS page format `plist` is one FileMaker Pro makes again
+/// from `Comm`: formatted for Any Printer (no `FormattingPrinter`, or a
+/// blank one) and for one of its papers (`PMCustomPaper` not true). Pro
+/// made those again from `Comm` alone; a custom paper it made again
+/// under another name ("MyPaper"), and a named printer was not measured
+/// [O: file-format.md 3.8, runs W and P]. A key appears over its ticket's
+/// `<dict>` and over its value; each value is read. The keys and values
+/// are read in the text, so a record is accepted only as plain text, as
+/// Pro writes it ([`plain_plist`]): one that may spell a key or a value
+/// otherwise is not known to be one Pro makes again.
+fn regenerable_mac_page_format(plist: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(plist) else {
+        return false;
+    };
+    text.starts_with("<?xml")
+        && plain_plist(text)
+        && plist_values(text, "com.apple.print.PaperInfo.PMCustomPaper")
+            .iter()
+            .all(|value| value.starts_with("<false/>"))
+        && plist_values(text, "com.apple.print.PageFormat.FormattingPrinter")
+            .iter()
+            .all(|value| {
+                value
+                    .strip_prefix("<string>")
+                    .and_then(|rest| rest.split_once("</string>"))
+                    .is_some_and(|(name, _)| name.trim().is_empty())
+            })
+}
+
+/// Whether `text` holds its plist's keys and strings as they read: no
+/// entity or character reference (`&`), no CDATA section or comment, no
+/// declaration but the plist's own `<!DOCTYPE` without an internal subset,
+/// no processing instruction but the leading `<?xml` declaration, and
+/// every `<key>` and `</key>` tag written so. Then a key's text is the
+/// key, and nothing outside markup looks like a `<key>` tag.
+fn plain_plist(text: &str) -> bool {
+    let mut declarations = text.match_indices("<!");
+    let doctype = match declarations.next() {
+        None => true,
+        Some((at, _)) => {
+            text[at..].starts_with("<!DOCTYPE plist ")
+                && text[at..]
+                    .split_once('>')
+                    .is_some_and(|(decl, _)| !decl.contains('['))
+        }
+    };
+    let tags_closed = |tag: &str| {
+        text.match_indices(tag)
+            .all(|(at, _)| text[at + tag.len()..].starts_with('>'))
+    };
+    doctype
+        && declarations.next().is_none()
+        && text.starts_with("<?xml")
+        && text.matches("<?").count() == 1
+        && !text.contains('&')
+        && tags_closed("<key")
+        && tags_closed("</key")
+}
+
+/// The text after each `<key>key</key>` of `text` but those that open a
+/// `<dict>`: each starts with the key's value element.
+fn plist_values<'a>(text: &'a str, key: &str) -> Vec<&'a str> {
+    let key = format!("<key>{key}</key>");
+    text.match_indices(&key)
+        .map(|(at, _)| text[at + key.len()..].trim_start())
+        .filter(|value| !value.starts_with("<dict>"))
+        .collect()
+}
+
+/// `value` as the node of a file's page setup ([`PAGE_SETUP`]), stored
+/// chunked as FileMaker Pro stores it whatever its length: child `00` the
+/// u32 total, then 1000-byte pieces keyed 1, 2, ... (file-format.md 3.8,
+/// 4.3). Pro read a 37-byte `[2, 87]` stored this way; one stored as a
+/// plain leaf it was never shown. `None` past [`MAX_PAGE_FORMAT`], which
+/// [`page_format`] would not read back.
+pub fn page_format_node(value: &[u8]) -> Option<om_hbam::OwnedNode> {
+    if value.len() > MAX_PAGE_FORMAT {
+        return None;
+    }
+    let total = u32::try_from(value.len()).ok()?;
+    let mut children = vec![om_hbam::OwnedNode::leaf([0], total.to_be_bytes())];
+    for (i, piece) in value.chunks(1000).enumerate() {
+        children.push(om_hbam::OwnedNode::leaf(
+            om_hbam::serial::encode(i as u64 + 1),
+            piece,
+        ));
+    }
+    Some(om_hbam::OwnedNode::list([0x87], children))
+}
+
 /// A big-endian reader over a stored stream (file-metadata.md 0).
 struct Reader<'a> {
     bytes: &'a [u8],
@@ -1764,5 +1916,103 @@ mod tests {
         assert_eq!(lists[0].options, 7);
         assert_eq!(lists[0].sort_locale, 25);
         assert_eq!(lists[0].separator, " ");
+    }
+
+    /// What a page setup save may replace (#112): only `Comm`, `MMod`, and
+    /// an `M_PM` for Any Printer on one of its papers, laid out as FileMaker
+    /// Pro 26.1.1 writes them (file-format.md 3.8): a key over its ticket's
+    /// `<dict>`, then over its value.
+    #[test]
+    fn a_page_setup_is_replaced_only_where_filemaker_pro_makes_it_again() {
+        fn chunk(tag: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+            let mut out = tag.to_vec();
+            out.extend((payload.len() as u32).to_be_bytes());
+            out.extend(payload);
+            out
+        }
+        let plist = |key: &str, value: &str| {
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \
+                 \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+                 <plist><dict>\n\
+                 <key>{key}</key>\n<dict>\n<key>com.apple.print.ticket.itemArray</key>\n\
+                 <array><dict>\n<key>{key}</key>\n{value}\n</dict></array></dict>\n</dict></plist>\n"
+            )
+        };
+        let comm = [0u8; 29];
+        let format = |m_pm: &str| {
+            [
+                chunk(b"Comm", &comm),
+                chunk(b"M_PM", m_pm.as_bytes()),
+                chunk(b"MMod", &comm),
+                chunk(b"MMod", &comm),
+            ]
+            .concat()
+        };
+        let printer = "com.apple.print.PageFormat.FormattingPrinter";
+        let custom = "com.apple.print.PaperInfo.PMCustomPaper";
+        for (value, replaceable) in [
+            (
+                format(&plist(
+                    "com.apple.print.PageFormat.PMScaling",
+                    "<real>1</real>",
+                )),
+                true,
+            ),
+            (format(&plist(printer, "<string> </string>")), true),
+            (format(&plist(custom, "<false/>")), true),
+            (format(&plist(custom, "<true/>")), false),
+            (
+                format(&plist(printer, "<string>Office Laser</string>")),
+                false,
+            ),
+            (
+                [chunk(b"Comm", &comm), chunk(b"W_DM", b"\x01")].concat(),
+                false,
+            ),
+            (chunk(b"Comm", &comm)[..20].to_vec(), false),
+            // A key or value spelt otherwise than as plain text is not read
+            // as the key it may be: a character reference, CDATA, a
+            // processing instruction, a tag with a space.
+            (
+                format(&plist(
+                    "com.apple.print.PageFormat.Formatting&#80;rinter",
+                    "<string>Office Laser</string>",
+                )),
+                false,
+            ),
+            (
+                format(&plist(&format!("<![CDATA[{custom}]]>"), "<true/>")),
+                false,
+            ),
+            (
+                format(&plist(
+                    "com.apple.print.PageFormat.Formatting<?x?>Printer",
+                    "<string>Office Laser</string>",
+                )),
+                false,
+            ),
+            (
+                format(
+                    &plist(printer, "<string>Office Laser</string>")
+                        .replace(&format!("<key>{printer}"), &format!("<key >{printer}")),
+                ),
+                false,
+            ),
+        ] {
+            assert_eq!(replaceable_page_format(&value), replaceable, "{value:02x?}");
+        }
+
+        // Stored otherwise than Pro stores it (a longer chunk header), a
+        // value is not one a writer may replace.
+        let value = chunk(b"Comm", &comm);
+        let mut node = page_format_node(&value).unwrap();
+        let read = |node: &OwnedNode| {
+            let wire = tree(vec![OwnedNode::list([2], vec![node.clone()])]);
+            stored_page_format(&KeyTree::from_slots(SlotReader::new(&wire)).unwrap())
+        };
+        assert_eq!(read(&node), StoredPageFormat::Readable(value.clone()));
+        node.children[0].value = Some([&37u32.to_be_bytes()[..], &[0, 0, 0, 9]].concat());
+        assert_eq!(read(&node), StoredPageFormat::Unreadable);
     }
 }

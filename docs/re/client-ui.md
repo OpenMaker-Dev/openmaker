@@ -422,6 +422,23 @@ actual pixel layout, dynamic controls, runtime handlers and some hierarchy links
 remain unknown, so OpenMaker's Layout mode dimensions and interactions are its
 own choices ([desktop-client.md](../desktop-client.md), Layout mode).
 
+## Layout mode: Selecting and moving objects
+
+Claris's [Editing objects, layout parts, and the layout background](https://help.claris.com/en/pro-help/content/editing-objects-parts-background.html)
+documents Edit > Select All and dragging a selection box with the Selection
+tool. The box can cross an object to select it. Holding Command on macOS or
+Control on Windows restricts selection to objects entirely inside the box.
+Dragging on an open popover selects within the popover. Claris also documents
+tool-specific Select All and selecting objects of the same type.
+[Moving objects on a layout](https://help.claris.com/en/pro-help/content/moving-objects.html)
+documents moving the selection by one point per arrow key press. See
+[layout-model.md 10.7](layout-model.md#107-an-objects-position) for how a
+move is stored.
+
+**Unknowns:** Which nested objects Select All and a layout-level box select,
+how they treat locked objects, and whether a modifier changes the arrow
+step. These gestures were not observed in a running FileMaker Pro window.
+
 ## Layout mode: Align, Distribute and Resize To
 
 From Claris's help (doc), fetched 2026-11-20:
@@ -813,7 +830,8 @@ options are stored is in the specs named.
 - **Layout Setup**, General: "Show alerts when field isn't modifiable or
   no records are present", under "Show current record indicator in List
   View" (`IDD_LAYOUT_SETUP.nib`, SHA-256 `c3b0f9d5...`); on by default in new
-  files, off in existing ones (Claris). Storage unknown (layout-model.md 12).
+  files, off in existing ones (Claris). Storage and the measured empty
+  Form click are in layout-model.md 4.2.
 - **Portal Setup:** "Place row for new record at top"
   (`IDD_PORTAL_SETUP.nib`, `8862dd0a...`); layout-model.md 5.3.2.
 - **Inspector**, Data: "Show indicator for clipped contents" in the Edit
