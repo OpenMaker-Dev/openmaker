@@ -867,6 +867,9 @@ impl NativeProvider {
         use om_data::host::session::selector;
         let reads = plan.context_reads();
         let mut context = WriteContext::default();
+        if self.local.is_some() && reads.contains(&selector::CURRENT_TIME_UTC_MILLISECONDS) {
+            context.creation_utc_clock = Some(Default::default());
+        }
         if let Some(layout) = layout.filter(|_| reads.contains(&selector::LAYOUT_NUMBER)) {
             context.layout = self.layout_number(layout)?;
         }

@@ -792,6 +792,14 @@ currently keeps local globals in memory for the session. See the native
 observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
 and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
 
+A local Text or Number calculated auto-enter may read
+`Get ( CurrentTimeUTCMilliseconds )` at New Record, including through a
+custom function. Each field takes its own samples and replays them when
+its creation preview is committed. Evaluating a clock-dependent rule
+again on an existing record, and clock reads in hosted writes,
+validation and stored calculations, are outside this support.
+[Native Browse check](https://github.com/OpenMaker-Dev/openmaker/issues/1055).
+
 **An auto-entered or validation formula may read an unstored
 calculation** of its own table ([#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); auto-entry.md, "Formulas over
 an unstored calculation or a summary field"). The calculation is

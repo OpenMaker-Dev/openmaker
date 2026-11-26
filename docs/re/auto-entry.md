@@ -562,6 +562,17 @@ or related-values lists. Carry-over to them is inference, and this case
 does not distinguish validation being skipped from other internal timing
 that saves without a dialog. Hosted behavior is unmeasured.
 
+## Get ( CurrentTimeUTCMilliseconds )
+
+FileMaker Pro 26.1.1 in a local file displayed the UTC millisecond value
+of a Text auto-enter calling a custom function at New Record. Its value
+fell inside a bracket around that operation and survived an unrelated
+Text edit and close. A direct Number auto-enter was stored as well. With
+replacement enabled, one record stored the direct and custom results
+one millisecond apart, so different field evaluations can take different
+samples. These checks did not change an input the calculation reads.
+[Native Browse check](https://github.com/OpenMaker-Dev/openmaker/issues/1055).
+
 ## Get ( RecordNumber )
 
 **Stored Number calculation.** [O: FileMaker Pro 26.1.1, local disposable
