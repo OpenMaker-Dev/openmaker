@@ -1998,13 +1998,16 @@ pub struct Slot {
     state: Mutex<SlotState>,
 }
 
-/// A slot as one look saw it ([`Slot::seen`]).
+/// A slot as one look saw it ([`Slot::seen`]), without its file.
 pub struct SlotSeen {
     pub status: FileStatus,
-    /// Why the file is closed: its last open failed.
+    /// Why the file is closed (its last open failed), or, while it is
+    /// served, why it takes no more changes ([`Hosted::writes_refused`]).
     pub error: Option<String>,
-    /// The file, while it is served.
-    pub file: Option<Arc<Hosted>>,
+    /// Why the served file is read-only ([`Hosted::read_only_cause`]).
+    pub read_only: Option<crate::store::ReadOnlyCause>,
+    /// The slot's revision then ([`Slot::revision`]).
+    pub revision: u64,
 }
 
 #[derive(Debug)]
@@ -2018,6 +2021,9 @@ struct SlotState {
     closing: Option<FileClose>,
     /// Why the file is closed: its last open failed.
     error: Option<String>,
+    /// How many times the served file has changed: a reopen that loads
+    /// serves a new load of the file, a close that finishes serves none.
+    revision: u64,
 }
 
 impl Slot {
@@ -2033,6 +2039,7 @@ impl Slot {
                 closed_file: None,
                 closing: None,
                 error: None,
+                revision: 0,
             }),
         }
     }
@@ -2045,17 +2052,37 @@ impl Slot {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The file's status, why it is closed and the file while it is served,
-    /// from one look at the slot, so that they agree with each other: a
-    /// close that finishes meanwhile is seen whole or not at all (the
-    /// administrator's list of files, `ServerHandle::files`).
+    /// The file's status, why it is closed or takes no more changes, and
+    /// why it is read-only, from one look at the slot, so that they agree
+    /// with each other: a close that finishes meanwhile is seen whole or
+    /// not at all (the administrator's list of files,
+    /// `ServerHandle::files`). The file is read under the slot's lock and
+    /// not handed out: a close finishes only once nothing else holds it
+    /// ([`Slot::finish_close_if_drained`]), so a list that kept it, while
+    /// it read a size from a mount that does not answer, would keep the
+    /// file closing. Both causes are read without the store's lock, which
+    /// a save holds through its write and flush.
     pub fn seen(&self) -> SlotSeen {
         let state = self.state();
+        let file = state.file.as_deref();
         SlotSeen {
             status: state.status,
-            error: state.error.clone(),
-            file: state.file.clone(),
+            error: state
+                .error
+                .clone()
+                .or_else(|| file.and_then(|file| file.writes_refused().map(str::to_owned))),
+            read_only: file.and_then(Hosted::read_only_cause),
+            revision: state.revision,
         }
+    }
+
+    /// Which load of the file the slot serves, if any: a number that
+    /// changes whenever the served file does (a reopen that loads, a close
+    /// that finishes). Two looks with the same revision saw the same load,
+    /// or none, served: for a reader that reads something of the file
+    /// between them with nothing held (the size, in `ServerHandle::files`).
+    pub fn revision(&self) -> u64 {
+        self.state().revision
     }
 
     /// What state the file is in.
@@ -2151,6 +2178,7 @@ impl Slot {
         let closed = state.file.take();
         state.closed_file = closed.as_ref().and_then(|file| engine.file_on_disk(file));
         state.closing = None;
+        state.revision += 1;
         drop(state);
         // A test's server checking reads lets go of the store copies it made
         // of this load (`engine::copies`): no read of it comes after this.
@@ -2293,6 +2321,7 @@ impl Hosting {
                 state.file = Some(hosted);
                 state.closed_file = None;
                 state.error = None;
+                state.revision += 1;
                 Ok(())
             }
             Err(e) => {
