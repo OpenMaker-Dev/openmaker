@@ -28,12 +28,20 @@ pub enum Orientation {
     Landscape,
 }
 
+/// The scales Page Setup accepts, 1.0 = 100%. FileMaker Pro stores 40%,
+/// 60% and 100% (script-steps.md 11.6, #817); its limits are unmeasured
+/// (#871), and 1% to 1000% is OpenMaker's choice.
+pub const SCALES: std::ops::RangeInclusive<f64> = 0.01..=10.0;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PaperSettings {
     /// Unrotated sheet dimensions, in points (72 points = one inch).
     pub width: f64,
     pub height: f64,
     pub orientation: Orientation,
+    /// Page Setup's scale, 1.0 = 100%: the layout prints at this fraction of
+    /// its size, so a page holds `1 / scale` as much of it each way.
+    pub scale: f64,
 }
 
 impl Default for PaperSettings {
@@ -42,13 +50,14 @@ impl Default for PaperSettings {
             width: 612.0,
             height: 792.0,
             orientation: Orientation::Portrait,
+            scale: 1.0,
         }
     }
 }
 
 impl PaperSettings {
-    /// Bound custom paper to 1–200 inches on each axis. Scale is deliberately
-    /// absent: the report pipeline currently supports only 100 percent.
+    /// Bound custom paper to 1–200 inches on each axis, and the scale to
+    /// [`SCALES`].
     pub fn validate(&self) -> Result<(), String> {
         if [self.width, self.height]
             .iter()
@@ -57,6 +66,9 @@ impl PaperSettings {
             return Err(
                 "Paper dimensions must be between 72 and 14400 points (1–200 inches).".into(),
             );
+        }
+        if !SCALES.contains(&self.scale) {
+            return Err("Scale must be between 1% and 1000%.".into());
         }
         Ok(())
     }
@@ -79,6 +91,11 @@ impl PaperSettings {
         })
     }
 
+    /// The page as the layout sees it, in layout points: the sheet divided
+    /// by the scale, as FileMaker stores the printable size (script-steps.md
+    /// 11.6). The whole page is scaled, the printer's margins too, so they
+    /// stay the same on paper. That a layout's fixed page margins are in
+    /// layout points too, and so print scaled, is inferred: unmeasured.
     pub fn for_layout(&self, layout: &Layout) -> Result<PageSize, String> {
         self.validate()?;
         let def = layout.def.as_ref().ok_or("The layout has no definition")?;
@@ -86,6 +103,7 @@ impl PaperSettings {
             Orientation::Portrait => (self.width, self.height),
             Orientation::Landscape => (self.height, self.width),
         };
+        let (width, height) = (width / self.scale, height / self.scale);
         // The stored `customMargins` apply only with "Use fixed page
         // margins" on. FileMaker Pro stores them with it off too (every
         // starter layout keeps 36 points) and then prints within the
@@ -112,12 +130,22 @@ impl PaperSettings {
                     ..Rect::default()
                 }
             }
-            None => printer_margins(),
+            None => {
+                let m = printer_margins();
+                Rect {
+                    top: m.top / self.scale,
+                    left: m.left / self.scale,
+                    bottom: m.bottom / self.scale,
+                    right: m.right / self.scale,
+                    ..Rect::default()
+                }
+            }
         };
         Ok(PageSize {
             width,
             height,
             margins,
+            scale: self.scale,
         })
     }
 }

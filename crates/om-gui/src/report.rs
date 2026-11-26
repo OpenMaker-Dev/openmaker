@@ -4633,6 +4633,10 @@ pub fn render_pdf_viewed(
     let mut images = Vec::new();
     let image_ref = |index: usize| Ref::new(20 + (plan.pages.len() + index) as i32 * 2);
     let h = plan.paper.height;
+    // Pages are drawn in layout points; Page Setup's scale maps them onto
+    // the sheet, which is the media box.
+    let (sheet_width, sheet_height) = plan.paper.sheet();
+    let scale = plan.paper.scale as f32;
     // Each page's pictures and opacities; the page dictionaries follow the
     // streams, once every picture (and so the first free object) is known.
     let mut resources = Vec::with_capacity(plan.pages.len());
@@ -4640,10 +4644,17 @@ pub fn render_pdf_viewed(
         let stream = Ref::new(21 + index as i32 * 2);
         let scene = prepare_page(layout, &plan, index, &pictures, content)?;
         let mut alphas = BTreeSet::new();
-        pdf.stream(
-            stream,
-            &encode_page(&scene, h, &mut maps, &mut images, &mut alphas)?,
-        );
+        let mut bytes = Vec::new();
+        if scale != 1.0 {
+            let mut prefix = Content::new();
+            prefix.transform([scale, 0.0, 0.0, scale, 0.0, 0.0]);
+            bytes.extend_from_slice(&prefix.finish());
+            // A content stream separates its operators by whitespace, and
+            // `finish` ends without it.
+            bytes.push(b'\n');
+        }
+        bytes.extend(encode_page(&scene, h, &mut maps, &mut images, &mut alphas)?);
+        pdf.stream(stream, &bytes);
         let used: BTreeSet<usize> = scene
             .parts
             .iter()
@@ -4688,8 +4699,8 @@ pub fn render_pdf_viewed(
             .media_box(pdf_writer::Rect::new(
                 0.0,
                 0.0,
-                plan.paper.width as f32,
-                h as f32,
+                sheet_width as f32,
+                sheet_height as f32,
             ))
             .contents(stream);
         let mut resources = page.resources();

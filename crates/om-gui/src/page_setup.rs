@@ -61,8 +61,9 @@ impl Settings {
             if values.iter().any(|v| !v.is_finite()) {
                 return Err("Non-finite page format number".into());
             }
-            if values[0] != 1.0 {
-                return Err("Page Setup scale other than 100% is unsupported".into());
+            let scale = values[0];
+            if !om_layout::paper::SCALES.contains(&scale) {
+                return Err("Page Setup scale must be between 1% and 1000%".into());
             }
             let orientation = match payload[0] {
                 0 => Orientation::Portrait,
@@ -70,14 +71,16 @@ impl Settings {
                 _ => return Err("Unsupported page orientation".into()),
             };
             let (left, top, right, bottom) = (values[1], values[2], values[3], values[4]);
-            // The rectangle is the upright sheet in either orientation, while
-            // the printable size is the page's own: a landscape US Letter
-            // stores 734 x 576 on the sheet -18, -18 to 594, 774 [O: Comm
-            // chunks FileMaker Pro 26 for macOS saved, #817]. Turned upright,
-            // it is checked against the sheet like a portrait one.
+            // The rectangle is the upright sheet in either orientation and at
+            // any scale, while the printable size is the page's own, in
+            // layout points: a landscape US Letter stores 734 x 576 on the
+            // sheet -18, -18 to 594, 774, and 1223.33 x 960 at 60% [O: Comm
+            // chunks FileMaker Pro 26 for macOS saved, #817]. Turned upright
+            // and multiplied back by the scale, it is checked against the
+            // sheet like a portrait one at 100%.
             let (printable_w, printable_h) = match orientation {
-                Orientation::Portrait => (values[5], values[6]),
-                Orientation::Landscape => (values[6], values[5]),
+                Orientation::Portrait => (values[5] * scale, values[6] * scale),
+                Orientation::Landscape => (values[6] * scale, values[5] * scale),
             };
             let (width, height) = (right - left, bottom - top);
             // The printable origin must lie inside the sheet. Printer insets
@@ -95,6 +98,7 @@ impl Settings {
                 width,
                 height,
                 orientation,
+                scale,
             };
             candidate.validate()?;
             paper = Some(candidate);
@@ -159,7 +163,28 @@ pub(crate) fn dialog(
         ui.selectable_value(&mut paper.orientation, Orientation::Portrait, "Portrait");
         ui.selectable_value(&mut paper.orientation, Orientation::Landscape, "Landscape");
     });
-    ui.label("Scale: 100%. Layout margins are preserved.");
+    ui.horizontal(|ui| {
+        // Edited as a percentage; only an edit writes it back, so a stored
+        // f32 scale (0.6 reads 0.6000000238) is kept as it is.
+        let label = ui.label("Scale");
+        let mut percent = paper.scale * 100.0;
+        let edit = ui
+            .add(
+                egui::DragValue::new(&mut percent)
+                    .speed(1.0)
+                    .range(
+                        *om_layout::paper::SCALES.start() * 100.0
+                            ..=*om_layout::paper::SCALES.end() * 100.0,
+                    )
+                    .max_decimals(2)
+                    .suffix(" %"),
+            )
+            .labelled_by(label.id);
+        if edit.changed() {
+            paper.scale = percent / 100.0;
+        }
+    });
+    ui.label("Layout margins are preserved.");
     let valid = paper.validate();
     if let Err(message) = &valid {
         ui.colored_label(crate::theme::RED_INK, message);
@@ -212,6 +237,20 @@ pub(crate) mod tests {
         bytes
     }
 
+    /// `format` (one `Comm` chunk first) at `scale`, the way FileMaker
+    /// stores it: the scale, and the printable size divided by it (here in
+    /// double precision; #817 gives the stored sizes to two decimals).
+    pub(crate) fn scaled(format: &[u8], scale: f32) -> Vec<u8> {
+        let mut bytes = format.to_vec();
+        bytes[9..13].copy_from_slice(&scale.to_be_bytes());
+        for at in [29, 33] {
+            let size = f32::from_be_bytes(bytes[at..at + 4].try_into().unwrap());
+            let size = (f64::from(size) / f64::from(scale)) as f32;
+            bytes[at..at + 4].copy_from_slice(&size.to_be_bytes());
+        }
+        bytes
+    }
+
     #[test]
     fn page_setup_common_format_is_bounded_and_preserves_native_records() {
         let settings = Settings::restored(A4).unwrap();
@@ -239,11 +278,33 @@ pub(crate) mod tests {
             (612.0, 792.0, Orientation::Landscape)
         );
         assert_eq!(landscape(STORED_LETTER), STORED_LETTER_LANDSCAPE);
+        // The same at 60% and 40%: FileMaker Pro stores the printable size
+        // divided by the scale, 1223.33 x 960 and 1835 x 1440 (#817).
+        for (scale, printable) in [(0.6, (1223.33, 960.0)), (0.4, (1835.0, 1440.0))] {
+            let bytes = scaled(STORED_LETTER_LANDSCAPE, scale);
+            let size = |at: usize| f32::from_be_bytes(bytes[at..at + 4].try_into().unwrap());
+            assert!((size(29) - printable.0).abs() < 0.01);
+            assert!((size(33) - printable.1).abs() < 0.01);
+            let stored = Settings::restored(&bytes).unwrap();
+            assert_eq!(
+                stored.paper,
+                PaperSettings {
+                    width: 612.0,
+                    height: 792.0,
+                    orientation: Orientation::Landscape,
+                    scale: f64::from(scale),
+                }
+            );
+        }
         for bad in [
             A4[..A4.len() - 1].to_vec(),
+            // Scales out of range, and a printable size that is not divided
+            // by the scale, so is larger than the sheet multiplied back.
+            scaled(A4, 0.0),
+            scaled(A4, 20.0),
             {
                 let mut b = A4.to_vec();
-                b[9..13].copy_from_slice(&0.5f32.to_be_bytes());
+                b[9..13].copy_from_slice(&2.0f32.to_be_bytes());
                 b
             },
             {
