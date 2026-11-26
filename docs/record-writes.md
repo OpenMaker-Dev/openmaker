@@ -153,7 +153,9 @@ OpenMaker does the same with the window's record session
   instead.
 - **The commit** writes the record, and what was changed through it,
   together (op14, op70) and reads them back
-  (`DataProvider::commit_record_session`). The related files' records it
+  (`DataProvider::commit_record_session`). Committing a held new record
+  without further edits also reloads the window's page, so the next edit
+  uses the stored record version. The related files' records it
   wrote, a row of a related file's table typed into the record's portal
   among them, are committed in their files before this file's (#1119).
   Each file takes part in its own way. A related file on this file's

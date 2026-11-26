@@ -706,8 +706,7 @@ impl Window {
         Ok(())
     }
 
-    /// Whether the current record has unsaved changes (or is new), its
-    /// related records included.
+    /// Whether the current record or its related records have unsaved edits.
     pub fn is_modified(&self) -> bool {
         let open = &self.state.uncommitted;
         !self.state.drafts.is_empty() || !open.cells.is_empty() || !open.related.is_empty()
@@ -811,6 +810,11 @@ impl Window {
                 self.commit_session(provider, skip_validation)?;
             }
             let new = std::mem::take(&mut self.state.uncommitted.new);
+            if new && session && self.state.record.is_some() {
+                // A page showing the held row has no stored version.
+                // Reload it so the next edit starts with the saved version.
+                self.changed_data();
+            }
             return Ok(self
                 .state
                 .record
