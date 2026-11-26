@@ -1358,6 +1358,9 @@ fn shift_selection_moves_and_deletes_saved_objects_and_field_drafts_together() {
     assert!(app.query_by_label("Field to Place").is_none());
     click_at(&mut app, egui::vec2(160.0, 91.0), true);
     app.get_by_label("2 objects selected");
+    common::open_menu(&mut app, "Edit");
+    common::click(&mut app, "Select All");
+    app.get_by_label("3 objects selected");
     click_at(&mut app, egui::vec2(330.0, 91.0), false);
     assert!(app.query_by_label("2 objects selected").is_none());
     click_at(&mut app, egui::vec2(440.0, 160.0), false);
@@ -1411,6 +1414,12 @@ fn shift_selection_moves_and_deletes_saved_objects_and_field_drafts_together() {
         origin + egui::vec2(160.0, 91.0),
         origin + egui::vec2(190.0, 101.0),
     );
+    app.key_press(egui::Key::ArrowRight);
+    app.run_steps(3);
+    assert_eq!(
+        canvas_frame(&app, "Field: Count (object 1)"),
+        [141.0, 30.0, 261.0, 52.0]
+    );
     save_layout(&mut app);
     common::wait_until(&mut app, "the mixed selection saved", |app| {
         assert!(app.state().error().is_none(), "{:?}", app.state().error());
@@ -1432,8 +1441,8 @@ fn shift_selection_moves_and_deletes_saved_objects_and_field_drafts_together() {
         .iter()
         .find(|o| o.field_name.as_deref() == Some("Name"))
         .unwrap();
-    assert_eq!((count.rect.left, count.rect.top), (140.0, 30.0));
-    assert_eq!((name.rect.left, name.rect.top), (140.0, 90.0));
+    assert_eq!((count.rect.left, count.rect.top), (141.0, 30.0));
+    assert_eq!((name.rect.left, name.rect.top), (141.0, 90.0));
     reader.close();
 }
 
