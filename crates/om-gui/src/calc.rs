@@ -3648,17 +3648,18 @@ impl<'a> Evaluator<'a> {
         Some(value)
     }
 
-    /// Layout text with its merge variables and symbols, `None` while their
-    /// data is being fetched.
+    /// Layout text with its merge variables and symbols, optionally with
+    /// byte ranges for remapping static styles. `None` while fetching data.
     pub fn merge_text_in_portal(
         &self,
         text: &str,
         record: Option<u64>,
         portal: Option<PortalRow>,
         format: Option<&om_layout::DataFormat>,
-    ) -> Option<String> {
+        track_substitutions: bool,
+    ) -> Option<(String, Vec<layout::TextSubstitution>)> {
         if !text.contains("<<$") && !text.contains("{{") {
-            return Some(text.to_owned());
+            return Some((text.to_owned(), Vec::new()));
         }
         let context = match record {
             Some(record) => self.portal_context(record, portal),
@@ -3668,8 +3669,12 @@ impl<'a> Evaluator<'a> {
             },
         };
         self.with_host(|host| {
-            layout::merge_text_with_symbols(host, text, &context, |kind, shown| {
-                match (kind, format) {
+            let mut substitutions = Vec::new();
+            let text = layout::merge_text_with_substitutions(
+                host,
+                text,
+                &context,
+                |kind, shown| match (kind, format) {
                     (ValueType::Date | ValueType::Time, Some(format)) => {
                         crate::document::data_format::display(
                             &shown,
@@ -3680,8 +3685,14 @@ impl<'a> Evaluator<'a> {
                         .into_owned()
                     }
                     _ => shown,
-                }
-            })
+                },
+                |substitution| {
+                    if track_substitutions {
+                        substitutions.push(substitution);
+                    }
+                },
+            );
+            (text, substitutions)
         })
     }
 }
@@ -3915,9 +3926,18 @@ mod tests {
             number: Default::default(),
             raw: Vec::new(),
         };
-        let text =
-            eval.merge_text_in_portal("Run {{1002}} at {{CurrentTime}}", None, None, Some(&format));
-        assert_eq!(text.as_deref(), Some("Run April 11, 2017 at 21:03"));
+        let (text, substitutions) = eval
+            .merge_text_in_portal(
+                "Run {{1002}} at {{CurrentTime}}",
+                None,
+                None,
+                Some(&format),
+                true,
+            )
+            .unwrap();
+        assert_eq!(text, "Run April 11, 2017 at 21:03");
+        assert_eq!(substitutions[0].source, 4..12);
+        assert_eq!(&text[substitutions[0].display.clone()], "April 11, 2017");
     }
 
     #[test]
@@ -5239,8 +5259,9 @@ mod tests {
             assert_eq!(state.label.as_deref(), Some(expected), "{portal:?}");
             assert_eq!(
                 evaluator
-                    .merge_text_in_portal("Row {{RecordNumber}}", Some(1), portal, None)
-                    .unwrap(),
+                    .merge_text_in_portal("Row {{RecordNumber}}", Some(1), portal, None, false)
+                    .unwrap()
+                    .0,
                 format!("Row {expected}")
             );
         }

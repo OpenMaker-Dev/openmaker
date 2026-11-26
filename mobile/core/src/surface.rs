@@ -265,6 +265,9 @@ impl Surface {
             // The window's own passes, unseen: their texture changes wait
             // for the first frame.
             surface.pass(Vec::new());
+            if let Some(untrusted) = surface.app.untrusted() {
+                return Err(GoError::untrusted(untrusted));
+            }
             if let Some((code, message)) = surface.app.failure() {
                 return Err(GoError::from_failure(code, message));
             }

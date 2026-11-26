@@ -9,7 +9,7 @@ use egui::{
 };
 use om_data::calc::Value;
 use om_data::choice::{self, ChoiceError, ChoiceTarget, Choices, MenuCommand};
-use om_data::host::layout::ObjectState;
+use om_data::host::layout::{ObjectState, TextSubstitution};
 use om_data::host::NO_RECORD;
 use om_data::{EditRefusal, Field, FieldKind, RecordCapabilities, RenderLayout};
 use om_layout::{Color, Layout, LayoutObject, ObjectKind, ResolvedStyle, TextRun};
@@ -37,6 +37,7 @@ pub(crate) mod portals;
 mod rich_text;
 mod scaled_text;
 pub(crate) mod scroll;
+mod slide;
 pub(crate) mod value_dialogs;
 pub(crate) mod zoom;
 
@@ -4866,12 +4867,29 @@ fn paint_object_repetition(
         } else {
             1
         };
-    let style = state
+    let mut style = state
         .layout_cache
         .formatted_style(layout, object, conditions, 1, style_state);
+    if !finding && object.kind() == ObjectKind::Text {
+        // Browse draws no Text edge without a line style, even when the
+        // definition retained its width and color (layout-model.md 6.2).
+        for (width, line_style) in style.border_width.iter_mut().zip(style.border_style) {
+            if line_style.is_none() {
+                *width = None;
+            }
+        }
+    }
     if object.kind() == ObjectKind::Line {
         line::paint(ui.painter(), rect, object.flags, &style);
     } else {
+        if !finding
+            && portal.is_none()
+            && object.parent.is_none()
+            && object.rotation == 0
+            && object.kind() == ObjectKind::Rectangle
+        {
+            paint_outer_box_shadow(ui, rect, &style);
+        }
         paint_box(ui, rect, &style, object.kind());
     }
     if object.kind() == ObjectKind::Popover {
@@ -5298,6 +5316,15 @@ fn paint_object_repetition(
             // Paint only the active panel. Hidden panels contain overlapping
             // field objects and must never bleed into the selected panel.
             let active = *selected;
+            let clip = ui.clip_rect();
+            let contents = if !finding && object.kind() == ObjectKind::SlideControl {
+                slide::paint_contents(ui, layout, object, rect)
+            } else {
+                None
+            };
+            if let Some(contents) = contents {
+                ui.set_clip_rect(clip.intersect(contents));
+            }
             for &child in &object.children {
                 if state.layout_cache.object(layout, child).is_some_and(|o| {
                     matches!(o.kind(), ObjectKind::TabPanel | ObjectKind::SlidePanel)
@@ -5320,18 +5347,44 @@ fn paint_object_repetition(
                     visited,
                 );
             }
+            if contents.is_some() {
+                ui.set_clip_rect(clip);
+            }
             if object.kind() == ObjectKind::TabControl {
                 let selected = state
                     .panels
                     .get_mut(&(layout.id, object.id))
                     .expect("selected panel");
-                tab_headers(
+                let focus_record = session
+                    .current_record()
+                    .filter(|_| !finding && portal.is_none() && record_index == session.current)
+                    .map(|(_, record)| record.id);
+                let keyboard = focus_record.is_some() && object.tab_order > 0;
+                let widget = tab_headers(
                     ui,
                     &state.layout_cache,
                     layout,
                     object,
                     &panels,
+                    (rect, keyboard),
+                    selected,
+                );
+                if let Some((record, widget)) = focus_record.zip(widget) {
+                    let target = (layout.id, record, object.id);
+                    state.note_tab_stop(object.tab_order, target, widget, false);
+                }
+            } else if !finding && object.shows_slide_dots() {
+                let selected = state
+                    .panels
+                    .get_mut(&(layout.id, object.id))
+                    .expect("selected panel");
+                slide::navigation(
+                    ui,
+                    layout,
+                    object,
+                    &panels,
                     rect,
+                    ui.scope_id().with((record_index, portal)),
                     selected,
                 );
             }
@@ -5378,21 +5431,30 @@ fn paint_object_repetition(
         ObjectKind::Text | ObjectKind::Button | ObjectKind::PopoverButton => {
             // "Image only" shows the icon alone and centered (layout-model.md
             // 5.6.1); its stored label stays the button's accessible name.
-            let text = match object.shows_label() {
-                true => object_text(
+            let mut rich = object.rich_text.as_ref().map(Cow::Borrowed);
+            let track_substitutions = rich.as_ref().is_some_and(|rich| {
+                object.merge_source.as_deref().or(object.text.as_deref())
+                    == Some(rich.text.as_str())
+            });
+            let (text, substitutions) = match object.shows_label() {
+                true => object_text_with_substitutions(
                     session,
                     object,
                     (record_index, !finding),
                     calc,
                     &calc_state,
                     portal,
+                    track_substitutions,
                 ),
-                false => String::new(),
+                false => (String::new(), Vec::new()),
             };
             let text_style = state
                 .layout_cache
                 .text_style(layout, object, conditions, style_state);
-            let mut rich = object.rich_text.as_ref().map(std::borrow::Cow::Borrowed);
+            if !substitutions.is_empty() {
+                rich = rich
+                    .map(|data| Cow::Owned(rich_text::substitute(&data, &text, &substitutions)));
+            }
             if !conditions.is_empty() {
                 if let Some(rich) = &mut rich {
                     rich_text::apply_conditional(
@@ -8704,14 +8766,15 @@ fn tab_headers(
     layout: &Layout,
     control: &LayoutObject,
     panels: &[&LayoutObject],
-    rect: Rect,
+    (rect, keyboard): (Rect, bool),
     selected: &mut u64,
-) {
+) -> Option<egui::Id> {
     let height = control
         .tab
         .as_ref()
         .map_or(30.0, |tab| tab.tab_height.max(1) as f32);
     let mut left = rect.left();
+    let mut focus_stop = None;
     for panel in panels {
         let info = panel.tab_panel.as_ref();
         let width = info.map_or(100.0, |tab| tab.tab_width.max(1) as f32);
@@ -8735,6 +8798,12 @@ fn tab_headers(
             *selected = panel.id;
         }
         let active = *selected == panel.id;
+        if active && keyboard && ui.is_rect_visible(header) {
+            focus_stop = Some(response.id);
+            if response.has_focus() {
+                keep_tab(ui, response.id);
+            }
+        }
         let state = if active {
             7
         } else if response.hovered() {
@@ -8759,8 +8828,17 @@ fn tab_headers(
         text.text_align = Some(2);
         text.vertical_align = Some(1);
         paint_text(ui, header, label, &text);
+        if focus_stop == Some(response.id) && response.has_focus() {
+            ui.painter().rect_stroke(
+                header,
+                CornerRadius::ZERO,
+                Stroke::new(1.0, theme::FOCUS),
+                egui::StrokeKind::Inside,
+            );
+        }
         left = header.right();
     }
+    focus_stop
 }
 
 fn bound_value<'a>(
@@ -9099,56 +9177,116 @@ fn object_text(
     state: &ObjectState,
     portal: Option<PortalRow>,
 ) -> String {
+    object_text_with_substitutions(
+        session,
+        object,
+        (record_index, values),
+        calc,
+        state,
+        portal,
+        false,
+    )
+    .0
+}
+
+fn object_text_with_substitutions(
+    session: &Session,
+    object: &LayoutObject,
+    (record_index, values): (u64, bool),
+    calc: Option<&Evaluator<'_>>,
+    state: &ObjectState,
+    portal: Option<PortalRow>,
+    track_substitutions: bool,
+) -> (String, Vec<TextSubstitution>) {
     if let Some(label) = &state.label {
-        return label.clone();
+        return (label.clone(), Vec::new());
     }
     let record = session
         .record_at(record_index)
         .and_then(|(_, r)| u64::try_from(r.id).ok());
-    let merged = |text: &str| -> String {
+    let merged = |text: &str, track_substitutions| {
         calc.and_then(|calc| {
-            calc.merge_text_in_portal(text, record, portal, object.data_format.as_ref())
+            calc.merge_text_in_portal(
+                text,
+                record,
+                portal,
+                object.data_format.as_ref(),
+                track_substitutions,
+            )
         })
-        .unwrap_or_else(|| text.to_owned())
+        .unwrap_or_else(|| (text.to_owned(), Vec::new()))
     };
     if object.text_runs.is_empty() {
-        return merged(object.text.as_deref().unwrap_or_default());
+        return merged(
+            object.text.as_deref().unwrap_or_default(),
+            track_substitutions,
+        );
     }
-    object
-        .text_runs
-        .iter()
-        .map(|run| match run {
-            TextRun::Literal(text) => merged(text),
-            TextRun::MergeField(_) if !values => String::new(),
+    let field_value = |name: &str| {
+        if !values {
+            String::new()
+        } else if calc.is_some_and(Evaluator::layout_masked) {
             // A layout whose records the set gives no access shows
             // `<No Access>` for a merge field (#707's reading).
-            TextRun::MergeField(_) if calc.is_some_and(Evaluator::layout_masked) => {
-                NO_ACCESS.to_owned()
+            NO_ACCESS.to_owned()
+        } else {
+            if let (Some(calc), Some(record)) = (calc, record) {
+                if let Some(value) = calc.named_value_in_portal(name, record, portal) {
+                    // A merge field shows its value through the object's
+                    // own data format, as a field object does.
+                    return data_format::display(
+                        &calc.display(&value),
+                        value.value_type(),
+                        object.data_format.as_ref(),
+                        &calc.context(),
+                    )
+                    .into_owned();
+                }
+            }
+            if portal.is_some() {
+                String::new()
+            } else {
+                value_named(session, name, record_index).to_owned()
+            }
+        }
+    };
+    let mut output = String::new();
+    let mut substitutions = Vec::new();
+    let mut fields = object.stored_merge_field_ranges();
+    let mut source = track_substitutions.then_some(0);
+    for run in &object.text_runs {
+        match run {
+            TextRun::Literal(text) => {
+                let (shown, ranges) = merged(text, source.is_some());
+                let start = output.len();
+                output.push_str(&shown);
+                if let Some(source) = &mut source {
+                    substitutions.extend(ranges.into_iter().map(|range| TextSubstitution {
+                        source: (*source + range.source.start)..(*source + range.source.end),
+                        display: (start + range.display.start)..(start + range.display.end),
+                    }));
+                    *source += text.len();
+                }
             }
             TextRun::MergeField(name) => {
-                if let (Some(calc), Some(record)) = (calc, record) {
-                    if let Some(value) = calc.named_value_in_portal(name, record, portal) {
-                        // A merge field shows its value through the
-                        // object's own data format, as a field object
-                        // does (data-format.md) and as Preview and PDF
-                        // already show it (`report::object_text`).
-                        return data_format::display(
-                            &calc.display(&value),
-                            value.value_type(),
-                            object.data_format.as_ref(),
-                            &calc.context(),
-                        )
-                        .into_owned();
+                let start = output.len();
+                output.push_str(&field_value(name));
+                if let Some(expected_start) = source {
+                    if let Some(range) = fields.next().filter(|r| r.start == expected_start) {
+                        source = Some(range.end);
+                        substitutions.push(TextSubstitution {
+                            source: range,
+                            display: start..output.len(),
+                        });
+                    } else {
+                        source = None;
+                        substitutions.clear();
                     }
                 }
-                if portal.is_some() {
-                    String::new()
-                } else {
-                    value_named(session, name, record_index).to_owned()
-                }
             }
-        })
-        .collect()
+        }
+    }
+    (output, substitutions)
 }
 
 /// An object's style for `component` in `state`, with the conditional
@@ -9341,6 +9479,49 @@ fn resized_bounds(layout: &Layout, id: u64, mut growth: egui::Vec2) -> Option<Re
         origin = rect.min;
     }
     Some(rect)
+}
+
+/// A solid rectangle hides the part of its outer shadow behind its own fill.
+/// Other shapes need separate clipping and are outside this path.
+fn paint_outer_box_shadow(ui: &Ui, rect: Rect, style: &ResolvedStyle) {
+    let Some([shadow]) = style.box_shadows.as_deref() else {
+        return;
+    };
+    if shadow.kind != 1
+        || shadow.inset
+        || style.border_radius.unwrap_or(0.0) != 0.0
+        || !style.background.is_some_and(|fill| fill.alpha == 1.0)
+    {
+        return;
+    }
+    let Some(tint) = shadow.color.filter(|tint| tint.alpha == 1.0) else {
+        return;
+    };
+    // Keep non-finite and excessive file coordinates out of tessellation.
+    let points = |length: Option<&om_layout::Length>| {
+        length
+            .and_then(om_layout::Length::points)
+            .filter(|value| value.abs() <= 4096.0)
+            .map(|value| value as f32)
+    };
+    let (Some(x), Some(y), Some(blur), Some(spread)) = (
+        points(shadow.offset[0].as_ref()),
+        points(shadow.offset[1].as_ref()),
+        points(shadow.blur.as_ref()),
+        points(shadow.spread.as_ref()),
+    ) else {
+        return;
+    };
+    if blur < 0.0 || spread < 0.0 || !rect.is_positive() {
+        return;
+    }
+    let bounds = rect.translate(egui::vec2(x, y)).expand(spread);
+    // Epaint centers its feathering on the edge. Use a full width of
+    // twice the blur distance to reach about one blur distance outward.
+    ui.painter().add(
+        egui::epaint::RectShape::filled(bounds, CornerRadius::ZERO, color(tint))
+            .with_blur_width(2.0 * blur),
+    );
 }
 
 fn paint_box(ui: &Ui, rect: Rect, style: &ResolvedStyle, kind: ObjectKind) {

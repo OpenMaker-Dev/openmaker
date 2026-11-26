@@ -42,9 +42,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
@@ -57,7 +55,7 @@ use wry::dpi::{LogicalPosition, LogicalSize};
 use wry::{PageLoadEvent, WebView, WebViewBuilder, WebViewExtMacOS};
 
 use super::{allowed, Backend, Event, Geometry, NativeParent, Navigation, Unavailable, ViewSpec};
-use super::{js_string, parse_message, MAX_MESSAGE, MESSAGE_URL};
+use super::{js_string, MessageBudget, MESSAGE_URL};
 
 /// The `FileMaker` object of a page whose web viewer allows JavaScript to
 /// perform FileMaker scripts, as the WebKitGTK bridge's (`super::BRIDGE`),
@@ -114,14 +112,6 @@ const APPKIT_BRIDGE: &str = r#"(function () {
     value: fileMaker, writable: false, configurable: false, enumerable: true
   });
 })();"#;
-
-/// The most bridge message bytes that may wait for the app at once, each
-/// message counted as at least [`MESSAGE_COST`]; more are dropped, as one
-/// longer than [`MAX_MESSAGE`] is.
-const MESSAGE_BUDGET: usize = 2 * MAX_MESSAGE;
-const MESSAGE_COST: usize = 1024;
-/// The most bridge messages that may wait for the app at once.
-const MESSAGE_ENTRIES: usize = 256;
 
 /// How long after a navigation the page must have started loading: when it
 /// is not loading by then, the navigation has ended (it failed before
@@ -184,10 +174,8 @@ pub(crate) struct AppKitBackend {
     /// it, and the message.
     bridge: Sender<(u64, u64, String)>,
     bridged: Receiver<(u64, u64, String)>,
-    /// Bridge message bytes (each at least [`MESSAGE_COST`]) and messages
-    /// sent and not yet polled.
-    waiting: Arc<AtomicUsize>,
-    entries: Arc<AtomicUsize>,
+    /// Bridge messages sent and not yet polled.
+    budget: MessageBudget,
 }
 
 /// Where events go: the app's channel, with a repaint so it reads them.
@@ -244,8 +232,7 @@ impl AppKitBackend {
             received,
             bridge,
             bridged,
-            waiting: Arc::default(),
-            entries: Arc::default(),
+            budget: MessageBudget::default(),
         })
     }
 
@@ -383,7 +370,7 @@ impl AppKitBackend {
         let loads = self.events.clone();
         let messages = self.bridge.clone();
         let wake = self.events.ctx.clone();
-        let (waiting, entries) = (Arc::clone(&self.waiting), Arc::clone(&self.entries));
+        let budget = self.budget.clone();
         let commits = Rc::new(Cell::new(0));
         let (committed, document) = (Rc::clone(&commits), Rc::clone(&commits));
         // The current document's message prefix, which only its bridge
@@ -405,8 +392,7 @@ impl AppKitBackend {
                     return allowed(&url);
                 }
                 // Never a page of its own; a message only with the current
-                // document's prefix, within the bounds (reserved before the
-                // message is read) and well formed.
+                // document's prefix, if the budget admits it.
                 let Some(route) = current.as_ref() else {
                     return false;
                 };
@@ -415,25 +401,15 @@ impl AppKitBackend {
                 else {
                     return false;
                 };
-                if body.len() > MAX_MESSAGE {
-                    return false;
-                }
-                let cost = body.len().max(MESSAGE_COST);
-                let bytes = waiting.fetch_add(cost, Ordering::SeqCst) + cost;
-                let count = entries.fetch_add(1, Ordering::SeqCst) + 1;
-                if bytes <= MESSAGE_BUDGET
-                    && count <= MESSAGE_ENTRIES
-                    && parse_message(body).is_some()
-                {
+                if budget.admit(body) {
                     if messages
                         .send((view, document.get(), body.to_owned()))
                         .is_ok()
                     {
                         wake.request_repaint();
+                    } else {
+                        budget.release(body);
                     }
-                } else {
-                    waiting.fetch_sub(cost, Ordering::SeqCst);
-                    entries.fetch_sub(1, Ordering::SeqCst);
                 }
                 false
             })
@@ -561,9 +537,7 @@ impl Backend for AppKitBackend {
     fn poll(&mut self) -> Vec<Event> {
         let mut events: Vec<Event> = self.received.try_iter().collect();
         for (view, document, body) in self.bridged.try_iter() {
-            self.waiting
-                .fetch_sub(body.len().max(MESSAGE_COST), Ordering::SeqCst);
-            self.entries.fetch_sub(1, Ordering::SeqCst);
+            self.budget.release(&body);
             // A document the main frame has left posts nothing more.
             let current = self
                 .views
@@ -665,6 +639,18 @@ fn give_token(webview: &WebView, route: &std::cell::RefCell<Option<String>>) {
 /// `url` when Foundation reads it as a URL, a blank page otherwise: wry
 /// unwraps Foundation's reading, and would panic.
 fn readable(url: String) -> String {
+    // FileMaker loads literal inline markup with URL encoding off (#1129).
+    // Keep its hashes in the HTML instead of letting Foundation parse a
+    // fragment. Already encoded addresses can still contain real fragments.
+    let url = if url.split_once(',').is_some_and(|(header, payload)| {
+        header.eq_ignore_ascii_case("data:text/html")
+            && payload.trim_start().starts_with('<')
+            && payload.contains('#')
+    }) {
+        url.replace('#', "%23")
+    } else {
+        url
+    };
     if NSURL::URLWithString(&NSString::from_str(&url)).is_some() {
         url
     } else {
@@ -765,5 +751,20 @@ mod tests {
         assert_eq!(super::readable("http://[".into()), "about:blank");
         let page = "data:text/html,%3Cp%3Ehi%3C/p%3E";
         assert_eq!(super::readable(page.into()), page);
+    }
+
+    #[test]
+    fn literal_inline_html_keeps_hashes_in_the_page() {
+        assert_eq!(
+            super::readable("data:text/html,<style>b{color:#112233}</style><b>#1</b>".into()),
+            "data:text/html,<style>b{color:%23112233}</style><b>%231</b>"
+        );
+        for address in [
+            "data:text/html,%3Cb%3E%231%3C/b%3E#section",
+            "data:text/html;base64,PGI+IyE8L2I+#section",
+            "https://example.com/#section",
+        ] {
+            assert_eq!(super::readable(address.into()), address);
+        }
     }
 }

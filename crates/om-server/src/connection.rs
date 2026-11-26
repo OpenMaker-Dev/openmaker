@@ -68,7 +68,7 @@ use crate::transfer::{
     page_limit, DownloadMemory, Owner, Refused, Transfers, Upload, MAX_PRE_LOGIN_UPLOAD, MAX_UPLOAD,
 };
 use crate::uploads::{self, Charge, UploadMemory};
-use crate::writes::{self, Mailboxes};
+use crate::writes::{self, Mailboxes, Taken};
 use om_data::host::security::{RecordAction, SetAccess};
 use om_query::Context as QueryContext;
 
@@ -1123,7 +1123,7 @@ impl Connection {
     /// second panic aborts the server: so nothing here may panic, and
     /// every lock it takes is used even when poisoned.
     fn end_session(&mut self) {
-        if let Some(session) = self.session.take() {
+        if let Some(mut session) = self.session.take() {
             if let Some(client) = &session.access {
                 let events = &self.shared.events;
                 for file in session.open.values() {
@@ -1139,11 +1139,31 @@ impl Connection {
             }
             let connection = session.connection_id;
             self.shared.scripts.forget(connection);
-            for file in self.shared.hosting.files() {
+            // Only the files the session has open can hold its locks and
+            // registrations: it takes them through its open files alone
+            // (op60, the writes, op63), and a file it closes releases them
+            // first (`clear_file_session`); a server script locks under its
+            // own connection id. So the release visits those files, which
+            // the session holds already, and lets go of each once done:
+            // waiting on one file's lock table (a commit of another session
+            // holds it through its save) holds no file the session never
+            // opened, nor one it is done with (#1007). A file let go of is
+            // also taken out of what the administrator's list counts for
+            // this client, before its reference is dropped: it may finish
+            // closing while the session still waits in another, and must
+            // not be listed closed with this client in it. That takes the
+            // client registry's lock alone, no other being held then, and
+            // cannot panic (`Clients::closed`).
+            for file in std::mem::take(&mut session.open).into_values() {
                 let release = Operation::ReleaseSessionLocks(ReleaseSessionLocks { connection });
-                let outcome = self.shared.engine.submit(&file, release);
-                outcome.notices.deliver(&file, &self.shared.mailboxes);
-                file.registrations().retain(|r| r.connection != connection);
+                let outcome = self.shared.engine.submit(&file.hosted, release);
+                outcome
+                    .notices
+                    .deliver(&file.hosted, &self.shared.mailboxes);
+                file.hosted
+                    .registrations()
+                    .retain(|r| r.connection != connection);
+                self.shared.clients.closed(connection, file.hosted.id);
             }
             self.shared.mailboxes.close(connection);
             self.shared.clients.ended(connection);
@@ -1512,12 +1532,26 @@ impl Connection {
             code if code == Opcode::KillAllLocks as u8 => write::parse_kill_all_locks_request(txn)
                 .map(|request| {
                     if let Some(file) = session.open.get(&header.file_id) {
+                        let txn = (!request.all).then_some(request.txn);
                         let release = ReleaseLocks {
                             connection: session.connection_id,
                             request,
                         };
                         let operation = Operation::ReleaseLocks(release);
                         shared.engine.submit(&file.hosted, operation);
+                        // op65 gives the transaction up: FileMaker Pro
+                        // sends it when its user leaves the record and
+                        // starts the next change in a new transaction
+                        // (write-path.md 1.1, 4.4), so no commit of this
+                        // one is to come that its lost uploads were part
+                        // of; it says so whether or not the transaction
+                        // held a lock. An op62 speaks of one lock only and
+                        // forgets nothing: a client may commit a record it
+                        // never locked, and every mistake in forgetting
+                        // gives back the "done" a lost upload must not get.
+                        if let Some(temp) = session.temp.get_mut(&header.file_id) {
+                            temp.forget_lost_of(txn);
+                        }
                     }
                     write::echo_header(&header)
                 }),
@@ -4029,6 +4063,8 @@ fn commit(
         .entry(header.file_id)
         .or_insert_with(|| writes::TempArea::new(Charge::none(&shared.upload_memory, client)));
     let (staged, lent) = temp.lend(&list);
+    let lost = temp.lost_named(&list, user.txn);
+    let deleted = temp.lost_deleted(&list, user.txn);
     // The account's set decides each record's action under the write lock
     // (`writes::refused_action`); a refused commit writes nothing, and fails
     // as one not saved does (FileMaker Pro checks first and reports 200).
@@ -4043,20 +4079,38 @@ fn commit(
         access,
         list,
         staged,
+        lost,
         withheld,
     };
     before_engine_write(shared, &hosted);
     let outcome = shared
         .engine
         .submit(&hosted, Operation::CommitRecords(commit));
+    // The commit's outcome is known here, its save done or taken back (a
+    // panic in the engine is answered too, with another reply): each
+    // record it took that it did not store is recorded as lost, so that
+    // the same commit sent again without it is refused (#839 of
+    // github.com/OpenMaker-Dev/openmaker). No record lent is left neither
+    // staged, stored nor lost.
+    let lost = Taken::Lost { txn: user.txn };
     let committed = match outcome.reply {
         Reply::CommitRecords(committed) => committed,
         other => {
-            temp.settle(lent, Default::default());
+            temp.settle(lent, Default::default(), lost);
             return Err(mismatched(&other));
         }
     };
-    temp.settle(lent, committed.unused);
+    let taken = if committed.result.is_ok() {
+        // A record this commit of the transaction deleted is no longer one
+        // whose lost upload a commit of it could name.
+        for path in &deleted {
+            temp.forget_lost(path, Some(user.txn));
+        }
+        Taken::Stored
+    } else {
+        lost
+    };
+    temp.settle(lent, committed.unused, taken);
     let reply = match committed.result {
         Ok(()) => {
             outcome.notices.deliver(&hosted, &shared.mailboxes);

@@ -62,6 +62,8 @@ fn main() {
                 address: env("GO_PROFILE_HOST").expect("GO_PROFILE_HOST or GO_PROFILE_PATH"),
                 port: env("GO_PROFILE_PORT").map_or(5003, |p| p.parse().unwrap()),
                 certificate: String::new(),
+                permitted: String::new(),
+                permitted_elsewhere: Vec::new(),
             },
             file: env("GO_PROFILE_FILE").expect("GO_PROFILE_FILE"),
         },

@@ -128,12 +128,14 @@ pub(crate) enum Request {
     },
     RenderLayout {
         layout_id: u32,
+        scripted: bool,
     },
     LayoutGeometry {
         layout_id: u32,
     },
     RecordCapabilities {
         layout_id: u32,
+        scripted: bool,
     },
     /// Where the window starts on the layout's table: the record a local
     /// file was closed on (`DataProvider::take_saved_position`). Asked
@@ -1368,17 +1370,31 @@ fn answer(
             token,
             result: contain(provider, |p| p.value_list_catalog()),
         },
-        Request::RenderLayout { layout_id } => Reply::RenderLayout {
+        Request::RenderLayout {
             layout_id,
-            result: Box::new(contain(provider, |p| p.render_layout(layout_id))),
+            scripted,
+        } => Reply::RenderLayout {
+            layout_id,
+            result: Box::new(contain(provider, |p| {
+                if scripted {
+                    p.render_script_layout(layout_id)
+                } else {
+                    p.render_layout(layout_id)
+                }
+            })),
         },
         Request::LayoutGeometry { layout_id } => Reply::LayoutGeometry {
             layout_id,
             result: contain(provider, |p| p.layout_geometry(layout_id)),
         },
-        Request::RecordCapabilities { layout_id } => Reply::RecordCapabilities {
+        Request::RecordCapabilities {
             layout_id,
-            result: contain(provider, |p| p.record_capabilities(layout_id)),
+            scripted,
+        } => Reply::RecordCapabilities {
+            layout_id,
+            result: contain(provider, |p| {
+                p.record_capabilities_for_layout(layout_id, scripted)
+            }),
         },
         Request::SavedPosition { layout_id } => Reply::SavedPosition {
             layout_id,

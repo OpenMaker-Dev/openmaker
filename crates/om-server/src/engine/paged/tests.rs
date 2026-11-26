@@ -683,10 +683,13 @@ fn the_store_engine_refuses_an_entry_at_the_first_node_past_either_counter() {
     ] {
         counting.reads.set(0);
         assert!(refused(spent), "{spent:?}");
-        assert_eq!(counting.reads.get(), seek, "{spent:?}");
+        // No more: from the place the last read left, none at all (#767).
+        assert!(counting.reads.get() <= seek, "{spent:?}");
     }
+    // Read whole by a view that holds no place yet.
+    let fresh = PagedView::open(&counting, imported.root).unwrap();
     counting.reads.set(0);
-    assert!(view.subtree_within(&path, exact).unwrap().is_some());
+    assert!(fresh.subtree_within(&path, exact).unwrap().is_some());
     assert!(
         counting.reads.get() > seek,
         "the entry spans pages past the seek"
@@ -758,6 +761,71 @@ fn the_file_engine_lends_an_entry_and_both_engines_answer_the_reader_alike() {
             assert_eq!((file, store), (outcome, outcome), "test view, {work:?}");
         }
     }
+}
+
+/// An index entry read at a key a listing has just given is sought from the
+/// listing's place, and the listing's next page from where the last
+/// entry's walk ended (#767): listing an index of 3,000 keys in pages of
+/// eight and reading each key's entry, as a find's listed index reads them,
+/// reads each page of the index at most twice, once as the listing looks
+/// past a page of keys and once as the entries' walks reach it, where
+/// seeking every entry from the root read a way down the tree for each
+/// key; and it gives what the file engine gives.
+#[test]
+fn a_listing_and_the_entries_it_gives_read_about_the_pages_of_one_walk() {
+    use om_hbam::RidList;
+    use om_query::program::Size;
+    let mut root = fixture::tree(&[], true);
+    let index: [&[u8]; 4] = [&[0x80, 0x01], &[1], &[1], &[0]];
+    let keys: Vec<Vec<u8>> = (0..3_000u32)
+        .map(|n| format!("\x01name {n:05}").into_bytes())
+        .collect();
+    for (n, key) in (1u64..).zip(&keys) {
+        let mut at = index.to_vec();
+        at.push(key);
+        let posting: RidList = [n, n + 3_000].into_iter().collect();
+        root.put(&at, posting.to_node(Vec::new()));
+    }
+    let (memory, imported) = import_into_memory(&written(&root), SMALL);
+    let counting = CountingReads {
+        inner: &memory,
+        reads: Cell::new(0),
+    };
+    let height = Tree::open(&memory, imported.root).unwrap().height();
+    let read = |view: &dyn View| -> Vec<OwnedNode> {
+        let mut entries = Vec::new();
+        let mut after: Option<Vec<u8>> = None;
+        loop {
+            let mut page = Vec::new();
+            let from = after.as_deref().map_or(Bound::Unbounded, Bound::Excluded);
+            let more = view
+                .children_page(&index, from, Direction::Forward, 8, &mut page)
+                .unwrap();
+            for child in &page {
+                let mut at = index.to_vec();
+                at.push(&child.segment);
+                let entry = view.subtree_within(&at, Size::UNLIMITED).unwrap();
+                entries.push(entry.unwrap().into_owned());
+            }
+            after = page.last().map(|child| child.segment.to_vec());
+            if !more || after.is_none() {
+                return entries;
+            }
+        }
+    };
+    let listed = read(&PagedView::open(&counting, imported.root).unwrap());
+    let reads = counting.reads.replace(0);
+    assert_eq!(listed.len(), keys.len());
+    assert_eq!(listed, read(&crate::engine::TreeView::new(&root, 1)));
+    let view = PagedView::open(&counting, imported.root).unwrap();
+    counting.reads.set(0);
+    view.subtree(&index, NO_LIMIT).unwrap().unwrap();
+    let walk = counting.reads.get();
+    assert!(walk > 10, "{walk} pages: the index should span many leaves");
+    assert!(
+        reads <= 2 * walk + height,
+        "{reads} pages read; a walk {walk}, height {height}"
+    );
 }
 
 /// Two engines, one answer (docs/server-storage.md 12, "Both engines
@@ -1827,6 +1895,51 @@ fn filemakers_templates_through_the_store_engine() {
     );
 }
 
+/// The reads of the `index-reads` step of [`paged_measurement`] over the
+/// index at `index`, timed: its keys listed, its entries read by key, the
+/// upkeep's check through a find's listing, and one walk of it.
+#[cfg(target_os = "linux")]
+fn index_reads(view: &dyn View, index: &[&[u8]]) -> String {
+    use std::collections::BTreeMap;
+    use std::time::Instant;
+
+    use om_hbam::RidList;
+    let ms = |started: Instant| started.elapsed().as_secs_f64() * 1e3;
+    let started = Instant::now();
+    let keys: Vec<Vec<u8>> = view
+        .children(index, Bound::Unbounded, Direction::Forward)
+        .map(|child| child.unwrap().segment.into_owned())
+        .collect();
+    let listed = ms(started);
+    let started = Instant::now();
+    let mut built = BTreeMap::new();
+    for key in &keys {
+        let mut path = index.to_vec();
+        path.push(key);
+        let entry = view.subtree(&path, NO_LIMIT).unwrap().unwrap();
+        built.insert(key.clone(), RidList::from_owned(&entry).unwrap());
+    }
+    let read = ms(started);
+    let Some(om_query::Children::Listed(listing)) =
+        crate::connection::ViewListing::of(view, index).unwrap()
+    else {
+        panic!("a view lists an index");
+    };
+    let started = Instant::now();
+    let agrees =
+        om_query::upkeep::holds_exactly(listing.as_ref(), &built, |n| RidList::from_owned(n).ok());
+    assert!(agrees.unwrap());
+    let checked = ms(started);
+    let started = Instant::now();
+    let walked = view.walk(index).map(Result::unwrap).count();
+    let walk = ms(started);
+    format!(
+        "{} keys listed {listed:.0} ms, their entries read by key {read:.0} ms, the check \
+         through the listing {checked:.0} ms, a walk of the index {walk:.0} ms ({walked} nodes)",
+        keys.len()
+    )
+}
+
 /// A measurement, not a test: the store engine's import, export and reads
 /// of a generated file against the file engine's, one step per process so
 /// that each peak is its own. The file is one `export_measurement`
@@ -1852,7 +1965,14 @@ fn filemakers_templates_through_the_store_engine() {
 /// page's hash on its first read) or with `OM_PAGED_TRUSTING=1` through
 /// `MemStore::trusting` (which checks none); `file-reads`, the file
 /// engine's load and the same reads and listing through its view; `file-export`, the
-/// file engine's load and its written export of the same file.
+/// file engine's load and its written export of the same file;
+/// `index-reads`, the opened view's reads of Name's value index, twice:
+/// every key listed (heads only, a page at a time), every entry read by
+/// its key (as a find reads the entries it takes), the upkeep's check of
+/// the index through a find's listing (`om_query::upkeep::holds_exactly`:
+/// both), and one walk of the whole index (what a reader that kept its
+/// place would read); `file-index-reads`, the same through the file
+/// engine's view.
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "a measurement for release builds; set OM_PAGED_FILE, OM_PAGED_STORE and OM_PAGED_STEP"]
@@ -2011,6 +2131,35 @@ fn paged_measurement() {
                      {again_scattered:.1} ms; {listed} records listed {listed_ms:.0} ms",
                     warm.len()
                 )
+            }
+        }
+        "index-reads" | "file-index-reads" => {
+            let index = [
+                om_hbam::slot::uint_segment(fixture::TABLE),
+                vec![1],
+                om_hbam::slot::uint_segment(fixture::NAME),
+                vec![0],
+            ];
+            let index: Vec<&[u8]> = refs(&index);
+            let passes = |view: &dyn View| {
+                (0..2)
+                    .map(|_| index_reads(view, &index))
+                    .collect::<Vec<_>>()
+                    .join("; again: ")
+            };
+            if step == "index-reads" {
+                let fs = OsFs::new(&folder);
+                let lock = fs.lock().unwrap();
+                let (pf, _) = PageFile::open(&fs, &lock, config).unwrap();
+                let pin = pf.pin(pf.checkpoint_entry().1.index).unwrap();
+                let view = PagedView::open(&pf, pin.roots()[0].1).unwrap();
+                format!("cache {cache_mib} MiB: {}", passes(&view))
+            } else {
+                let hbam = HbamFile::open(&file).unwrap();
+                let store = Store::load(&hbam, "Measured.fmp12").unwrap();
+                drop(hbam);
+                let report = passes(&store.tree_view());
+                report
             }
         }
         "decode" => {

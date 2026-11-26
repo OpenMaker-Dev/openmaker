@@ -23,7 +23,7 @@ use rustls::{
     RootCertStore, ServerConfig, SignatureScheme,
 };
 
-use crate::cert;
+use om_session::cert;
 
 /// A server certificate chain and its private key.
 #[derive(Debug)]

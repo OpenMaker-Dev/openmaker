@@ -418,6 +418,7 @@ impl DataProvider for LargeLayoutProvider {
             width: 2000.0,
             height: 1500.0,
             parts: vec![PartGeom {
+                identity: None,
                 kind_name: "Body".into(),
                 top: 0.0,
                 height: 1500.0,

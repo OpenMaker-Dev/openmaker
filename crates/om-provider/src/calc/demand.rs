@@ -269,16 +269,30 @@ impl NativeProvider {
         Ok(())
     }
 
-    /// The calculation schema with the related files `layout` reads open.
+    /// Related schema needed to describe a layout. A scripted visit can
+    /// leave unset variable sources pending until a data read needs them.
     pub(crate) fn calc_schema_for_layout(
         &mut self,
         layout: &om_layout::Layout,
+        scripted: bool,
     ) -> Result<Arc<CalcSchema>, DataError> {
         let schema = self.calc_schema_cached()?;
         if !self.external.on_demand() {
             return Ok(schema);
         }
-        let occurrences = om_data::host::needs::layout_occurrences(&schema, layout);
+        let mut occurrences = om_data::host::needs::layout_occurrences(&schema, layout);
+        if let Some(base) = crate::layout_occurrence(layout)
+            .ok()
+            .filter(|base| scripted && schema.external_occurrence(*base).is_none())
+        {
+            // A scripted layout visit can finish without a related object
+            // opening a variable-only source whose path is unset (#988).
+            occurrences.retain(|occurrence| {
+                *occurrence == base
+                    || schema.table_of(*occurrence).is_some()
+                    || !self.external.unset_variable_source(*occurrence)
+            });
+        }
         if self.grow_related(occurrences)? {
             return self.calc_schema_cached();
         }
