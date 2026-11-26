@@ -2077,7 +2077,7 @@ impl RecordPlan {
                     .ok_or_else(|| error("calculation code is missing."))?;
                 let polish = decode_rule_code(&code).map_err(|e| error(&e))?;
                 if matches!(usage, FormulaUse::LocalStoredText)
-                    && matches!(polish, Expr::Evaluate { .. })
+                    && matches!(&polish, Expr::Evaluate { args, .. } if args.len() > 1)
                 {
                     return parse_literal_evaluate(polish, &context, table, &schema).map_err(
                         |reason| {
