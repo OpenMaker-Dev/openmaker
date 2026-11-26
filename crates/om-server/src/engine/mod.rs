@@ -476,6 +476,9 @@ pub struct CommitRecords {
     /// The staged records the list names, out of the session's temporary
     /// area ([`writes::TempArea::lend`]).
     pub staged: Staged,
+    /// The records the list names whose upload an earlier commit of this
+    /// transaction took and did not store ([`writes::TempArea::lost_named`]).
+    pub lost: std::collections::BTreeSet<KeyPath>,
     /// The records of the list the session was served without their values
     /// (`views::Withheld::named_in`).
     pub withheld: Withheld,

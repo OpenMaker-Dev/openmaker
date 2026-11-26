@@ -434,6 +434,7 @@ fn a_recorded_sequence_of_operations_replays_to_the_same_replies_and_tree() {
             access: access.unwrap(),
             list,
             staged: Staged::from([(record(1), edited.clone()), (record(4), new)]),
+            lost: Default::default(),
             withheld: Withheld::default(),
         }),
         Operation::UpgradeLock(UpgradeLock {
@@ -1963,6 +1964,7 @@ fn a_save_whose_folder_flush_fails_leaves_the_file_taking_no_more_changes() {
             .unwrap(),
         list: OwnedNode::list(Vec::new(), Vec::new()),
         staged: Staged::from([(record.clone(), staged.clone())]),
+        lost: Default::default(),
         withheld: Withheld::default(),
     });
     let Reply::CommitRecords(committed) = engine.submit(&file, commit).reply else {
@@ -3079,6 +3081,7 @@ fn limited_edit(limit: &str) -> Operation {
             )],
         ),
         staged: Staged::from([(record, edited)]),
+        lost: Default::default(),
         withheld: Withheld::default(),
     })
 }
@@ -3610,6 +3613,7 @@ fn a_change_whose_save_fails_takes_back_the_nodes_it_created() {
             access,
             list,
             staged: Staged::from([(record, staged)]),
+            lost: Default::default(),
             withheld: Withheld::default(),
         }),
         Operation::AdvanceSerial(AdvanceSerial {
@@ -4057,6 +4061,7 @@ fn a_commit_that_panics_is_put_back_and_counts_as_changed() {
             .unwrap(),
         list,
         staged: Staged::from([(record, edited)]),
+        lost: Default::default(),
         withheld: Withheld::default(),
     });
     super::transaction::PANIC_WRITING_RECORDS.with(|panics| panics.set(true));
@@ -4143,6 +4148,7 @@ fn an_export_after_a_failed_save_holds_what_memory_holds() {
             .unwrap(),
         list,
         staged: Staged::from([(vec![table.clone(), vec![0x05], id.clone()], new)]),
+        lost: Default::default(),
         withheld: Withheld::default(),
     });
     file.fail_saves(Some(crate::store::SaveFault::BeforeRename));
@@ -4210,6 +4216,7 @@ fn a_value_without_a_key_marks_its_index_disagreeing() {
                     vec![text_node(&due, value), serial_leaf(MOD_COUNT, count)],
                 ),
             )]),
+            lost: Default::default(),
             withheld: Withheld::default(),
         })
     };
@@ -4315,6 +4322,7 @@ fn a_deletion_taken_back_puts_the_record_back_as_it_was() {
             .unwrap(),
         list,
         staged: Staged::default(),
+        lost: Default::default(),
         withheld: Withheld::default(),
     });
     file.fail_saves(Some(crate::store::SaveFault::BeforeRename));
@@ -4784,6 +4792,7 @@ fn seeded_step(kind: usize, file: &Hosted, reserved: Option<&[u8]>) -> Option<(S
                 access,
                 list,
                 staged,
+                lost: Default::default(),
                 withheld: Withheld::default(),
             })
         }
