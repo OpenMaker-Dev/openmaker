@@ -1670,28 +1670,25 @@ templates).
   is unresolved ([conditional-visibility.md](../conditional-visibility.md)). Conditional formats whose formulas hold apply in
   stored order, later ones over earlier ones. Merge variables are
   `<<$name>>` and `<<$$name>>` with an optional `[n]`; the symbols
-  `{{CurrentDate}}`, `{{CurrentTime}}`, `{{UserName}}`, `{{PageNumber}}`
+  `{{CurrentDate}}`, `{{CurrentTime}}`, `{{UserName}}`, `{{PageNumber}}`,
   `{{RecordNumber}}` and `{{AccountName}}` show their `Get` selectors
   (Claris documentation, “Inserting the date, page number, or other variable”).
-  - [O] One hosted solution's layout text is stored as `Today is:
-    {{1002}}`, the symbol a number where the name would be.
+  - [O] One hosted layout stored `{{1002}}` in date-label text.
   - [O] In a blank local file, FileMaker Pro 26.1.1 stored
     `{{1032}}` after Insert > Other Symbol > AccountName. Browse and
-    Preview showed the authenticated account
+    Preview showed the authenticated account for the file
     ([native check](https://github.com/OpenMaker-Dev/openmaker/issues/598#issuecomment-7184700227)).
-  - [I] The number is the selector's engine op, 1000 + its index (9.2,
-    slot 13; calc-functions.md 2), so `{{1002}}` is CurrentDate (2). The
-    numbers of the other symbols follow from the same table: CurrentTime
-    1029, UserName 1031, AccountName 1032, PageNumber 1015, RecordNumber
-    1020 and PageCount 1125. AccountName reads the authenticated account
-    for the file (calc-functions.md 6.1), independent of the User Name
-    preference.
-  - OpenMaker reads these numbers, written as FileMaker writes numbers (no
-    sign, no leading zero), as the symbols' names, and PageCount's where
-    page symbols are checked. Any other number stays as typed.
-  - Unmeasured: which files store numbers rather than names (perhaps ones
-    converted from older formats), and what FileMaker Pro shows for
-    them.
+  - [I] The stored numbers fit 1000 + the selector's index (9.2,
+    slot 13 and [calc-functions.md](calc-functions.md) 2). That identifies
+    1002 as CurrentDate. The same rule predicts CurrentTime 1029, UserName
+    1031, PageNumber 1015, RecordNumber 1020 and PageCount 1125. Those five
+    numeric forms are unverified in these measurements.
+  - OpenMaker resolves these numbers without a sign or leading zero and
+    recognizes PageCount where page symbols are checked. Any other number
+    stays as typed.
+  - Unmeasured: when FileMaker chooses to store numbers instead of names
+    and whether it recognizes the other inferred numeric forms in Browse
+    and Preview.
 - **Unstored calculations with every reference empty [O-run].** "Do not
   evaluate if all referenced fields are empty" (option `0x20` clear, the
   default) applies to unstored calculations too: on FileMaker Server's
