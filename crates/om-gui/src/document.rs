@@ -8161,6 +8161,9 @@ const MAX_WEB_VIEWERS: usize = 32;
 /// width, and an ellipsis ends what does not fit in the viewer's height. In
 /// a viewer too short for the plate it is one row, centered. The plate and
 /// text never leave the viewer or the document's clip, and take no input.
+/// The text is rasterized at the window's zoom (`layer_galley`), so it stays
+/// as sharp as the layout's own text; a note cut short with an ellipsis
+/// keeps the unzoomed raster, which `scaled_text` does not rebuild.
 fn paint_web_viewer_note(ui: &Ui, rect: Rect, note: &str) {
     /// The plate's inset from the viewer's edges.
     const MARGIN: f32 = 4.0;
@@ -8174,7 +8177,7 @@ fn paint_web_viewer_note(ui: &Ui, rect: Rect, note: &str) {
         egui::text::LayoutJob::simple(note.to_owned(), font, theme::CAPTION, text.width().max(row));
     job.wrap.max_rows = ((text.height() / row).floor() as usize).max(1);
     job.halign = Align::Center;
-    let galley = painter.layout_job(job);
+    let galley = layer_galley(ui, job);
     let size = galley.size() + 2.0 * PADDING;
     let bottom = (rect.bottom() - MARGIN).max(rect.center().y + size.y / 2.0);
     let plate = Rect::from_center_size(pos2(rect.center().x, bottom - size.y / 2.0), size);
