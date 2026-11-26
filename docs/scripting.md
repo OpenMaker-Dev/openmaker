@@ -346,10 +346,9 @@ host refusing a later file, after an earlier file's commit leaves that earlier
 file committed (record-writes.md, "A script's transaction across files").
 A script's Delete Record inside one is held there too; the user's own edits
 and deletions on such a layout while the script is paused are refused
-([#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)), but for the
-user's typing into a later repetition there: the window saves it as it saves
-related records, so it is held in the transaction, as a script's write is,
-and goes with its Commit or Revert Transaction.
+([#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)), the user's
+typing into a later repetition there too, in any window while a script's
+transaction is open; the draft is kept.
 Import and writes to the layout's related records in other tables remain
 refused on these layouts
 ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). A global of

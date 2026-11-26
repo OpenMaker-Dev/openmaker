@@ -3430,14 +3430,26 @@ impl DataProvider for NativeProvider {
                 }
                 related_owner::RoutedEdits::Refused => None,
             };
-            // Later repetitions are entered as cells of the record's own
-            // related draft (#185), as on a layout of this file's table: by
-            // the layout's occurrence and field id.
-            let repetitions: BTreeSet<u64> = file
+            // A name two of its fields share, as a malformed file can have
+            // it, names neither for certain: neither is offered.
+            let fields: Vec<_> = file
                 .table(table.id)
                 .into_iter()
                 .flat_map(|t| t.fields.values())
-                .filter(|f| editable.as_ref().is_some_and(|e| e.contains(&f.name)))
+                .collect();
+            let unique = |name: &String| fields.iter().filter(|f| f.name == *name).count() == 1;
+            let editable =
+                editable.map(|names| names.into_iter().filter(|name| unique(name)).collect());
+            // Later repetitions are entered as cells of the record's own
+            // related draft (#185), as on a layout of this file's table: by
+            // the layout's occurrence and field id.
+            let repetitions: BTreeSet<u64> = fields
+                .iter()
+                .filter(|f| {
+                    editable
+                        .as_ref()
+                        .is_some_and(|e: &BTreeSet<String>| e.contains(&f.name))
+                })
                 .map(|f| f.id)
                 .collect();
             let mut related = BTreeMap::new();
@@ -4141,6 +4153,19 @@ impl DataProvider for NativeProvider {
             // the transaction, and nothing stored until it commits or
             // reverts (#892, #1006).
             if self.in_transaction() {
+                // The user's typing into a later repetition of the record is
+                // the user's own edit, which a script's transaction does not
+                // take on such a layout (#411): refused, its draft kept, as
+                // the user's other saves there are (`with_existing_record_owner`).
+                if self.transaction_kind() == Some(transaction::TransactionKind::Script) {
+                    let schema = self.calc_schema_cached()?;
+                    let def = schema.table(table);
+                    if write.typed.iter().any(|cell| {
+                        *cell & 0xff >= 2 && def.is_some_and(|t| !t.fields.contains_key(cell))
+                    }) {
+                        return Err(Self::unsupported_peer_transaction());
+                    }
+                }
                 // A record the session's new record is not on the host: the
                 // window saw no version of it to check its save against.
                 if let Some(id) = write.record.and_then(|id| u64::try_from(id).ok()) {
