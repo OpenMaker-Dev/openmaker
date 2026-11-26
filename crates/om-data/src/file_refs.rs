@@ -188,7 +188,51 @@ pub fn is_plain_name(name: &str) -> bool {
     plain(name)
 }
 
+/// The local database a variable names. Relative references name files
+/// beside the source. On macOS, absolute FileMaker paths start with a
+/// volume name. The variable never changes a local open into a hosted one.
+pub fn local_database_path(line: &str, folder: &std::path::Path) -> Option<std::path::PathBuf> {
+    let (scheme, name) = line.split_once(':').unwrap_or(("file", line));
+    if scheme.eq_ignore_ascii_case("file") && plain(name) {
+        return Some(folder.join(hosted_name(name)));
+    }
+    if !cfg!(target_os = "macos")
+        || !(scheme.eq_ignore_ascii_case("filemac") || scheme.eq_ignore_ascii_case("file"))
+    {
+        return None;
+    }
+    let (volume, rest) = name.strip_prefix('/')?.split_once('/')?;
+    let (prefix, name) = rest.rsplit_once('/').unwrap_or(("", rest));
+    if !plain(volume)
+        || matches!(volume, "." | "..")
+        || !plain(name)
+        || matches!(name, "." | "..")
+        || (!prefix.is_empty()
+            && !prefix
+                .split('/')
+                .all(|p| plain(p) && !matches!(p, "." | "..")))
+        || rest.starts_with('/')
+    {
+        return None;
+    }
+    let root = if volume == boot_volume() {
+        std::path::PathBuf::from("/")
+    } else {
+        std::path::Path::new("/Volumes").join(volume)
+    };
+    Some(root.join(prefix).join(hosted_name(name)))
+}
+
 impl FilePath {
+    /// The variable stored as a path alternative, with neither scheme nor
+    /// location (file-metadata.md 1.1).
+    pub fn global_variable(&self) -> Option<&str> {
+        (self.scheme.is_empty()
+            && self.location.is_empty()
+            && self.name.strip_prefix("$$").is_some_and(plain))
+        .then_some(self.name.as_str())
+    }
+
     /// The file a relative `file` alternative names (`file:Name`, a plain
     /// name, the stored `("file", "", Name)`), with `.fmp12` added when
     /// absent: on the same host as the file it is relative to, or, for a

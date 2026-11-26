@@ -290,6 +290,11 @@ impl Doc {
         }
     }
 
+    /// Whether the window holds a layout draft or is waiting for a layout save.
+    pub(super) fn layout_unsaved(&self) -> bool {
+        self.layout_workspace.has_changes() || self.layout_workspace.saving
+    }
+
     /// Whether the window holds changes made on layout `layout` that the
     /// host has not saved: the layout's own draft in Layout mode, or a
     /// record's edits made through it, the user's or what scripts left.
