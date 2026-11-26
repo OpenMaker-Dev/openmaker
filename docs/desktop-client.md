@@ -2577,10 +2577,16 @@ operation `om-author`'s `set_field_control` uses
 controls") after any deletions, one object at a time on the layout the one
 before made, then places a new field and sends its control. A list control
 without a value list is not sent: an alert asks for one. A layout changed
-since it was shown is refused (306): the control changes are dropped and
-the layout read again; another refusal keeps them. Revert Layout drops
-them, and so does reading the layout again without the object (another
-window deleted it). A related field's control is offered too. Limits: the canvas outlines the changed object but does not draw the
+since it was shown is refused (306): the layout is read again, and the
+control changes, like retyped texts, are kept (any refusal keeps them: a
+refused save never drops them; the alert says so). Revert Layout drops
+them. When the layout is read again without the object (another window
+or client deleted it), the change stays, as a retyped text's words do: an
+alert says it cannot be saved, Save Layout is refused for it, and closing
+or quitting waits until Revert Layout discards it (OpenMaker's choice, so
+that no change is dropped unseen; FileMaker Pro locks a layout being
+edited, so it meets no such case). An editor opened on such a text and
+left unchanged is no change. A related field's control is offered too. Limits: the canvas outlines the changed object but does not draw the
 control until the layout is saved and read again; the options under Values
 from (the arrow, editing, other values, auto-complete, the checkbox icon)
 and the button that edits value lists are not offered, and the Data tab's
@@ -2589,7 +2595,7 @@ look is OpenMaker's.
 Limits: a stored object cannot be moved between parts or restyled;
 groups, portals, tab and slide controls, popovers and button bars and the
 objects inside them do not move and cannot be deleted, nor can objects
-showing a library image, a field's label or a popover button; only a stored text of one line of plain text can be retyped; and the Text tool places one line of plain text in the theme's text style, with no character styles. The Field, Text, Button and Portal tools place objects; the other tool buttons only select a tool. For a stored object, the Inspector shows its
+showing a library image, a field's label or a popover button; only a stored text of one line of plain text can be retyped; and the Text tool places one line of plain text in the theme's text style, with no character styles. The Field, Text, Button and Portal tools place objects and the Part tool adds a part; the other tool buttons only select a tool. For a stored object, the Inspector shows its
 named style and calls out local styling beyond the object's stored
 rotation. Appearance shows known
 normal-state fill, border and text colors and the base font from Browse's
@@ -2607,15 +2613,25 @@ The revision is the one the window read when it opened the file or after
 its last placement: a layout another client changed since is refused at
 Save Layout, not shown changed before.
 
-On a decoded layout, the canvas draws and picks objects on the front tab
-or slide of each control. It starts with the stored current tab, the
-stored default tab, or the first panel, in that order. The Objects list
-still includes inactive panels and their contents. Selecting one of those
-rows reveals its containing panels in this window. This is
-OpenMaker's editor navigation and makes no layout changes. Tab and slide
-navigation directly on the design surface, handoff of the last Browse
-panel, and FileMaker's box selection of an entire control across its panels
-are not implemented.
+On a decoded layout, the canvas draws saved tab labels and the styled
+front tab panel even with nothing selected. Only the front tab or
+slide's contents draw and take canvas input. The canvas starts with the
+stored current tab, the stored default tab, or the first panel, in that
+order. The Objects list still includes inactive panels and their contents.
+Selecting one of those rows reveals its containing panels in this window.
+This editor navigation makes no layout changes. Tab and slide navigation
+directly on the design surface and handoff of the last Browse panel are
+unavailable. The canvas reads the stored label without evaluating label
+calculations.
+
+Layout mode joins an opaque active tab to its panel when the panel has a
+body below the tabs. Browse keeps the active tab's authored bottom rule
+when present and uses fallback dimensions when stored tab geometry is
+missing. Browse tab appearance has yet to be compared with FileMaker Pro.
+In the synthetic Apex Blue Layout mode comparison, OpenMaker drew the
+label about 5 pt higher than FileMaker Pro 26.1.1
+([#1165](https://github.com/OpenMaker-Dev/openmaker/issues/1165)). Other
+themes are unverified.
 
 Manage Layouts opens from File > Manage > Layouts, Layouts > Manage Layouts
 and the Layout mode Manage button. Search, row selection, double-click,
@@ -2733,12 +2749,43 @@ Both go with the operation `om-author`'s `change_parts` uses
 parts are keyed again and the objects below move with their parts. Part
 Setup shows the parts as saved, takes later changes at the layout's new
 revision, and every window of the file reads the layout again. Until the
-host has answered a change and the layout is read again, the window's
-canvas takes no edit and Part Setup cannot be opened anew; the dialog
+host has answered a change and, when the layout may have changed (saved, or
+refused because it changed meanwhile), the layout is read again, the
+window's canvas takes no edit and Part Setup cannot be opened anew; the dialog
 itself waits without closing, unless another window comes forward, which
 closes it as it closes Layout Setup. A change refused because the layout
 changed meanwhile closes it; opened again, it shows the layout as it is
 now.
+
+**The Part tool and Insert > Part.** Dragging the status toolbar's Part
+Tool button onto the layout, as Claris documents it (re/client-ui.md, "Part
+Setup"), choosing the tool and clicking the layout, or Insert > Part...
+opens Part Definition alone, as Part Setup's Create opens it: the kinds of
+part the layout lacks offered (not sub-summaries), the first of them
+chosen (OpenMaker's rule, from FileMaker Pro 26.1.1's Insert > Part
+choosing Title Header on a layout with a top navigation part and a body;
+Pro's choice elsewhere, and its Part tool's, are unmeasured), and OK adds
+the one chosen at its place in the order of
+parts, at Create's heights, with the same operation. While OK is with the
+host the dialog stays, taking no input; it closes with Cancel or with the
+host's answer, and the tool goes back to Selection. Where the button is dropped does not matter: each kind of part
+OpenMaker adds has one place. It is refused as Part Setup is (unsaved
+changes, a change still with the host), and with an alert when the layout
+has every kind of part OpenMaker adds. Not compared with FileMaker Pro: the
+height Pro gives a part the Part tool adds, whether the drop point decides
+anything for the kinds OpenMaker adds, and what a click with the tool does
+(OpenMaker's choice).
+
+**Layout mode's Insert menu** has FileMaker Pro 26.1.1's items, in its
+order, with its submenus and shortcuts (re/client-ui.md, "Layout mode's
+Insert menu"). Part... works as above, enabled when Part Definition can open
+(the layout read, no unsaved change, nothing with the host, a kind of part
+missing). The other items are shown but not offered yet: Field... (Pro
+opens Specify Field; on the layout captured it inserted a selected edit box
+with its label at the bottom of the body), the items of the Graphic Object and
+Field/Control submenus (which open on them), the objects of the other tools, Picture..., the
+current date, time and user name, the symbols, Merge Field..., Merge
+Variable and Layout Calculation....
 
 **A part's boundary.** In Layout mode the Selection tool drags a part's
 lower boundary (a band across the layout and the part strip) to set its

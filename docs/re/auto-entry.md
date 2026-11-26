@@ -163,12 +163,12 @@ Contacts::Initial has kind 2 and option word 0, so its result is stored.
 `0x80` (`kOverwriteExisting`, the auto-entry "replace existing value" bit)
 is set on an unstored Date calculation (`0x00060080`) in a solution FileMaker
 Server hosts, in production use [O, PM relay, sanitized]. The earlier
-survey found no other instances: none of the 110 in the 66 `.fmp12` files
-FileMaker Pro 26 for macOS ships, nor the 402 in the maintainer's other test
-files [O]. It has no
-auto-entry for it to qualify; that it is left over from an earlier
-definition of the field, and changes nothing, is [I]. What FileMaker Pro's
-dialogs show for it is unmeasured.
+survey found no other instances among the 110 calculation fields in the
+66 `.fmp12` files shipped with FileMaker Pro 26 for macOS or the 402
+calculation fields in the maintainer's other test files [O]. The unstored
+field has no auto-entry for the bit to qualify. That the bit survived
+an earlier definition of this field is [I]. Its dialog behavior is
+unmeasured.
 
 FileMaker Pro 26.1.1 converted a replacing Number auto-enter calculation
 `Year ( Issued )` (`0x00000088`) to a stored indexed Number calculation.
@@ -177,6 +177,15 @@ fresh stored calculation had `0x80000000`. Both had one repetition and
 no validation flags. Both accepted New Record, an unrelated Text
 assignment, and Date assignments with the calculated years 2024 and
 2025 visible before commit and retained on reopen. [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204266349)
+
+The same conversion with a Text result and `MonthName ( Issued )`
+retained `0x80`. The converted option word was `0x80000080` with
+automatic indexes on and `0xc0000080` with them off. The fresh control
+with automatic indexes off used `0xc0000000`. All three had one
+repetition, zero validation flags, a value index and no word index.
+Assigning the date immediately produced December and then January, and
+each result survived commit and reopen. The closed copies confirm that
+`0x40000000` can coexist with an existing value index. [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204722695)
 
 ## Built-in variables and Get() expressions
 
@@ -862,6 +871,29 @@ Unmeasured [U]:
   commit (an earlier record omitted in a transaction);
 - New Record from FileMaker Pro's menu or toolbar (inferred above, not
   run).
+
+**Stored Number calculation on a related create** [O: FileMaker Pro
+26.1.1, local macOS file,
+[#1011](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7204449570)].
+Parent's global Text key matched Child's stored Text key in one unsorted
+equality relationship with creation enabled. The key had no matches.
+Set Field on a non-key Child field made one related row and exposed its
+stored `Get ( RecordNumber )` value, 1, immediately. Commit and reopen
+kept 1, including with the parent at position 2 and the child table
+already containing two unrelated records. A separate sorted Child window
+did not change the answer. The calculation was unindexed (option word
+`0x00080000`). Each step returned 0 without an alert. Other relationship
+shapes, portal creation and hosted writes were not measured here.
+
+A follow-up used a value index on the Number calculation
+(`0x80080000`). Set Field still made Position 1 visible immediately,
+and Commit and reopen kept it. An exact Find for Position `==1`
+returned the new row and the seed with that value. The same result
+held for a plain value-indexed Text key or an indexed Text key with
+replacing `Get ( UUID )` auto-entry. Both related creates kept the
+copied match value. Ordinary New Record in the Child table generated
+a UUID and stored its own position, 3.
+[FileMaker Pro 26.1.1 comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7204904879)
 
 ## Serial numbers
 
