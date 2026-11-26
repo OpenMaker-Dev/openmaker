@@ -43,7 +43,7 @@ pub(crate) struct LayoutSetup {
     name: String,
     in_menus: bool,
     /// The General tab's options, on or off, in [`general::OPTIONS`]' order.
-    options: [bool; 5],
+    options: [bool; general::OPTIONS.len()],
     /// Form, List, Table available, and the default view's index.
     views: [bool; 3],
     default: usize,
@@ -224,22 +224,31 @@ impl LayoutSetup {
                         place(ui, content(177.0, 120.0, 226.0, 22.0), &mut |ui| {
                             shown_popup(ui, "Show records from", &self.occurrence, 220.0);
                         });
-                        place(ui, content(49.0, 246.0, 71.0, 17.0), &mut |ui| {
+                        place(ui, content(49.0, 283.0, 71.0, 17.0), &mut |ui| {
                             ui.label("Menu Set:");
                         });
-                        place(ui, content(117.0, 244.0, 286.0, 22.0), &mut |ui| {
+                        place(ui, content(117.0, 281.0, 286.0, 22.0), &mut |ui| {
                             shown_popup(ui, "Menu Set", &self.menu_set, 280.0);
                         });
-                        place(ui, content(219.0, 280.0, 180.0, 22.0), &mut |ui| {
+                        place(ui, content(219.0, 313.0, 180.0, 22.0), &mut |ui| {
                             ui.add_enabled(false, egui::Button::new("Reset Quick Find"))
                                 .on_disabled_hover_text(NOT_YET);
                         });
-                        // The nib's places, in `general::OPTIONS`' order.
-                        let tops = [149.0, 173.0, 197.0, 221.0, 284.0];
-                        for ((on, (_, label, ..)), top) in
-                            self.options.iter_mut().zip(general::OPTIONS).zip(tops)
+                        // In `general::OPTIONS` order. The positions and
+                        // sizes around the wrapping field-alert row are
+                        // estimates based on the older General tab.
+                        let rows = [
+                            (149.0, 18.0),
+                            (173.0, 18.0),
+                            (197.0, 18.0),
+                            (221.0, 18.0),
+                            (245.0, 34.0),
+                            (317.0, 18.0),
+                        ];
+                        for ((on, (_, label, ..)), (top, height)) in
+                            self.options.iter_mut().zip(general::OPTIONS).zip(rows)
                         {
-                            place(ui, content(48.0, top, 286.0, 18.0), &mut |ui| {
+                            place(ui, content(48.0, top, 393.0, height), &mut |ui| {
                                 ui.checkbox(on, label);
                             });
                         }

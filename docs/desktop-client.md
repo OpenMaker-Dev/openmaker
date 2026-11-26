@@ -2489,9 +2489,12 @@ look is OpenMaker's.
 Limits: a stored object cannot be moved between parts or restyled;
 groups, portals, tab and slide controls, popovers and button bars and the
 objects inside them do not move and cannot be deleted, nor can objects
-showing a library image, a field's label or a popover button; only a stored text of one line of plain text can be retyped; and the Text tool places one line of plain text in the theme's text style, with no character styles. The Field, Text, Button and Portal tools place objects; the other tool buttons only select a tool. The provider exposes no
-object styles, autosizing, names or tooltips, so the Inspector does not
-show them, and the other property and arrangement controls stay disabled. Layouts without geometry keep the generic field
+showing a library image, a field's label or a popover button; only a stored text of one line of plain text can be retyped; and the Text tool places one line of plain text in the theme's text style, with no character styles. The Field, Text, Button and Portal tools place objects; the other tool buttons only select a tool. For a stored object, the Inspector shows its
+named style and calls out local styling beyond the object's stored
+rotation. Appearance shows known
+normal-state fill, border and text colors and the base font from Browse's
+style cascade. These properties are read-only. Autosizing, names and
+tooltips are unavailable. Layouts without geometry keep the generic field
 view, which is not inspectable as document objects; they cannot be edited.
 The revision is the one the window read when it opened the file or after
 its last placement: a layout another client changed since is refused at
@@ -2549,12 +2552,13 @@ Neither FileMaker Pro's drag nor OpenMaker's stops at the rightmost
 object (re/layout-model.md 10.12).
 
 **Layout Setup.** Layouts > Layout Setup... and the layout bar's Layout
-Setup button (Layout mode, design access) open FileMaker Pro's Layout Setup
-dialog over the layout the window shows, its controls where Pro's places
-them (re/client-ui.md, "Layout Setup"). OK sets the Layout Name, "Include
-in layout menus", the General tab's five checkboxes, the views available
-and the default view, and the Printing tab's "Use fixed page margins" and
-its Top, Bottom, Left and Right margins, with the
+Setup button (Layout mode, design access) open the dialog over the current
+layout. Its window and tabs follow FileMaker Pro 26.0.3
+(re/client-ui.md, "Layout Setup"). The General tab uses estimated widths
+and row spacing to fit the 26.1.1 field-alert checkbox. OK sets the
+Layout Name, "Include in layout menus", the General tab's checkboxes,
+the views available and the default view, and the Printing tab's "Use
+fixed page margins" and its Top, Bottom, Left and Right margins, with the
 operation `om-author`'s `layout_setup` uses (`DataProvider::set_layout_setup`;
 [authoring](authoring.md), "Layout Setup"); every window of the file then
 reads its layouts again. The margins are edited in points (OpenMaker's
@@ -2571,6 +2575,17 @@ stores them is unknown
 ([#948](https://github.com/OpenMaker-Dev/openmaker/issues/948)). Nor are
 Reset Quick Find, the Script Triggers tab or Manage Layouts' Edit offered. It is refused while the layout has unsaved
 changes, as New and Duplicate Layout are.
+
+In a drawn Browse Form with a loaded empty found set, clicking a bound
+edit box directly on the canvas shows the New Record alert when the
+General tab's "Show alerts when field isn't modifiable or no records are
+present" option is on. FileMaker Pro was measured with an empty table.
+OpenMaker applies the option to the empty found set shown in the window.
+Clicks on checkbox sets, radio button sets, pop-up menus and drop-down
+lists leave the New Record alert closed in OpenMaker. FileMaker Pro's
+behavior for these controls remains unmeasured. Field clicks inside
+popovers, nonmodifiable field clicks and defaults for new files remain open
+([#353](https://github.com/OpenMaker-Dev/openmaker/issues/353)).
 
 **Part Setup.** Layouts > Part Setup... (Layout mode, design access) opens
 FileMaker Pro's Part Setup over the layout the window shows, its controls

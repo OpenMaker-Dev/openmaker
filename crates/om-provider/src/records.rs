@@ -4,7 +4,8 @@
 
 use super::*;
 use om_data::rules::{
-    error, Entry, RecordEnvironment, RecordPlan, WriteContext, WriteLayout, WriteMode, Written,
+    error, Entry, RecordEnvironment, RecordPlan, Serial, WriteContext, WriteLayout, WriteMode,
+    Written,
 };
 use om_data::FieldChanges;
 use om_hbam::{Cell, OwnedNode};
@@ -13,6 +14,42 @@ use om_query::keys::{record_value_keys, TextKeys};
 
 /// Field values a write stores: masked text by field id, `None` to remove.
 type EncodedChanges = BTreeMap<u64, Option<Vec<u8>>>;
+
+/// Auto-entered values for global storage, collected outside record cells.
+#[derive(Default)]
+pub(super) struct NewGlobals {
+    values: om_data::GlobalChanges,
+    serials: Vec<Serial>,
+}
+
+impl NewGlobals {
+    pub(super) fn reserve(
+        &mut self,
+        provider: &mut NativeProvider,
+        table: u64,
+    ) -> Result<(), DataError> {
+        if !self.serials.is_empty() {
+            self.values.extend(
+                provider
+                    .reserve_serials(table, std::mem::take(&mut self.serials))?
+                    .into_iter()
+                    .map(|(field, value)| ((field, 1), value)),
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn publish(
+        self,
+        provider: &mut NativeProvider,
+        table: u64,
+    ) -> Result<(), DataError> {
+        if !self.values.is_empty() {
+            provider.keep_globals(table, self.values)?;
+        }
+        Ok(())
+    }
+}
 
 /// Field `fc` of a record: its modification count (write-path.md 5.4).
 pub(crate) const MOD_COUNT: u64 = 0xfc;
@@ -510,10 +547,10 @@ impl NativeProvider {
         }
         let file = self.plan_schema()?;
         match tree {
-            Some(tree) => RecordPlan::from_file_schema(table, tree, &file),
+            Some(tree) => RecordPlan::from_desktop_file_schema(table, tree, &file),
             None => {
                 let tree = download_tree(&self.schema_downloads)?;
-                RecordPlan::from_file_schema(table, &tree, &file)
+                RecordPlan::from_desktop_file_schema(table, &tree, &file)
             }
         }
     }
@@ -893,6 +930,27 @@ impl NativeProvider {
                  No values were changed.",
             )
         })
+    }
+
+    pub(super) fn new_record_defaults(
+        &mut self,
+        plan: &RecordPlan,
+        entry: Entry,
+        environment: &RecordEnvironment,
+    ) -> Result<NewGlobals, DataError> {
+        if !plan.has_global_auto_entry(entry) {
+            return Ok(NewGlobals::default());
+        }
+        let table = plan.table();
+        let data = self.read_calc_data(&[om_data::host::CalcNeed::Globals { table }])?;
+        let globals = data.globals.get(&table).ok_or_else(|| {
+            DataError::with_code(
+                error::UNAVAILABLE,
+                "The table's global values could not be read.",
+            )
+        })?;
+        let (values, serials) = plan.new_record_globals(entry, globals, environment)?;
+        Ok(NewGlobals { values, serials })
     }
 
     /// The record `[T, 05, R]` as the server holds it now, `None` when there
@@ -1569,37 +1627,30 @@ impl NativeProvider {
         context: WriteContext,
     ) -> Result<Record, DataError> {
         let environment = self.rule_environment(table.id, plan, context)?;
+        let entry = Entry::default();
+        let globals = self.new_record_defaults(plan, entry, &environment)?;
         // Compute and check every value before reserving a record id.
         let prepared = self.prepare_record(
             plan,
-            (WriteMode::Create, Entry::default(), Written::New(None)),
+            (WriteMode::Create, entry, Written::New(None)),
             &BTreeMap::new(),
             changes,
             &environment,
         )?;
         let txn = self.new_transaction();
-        let result = self.create(table, plan, prepared.values, txn);
+        let result = self.create_with(
+            table,
+            plan,
+            prepared.values,
+            txn,
+            (entry, None, &BTreeSet::new()),
+            globals,
+        );
         self.end_transaction(txn);
         result
     }
 
-    fn create(
-        &mut self,
-        table: &Table,
-        plan: &RecordPlan,
-        values: EncodedChanges,
-        txn: u32,
-    ) -> Result<Record, DataError> {
-        self.create_with(
-            table,
-            plan,
-            values,
-            txn,
-            (Entry::default(), None, &BTreeSet::new()),
-        )
-    }
-
-    /// [`Self::create`] of a write by `entry`: its unique, existing and
+    /// Create a record by `entry`: its unique, existing and
     /// value list rules are the ones `entry` checks. An import's cells
     /// (repetitions too) are checked cell by cell when read back.
     /// `prepared`: the preview the record is written from (preview.rs),
@@ -1611,6 +1662,7 @@ impl NativeProvider {
         values: EncodedChanges,
         txn: u32,
         (entry, prepared, typed): (Entry, Option<om_data::PreparedId>, &BTreeSet<u64>),
+        mut globals: NewGlobals,
     ) -> Result<Record, DataError> {
         self.refuse_related_lists(table, plan, entry, entered(&values))?;
         // Before a record is reserved: a new record's list does not hold it
@@ -1653,6 +1705,7 @@ impl NativeProvider {
         // code, not a record created and unverified.
         self.check_unique(table, plan.unique_fields_for(entry), &values, record, txn)?;
         self.check_lookups(table, plan, entry, &values, record)?;
+        globals.reserve(self, table.id)?;
         (|| {
             // A new record has no modification count (write-path.md 5.4).
             let mut node = OwnedNode::list(serial::encode(record), Vec::new());
@@ -1660,6 +1713,7 @@ impl NativeProvider {
             let commit = OwnedNode::leaf(serial::encode(record), vec![write::COMMIT_NEW]);
             self.store_pending_assets(table, &text_values(&stored_record(record, &node)), None);
             self.commit_record(table.id, node, commit, txn)?;
+            globals.publish(self, table.id)?;
             // A record the set may not view comes back as its id and
             // modification count only: FileMaker Pro 26.0.3 creates it all
             // the same (#137's reading).
@@ -1879,6 +1933,12 @@ impl NativeProvider {
         }
         let (table, plan) = self.table_plan(table)?;
         let entry = Entry::import(auto_enter);
+        if record.is_none() && plan.has_global_auto_entry(entry) {
+            return Err(DataError::with_code(
+                error::UNAVAILABLE,
+                "Auto-entry into a global during import is unsupported.",
+            ));
+        }
         // An import may be a script's step: its set is not known.
         let context = self.write_context(&plan, layout, CurrentSet::Step(None))?;
         let environment = self.rule_environment(table.id, &plan, context)?;
@@ -1894,7 +1954,14 @@ impl NativeProvider {
                 )
                 .and_then(|ready| {
                     let none = BTreeSet::new();
-                    self.create_with(&table, &plan, ready.values, txn, (entry, None, &none))
+                    self.create_with(
+                        &table,
+                        &plan,
+                        ready.values,
+                        txn,
+                        (entry, None, &none),
+                        NewGlobals::default(),
+                    )
                 })
                 .and_then(|r| u64::try_from(r.id).map_err(|_| DataError::new("Invalid record ID.")))
             }
@@ -1955,6 +2022,12 @@ impl NativeProvider {
         let entry = script_entry(skip_validation, record.is_none());
         let mut environment = self.rule_environment(table.id, plan, context)?;
         if let Some(id) = prepared {
+            if plan.has_global_auto_entry(entry) {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    "Creating a record from a preview with global auto-entry is unsupported.",
+                ));
+            }
             let on_creation = plan
                 .serials_for(WriteMode::Create, entry)
                 .into_iter()
@@ -1966,9 +2039,10 @@ impl NativeProvider {
             reuse.stamp.apply(&mut environment);
         }
         let txn = self.new_transaction();
-        let result = match record {
-            None => self
-                .prepare_record(
+        let result = (|| match record {
+            None => {
+                let globals = self.new_record_defaults(plan, entry, &environment)?;
+                self.prepare_record(
                     plan,
                     (WriteMode::Create, entry, Written::New(None)),
                     &BTreeMap::new(),
@@ -1976,13 +2050,21 @@ impl NativeProvider {
                     &environment,
                 )
                 .and_then(|ready| {
-                    self.create_with(table, plan, ready.values, txn, (entry, prepared, typed))
-                }),
+                    self.create_with(
+                        table,
+                        plan,
+                        ready.values,
+                        txn,
+                        (entry, prepared, typed),
+                        globals,
+                    )
+                })
+            }
             Some(id) => {
                 let id = u64::try_from(id).map_err(|_| DataError::new("Invalid record ID."))?;
                 self.edit_with(table, plan, id, cells, &environment, txn, (entry, typed))
             }
-        };
+        })();
         self.end_transaction(txn);
         result
     }

@@ -14,13 +14,12 @@ Initial formula is decoded from its compiled stream without field-name
 special cases. Lookups are performed only in the exact-match form below
 (Lookups); serial numbers as below (Serial numbers), reserved on the host.
 A container field a formula reads is read as its data, through the
-write's container reader. Other lookups, entry from the last visited
-record, related fields beyond the formulas docs/record-writes.md
-supports, globals other than one repetition of a non-container global of
-the record's own table read by an auto-entered or validation
-calculation, summary fields, unstored calculations other than those
-docs/record-writes.md lists, plug-in functions, custom functions that read fields and dependency cycles fail
-preflight (docs/record-writes.md, Limits).
+write's container reader. An auto-entered or validation calculation may
+read one repetition of a non-container global of its own table. Other
+global reads, entry from the last visited record, summary fields, plug-in
+functions, custom functions that read fields and dependency cycles fail
+preflight. The supported lookups, related reads and unstored calculations
+are listed in docs/record-writes.md, Limits.
 
 The provider preserves creation metadata on updates, refreshes modification
 variables, checks unique values with the server under a lock on the field's
@@ -680,6 +679,24 @@ its serial back, whether an existing record whose on-commit field is
 empty gets a serial when it is next committed, which value a record keeps
 when a script or the user sets the field before an on-commit serial is
 generated, text without digits, and increments below 1.
+
+## Auto-entry into global storage
+
+FileMaker Pro 26.1.1 kept a Text field's Auto-Enter setting when its
+storage changed to global. In each disposable file the option word gained
+only `0x10000`. The constant-data member `0d`, calculation member `05`,
+or next-serial member `0c` remained, according to the option used.
+With the global initially empty, New Record set it to `X` for the
+constant and calculation cases, and to `1` for the serial case. Editing
+another field and committing kept that value. Set Field on the global
+then replaced it with `Y`, which survived a local reopen. All scripted
+steps returned 0 and continued without alerts. The hosted constant
+case on FileMaker Server 26.0.3 followed the same sequence in the open
+session. After reopening, the hosted global was empty again.
+[O, disposable FileMaker Pro runs](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7183655256).
+
+Unknowns include a second New Record with a nonempty global and a
+calculated default configured to keep an existing value.
 
 ## A stored calculation before the commit
 

@@ -94,6 +94,10 @@ pub(crate) struct FileState {
     /// again, with the same account.
     pub endpoint: Option<Endpoint>,
     pub page_setup: Option<crate::page_setup::Settings>,
+    /// The page setup this session saved in a file on this computer
+    /// (`[2, 87]`; `store_page_format`): what the file stores now, in
+    /// place of what it stored when it opened.
+    pub page_format_saved: Option<Vec<u8>>,
     /// The window the script works on, and the file's other windows, the
     /// most recently current last (Close Window returns to it).
     pub window: Window,
@@ -442,6 +446,7 @@ impl Shared {
                 id: 0,
                 endpoint: None,
                 page_setup: None,
+                page_format_saved: None,
                 window: Window::default(),
                 others: Vec::new(),
                 context: SessionContext::default(),

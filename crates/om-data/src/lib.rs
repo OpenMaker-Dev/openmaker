@@ -1908,6 +1908,23 @@ pub trait DataProvider: Send {
             "This provider cannot read the file's security.",
         ))
     }
+    /// Keep `value`, a page format (script-steps.md 11.6), as the open
+    /// file's page setup `[2, 87]` in place of `expected`, what the caller
+    /// read there (`None`: nothing). FileMaker Pro writes it at Page
+    /// Setup's OK in a file on this computer, and sends nothing for a
+    /// hosted file (file-format.md 3.8). The file's setup is kept, with an error, when
+    /// it is not `expected` or is one that may not be replaced
+    /// ([`meta::replaceable_page_format`]). `Ok(true)` once it is stored
+    /// and read back; `Ok(false)` for a hosted file, with nothing sent, and
+    /// from a provider with no files of its own.
+    fn store_page_format(
+        &mut self,
+        _expected: Option<&[u8]>,
+        _value: &[u8],
+    ) -> Result<bool, DataError> {
+        Ok(false)
+    }
+
     /// The open file's schema for calculations (fields, relationships,
     /// custom functions), `None` when this provider cannot describe it.
     fn calc_schema(&mut self) -> Result<Option<std::sync::Arc<host::CalcSchema>>, DataError> {

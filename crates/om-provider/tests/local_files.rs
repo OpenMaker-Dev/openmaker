@@ -538,6 +538,81 @@ fn damaged_files_are_refused_unchanged() {
         .unwrap();
 }
 
+/// A page setup accepted in Page Setup is kept in a file on this computer,
+/// as FileMaker Pro keeps it at the OK (#112). `[2, 87]` then holds the one
+/// `Comm` chunk, stored chunked as Pro stores it: child `00` the length,
+/// then the piece (file-format.md 3.8; Pro read such a file whole), and
+/// the file opens with it. What the file stores is replaced only when it is
+/// what the caller read, and holds only records FileMaker Pro makes again;
+/// otherwise it is kept (AGENTS.md rule 5).
+#[test]
+fn a_page_setup_is_kept_in_the_local_file_as_filemaker_pro_stores_it() {
+    use om_layout::paper::{Orientation, PaperSettings};
+    let folder = Folder::new("page-setup");
+    let path = folder.tasks(None);
+    let value = PaperSettings {
+        width: 595.2756,
+        height: 841.8898,
+        orientation: Orientation::Landscape,
+        scale: 0.5,
+    }
+    .common_format();
+    let stored = |path: &Path| {
+        let file = om_hbam::HbamFile::open(path).unwrap();
+        let tree = file.key_tree().unwrap();
+        tree.node(&[&[2], &[0x87]]).map(|node| {
+            let parts: Vec<(Vec<u8>, Option<Vec<u8>>)> = node
+                .children
+                .iter()
+                .map(|child| (child.segment.0.to_vec(), child.value.map(<[u8]>::to_vec)))
+                .collect();
+            parts
+        })
+    };
+    assert_eq!(stored(&path), None);
+
+    let mut provider = opened(&path);
+    assert!(provider.store_page_format(None, &value).unwrap());
+    // The file now stores a setup: one saved over "none" again is refused.
+    let changed = provider.store_page_format(None, &value).unwrap_err();
+    assert_eq!(changed.code, Some(301), "{changed:?}");
+    provider.close();
+    assert_eq!(
+        stored(&path),
+        Some(vec![
+            (vec![0], Some(37u32.to_be_bytes().to_vec())),
+            (vec![1], Some(value.to_vec())),
+        ])
+    );
+    let mut reopened = opened(&path);
+    let schema = reopened.calc_schema().unwrap().unwrap();
+    assert_eq!(schema.page_format.as_deref(), Some(&value[..]));
+    reopened.close();
+
+    // Kept: a record FileMaker Pro does not make from `Comm` beside it,
+    // and a value that does not read (declared larger than 1 MiB).
+    let mut unknown = value.to_vec();
+    unknown.extend_from_slice(b"W_XX\x00\x00\x00\x01\x07");
+    let mut unreadable = om_data::meta::page_format_node(&value).unwrap();
+    unreadable.children[0].value = Some((2u32 << 20).to_be_bytes().to_vec());
+    for (name, node, expected) in [
+        (
+            "unknown.fmp12",
+            om_data::meta::page_format_node(&unknown).unwrap(),
+            Some(&unknown[..]),
+        ),
+        ("unreadable.fmp12", unreadable, None),
+    ] {
+        let path = folder.file(name, PASSWORD, |root| root.put(&[&[2], &[0x87]], node));
+        let before = stored(&path);
+        let mut provider = opened(&path);
+        let kept = provider.store_page_format(expected, &value).unwrap_err();
+        assert_eq!(kept.code, Some(3), "{name}: {kept:?}");
+        provider.close();
+        assert_eq!(stored(&path), before, "{name}");
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn a_file_it_may_not_write_opens_read_only_and_refuses_every_change() {
@@ -2854,6 +2929,85 @@ fn starter_fields_read_as_the_fields_tab_lists_them() {
     );
     assert!(text("Contacts", "Contacts", "Initial").contains("= "));
     assert!(texts.values().any(|t| t.starts_with("= Total of ")));
+}
+
+#[test]
+fn new_record_auto_enters_the_session_globals() {
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
+    use om_data::calc::Value;
+    use om_data::host::CalcNeed;
+    use om_hbam::slot::uint_segment;
+
+    const CONSTANT: u64 = 40;
+    const CALCULATED: u64 = 41;
+    const SERIAL: u64 = 42;
+    let folder = Folder::new("global-auto-entry");
+    let path = folder.file("Sample.fmp12", PASSWORD, |root| {
+        for (id, label, options) in [
+            (CONSTANT, "Default setting", 0x1_0004),
+            (CALCULATED, "Calculated setting", 0x1_0008),
+            (SERIAL, "Serial setting", 0x1_0002),
+        ] {
+            fixture::add_field(root, TABLE, id, label, 1, 1, 0, options, 0);
+        }
+        let table = uint_segment(TABLE);
+        root.put(
+            &[&table, &[3], &[5], &uint_segment(CONSTANT), &[0x0d]],
+            om_scripts::text_node(&[], "X"),
+        );
+        fixture::add_formula(
+            root,
+            &fixture::names(),
+            (TABLE, OCCURRENCE),
+            CALCULATED,
+            5,
+            "\"Y\"",
+        );
+        fixture::set_field_serial_increment(root, TABLE, SERIAL, 1);
+        root.put(
+            &[&table, &[3], &[5], &uint_segment(SERIAL), &[0x0c]],
+            om_scripts::text_node(&[], "1"),
+        );
+    });
+    let mut provider = opened(&path);
+    let globals = |provider: &mut NativeProvider| {
+        provider
+            .calc_data(&[CalcNeed::Globals { table: TABLE }])
+            .unwrap()
+            .globals[&TABLE]
+            .clone()
+    };
+    let new = om_data::ScriptWrite {
+        layout: LAYOUT as u32,
+        ..Default::default()
+    };
+    provider.begin_record_commit().unwrap();
+    let record = provider.write_record(&new).unwrap();
+    let values = globals(&mut provider);
+    for (field, text) in [(CONSTANT, "X"), (CALCULATED, "Y"), (SERIAL, "1")] {
+        assert!(matches!(values.get(field, 1), Some(Value::Text(value)) if value.as_str() == text));
+    }
+    provider
+        .write_record(&om_data::ScriptWrite {
+            record: Some(record.id),
+            cells: [(NAME, Some("A note".into()))].into(),
+            ..new.clone()
+        })
+        .unwrap();
+    provider.set_global(TABLE, CONSTANT, 1, "Changed").unwrap();
+    provider.commit_transaction(false).unwrap();
+    assert_eq!(
+        name_of(&mut provider, LAYOUT as u32, record.id).as_deref(),
+        Some("A note")
+    );
+    let values = globals(&mut provider);
+    assert!(
+        matches!(values.get(CONSTANT, 1), Some(Value::Text(value)) if value.as_str() == "Changed")
+    );
+    provider.begin_record_commit().unwrap();
+    assert_eq!(provider.write_record(&new).unwrap_err().code, Some(3));
+    provider.revert_transaction().unwrap();
+    provider.close();
 }
 
 /// An auto-entered and a validation formula over a global field read the

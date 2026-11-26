@@ -663,6 +663,8 @@ pub(crate) enum Action {
     /// The user typed into a field the account's privilege set lets them
     /// enter but not change: FileMaker Pro's alert, the value unchanged.
     RefuseTyping(om_data::EditRefusal),
+    /// An edit box clicked with an empty found set, on the named layout.
+    ClickEmptyField(u64),
     /// A value-list control's command it cannot do here: its alert.
     RefuseChoice(om_data::choice::ChoiceError),
     /// A pop-up menu's Edit…: read the list and open Edit Value List
@@ -5600,6 +5602,22 @@ impl OpenMakerApp {
                         Some((session.layout?, session.current_record()?.1.id))
                     });
                 self.w.document.hold_focus(record);
+            }
+            Action::ClickEmptyField(layout) => {
+                if self.w.mode == Mode::Browse
+                    && self.w.view == ViewMode::Form
+                    && self.w.connection_lost.is_none()
+                {
+                    if let Some(message) = self
+                        .w
+                        .session
+                        .as_ref()
+                        .filter(|session| session.layout.map(u64::from) == Some(layout))
+                        .and_then(Session::empty_field_alert)
+                    {
+                        self.error = Some(message.into());
+                    }
+                }
             }
             Action::RefuseChoice(error) => self.error = Some(error.message()),
             Action::EditValueList(list) => self.request(ctx, Request::CustomValueList(list)),
