@@ -806,8 +806,9 @@ an explicit dependency list. OpenMaker compiles a concatenation of
 ordinary single-repetition Text fields and plain text during planning.
 The measured space form `Char ( 32 )` is also supported. Only the listed
 fields trigger a recalculation. Other referenced fields supply their
-current values when it runs. An untouched New Record leaves the result
-empty. The expression and its dependencies are kept in the file.
+current values when it runs. An untouched ordinary New Record leaves the
+result empty. Creation needs the local window context; duplicate and
+portal creation are outside this support. The expression and its dependencies are kept in the file.
 A field-supplied expression, hosted files and other dynamic record-rule
 expressions remain outside this support.
 [FileMaker Pro measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1072)
