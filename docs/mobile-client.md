@@ -19,11 +19,20 @@ desktop. What FileMaker Go does is in [go-client.md](re/go-client.md).
   FileMaker Pro's type identifier, `com.filemaker.doc.fmp12`, read from
   FileMaker Pro 26.1.1 for macOS; FileMaker Go's own declaration is not
   documented). Local edits go to that copy.
-- **Hosts** takes a host name or address and a port (5003), lists the
-  files the host shares or opens one by name. A private certificate
-  authority (PEM) can be saved for a host and port; it is used for that
-  host only. The certificate is verified as the desktop client verifies
-  it.
+- **Hosts** lists the saved hosts, by name or by address (with the port
+  when it is not 5003), as FileMaker Go's Hosts tab does. Add Host (+)
+  takes a host name or IP address, a port (5003; go-client.md records
+  only the name or address) and an optional name, checked as the
+  desktop's Add Host checks them (`om_gui::host_address`). A host opens to the files it
+  lists, with a search box, and pulled down (or Refresh on Android) lists
+  them again; Open by Name opens a file it does not list (`.fmp12` may be
+  left out). Swiping a host (iOS), or its menu or a long press, edits or
+  removes it; removing forgets only the saved entry and its certificate
+  authority. The one host the Hosts tab kept before it had a list becomes
+  the list's first. Local hosts (Bonjour) are not listed. A private
+  certificate authority (PEM) can be saved for a host and port; it is
+  used for that host only. The certificate is verified as the desktop
+  client verifies it.
 - **Favorites** and **Recent** keep references to local and hosted files;
   opening one signs in again. Rows can be removed, and a local file
   deleted after a confirmation.

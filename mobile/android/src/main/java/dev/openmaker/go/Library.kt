@@ -23,9 +23,32 @@ data class Entry(val name: String, val host: String = "", val port: Int = DEFAUL
 }
 
 /**
- * The apps on this device, Favorites, Recent and the hosts' trusted
- * certificate authorities. File references are kept by name: the documents
- * folder's absolute path can change with an update.
+ * A host of the Hosts list: its address and port, and the name it is
+ * listed by, empty for its location. The same address in another case is
+ * the same host.
+ */
+data class SavedHost(val address: String, val port: Int = Entry.DEFAULT_PORT, val name: String = "") {
+    /** The address, with the port when it is not FileMaker's (an IPv6 address then in brackets). */
+    val location
+        get() =
+            when {
+                port == Entry.DEFAULT_PORT -> address
+                ':' in address -> "[$address]:$port"
+                else -> "$address:$port"
+            }
+
+    val label
+        get() = name.ifEmpty { location }
+
+    fun isHost(address: String, port: Int) = this.address.equals(address, ignoreCase = true) && this.port == port
+
+    fun isHost(other: SavedHost) = isHost(other.address, other.port)
+}
+
+/**
+ * The apps on this device, Favorites, Recent, the Hosts list and the hosts'
+ * trusted certificate authorities. File references are kept by name: the
+ * documents folder's absolute path can change with an update.
  */
 class Library(context: Context) {
     private val prefs = context.getSharedPreferences("library", Context.MODE_PRIVATE)
@@ -50,19 +73,63 @@ class Library(context: Context) {
         get() = entries(RECENT)
         set(value) = store(RECENT, value.distinct().take(MAX_RECENT))
 
-    var lastHost: String
-        get() = prefs.getString("lastHost", "").orEmpty()
-        set(value) = prefs.edit().putString("lastHost", value).apply()
+    /**
+     * The Hosts list. Before it was kept, the Hosts tab remembered the one
+     * host it last browsed: that host is the list's first.
+     */
+    var hosts: List<SavedHost>
+        get() {
+            val stored = prefs.getString(HOSTS, null)
+            if (stored == null) {
+                val last = prefs.getString(LAST_HOST, "").orEmpty().trim()
+                return if (last.isEmpty()) emptyList()
+                else listOf(SavedHost(last, prefs.getInt(LAST_PORT, Entry.DEFAULT_PORT)))
+            }
+            val list = JSONArray(stored)
+            return (0 until list.length()).map {
+                val item = list.getJSONArray(it)
+                SavedHost(item.getString(0), item.getInt(1), item.getString(2))
+            }
+        }
+        private set(value) {
+            val list = JSONArray(value.map { JSONArray().put(it.address).put(it.port).put(it.name) })
+            prefs.edit().putString(HOSTS, list.toString()).remove(LAST_HOST).remove(LAST_PORT).apply()
+        }
 
-    var lastPort: Int
-        get() = prefs.getInt("lastPort", Entry.DEFAULT_PORT)
-        set(value) = prefs.edit().putInt("lastPort", value).apply()
+    /**
+     * Add [host], or with [replacing] put it in that host's place, with
+     * [certificate] as the certificate authority trusted for it. A host
+     * already in the list at the same address and port is that host: it is
+     * not listed twice. A host moved to another address or port takes its
+     * certificate authority along.
+     */
+    fun saveHost(replacing: SavedHost?, host: SavedHost, certificate: String) {
+        val list = hosts.toMutableList()
+        // Where the host goes: the replaced host's place, else its own.
+        val at =
+            replacing?.let { old -> list.indexOfFirst { it.isHost(old) } }?.takeIf { it >= 0 }
+                ?: list.indexOfFirst { it.isHost(host) }.takeIf { it >= 0 }
+                ?: list.size.also { list += host }
+        list[at] = host
+        hosts = list.filterIndexed { i, other -> i == at || !other.isHost(host) }
+        // Certificate authorities are kept by the address as typed.
+        if (replacing != null && (replacing.address != host.address || replacing.port != host.port)) {
+            trust(replacing.address, replacing.port, "")
+        }
+        trust(host.address, host.port, certificate)
+    }
+
+    /** Remove [host] from the list, with the certificate authority trusted for it. */
+    fun removeHost(host: SavedHost) {
+        hosts = hosts.filterNot { it.isHost(host) }
+        trust(host.address, host.port, "")
+    }
 
     /** The PEM certificate authority trusted for one host and port only. */
     fun certificate(host: String, port: Int): String = prefs.getString("ca:$host:$port", "").orEmpty()
 
     /** Save [pem] as the host's certificate authority; an empty one removes it. */
-    fun trust(host: String, port: Int, pem: String) {
+    private fun trust(host: String, port: Int, pem: String) {
         val edit = prefs.edit()
         if (pem.isBlank()) edit.remove("ca:$host:$port") else edit.putString("ca:$host:$port", pem)
         edit.apply()
@@ -132,6 +199,9 @@ class Library(context: Context) {
     private companion object {
         const val FAVORITES = "favorites"
         const val RECENT = "recent"
+        const val HOSTS = "hosts"
+        const val LAST_HOST = "lastHost"
+        const val LAST_PORT = "lastPort"
         const val MAX_RECENT = 30
         // Room an import leaves on the device for the files it opens.
         const val SPARE_BYTES = 256L shl 20

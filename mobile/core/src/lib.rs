@@ -160,6 +160,27 @@ fn provider(host: Option<&Host>) -> Result<NativeProvider, GoError> {
     Ok(NativeProvider::new(config).with_related_on_demand(true))
 }
 
+/// A host as Add Host takes it, or what to fix ([`GoError::Failed`]): the
+/// address and port are checked as the desktop's Add Host checks them
+/// (`om_gui::host_address`), and the certificate authority is kept as
+/// given.
+#[uniffi::export]
+pub fn check_host(address: String, port: String, certificate: String) -> Result<Host, GoError> {
+    let (address, port) = om_gui::host_address(&address, &port).map_err(GoError::failed)?;
+    Ok(Host {
+        address,
+        port,
+        certificate,
+    })
+}
+
+/// A file name typed to open on a host, as the host lists it: with the
+/// `.fmp12` extension, which the name may leave out.
+#[uniffi::export]
+pub fn hosted_file_name(name: String) -> String {
+    om_data::file_refs::hosted_name(name.trim())
+}
+
 /// The files `host` publishes. Blocks while it asks the host.
 #[uniffi::export]
 pub fn hosted_files(host: Host) -> Result<Vec<String>, GoError> {

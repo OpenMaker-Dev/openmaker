@@ -30,8 +30,28 @@ enum class Tab(val title: String) {
 /** The sign-in a file asks for: the open fails back into it with [error]. */
 data class SignInRequest(val entry: Entry, val error: String? = null, val opening: Boolean = false)
 
-/** The host form of the Hosts tab. */
-data class HostForm(val address: String, val port: String, val file: String = "", val certificate: String = "")
+/**
+ * Add Host, or Edit Host for the host it [replaces]: the fields as typed,
+ * and why the last Save was refused.
+ */
+data class HostEditor(
+    val replaces: SavedHost? = null,
+    val address: String = "",
+    val port: String = Entry.DEFAULT_PORT.toString(),
+    val name: String = "",
+    val certificate: String = "",
+    val error: String? = null,
+)
+
+/** A host's file list, as its page shows it. */
+sealed interface Listing {
+    /** Being asked for. Each request is its own: a reply to an older one is dropped. */
+    class Pending : Listing
+
+    data class Listed(val files: List<Entry>) : Listing
+
+    data class Failed(val reason: String) : Listing
+}
 
 /**
  * The Launch Center and the open file. Held for the activity's whole life,
@@ -48,15 +68,15 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var recent by mutableStateOf(library.recent)
         private set
-    var hostForm by mutableStateOf(
-        HostForm(
-            library.lastHost,
-            library.lastPort.toString(),
-            certificate = library.certificate(library.lastHost.trim(), library.lastPort),
-        )
-    )
-    var hosted by mutableStateOf(emptyList<Entry>())
+    var hosts by mutableStateOf(library.hosts)
         private set
+    /** The host whose files the Hosts tab shows; null for the list of hosts. */
+    var hostPage by mutableStateOf<SavedHost?>(null)
+        private set
+    /** Each host's file list, by its address (as typed) and port, while the app runs. */
+    var listings by mutableStateOf(mapOf<Pair<String, Int>, Listing>())
+        private set
+    var hostEditor by mutableStateOf<HostEditor?>(null)
     var working by mutableStateOf(false)
         private set
     var message by mutableStateOf<String?>(null)
@@ -76,6 +96,7 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
         local = library.localFiles()
         favorites = library.favorites
         recent = library.recent
+        hosts = library.hosts
     }
 
     fun import(uri: Uri) = background({ library.import(uri) }) { refresh() }
@@ -107,53 +128,98 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
     /** The certificate authority a hosted entry trusts. */
     private fun host(entry: Entry) = Host(entry.host, entry.port.toUShort(), library.certificate(entry.host, entry.port))
 
-    /**
-     * The host form's address or port changed. The certificate authority
-     * in the form belongs to its host and port: another endpoint's is the
-     * one saved for it (none if none was), never one typed for the last.
-     */
-    fun editHost(address: String = hostForm.address, port: String = hostForm.port) {
-        val form = hostForm
-        val moved =
-            address.trim() != form.address.trim() || port.trim().toIntOrNull() != form.port.trim().toIntOrNull()
-        val certificate =
-            if (!moved) form.certificate
-            else port.trim().toIntOrNull()?.let { library.certificate(address.trim(), it) }.orEmpty()
-        hostForm = form.copy(address = address, port = port, certificate = certificate)
+    /** Add Host. */
+    fun addHost() {
+        hostEditor = HostEditor()
     }
 
-    /** Browse the form's host, or with a file name go straight to its sign-in. */
-    fun browseHost() {
-        val form = hostForm
-        val address = form.address.trim()
-        val port = form.port.trim().toIntOrNull()
-        if (address.isEmpty() || port == null || port !in 1..65535) {
-            message = "Enter a host and a port from 1 to 65535."
-            return
+    /** Edit Host, with the certificate authority trusted for it. */
+    fun editHost(host: SavedHost) {
+        hostEditor =
+            HostEditor(host, host.address, host.port.toString(), host.name, library.certificate(host.address, host.port))
+    }
+
+    /**
+     * Save the host Add Host or Edit Host describes, checked as the
+     * desktop's Add Host checks one, or say in the editor what to fix. A
+     * host whose page is shown stays shown, at its new address.
+     */
+    fun saveHost() {
+        val editor = hostEditor ?: return
+        val checked =
+            try {
+                dev.openmaker.go.engine.checkHost(editor.address, editor.port, editor.certificate.trim())
+            } catch (error: GoException) {
+                hostEditor = editor.copy(error = error.goMessage())
+                return
+            }
+        val host = SavedHost(checked.address, checked.port.toInt(), editor.name.trim())
+        library.saveHost(editor.replaces, host, checked.certificate)
+        hosts = library.hosts
+        hostEditor = null
+        // Its files are listed again: the address, port or certificate
+        // authority they were listed with may have changed.
+        editor.replaces?.let { forgetListing(it) }
+        forgetListing(host)
+        if (hostPage?.let { shown -> editor.replaces?.isHost(shown) == true || shown.isHost(host) } == true) {
+            showHost(host)
         }
-        // A certificate authority belongs to the host and port it was
-        // entered for. The form shows the one saved for them, so a field
-        // the user cleared removes it.
-        val certificate = form.certificate.trim()
-        // A cleared one is removed now: a browse that fails without it
-        // must not leave the host trusted through it.
-        if (certificate.isEmpty()) library.trust(address, port, "")
-        val remember = {
-            library.lastHost = address
-            library.lastPort = port
-            library.trust(address, port, certificate)
+    }
+
+    fun removeHost(host: SavedHost) {
+        library.removeHost(host)
+        hosts = library.hosts
+        forgetListing(host)
+        if (hostPage?.isHost(host) == true) hostPage = null
+    }
+
+    /** Show [host]'s files, listing them if they have not been. */
+    fun showHost(host: SavedHost) {
+        hostPage = host
+        if (listings[key(host)] == null) listHost(host)
+    }
+
+    /** Back from a host's files to the list of hosts. */
+    fun showHosts() {
+        hostPage = null
+    }
+
+    /**
+     * Ask [host] for the files it lists. The answer shows on its page; one
+     * that comes after the host was changed or removed, or asked again, is
+     * dropped.
+     */
+    fun listHost(host: SavedHost) {
+        val key = key(host)
+        val certificate = library.certificate(host.address, host.port)
+        val asked = Listing.Pending()
+        listings = listings + (key to asked)
+        viewModelScope.launch {
+            val result =
+                withContext(Dispatchers.IO) {
+                    runCatching { dev.openmaker.go.engine.hostedFiles(Host(host.address, host.port.toUShort(), certificate)) }
+                }
+            if (listings[key] !== asked) return@launch
+            listings =
+                listings +
+                    (key to
+                        result.fold(
+                            { names -> Listing.Listed(names.map { Entry(it, host.address, host.port) }) },
+                            { Listing.Failed(it.goMessage()) },
+                        ))
         }
-        val file = form.file.trim()
-        if (file.isNotEmpty()) {
-            remember()
-            signIn = SignInRequest(Entry(file, address, port))
-            return
-        }
-        background({ dev.openmaker.go.engine.hostedFiles(Host(address, port.toUShort(), certificate)) }) { names ->
-            remember()
-            hosted = names.map { Entry(it, address, port) }
-            if (names.isEmpty()) message = "This host lists no files."
-        }
+    }
+
+    /** Sign in to a file [host] does not list, by its name ([name].fmp12). */
+    fun openByName(host: SavedHost, name: String) {
+        if (name.isBlank()) return
+        signIn = SignInRequest(Entry(dev.openmaker.go.engine.hostedFileName(name), host.address, host.port))
+    }
+
+    private fun key(host: SavedHost) = host.address to host.port
+
+    private fun forgetListing(host: SavedHost) {
+        listings = listings - key(host)
     }
 
     /**
