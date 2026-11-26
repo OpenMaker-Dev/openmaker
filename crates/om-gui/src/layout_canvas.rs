@@ -890,7 +890,7 @@ impl CanvasState {
         let geometry = self.geometry.as_ref()?;
         geometry.revision?;
         self.selected
-            .0
+            .members
             .iter()
             .map(|index| {
                 let object = geometry.objects.get(*index)?;
