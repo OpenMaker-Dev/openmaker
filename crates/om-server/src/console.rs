@@ -182,6 +182,7 @@ impl Backend for ServerBackend {
                 status: status(file.status),
                 clients: file.clients,
                 encrypted: false,
+                read_only: file.read_only.map(str::to_owned),
             })
             .collect()
     }

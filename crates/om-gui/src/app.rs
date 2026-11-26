@@ -469,7 +469,7 @@ const QUIT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 pub(crate) const DELETE_RECORD_MESSAGE: &str = "Permanently delete this ENTIRE record?";
 
 /// Something the user asked for during a frame.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Action {
     /// List the files of the host at this address and port (Home's host
     /// pages).
@@ -2347,7 +2347,7 @@ impl OpenMakerApp {
                                     self.w.calcs.schema().map(|schema| schema.as_ref()),
                                 ),
                                 &mut self.w.layout_workspace,
-                                &mut self.w.document.scroll,
+                                &mut self.w.document,
                             ),
                             Mode::Preview => crate::preview::show(
                                 ui,
@@ -4334,11 +4334,9 @@ impl OpenMakerApp {
     }
 
     /// Whether View's Zoom In, Zoom Out and Actual Size change the window's
-    /// zoom: a layout drawn in Browse's Form or List view, in Find mode
-    /// (which draws its requests as Form view does), or Preview, and Browse's
-    /// Table view, which draws the found set's grid whatever the layout,
-    /// unless Set Zoom Level locked the window's zoom. Layout mode and the
-    /// generic views are not zoomed yet (#36).
+    /// zoom: the drawn layout in Browse, Find, Preview or Layout mode, and
+    /// Browse's Table grid. Set Zoom Level can lock the window's zoom.
+    /// Generic views keep their normal scale (#36).
     fn zooms(&self) -> bool {
         if self.w.zoom_locked {
             return false;
@@ -4351,7 +4349,7 @@ impl OpenMakerApp {
             Mode::Browse => drawn || self.w.view == ViewMode::Table,
             Mode::Find => drawn && self.w.view != ViewMode::Table,
             Mode::Preview => drawn,
-            Mode::Layout => false,
+            Mode::Layout => matches!(session.geometry, crate::session::Geometry::Loaded(_)),
         }
     }
 
@@ -6480,7 +6478,7 @@ impl OpenMakerApp {
             self.w.id,
             (layout, revision),
             (name, occurrence),
-            (def.flags, def.menu_set_key),
+            def,
             in_menus,
         ));
     }
@@ -7710,7 +7708,7 @@ mod tests {
     }
 
     #[test]
-    fn view_zoom_commands_and_shortcuts_only_scale_the_form_document() {
+    fn view_zoom_commands_and_shortcuts_scale_the_document() {
         let mut app = OpenMakerApp::with_license_store(
             Box::new(om_data::mock::MockProvider::new()),
             Box::new(NoLicense),
@@ -7772,12 +7770,29 @@ mod tests {
         assert_eq!(app.w.document.zoom.percent(), 150);
         assert_eq!(context.zoom_factor(), 1.0);
 
+        app.w.mode = Mode::Layout;
+        app.apply(&context, Action::ZoomIn);
+        assert_eq!(
+            app.w.document.zoom.percent(),
+            150,
+            "layout geometry is still loading"
+        );
+        app.w.session.as_mut().unwrap().geometry =
+            crate::session::Geometry::Loaded(om_data::LayoutGeometry::default());
+        app.apply(&context, Action::ZoomIn);
+        assert_eq!(app.w.document.zoom.percent(), 200);
+
         app.w.zoom_locked = true;
         for action in [Action::ZoomIn, Action::ZoomOut, Action::ActualSize] {
             app.apply(&context, action);
-            assert_eq!(app.w.document.zoom.percent(), 150);
+            assert_eq!(app.w.document.zoom.percent(), 200);
         }
         app.w.zoom_locked = false;
+        app.apply(&context, Action::ActualSize);
+        assert_eq!(app.w.document.zoom.percent(), 100);
+        app.apply(&context, Action::ZoomIn);
+        assert_eq!(app.w.document.zoom.percent(), 150);
+        app.w.mode = Mode::Browse;
 
         // List and Table view zoom too, and Find mode's layout.
         app.w.view = ViewMode::List;

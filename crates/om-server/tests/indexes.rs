@@ -91,6 +91,90 @@ fn a_find_on_a_missing_index_builds_it_first_unless_builds_are_late() {
     assert!(name_index_on_disk(&file).is_empty());
 }
 
+/// A hosted file this server's user may not write (mode 444), or whose
+/// folder does not allow the new copy a save writes beside it (mode 555), is
+/// served read-only (#827 of github.com/OpenMaker-Dev/openmaker): the
+/// administrator's list of files says why, and a find on a field without an
+/// index, which stores the index it builds on a writable file, and an edit,
+/// which is refused, leave the file's bytes as they were. Permissions do
+/// not bind root (or a user with its override): a case whose forbidden
+/// write succeeds all the same says so on standard error and is skipped.
+/// The permissions are put back and the folder removed however a case ends.
+#[cfg(unix)]
+#[test]
+fn a_file_its_user_may_not_write_is_served_read_only() {
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    /// The case's folder: writable again and removed when it is dropped.
+    struct Folder(PathBuf);
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = mode(&self.0, 0o755);
+            let _ = mode(&self.0.join("Tasks.fmp12"), 0o644);
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    fn mode(path: &Path, mode: u32) -> std::io::Result<()> {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+    }
+    for (case, why) in [
+        (
+            "file",
+            "the server's user may not write the file, or its file system is read-only",
+        ),
+        (
+            "folder",
+            "its folder does not allow the new copy a save writes beside it",
+        ),
+    ] {
+        let folder = Folder(std::env::temp_dir().join(format!(
+            "om-read-only-{case}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        )));
+        std::fs::create_dir_all(&folder.0).unwrap();
+        let path = folder.0.join("Tasks.fmp12");
+        fixture::write_tree(&path, &fixture::tree(&[], true));
+        // The forbidden write, tried: a case it does not forbid is skipped.
+        let binds = match case {
+            "file" => {
+                mode(&path, 0o444).unwrap();
+                std::fs::OpenOptions::new().write(true).open(&path).is_err()
+            }
+            _ => {
+                mode(&folder.0, 0o555).unwrap();
+                let probe = folder.0.join("probe");
+                let made = std::fs::File::create_new(&probe).is_ok();
+                let _ = std::fs::remove_file(&probe);
+                !made
+            }
+        };
+        if !binds {
+            let _ = writeln!(
+                std::io::stderr(),
+                "a_file_its_user_may_not_write_is_served_read_only: the {case} case is \
+                 skipped: this user writes where its permissions forbid it (root?)"
+            );
+            continue;
+        }
+        let file = fixture::TempFile(path);
+        let before = std::fs::read(&file.0).unwrap();
+        let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+        let path = std::path::absolute(&file.0).unwrap();
+        let listed = handle.files().into_iter().find(|f| f.path == path).unwrap();
+        assert_eq!(listed.read_only, Some(why), "{case}");
+        for (_, found) in find_ship_twice(port) {
+            assert_eq!(found, [2], "{case}");
+        }
+        assert_eq!(std::fs::read(&file.0).unwrap(), before, "{case}: the finds");
+        let (mut session, _) = server::logged_in(port, "read-only file");
+        assert!(commit_cells(&mut session, 1, &[(fixture::NAME, "Changed")]).is_err());
+        session.disconnect().unwrap();
+        assert_eq!(std::fs::read(&file.0).unwrap(), before, "{case}: the edit");
+    }
+}
+
 /// A read that fails, as reads that reach a damaged page fail
 /// (docs/server-storage.md 5, "Views", and 6.12), reaches the client as an
 /// error, never as a reply that looks whole: a download that reaches it
@@ -453,7 +537,8 @@ fn commit_name(session: &mut om_session::Session, id: u64, name: &str) {
 }
 
 /// [`commit_name`] of a record holding `cells` of Tasks, its new content
-/// (the upload is the whole record), with the commit's outcome.
+/// (the upload is the whole record), with the outcome of the upload and the
+/// commit.
 fn commit_cells(
     session: &mut om_session::Session,
     id: u64,
@@ -481,9 +566,11 @@ fn commit_cells(
             .collect()
     };
     let record = OwnedNode::list(serial::encode(id), leaves(true));
-    session.upload_records(&table, vec![record]).unwrap();
     let changed = OwnedNode::list(serial::encode(id), leaves(false));
-    let committed = session.commit_records(&table, vec![changed], 0x31);
+    // On a file served read-only the upload is refused already.
+    let committed = session
+        .upload_records(&table, vec![record])
+        .and_then(|_| session.commit_records(&table, vec![changed], 0x31));
     session.kill_all_locks(0x31).unwrap();
     committed
 }

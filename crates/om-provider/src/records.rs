@@ -667,11 +667,32 @@ impl NativeProvider {
                 .is_some_and(|options| options.options & 0x1_0000 == 0)
     }
 
-    /// Whether Browse edits `field` of another file's table on a layout:
-    /// one a routed write takes ([`Self::check_scalar_cells`]) that does
-    /// not repeat. Browse edits a later repetition of the layout's own
-    /// record through its related path, which a routed table does not
-    /// take yet.
+    /// Whether Browse writes `field` of `table` through the owner on a
+    /// layout of the table: an ordinary stored field
+    /// ([`Self::ordinary_stored`]), each of its repetitions up to the 255th
+    /// by its cell, as Set Field writes them (`check_scalar_cells`) and as a
+    /// layout of this file's table offers them (#43). Not one whose later
+    /// repetition's cell (`F * 256 + n`) is another field's id, as a
+    /// malformed file can make it: a routed write takes a cell as the field
+    /// of that id first, and Set Field refuses one too (om-gui writes.rs).
+    pub(super) fn routed_layout_field(table: &Table, field: &om_hbam::Field) -> bool {
+        Self::ordinary_stored(field)
+            && field.decoded_options().is_some_and(|options| {
+                let repetitions = u64::from(options.max_repetitions.max(1));
+                repetitions <= 255
+                    && (2..=repetitions).all(|n| {
+                        field
+                            .id
+                            .checked_mul(256)
+                            .and_then(|base| base.checked_add(n))
+                            .is_some_and(|cell| table.field(cell).is_none())
+                    })
+            })
+    }
+
+    /// Whether Browse edits `field` of another file's table in a portal row
+    /// or related field: one a routed write takes
+    /// ([`Self::check_scalar_cells`]) that does not repeat.
     pub(super) fn routed_browse_field(field: &om_hbam::Field) -> bool {
         Self::ordinary_stored(field)
             && field
@@ -1835,13 +1856,31 @@ impl NativeProvider {
         auto_enter: bool,
     ) -> Result<u64, DataError> {
         self.require_open()?;
+        let layout = self.decoded_layout(layout_id)?;
+        let table = self.table_for_layout(&layout)?.id;
+        self.import_table_record(table, Some(layout_id), record, cells, auto_enter)
+    }
+
+    /// [`Self::import_native_record`] into base table `table`, through
+    /// `layout` of this file, or none: a layout of the opened file, which
+    /// imports into this file's table through it as its owner (#43), is no
+    /// layout of this file.
+    pub(crate) fn import_table_record(
+        &mut self,
+        table: u64,
+        layout: Option<u32>,
+        record: Option<i64>,
+        cells: &BTreeMap<u64, Option<String>>,
+        auto_enter: bool,
+    ) -> Result<u64, DataError> {
+        self.require_open()?;
         if self.in_transaction() {
-            return self.hold_import(layout_id, record, cells, auto_enter);
+            return self.hold_import(table, layout, record, cells, auto_enter);
         }
-        let (table, plan) = self.record_plan(layout_id)?;
+        let (table, plan) = self.table_plan(table)?;
         let entry = Entry::import(auto_enter);
         // An import may be a script's step: its set is not known.
-        let context = self.write_context(&plan, Some(layout_id), CurrentSet::Step(None))?;
+        let context = self.write_context(&plan, layout, CurrentSet::Step(None))?;
         let environment = self.rule_environment(table.id, &plan, context)?;
         let txn = self.new_transaction();
         let result = match record {

@@ -798,7 +798,8 @@ fn save_layout(app: &mut common::App) {
     common::click(app, "Save Layout");
 }
 
-/// Save Layout stores the sidebar drop's full edit-box height (#315).
+/// A sidebar drop into the zoomed canvas stores its position in layout
+/// points and keeps the full edit-box height (#315).
 #[test]
 fn a_sidebar_field_drop_saves_a_44_point_edit_box() {
     let file = form_file();
@@ -814,9 +815,13 @@ fn a_sidebar_field_drop_saves_a_44_point_edit_box() {
     common::click(&mut app, "Objects");
     common::click(&mut app, "Fields");
     common::wait_for_label(&mut app, "Name");
+    for _ in 0..2 {
+        common::open_menu(&mut app, "View");
+        common::click(&mut app, "Zoom In");
+    }
     let source = app.get_by_label("Name").rect().center();
     let canvas = app.get_by_label("Layout canvas").rect();
-    drag(&mut app, source, canvas.min + egui::vec2(132.0, 72.0));
+    drag(&mut app, source, canvas.min + 2.0 * egui::vec2(132.0, 72.0));
     common::wait_for_label(&mut app, "New field Name");
     shot(&mut app, "sidebar-field-drop", "Name field draft");
     save_layout(&mut app);
@@ -834,6 +839,7 @@ fn a_sidebar_field_drop_saves_a_44_point_edit_box() {
         .iter()
         .find(|object| object.field_name.as_deref() == Some("Name"))
         .unwrap();
+    assert_eq!((field.rect.left, field.rect.top), (110.0, 72.0));
     assert_eq!(field.rect.height(), 44.0);
 }
 
@@ -1152,14 +1158,24 @@ fn a_stored_field_is_moved_and_resized_and_kept() {
         canvas_frame(&app, "Field: Count (object 1)"),
         [110.0, 20.0, 230.0, 42.0]
     );
-    // Again, then wider by its right handle, then 30 high in the Inspector.
-    drag(
+    // Again at 200%, then 30 layout points wider by its right handle.
+    shot(&mut app, "layout-zoom-100", "the canvas at Actual Size");
+    for _ in 0..2 {
+        common::open_menu(&mut app, "View");
+        common::click(&mut app, "Zoom In");
+    }
+    shot(
         &mut app,
-        origin + egui::vec2(170.0, 31.0),
-        origin + egui::vec2(210.0, 61.0),
+        "layout-zoom-200",
+        "the same canvas at 200 percent",
     );
+    let from = app.get_by_label("Field: Count (object 1)").rect().center();
+    drag(&mut app, from, from + egui::vec2(80.0, 60.0));
     let handle = app.get_by_label("Resize right").rect().center();
-    drag(&mut app, handle, handle + egui::vec2(30.0, 0.0));
+    drag(&mut app, handle, handle + egui::vec2(60.0, 0.0));
+    common::open_menu(&mut app, "View");
+    common::click(&mut app, "Actual Size");
+    // The Inspector still measures in layout points.
     // A click on the Inspector's Height starts typing a value into it.
     app.get_by_label("Object Height").click();
     app.run_steps(3);
@@ -1769,9 +1785,9 @@ fn delete_layout_asks_then_shows_the_next_layout() {
 }
 
 /// Layouts > Layout Setup... renames the layout, turns two General options
-/// over and makes List view available with the operation `om-author`'s
-/// `layout_setup` uses (`DataProvider::set_layout_setup`); the layout menu
-/// shows the new name.
+/// over, makes List view available and prints within fixed page margins
+/// with the operations `om-author`'s `layout_setup` uses
+/// (`DataProvider::set_layout_setup`); the layout menu shows the new name.
 #[test]
 fn layout_setup_renames_the_layout_and_sets_its_views_and_options() {
     let alias = serial::decode(&uint_segment(OCCURRENCE)).unwrap();
@@ -1825,6 +1841,17 @@ fn layout_setup_renames_the_layout_and_sets_its_views_and_options() {
     common::click(&mut app, "Views");
     common::click(&mut app, "List View");
     shot(&mut app, "82-views", "Layout Setup's Views tab");
+    // Printing: the box on, and the left margin typed; the others stay as
+    // shown (re/layout-model.md 4.2).
+    common::click(&mut app, "Printing");
+    common::click(&mut app, "Use fixed page margins");
+    app.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Left")
+        .click();
+    app.run_steps(2);
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    app.input_mut().events.push(egui::Event::Text("70".into()));
+    app.run_steps(3);
+    shot(&mut app, "83-printing", "Layout Setup's Printing tab");
     common::click(&mut app, "OK");
     common::wait_until(&mut app, "the renamed layout", |app| {
         assert!(app.state().error().is_none(), "{:?}", app.state().error());
@@ -1838,7 +1865,13 @@ fn layout_setup_renames_the_layout_and_sets_its_views_and_options() {
         Some("Task Board")
     );
     let flags = member.child(&[0xf1]).and_then(|n| n.value.clone());
-    assert_eq!(flags, Some(0x00f3_8809_u64.to_be_bytes().to_vec()));
+    assert_eq!(flags, Some(0x00f3_8849_u64.to_be_bytes().to_vec()));
+    let def = om_data::layout_placement::definition(&member).unwrap();
+    let margins = def.custom_margins.unwrap();
+    assert_eq!(
+        (margins.top, margins.left, margins.bottom, margins.right),
+        (36.0, 70.0, 36.0, 36.0)
+    );
 }
 
 /// A double click on a stored text in Layout mode types into it; the words

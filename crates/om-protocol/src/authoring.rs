@@ -131,6 +131,9 @@ const SET_TEXT: u8 = 20;
 const VALUE_LIST_VALUES: u8 = 24;
 const PLACE_PORTAL: u8 = 21;
 const CHANGE_PARTS: u8 = 22;
+/// Layout Setup with fixed page margins: operation 16's request and the
+/// margins, in one commit.
+const LAYOUT_SETUP_MARGINS: u8 = 23;
 
 /// Bits of [`Described::operations`].
 pub const OP_REPLACE_SCRIPT_STEPS: u32 = 1 << REPLACE_SCRIPT_STEPS;
@@ -156,6 +159,7 @@ pub const OP_DELETE_LAYOUT: u32 = 1 << DELETE_LAYOUT;
 pub const OP_PLACE_TEXT: u32 = 1 << PLACE_TEXT;
 pub const OP_LAYOUT_SETUP: u32 = 1 << LAYOUT_SETUP;
 pub const OP_LAYOUT_WIDTH: u32 = 1 << LAYOUT_WIDTH;
+pub const OP_LAYOUT_SETUP_MARGINS: u32 = 1 << LAYOUT_SETUP_MARGINS;
 pub const OP_FIELD_CONTROL: u32 = 1 << FIELD_CONTROL;
 pub const OP_PART_OPTIONS: u32 = 1 << PART_OPTIONS;
 pub const OP_SET_TEXT: u32 = 1 << SET_TEXT;
@@ -264,6 +268,7 @@ pub enum Operation {
     DeleteLayout,
     LayoutSetup,
     LayoutWidth,
+    LayoutSetupMargins,
     FieldControl,
     PartOptions,
     SetText,
@@ -509,16 +514,19 @@ pub struct ValueListValues {
 /// Set layout `layout`'s name, view flags `f1` and whether the layout
 /// menus leave it out (`hidden`) as Layout Setup does, if its member
 /// `[4, 5, L]` is at revision `expected` ([`catalog_revision`]): `flags`
-/// may differ from the stored ones only in the view bits
-/// (`docs/authoring.md`, "Layout Setup"; layout-model.md 10.11). The reply
-/// is [`Reply::Framed`] with the member's revision.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// may differ from the stored ones only in the bits Layout Setup sets
+/// (`docs/authoring.md`, "Layout Setup"; layout-model.md 10.11). With
+/// `margins`, also its fixed page margins (`LayoutDef.customMargins`, in
+/// points: top, left, bottom, right), in the same commit: operation 23,
+/// else 16. The reply is [`Reply::Framed`] with the member's revision.
+#[derive(Clone, Debug, PartialEq)]
 pub struct LayoutSetup {
     pub expected: Revision,
     pub layout: u64,
     pub name: String,
     pub flags: u64,
     pub hidden: bool,
+    pub margins: Option<[f64; 4]>,
 }
 
 /// Move or resize objects of layout `layout`: each object (its key) to its
@@ -767,13 +775,23 @@ pub fn build_request(
             (b, LAYOUT_WIDTH, VERSION)
         }
         Request::LayoutSetup(setup) => {
+            let (b, operation) = match setup.margins {
+                Some(margins) => (
+                    margins
+                        .iter()
+                        .rev()
+                        .fold(b, |b, edge| b.push_u64(edge.to_bits())),
+                    LAYOUT_SETUP_MARGINS,
+                ),
+                None => (b, LAYOUT_SETUP),
+            };
             let b = b
                 .push_bool(setup.hidden)
                 .push_string(&setup.name)
                 .push_u64(setup.flags)
                 .push_raw(&setup.expected)
                 .push_u64(setup.layout);
-            (b, LAYOUT_SETUP, VERSION)
+            (b, operation, VERSION)
         }
         Request::DeleteLayout(delete) => {
             let b = b.push_u64(delete.layout).push_raw(&delete.expected);
@@ -1114,18 +1132,23 @@ pub fn parse_request_within(
                 width,
             })
         }
-        Operation::LayoutSetup => {
+        Operation::LayoutSetup | Operation::LayoutSetupMargins => {
             let layout = r.pop_u64()?;
             let expected: Revision = r.pop_raw(32)?.try_into().expect("32 bytes");
             let flags = r.pop_u64()?;
             let name = r.pop_string()?;
             let hidden = r.pop_bool()?;
+            let margins = match operation {
+                Operation::LayoutSetupMargins => Some(pop_frame(&mut r)?),
+                _ => None,
+            };
             Request::LayoutSetup(LayoutSetup {
                 expected,
                 layout,
                 name,
                 flags,
                 hidden,
+                margins,
             })
         }
         Operation::DeleteLayout => {
@@ -1303,6 +1326,7 @@ fn request_header(transaction: &[u8]) -> Result<(Reader<'_>, Operation), Perform
         (VERSION, DELETE_LAYOUT) => Operation::DeleteLayout,
         (VERSION, LAYOUT_SETUP) => Operation::LayoutSetup,
         (VERSION, LAYOUT_WIDTH) => Operation::LayoutWidth,
+        (VERSION, LAYOUT_SETUP_MARGINS) => Operation::LayoutSetupMargins,
         (VERSION, FIELD_CONTROL) => Operation::FieldControl,
         (VERSION, PART_OPTIONS) => Operation::PartOptions,
         (VERSION, CHANGE_PARTS) => Operation::ChangeParts,
@@ -1786,12 +1810,21 @@ mod tests {
             layout: 3,
             width: 900.5,
         });
+        let margins = Request::LayoutSetup(LayoutSetup {
+            expected: [8; 32],
+            layout: 3,
+            name: "Contact Details".into(),
+            flags: 0x10f3_0a49,
+            hidden: false,
+            margins: Some([50.0, 70.0, 60.0, 80.5]),
+        });
         let setup = Request::LayoutSetup(LayoutSetup {
             expected: [6; 32],
             layout: 3,
             name: "Contact Details – 2".into(),
             flags: 0x10f3_0a09,
             hidden: true,
+            margins: None,
         });
         let gone = Request::DeleteLayout(DeleteLayout {
             expected: [4; 32],
@@ -1966,6 +1999,13 @@ mod tests {
                 Reply::Framed(Framed {
                     changed: true,
                     revision: [8; 32],
+                }),
+            ),
+            (
+                margins,
+                Reply::Framed(Framed {
+                    changed: true,
+                    revision: [3; 32],
                 }),
             ),
             (

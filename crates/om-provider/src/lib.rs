@@ -3394,7 +3394,8 @@ impl DataProvider for NativeProvider {
             // Planned over the owner's routed plan (#187), as its write is,
             // opening nothing; deferred while a file its rules read waits
             // (`routed_edits`, #1160).
-            let (editable, typed) = match self.routed_edits(route, &file)? {
+            let mut refused = BTreeMap::new();
+            let editable = match self.routed_edits(route, &file)? {
                 related_owner::RoutedEdits::ReadOnly => {
                     return Ok(om_data::RecordCapabilities {
                         editable_fields: Some(BTreeSet::new()),
@@ -3402,37 +3403,53 @@ impl DataProvider for NativeProvider {
                     });
                 }
                 // Only the fields Browse writes through the owner
-                // (`routed_browse_field`): a repeating field the owner's
-                // plan offers is not. Its typed globals are the owner's
-                // session values (`set_typed_globals`).
+                // (`routed_layout_field`), and its typed globals, the
+                // owner's session values (`set_typed_globals`). One the
+                // owner's account may only view is entered and refused, as
+                // on a layout of this file's table.
                 related_owner::RoutedEdits::Offered {
                     fields,
                     globals,
+                    view_only,
                     table,
-                } => (
-                    Some(
-                        fields
-                            .into_iter()
-                            .filter(|name| {
-                                table.fields.iter().any(|field| {
-                                    field.name == *name && Self::routed_browse_field(field)
-                                })
+                } => {
+                    let (shown, offered): (BTreeSet<String>, BTreeSet<String>) = fields
+                        .into_iter()
+                        .filter(|name| {
+                            table.fields.iter().any(|field| {
+                                field.name == *name && Self::routed_layout_field(&table, field)
                             })
-                            .chain(globals.iter().cloned())
-                            .collect(),
-                    ),
-                    globals,
-                ),
-                related_owner::RoutedEdits::Refused => (None, BTreeSet::new()),
+                        })
+                        .chain(globals)
+                        .partition(|name| view_only.contains(name));
+                    refused = shown
+                        .into_iter()
+                        .map(|name| (name, om_data::EditRefusal::ViewOnlyField))
+                        .collect();
+                    Some(offered)
+                }
+                related_owner::RoutedEdits::Refused => None,
             };
-            // A typed global's later repetitions are entered as cells of the
-            // record's own related draft (#185), as on a layout of this
-            // file's table: by the layout's occurrence and field id.
-            let repetitions: BTreeSet<u64> = file
+            // A name two of its fields share, as a malformed file can have
+            // it, names neither for certain: neither is offered.
+            let fields: Vec<_> = file
                 .table(table.id)
                 .into_iter()
                 .flat_map(|t| t.fields.values())
-                .filter(|f| typed.contains(&f.name))
+                .collect();
+            let unique = |name: &String| fields.iter().filter(|f| f.name == *name).count() == 1;
+            let editable =
+                editable.map(|names| names.into_iter().filter(|name| unique(name)).collect());
+            // Later repetitions are entered as cells of the record's own
+            // related draft (#185), as on a layout of this file's table: by
+            // the layout's occurrence and field id.
+            let repetitions: BTreeSet<u64> = fields
+                .iter()
+                .filter(|f| {
+                    editable
+                        .as_ref()
+                        .is_some_and(|e: &BTreeSet<String>| e.contains(&f.name))
+                })
                 .map(|f| f.id)
                 .collect();
             let mut related = BTreeMap::new();
@@ -3451,7 +3468,7 @@ impl DataProvider for NativeProvider {
                 // Related records of a layout of another file's table
                 // are not edited in Browse yet.
                 related,
-                refused: BTreeMap::new(),
+                refused,
                 globals: file
                     .table(table.id)
                     .into_iter()
@@ -3702,8 +3719,23 @@ impl DataProvider for NativeProvider {
         // Even a lost write reply may have changed the host. Draft and
         // transaction outcome handling remains with the existing write path.
         self.invalidate_calc_data();
-        let id = self.import_native_record(layout_id, record, cells, auto_enter)?;
         let layout = self.decoded_layout(layout_id)?;
+        if self.table_for_layout(&layout).is_err() {
+            // Inside a transaction, refused before that file is opened or
+            // asked for its table (#933).
+            if self.in_transaction() {
+                return Err(Self::unsupported_peer_transaction());
+            }
+            // A layout of another file's table: that file imports the row
+            // into its table (related_owner.rs, #43).
+            let table = self.read_table_for_layout(&layout)?.id;
+            if self.external.route(table).is_some() {
+                let id = self.import_routed(table, record, cells, auto_enter)?;
+                return i64::try_from(id)
+                    .map_err(|_| DataError::new("Record ID exceeds the supported range."));
+            }
+        }
+        let id = self.import_native_record(layout_id, record, cells, auto_enter)?;
         let table = self.table_for_layout(&layout)?.id;
         if record.is_none() {
             self.found_add(table, id);
@@ -3812,18 +3844,19 @@ impl DataProvider for NativeProvider {
         let layout = self.decoded_layout(layout_id)?;
         if self.table_for_layout(&layout).is_err() {
             let table = self.read_table_for_layout(&layout)?.id;
-            if self.external.route(table).is_some() {
-                // Inside a script's transaction the reference would join
-                // the owner's part of it, whose cleanup after a refused
-                // copy is not settled: refused before anything is counted.
+            if let Some(route) = self.external.route(table) {
+                // Inside a script's transaction the reference is the
+                // owner's part of it, as the copy the owner holds there is
+                // (`write_routed_related`): kept by Commit Transaction,
+                // released by Revert Transaction. A copy refused before it
+                // is held gives it back at once (the window's
+                // `adjust_containers`), counted as given back before the
+                // release is sent (`adjust_table_container`), so that the
+                // revert cannot give it back again.
                 if delta > 0
                     && self.transaction_kind() == Some(transaction::TransactionKind::Script)
                 {
-                    return Err(DataError::with_code(
-                        3,
-                        "Duplicating a container of another file's table inside a script's \
-                         transaction is not supported.",
-                    ));
+                    self.join_owner_transaction(table, route)?;
                 }
                 return om_data::DataProvider::adjust_related_container(
                     self, table, reference, delta,
@@ -4110,32 +4143,34 @@ impl DataProvider for NativeProvider {
         let table = write.table.unwrap_or(layout_table);
         self.check_asset_write(write, table)?;
         if self.external.route(table).is_some() {
-            // A related record of another file's table on a layout of this
-            // file's table: that file writes it (related_owner.rs).
-            if table != layout_table && self.external.route(layout_table).is_none() {
+            // A related record of another file's table, on a layout of this
+            // file's table or of another file's table (#43): that file
+            // writes it (related_owner.rs).
+            if table != layout_table {
                 return self.write_routed_related(write, table);
             }
-            // Only the layout's own base table: an existing record, or a new
-            // one (New Record, Duplicate Record) created by the owner.
-            if table != layout_table {
-                return Err(DataError::with_code(
-                    3,
-                    "Related-file script writes support only records of the layout's base table.",
-                ));
-            }
-            // A layout of another file's table previews nothing (preview.rs).
-            if write.prepared.is_some() {
-                return Err(DataError::with_code(
-                    3,
-                    "A new record of another file's layout has no preview.",
-                ));
-            }
+            // The layout's own base table, of another file: an existing
+            // record, or a new one (New Record, Duplicate Record) created by
+            // the owner.
             // Inside the window's record session, or a script's transaction,
             // the owner holds it as one of the transaction's parts, as it
             // holds a portal row of its table (related_owner.rs): op71 under
             // the transaction, and nothing stored until it commits or
             // reverts (#892, #1006).
             if self.in_transaction() {
+                // The user's typing into a later repetition of the record is
+                // the user's own edit, which a script's transaction does not
+                // take on such a layout (#411): refused, its draft kept, as
+                // the user's other saves there are (`with_existing_record_owner`).
+                if self.transaction_kind() == Some(transaction::TransactionKind::Script) {
+                    let schema = self.calc_schema_cached()?;
+                    let def = schema.table(table);
+                    if write.typed.iter().any(|cell| {
+                        *cell & 0xff >= 2 && def.is_some_and(|t| !t.fields.contains_key(cell))
+                    }) {
+                        return Err(Self::unsupported_peer_transaction());
+                    }
+                }
                 // A record the session's new record is not on the host: the
                 // window saw no version of it to check its save against.
                 if let Some(id) = write.record.and_then(|id| u64::try_from(id).ok()) {
@@ -4151,6 +4186,12 @@ impl DataProvider for NativeProvider {
                 }
                 return self.with_calculations(write.layout, record);
             }
+            // A previewed new record names the owner's preview (preview.rs),
+            // as a related record's write does (`write_routed_related`).
+            let prepared = write
+                .prepared
+                .map(|id| self.routed_preview(id, table, write.layout))
+                .transpose()?;
             let script_write = |owner: &mut Self, wire| {
                 let (table, plan) = owner.table_plan(wire)?;
                 Self::check_scalar_cells(&table, &write.cells)?;
@@ -4160,12 +4201,24 @@ impl DataProvider for NativeProvider {
                         *text = owner.check_typed_entry(wire, *cell, text)?;
                     }
                 }
-                // This file's script's elevation is not the owner's.
-                let context = owner.write_context(&plan, None, records::CurrentSet::Account)?;
+                // This file's script's elevation is not the owner's, and no
+                // layout of the owner's is used. The record's number is the
+                // window's, and a preview's context, serial numbers, clock
+                // and UUID are the preview's, as for a related record's
+                // write (`routed_write`, #1084).
+                let context = owner.origin_context(
+                    &plan,
+                    records::Origin {
+                        layout: None,
+                        set: records::CurrentSet::Account,
+                        record_number: write.record_number,
+                        prepared,
+                    },
+                )?;
                 owner.script_table_record(
                     &table,
                     &plan,
-                    (write.record, None),
+                    (write.record, prepared),
                     (&cells, &write.typed),
                     write.skip_validation,
                     context,
@@ -4881,6 +4934,7 @@ impl DataProvider for NativeProvider {
                 name: change.name,
                 flags: change.flags,
                 hidden: change.hidden,
+                margins: change.margins.map(|m| [m.top, m.left, m.bottom, m.right]),
             })
             .map(|framed| om_data::layout_objects::FramedObjects {
                 changed: framed.changed,

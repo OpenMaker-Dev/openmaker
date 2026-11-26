@@ -661,7 +661,8 @@ pub static LAYOUT_SETUP: CommandSpec = CommandSpec {
     tool: "openmaker_layout_setup",
     title: "Set up a layout",
     description: "Set a layout's name, the views available (form, list, table), its default \
-                  view and whether the layout menus list it, as FileMaker Pro's Layout Setup \
+                  view, whether the layout menus list it, and its fixed page margins (in \
+                  points) and whether it prints within them, as FileMaker Pro's Layout Setup \
                   does; what is left out stays as it is. Only if the layout is still at \
                   expected_revision (get_layout's revision); then the layout is read back over a \
                   new connection. At least one view stays available, the default among them. \

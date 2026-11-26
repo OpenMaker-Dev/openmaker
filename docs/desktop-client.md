@@ -942,7 +942,7 @@ picture is drawn one pixel to a point whatever resolution (`DPI_`) it
 has; the file icon is OpenMaker's own, not the system's icon for the
 file's type; and only the starters' two graphic formats (5 and 7, centered)
 were compared with FileMaker Pro, the others are inferred from Claris's
-flag names. Zoom applies to loaded Form and List layouts and Find mode only (below).
+flag names. See [Zoom](#zoom) for which views support scaling.
 
 **Checks.** Regular tests use synthetic layouts and records. The ignored
 `live` tests (`cargo test -p om-gui --test live -- --ignored`) host a
@@ -1123,8 +1123,9 @@ is not shown; neither is compared with FileMaker Pro.
 
 ### Zoom
 
-Loaded Browse Form and List layouts, Browse Table view and Find mode's
-layout have document-local Actual Size, Zoom In and Zoom Out commands, in steps of 25, 50, 75, 100, 150, 200, 300 and 400 percent.
+Loaded Browse Form and List layouts, Browse Table view, Find mode's layout
+and the Layout mode canvas have document-local Actual Size, Zoom In and Zoom
+Out commands, in steps of 25, 50, 75, 100, 150, 200, 300 and 400 percent.
 The menu and keyboard controls scale the document's allocation, clipping,
 pointer input and accessibility bounds together; menus and toolbars keep the
 application scale. While the layout paints, egui treats the zoomed layer as
@@ -1181,10 +1182,11 @@ level, and Lock off restores those controls. A new window (New Window,
 the step or Window > New Window) takes the lock with the zoom of the window
 it opens from [I: inheritance has not been compared with FileMaker Pro].
 
-Limits: Layout mode and generic Form fallbacks are not zoomed (Preview scales its paper:
-[preview.md](preview.md); [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)). Scroll bars
-inside the zoomed layer (List and Table view's) scale with it; FileMaker Pro's
-keep their size [I: unmeasured]. How FileMaker Pro scales Table view's
+Generic Form fallbacks keep their normal scale
+([#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)). Preview scales its paper
+([preview.md](preview.md)). Scroll bars inside the zoomed layer (List and
+Table view and Layout mode) scale with it. FileMaker Pro's scrollbar size
+at different zoom levels is unmeasured. How FileMaker Pro scales Table view's
 header and row heights is unmeasured. A Table view column is resized from
 its divider in the header only, and a double click does not fit it to its
 contents; FileMaker Pro's divider behavior is unmeasured.
@@ -2120,8 +2122,12 @@ apply. The dialog has not been compared with FileMaker Pro's.
 
 ### Layout mode and Manage Layouts
 
-Layout mode renders the provider's `LayoutGeometry` at one point per UI
-point, with scrolling, part tabs, object selection and selection handles.
+Layout mode renders the provider's `LayoutGeometry` at the window zoom.
+The scrollable canvas, part tabs, objects and selection handles scale
+together. Placement, movement, resizing and the Inspector use the original
+layout points at every zoom. The toolbar, Objects pane and Inspector keep
+their size. The wheel and scroll bars scroll the canvas at every zoom.
+Touch drag to scroll is available at Actual Size.
 The Objects pane is 220 pt wide, lists the layout's objects front to back,
 filters by kind or known field name, and selects and reveals the matching
 canvas object. Inspector tabs are interactive; Position shows real bounds
@@ -2517,12 +2523,23 @@ Setup button (Layout mode, design access) open FileMaker Pro's Layout Setup
 dialog over the layout the window shows, its controls where Pro's places
 them (re/client-ui.md, "Layout Setup"). OK sets the Layout Name, "Include
 in layout menus", the General tab's five checkboxes, the views available
-and the default view with the
+and the default view, and the Printing tab's "Use fixed page margins" and
+its Top, Bottom, Left and Right margins, with the
 operation `om-author`'s `layout_setup` uses (`DataProvider::set_layout_setup`;
 [authoring](authoring.md), "Layout Setup"); every window of the file then
-reads its layouts again. The General tab's Show records from and Menu Set
-show the layout's values and are not offered, nor are Reset Quick Find,
-the Printing and Script Triggers tabs or Manage Layouts' Edit. It is refused while the layout has unsaved
+reads its layouts again. The margins are edited in points (OpenMaker's
+choice: Pro's fields show the ruler's units), and are sent only when
+they or the box changed, with the setup in one commit. With the box off
+they are not offered and show the printer's, 18 / 40 / 18 / 18, as Pro's
+do (re/layout-model.md 4.2). On a layout printing in columns neither the
+box nor the margins are offered: Pro works the columns' width out from
+them, which OpenMaker does not. The General
+tab's Show records from and Menu Set, and the Printing tab's "Print in N
+columns", show the layout's values and are not offered. The column order
+and Facing Pages are not offered and show no state, since where FileMaker
+stores them is unknown
+([#948](https://github.com/OpenMaker-Dev/openmaker/issues/948)). Nor are
+Reset Quick Find, the Script Triggers tab or Manage Layouts' Edit offered. It is refused while the layout has unsaved
 changes, as New and Duplicate Layout are.
 
 **Part Setup.** Layouts > Part Setup... (Layout mode, design access) opens

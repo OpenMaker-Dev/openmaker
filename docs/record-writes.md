@@ -428,8 +428,12 @@ before the record commit writes it.
   after a reconnect.
 - **Related files.** A portal row of another file's table is previewed by
   that file's provider through the table's route, as its write goes
-  (related_owner.rs); the opened file maps its preview id to the owner's.
-  A layout of another file's table ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)) has no preview.
+  (related_owner.rs); the opened file maps its preview id to the owner's,
+  and to the layout the write goes through. So is a new record of a layout
+  of another file's table ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)):
+  its write naming the preview, outside a transaction or held in one, stores
+  what the preview drew, with no layout of the owning file's. So is a
+  related record of another file's table on such a layout.
 - **The desktop window's use.** OnObjectSave when leaving a changed field
   by clicking the layout's background or using keyboard Commit
   (an ordinary commit, #1070), previews the window's begun rows before its
@@ -1071,7 +1075,10 @@ same way is inferred, not measured.
 
 **Related records of another file.** A portal row or related field of a
 table a related file owns, on a layout of the opened file's own table,
-is written by that file (`related_owner.rs`, #1000):
+is written by that file (`related_owner.rs`, #1000). So is a script's write
+to such a record from a layout of another file's table, whichever related
+file owns the record ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43));
+Browse there does not edit them yet:
 - **The owner writes.** The opened file's Browse edits, a script's Set
   Field into it (one through a relationship that allows creation creates
   the record, its match fields taking the current record's values) and
@@ -1155,12 +1162,24 @@ is written by that file (`related_owner.rs`, #1000):
     whose rules OpenMaker cannot plan still deletes
     ([#312](https://github.com/OpenMaker-Dev/openmaker/issues/312)). Which
     records the window shows after such a revert is unmeasured.
+  - **A script's Duplicate Record** of a record holding a container, on
+    such a layout, takes the copy's reference in that file's library
+    within that file's part ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)):
+    the owning file joins the transaction first (`adjust_container`), so
+    that Commit Transaction keeps the reference with the copy and Revert
+    Transaction gives it back. A copy refused before it is held gives its
+    reference back at once, counted as given back before the release is
+    sent, so that the revert does not give it back again.
   - **Still refused (3)** inside the transaction, on such a layout: the
     edits, new records and deletions the user makes there while the script
     is paused (the provider's create, update and delete calls,
     [#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)). No step
     of the transaction made them, and the window's OnWindowTransaction
-    would report them before the transaction's outcome.
+    would report them before the transaction's outcome. The Records menu's
+    New Record and Duplicate Record are the exception: they run their
+    steps, which run on top of the paused script, so the record (and a
+    duplicate's container references) is held in the transaction as a
+    script's is. Whether FileMaker holds them so is #411's question.
 - **The window's commit of a record across files** (#1006; it begins with
   `DataProvider::begin_record_commit`, a script's Open Transaction with
   `begin_transaction`). It is saved file by file, related files first and
