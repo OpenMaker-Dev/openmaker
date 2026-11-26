@@ -4159,9 +4159,21 @@ impl OpenMakerApp {
                     ui.add_space(14.0);
                     let ok = widgets::dialog_button(ui, "OK", true, true);
                     // Alerts are modal: only OK, Return or Escape dismiss
-                    // them, never a click outside.
+                    // them, never a click outside. Only a new press: the
+                    // repeats of a key held since an earlier alert do not
+                    // dismiss the next one too (#859).
                     let key = ui.input(|input| {
-                        input.key_pressed(Key::Enter) || input.key_pressed(Key::Escape)
+                        input.events.iter().any(|event| {
+                            matches!(
+                                event,
+                                egui::Event::Key {
+                                    key: Key::Enter | Key::Escape,
+                                    pressed: true,
+                                    repeat: false,
+                                    ..
+                                }
+                            )
+                        })
                     });
                     if ok.clicked() || key {
                         actions.push(dismiss.clone());
@@ -8790,6 +8802,79 @@ mod tests {
             assert!(app.docs().all(|doc| doc.session.is_none()), "{how}");
             assert!(app.quit_ready || app.quit_waiting.is_some(), "{how}");
         }
+    }
+
+    /// While a script runs or pauses, Escape on the app's alert (a pause's
+    /// message, a waiting alert) dismisses the alert, as Return does, and
+    /// does not reach the script; neither do the repeats of the held key.
+    /// A new Escape, and Command-period even with the alert up, stop it
+    /// (#859).
+    #[test]
+    fn escape_on_an_alert_during_a_script_dismisses_the_alert() {
+        let key = |key: Key, repeat: bool, modifiers: Modifiers| egui::RawInput {
+            events: vec![
+                egui::Event::ModifiersChanged(modifiers),
+                egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat,
+                    modifiers,
+                },
+            ],
+            ..Default::default()
+        };
+        let alert = || Some("The layout menus of \"Peer\" could not be read.".to_owned());
+        for paused in [false, true] {
+            let ctx = egui::Context::default();
+            let mut app = two_record_windows();
+            app.script.running = true;
+            app.script.paused = paused.then_some(None);
+            app.error = alert();
+            ctx.run_ui(key(Key::Escape, false, Modifiers::NONE), |ui| app.show(ui))
+                .drop_without_applying_deltas();
+            assert_eq!(app.error, None, "paused={paused}");
+            assert_eq!(app.script.paused, paused.then_some(None), "paused={paused}");
+        }
+        let ctx = egui::Context::default();
+        let mut app = two_record_windows();
+        app.script.running = true;
+        app.error = alert();
+        let frame = |app: &mut OpenMakerApp, input| {
+            ctx.run_ui(input, |ui| app.show(ui))
+                .drop_without_applying_deltas();
+        };
+        frame(&mut app, key(Key::Escape, false, Modifiers::NONE));
+        assert_eq!(app.error, None);
+        // The held key's repeats neither dismiss the next alert nor stop
+        // the script.
+        app.error = alert();
+        frame(&mut app, key(Key::Escape, true, Modifiers::NONE));
+        assert!(app.error.is_some(), "the next alert stays");
+        app.error = None;
+        frame(&mut app, key(Key::Escape, true, Modifiers::NONE));
+        assert!(!app.worker.abort_asked(), "the held key's repeat");
+        // egui reads a press of a key it holds down as a repeat: the key
+        // is released first.
+        let mut again = key(Key::Escape, false, Modifiers::NONE);
+        again.events.insert(
+            1,
+            egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            },
+        );
+        frame(&mut app, again);
+        assert!(app.worker.abort_asked(), "a new press");
+        let mut app = two_record_windows();
+        app.script.running = true;
+        app.error = alert();
+        frame(&mut app, key(Key::Period, false, Modifiers::COMMAND));
+        assert!(app.worker.abort_asked(), "Command-period");
+        assert!(app.error.is_some(), "the alert stays");
     }
 
     /// Quit while File > Close waits on a close trigger, from the menu or
