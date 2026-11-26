@@ -2793,6 +2793,85 @@ fn starter_fields_read_as_the_fields_tab_lists_them() {
     assert!(texts.values().any(|t| t.starts_with("= Total of ")));
 }
 
+#[test]
+fn new_record_auto_enters_the_session_globals() {
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
+    use om_data::calc::Value;
+    use om_data::host::CalcNeed;
+    use om_hbam::slot::uint_segment;
+
+    const CONSTANT: u64 = 40;
+    const CALCULATED: u64 = 41;
+    const SERIAL: u64 = 42;
+    let folder = Folder::new("global-auto-entry");
+    let path = folder.file("Sample.fmp12", PASSWORD, |root| {
+        for (id, label, options) in [
+            (CONSTANT, "Default setting", 0x1_0004),
+            (CALCULATED, "Calculated setting", 0x1_0008),
+            (SERIAL, "Serial setting", 0x1_0002),
+        ] {
+            fixture::add_field(root, TABLE, id, label, 1, 1, 0, options, 0);
+        }
+        let table = uint_segment(TABLE);
+        root.put(
+            &[&table, &[3], &[5], &uint_segment(CONSTANT), &[0x0d]],
+            om_scripts::text_node(&[], "X"),
+        );
+        fixture::add_formula(
+            root,
+            &fixture::names(),
+            (TABLE, OCCURRENCE),
+            CALCULATED,
+            5,
+            "\"Y\"",
+        );
+        fixture::set_field_serial_increment(root, TABLE, SERIAL, 1);
+        root.put(
+            &[&table, &[3], &[5], &uint_segment(SERIAL), &[0x0c]],
+            om_scripts::text_node(&[], "1"),
+        );
+    });
+    let mut provider = opened(&path);
+    let globals = |provider: &mut NativeProvider| {
+        provider
+            .calc_data(&[CalcNeed::Globals { table: TABLE }])
+            .unwrap()
+            .globals[&TABLE]
+            .clone()
+    };
+    let new = om_data::ScriptWrite {
+        layout: LAYOUT as u32,
+        ..Default::default()
+    };
+    provider.begin_record_commit().unwrap();
+    let record = provider.write_record(&new).unwrap();
+    let values = globals(&mut provider);
+    for (field, text) in [(CONSTANT, "X"), (CALCULATED, "Y"), (SERIAL, "1")] {
+        assert!(matches!(values.get(field, 1), Some(Value::Text(value)) if value.as_str() == text));
+    }
+    provider
+        .write_record(&om_data::ScriptWrite {
+            record: Some(record.id),
+            cells: [(NAME, Some("A note".into()))].into(),
+            ..new.clone()
+        })
+        .unwrap();
+    provider.set_global(TABLE, CONSTANT, 1, "Changed").unwrap();
+    provider.commit_transaction(false).unwrap();
+    assert_eq!(
+        name_of(&mut provider, LAYOUT as u32, record.id).as_deref(),
+        Some("A note")
+    );
+    let values = globals(&mut provider);
+    assert!(
+        matches!(values.get(CONSTANT, 1), Some(Value::Text(value)) if value.as_str() == "Changed")
+    );
+    provider.begin_record_commit().unwrap();
+    assert_eq!(provider.write_record(&new).unwrap_err().code, Some(3));
+    provider.revert_transaction().unwrap();
+    provider.close();
+}
+
 /// An auto-entered and a validation formula over a global field read the
 /// session's value of it (#187, schema-path.md 5.17): Stamp is auto-entered
 /// `Name & Setting` and Checked validated by `Self <> Setting` (always,
