@@ -33,6 +33,15 @@ come from the fmp12 file (see `layout-model.md`), not from the application.
 
 ## Status toolbar (Browse), left to right
 
+In FileMaker Pro 26.1.1, Show/Hide Toolbars [Hide] removes both the
+status toolbar and the layout bar. The same step in OnFirstWindowOpen
+gives the same view as running it after open. Lock disables View >
+Status Toolbar and its Option-Command-S shortcut whether the bars are
+shown or hidden. A Show with Lock off restores manual control, even if
+the bars were already shown. The native steps all returned LastError 0.
+Toggle with Lock and new-window inheritance were not measured.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1040#issuecomment-7188552787)
+
 1. **Record navigation group**, captioned **Records** (caption centered under
    the group):
    - Previous / Next chevrons (thin gray, ~16 px tall) separated by a hairline.
