@@ -30,8 +30,12 @@ they print at. The printer's margins scale with the page, so they stay
 ([#871](https://github.com/OpenMaker-Dev/openmaker/issues/871)): the 1%–1000%
 bounds are OpenMaker's (FileMaker Pro's are unmeasured; Claris documents scale
 only as a macOS Page Setup option), and so are a layout's fixed page margins
-scaling with the page and how Preview shows a scaled page; FileMaker's
-Preview and PDF output at a scale were not compared.
+scaling with the page and how Preview shows a scaled page;
+FileMaker's Preview was not compared. FileMaker Pro's Save Records as
+PDF differs: it writes the page in layout points, the sheet divided by
+the scale (1584 x 1224 for US Letter landscape at 50%), with no scaling
+in the content ([#954](https://github.com/OpenMaker-Dev/openmaker/issues/954),
+[file format](re/file-format.md) 3.8).
 
 Accepted paper settings belong to the open **file session**, apply to every
 layout and window of that file, and are inherited by new windows. Other files,
@@ -56,11 +60,12 @@ the current layout. None of the starter solutions stores one.
 Nothing is written back: there is **no local disk persistence** and no write to
 the hosted file, so a Page Setup accepted in OpenMaker is lost when the file
 closes, and the file keeps the setup it had. Once accepted, the preference
-overrides layout orientation for every layout. This differs from native
-FileMaker, which saves the choice in the file. What FileMaker accepts at
-`[2, 87]`, and how FileMaker Pro writes it to a hosted file, are unknown
-([#876](https://github.com/OpenMaker-Dev/openmaker/issues/876)), so OpenMaker
-writes nothing there yet.
+overrides layout orientation for every layout. For a hosted file this is what
+FileMaker Pro does: it sends nothing to the host, and the setup lasts while
+the file is open in that client. A local file, though, gets the setup at each
+Page Setup OK in FileMaker Pro ([file format](re/file-format.md) 3.8, [#876](https://github.com/OpenMaker-Dev/openmaker/issues/876)),
+which OpenMaker does not do yet
+([#112](https://github.com/OpenMaker-Dev/openmaker/issues/112)).
 
 ## Script step 42
 
