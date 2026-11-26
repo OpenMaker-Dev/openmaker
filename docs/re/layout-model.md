@@ -2236,7 +2236,8 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   epoch, file, layout and object; one from a destroyed view, a closed
   window or an earlier session is dropped.
 - Not yet: a Windows (WebView2) adapter, views in
-  native Wayland windows, Find mode's "Display content in Find
+  native Wayland windows, pages on cards (a card's own layer counts as
+  covering them: [#1028](https://github.com/OpenMaker-Dev/openmaker/issues/1028)), Find mode's "Display content in Find
   mode", progress bar and status messages, `GetLayoutObjectAttribute`'s
   `source`/`content` of a live page, `fmp:` URLs from pages, Reset clearing
   the history, and layout objects stacked above a viewer (the native view

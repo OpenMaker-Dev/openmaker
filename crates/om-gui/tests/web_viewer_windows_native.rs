@@ -830,9 +830,28 @@ fn main() {
     if !embedded {
         // A process runs one event loop: the embedded run has its own.
         let exe = std::env::current_exe().unwrap_or_else(|e| fail(format!("no executable: {e}")));
-        match std::process::Command::new(exe).env(EMBEDDED, "1").status() {
-            Ok(status) if status.success() => {}
-            other => fail(format!("with embedded viewports: {other:?}")),
+        // Its watchdog starts only once it has its display: this bounds the
+        // wait before that too.
+        let mut child = std::process::Command::new(exe)
+            .env(EMBEDDED, "1")
+            .spawn()
+            .unwrap_or_else(|e| fail(format!("the embedded run did not start: {e}")));
+        let deadline = Instant::now() + Duration::from_secs(240);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                other => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    fail(format!("the embedded run did not end: {other:?}"));
+                }
+            }
+        };
+        if !status.success() {
+            fail(format!("with embedded viewports: {status}"));
         }
     }
     // As `om_gui::run` does, before any other thread starts.
