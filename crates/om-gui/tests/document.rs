@@ -29,6 +29,7 @@ struct DocumentProvider {
     writable: bool,
     styled: bool,
     conditional_color: bool,
+    design_geometry: bool,
     duplicate_field: bool,
     /// Given's "Go to next object using" includes Return and the Enter
     /// key, as 123 of the starter solutions' 179 field objects do.
@@ -57,6 +58,7 @@ impl DocumentProvider {
             writable: false,
             styled: false,
             conditional_color: false,
+            design_geometry: false,
             duplicate_field: false,
             given_next_keys: false,
             show_field_alerts: false,
@@ -246,6 +248,56 @@ impl DataProvider for DocumentProvider {
                 .collect(),
             total: self.rows.len() as u64,
         })
+    }
+
+    fn layout_geometry(&mut self, _: u32) -> Result<Option<om_data::LayoutGeometry>, DataError> {
+        Ok(self.design_geometry.then(|| {
+            let fixture = document();
+            let objects = fixture
+                .layout
+                .objects
+                .objects
+                .iter()
+                .filter(|object| (1..=5).contains(&object.id))
+                .map(|object| {
+                    let rect = object.bounds.as_ref().unwrap();
+                    let kind = match object.kind() {
+                        om_layout::ObjectKind::Field => "Field",
+                        om_layout::ObjectKind::Rectangle => "Rectangle",
+                        _ => "Text",
+                    };
+                    om_data::ObjectGeom {
+                        key: object.id,
+                        kind_name: kind.into(),
+                        rect: om_data::GeomRect {
+                            left: rect.left,
+                            top: rect.top,
+                            right: rect.right,
+                            bottom: rect.bottom,
+                        },
+                        field_name: fixture.field_bindings.get(&object.id).cloned(),
+                        movable: true,
+                        deletable: true,
+                    }
+                })
+                .collect();
+            om_data::LayoutGeometry {
+                width: fixture.layout.width(),
+                height: fixture.layout.height(),
+                objects,
+                parts: fixture
+                    .layout
+                    .parts
+                    .iter()
+                    .map(|part| om_data::PartGeom {
+                        top: part.top,
+                        height: part.height,
+                        kind_name: format!("{:?}", part.kind()),
+                    })
+                    .collect(),
+                revision: Some([1; 32]),
+            }
+        }))
     }
 
     fn render_layout(&mut self, id: u32) -> Result<Option<RenderLayout>, DataError> {
@@ -680,8 +732,8 @@ fn document() -> RenderLayout {
 /// The card with only its title and name fields, and on its right a web
 /// viewer over a picture (a globe drawn for this test). The viewer is
 /// anchored left, top and bottom (layout-model.md 5.7): the window's spare
-/// height stretches it, and the record-edits bar takes some of that height
-/// back. The picture keeps its place. Without a live view the viewer shows
+/// height stretches it, and a shorter window takes that height back. The
+/// picture keeps its place. Without a live view the viewer shows
 /// OpenMaker's own note over the picture.
 fn web_viewer_card(layout: &mut Layout) {
     const GLOBE: u64 = 0x51;
@@ -1826,6 +1878,46 @@ fn rendered_text(app: &common::App, text: &str) -> Option<Arc<egui::Galley>> {
 }
 
 #[test]
+fn design_paints_stored_artwork_at_the_draft_frame() {
+    let mut provider = DocumentProvider::new(false);
+    provider.design_geometry = true;
+    let mut app = open_provider(provider);
+    common::click(&mut app, "Edit Layout");
+    common::wait_for_label(&mut app, "Rectangle (object 5)");
+    if std::env::var_os("OM_SCREENSHOTS").is_some() {
+        shot(&mut app, "layout-design", "the Client Card in Layout mode");
+    }
+    assert!(rendered_text(&app, "CLIENT CARD").is_some());
+    assert!(rendered_text(&app, "Contact: <<Given>> <<Family>>").is_some());
+    assert!(rendered_text(&app, "Contact: Clara Mason").is_none());
+
+    let fill = |app: &common::App| {
+        app.output()
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                Shape::Rect(rect) if rect.fill == Color32::from_rgb(64, 128, 191) => {
+                    assert!(
+                        shape.clip_rect.left() > app.get_by_label("Layout canvas").rect().left(),
+                        "artwork stays clear of the part strip"
+                    );
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("the rectangle uses the file's theme fill")
+    };
+    let before = fill(&app);
+    common::click(&mut app, "Rectangle (object 5)");
+    app.key_press(egui::Key::ArrowLeft);
+    app.run_steps(3);
+    assert_eq!(fill(&app), before.translate(egui::vec2(-1.0, 0.0)));
+    common::open_menu(&mut app, "Layouts");
+    common::click(&mut app, "Revert Layout");
+    assert_eq!(fill(&app), before);
+}
+
+#[test]
 fn stored_and_calculated_styles_render_while_unfocused_and_drafts_remain_editable() {
     let mut provider = DocumentProvider::new(false);
     provider.writable = true;
@@ -2064,7 +2156,9 @@ fn zoomed_form_keeps_chrome_size_and_edits_the_clicked_field() {
 
 /// A manual capture of the web viewer's own note (#391): one window, at
 /// rest and with its record being edited, which takes no bar (#871), so
-/// the anchored viewer keeps its size over the picture.
+/// the anchored viewer keeps its size over the picture; then a shorter
+/// window, where the viewer is back at its stored height and its middle
+/// is over the picture; then that window taller again at 200%.
 /// `OM_SCREENSHOTS=<folder> cargo test -p om-gui --test document
 /// web_viewer_note -- --ignored`
 #[test]
@@ -2089,5 +2183,21 @@ fn web_viewer_note_over_a_picture_at_rest_and_while_editing() {
         &mut app,
         "web-viewer-note-record-edits",
         "the same window with its record being edited",
+    );
+    app.set_size(egui::vec2(1060.0, 520.0));
+    shot(
+        &mut app,
+        "web-viewer-note-short-window",
+        "a shorter window: the viewer at its stored height",
+    );
+    app.set_size(egui::vec2(1060.0, 1000.0));
+    for _ in 0..2 {
+        common::click(&mut app, "View");
+        common::click(&mut app, "Zoom In");
+    }
+    shot(
+        &mut app,
+        "web-viewer-note-zoom-200",
+        "a taller window at 200%",
     );
 }
