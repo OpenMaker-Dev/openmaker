@@ -2298,10 +2298,55 @@ fn part_setup_creates_and_deletes_a_header_and_the_body_boundary_is_dragged() {
         "95-part-boundary",
         "the Body dragged 40 points taller",
     );
-    drop(app);
     assert_eq!(
         read(&hosted),
         (vec![(4, 0.0, 240.0), (7, 240.0, 22.0)], 20.0)
+    );
+
+    // The Part tool's button dropped on the layout (#885) opens Part
+    // Definition alone, whose OK adds the part as Create does.
+    let tool = app.get_by_label("Part Tool").rect().center();
+    let canvas = app.get_by_label("Layout canvas").rect();
+    drag(&mut app, tool, canvas.min + egui::vec2(200.0, 60.0));
+    common::wait_until(&mut app, "the Part tool's Part Definition", |app| {
+        app.query_by_role_and_label(Role::RadioButton, "Header")
+            .is_some()
+    });
+    assert!(
+        app.query_by_role_and_label(Role::Button, "Create")
+            .is_none(),
+        "Part Definition opens without Part Setup's list"
+    );
+    app.get_by_role_and_label(Role::RadioButton, "Header")
+        .click();
+    app.run_steps(2);
+    shot(
+        &mut app,
+        "96-part-tool",
+        "the Part tool's Part Definition, Header chosen",
+    );
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "the Part tool's header saved", |app| {
+        assert!(app.state().error().is_none(), "{:?}", app.state().error());
+        app.state().is_settled() && app.query_by_label("Header boundary").is_some()
+    });
+    assert!(
+        app.query_by_role_and_label(Role::RadioButton, "Header")
+            .is_none(),
+        "Part Definition closed"
+    );
+    shot(
+        &mut app,
+        "97-part-tool-header",
+        "the Header the Part tool added",
+    );
+    drop(app);
+    assert_eq!(
+        read(&hosted),
+        (
+            vec![(1, 0.0, 110.0), (4, 110.0, 240.0), (7, 350.0, 22.0)],
+            130.0
+        )
     );
 }
 

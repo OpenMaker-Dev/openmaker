@@ -2502,7 +2502,7 @@ look is OpenMaker's.
 Limits: a stored object cannot be moved between parts or restyled;
 groups, portals, tab and slide controls, popovers and button bars and the
 objects inside them do not move and cannot be deleted, nor can objects
-showing a library image, a field's label or a popover button; only a stored text of one line of plain text can be retyped; and the Text tool places one line of plain text in the theme's text style, with no character styles. The Field, Text, Button and Portal tools place objects; the other tool buttons only select a tool. For a stored object, the Inspector shows its
+showing a library image, a field's label or a popover button; only a stored text of one line of plain text can be retyped; and the Text tool places one line of plain text in the theme's text style, with no character styles. The Field, Text, Button and Portal tools place objects and the Part tool adds a part; the other tool buttons only select a tool. For a stored object, the Inspector shows its
 named style and calls out local styling beyond the object's stored
 rotation. Appearance shows known
 normal-state fill, border and text colors and the base font from Browse's
@@ -2639,6 +2639,21 @@ itself waits without closing, unless another window comes forward, which
 closes it as it closes Layout Setup. A change refused because the layout
 changed meanwhile closes it; opened again, it shows the layout as it is
 now.
+
+**The Part tool.** Dragging the status toolbar's Part Tool button onto the
+layout, as Claris documents it (re/client-ui.md, "Part Setup"), or choosing
+the tool and clicking the layout, opens Part Definition alone, as Part
+Setup's Create opens it: the kinds of part the layout lacks offered (not
+sub-summaries), and OK adds the one chosen at its place in the order of
+parts, at Create's heights, with the same operation. The dialog closes with
+Cancel, or once the host has answered OK, and the tool goes back to
+Selection. Where the button is dropped does not matter: each kind of part
+OpenMaker adds has one place. It is refused as Part Setup is (unsaved
+changes, a change still with the host), and with an alert when the layout
+has every kind of part OpenMaker adds. Not compared with FileMaker Pro: the
+height Pro gives a part the Part tool adds, whether the drop point decides
+anything for the kinds OpenMaker adds, and what a click with the tool does
+(OpenMaker's choice).
 
 **A part's boundary.** In Layout mode the Selection tool drags a part's
 lower boundary (a band across the layout and the part strip) to set its

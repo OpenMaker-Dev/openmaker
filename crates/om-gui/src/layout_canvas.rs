@@ -418,6 +418,8 @@ pub(crate) struct CanvasState {
     /// height dragged to, for the window to send.
     part_drag: Option<PartDrag>,
     part_resize: Option<PartResize>,
+    /// The Part tool was used on the layout: Part Definition opens.
+    part_tool: bool,
 }
 
 /// A part boundary being dragged: the part's place in the layout's parts
@@ -440,18 +442,31 @@ pub(crate) struct PartResize {
 }
 
 /// What the part boundaries need: each part's key and type, in the order of
-/// the geometry's parts, whether they may be dragged, and the drag.
+/// the geometry's parts, whether they may be dragged, and the drag; and
+/// whether the Part tool was used.
 struct PartEdges<'a> {
     keys: &'a [(u64, i32)],
     enabled: bool,
     drag: &'a mut Option<PartDrag>,
     resize: &'a mut Option<PartResize>,
+    tool: &'a mut bool,
 }
+
+/// The Part tool's button dragged from the status toolbar: dropped on the
+/// layout, it adds a part as a click with the tool does.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PartToolDrag;
 
 impl CanvasState {
     /// A part's height dragged to, since the last call.
     pub(crate) fn take_part_resize(&mut self) -> Option<PartResize> {
         self.part_resize.take()
+    }
+
+    /// Whether the Part tool was used on the layout since the last call:
+    /// a click with it, or its button dropped there.
+    pub(crate) fn take_part_tool(&mut self) -> bool {
+        std::mem::take(&mut self.part_tool)
     }
 
     /// Whether the layout holds changes not saved yet: a part boundary is
@@ -1137,6 +1152,7 @@ pub(crate) fn show(
                         enabled: !unsaved,
                         drag: &mut state.part_drag,
                         resize: &mut state.part_resize,
+                        tool: &mut state.part_tool,
                     },
                     // Frozen, the canvas still paints but takes no drag or click.
                     !frozen,
@@ -1191,6 +1207,7 @@ pub(crate) fn show(
                     enabled: false,
                     drag: &mut None,
                     resize: &mut None,
+                    tool: &mut false,
                 },
                 false,
                 None,
@@ -1392,6 +1409,20 @@ fn draw(
                         }
                     }
                 }
+            }
+            // The Part tool's button dropped on the layout, as Claris
+            // documents it ("drag the Part tool ... to the layout"), or a
+            // click on the layout with the tool chosen (OpenMaker's): Part
+            // Definition opens. The point does not matter, as the parts it
+            // adds go at their kind's place in the order of parts.
+            let on_layout = pointer
+                .is_some_and(|point| surface.contains(point) && ui.clip_rect().contains(point));
+            let dropped_tool = background.dnd_release_payload::<PartToolDrag>().is_some();
+            if selectable
+                && on_layout
+                && (dropped_tool || (tool == LayoutTool::Part && background.clicked()))
+            {
+                *edges.tool = true;
             }
             let painter = ui.painter().clone();
             painter.rect_filled(

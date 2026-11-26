@@ -106,6 +106,10 @@ pub(crate) struct PartSetup {
     creating: Option<Option<i32>>,
     /// A part added or deleted is with the host.
     waiting_parts: Option<PartsChange>,
+    /// Opened by the Part tool: Part Definition alone, without Part
+    /// Setup's list. It closes with Cancel, or once the host has answered
+    /// its OK.
+    alone: bool,
 }
 
 /// Why a control is shown but not offered.
@@ -146,7 +150,21 @@ impl PartSetup {
             waiting: None,
             creating: None,
             waiting_parts: None,
+            alone: false,
         }
+    }
+
+    /// This dialog as the Part tool opens it: Part Definition alone, the
+    /// kinds of part Create adds that the layout lacks offered. Refused,
+    /// with the reason, when the layout has them all (OpenMaker adds no
+    /// sub-summaries, which FileMaker Pro adds any number of).
+    pub(crate) fn creating_alone(mut self) -> Result<Self, &'static str> {
+        if !ADDABLE_PARTS.iter().any(|&t| self.creatable(t)) {
+            return Err("The layout has every kind of part OpenMaker adds.");
+        }
+        self.creating = Some(None);
+        self.alone = true;
+        Ok(self)
     }
 
     /// The host's answer to `sent`, a part added or deleted: saved, the
@@ -233,6 +251,14 @@ impl PartSetup {
     pub(crate) fn show(&mut self, ctx: &egui::Context) -> PartSetupAnswer {
         if self.creating.is_some() {
             return self.show_create(ctx);
+        }
+        if self.alone {
+            // Part Definition was the whole dialog: nothing else to show.
+            return if self.waiting_parts.is_some() {
+                PartSetupAnswer::Open
+            } else {
+                PartSetupAnswer::Done
+            };
         }
         if self.definition.is_some() {
             return self.show_definition(ctx);

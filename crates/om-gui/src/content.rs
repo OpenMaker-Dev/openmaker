@@ -1363,6 +1363,11 @@ impl LayoutWorkspace {
         self.canvas.take_part_resize()
     }
 
+    /// Whether the Part tool was used on the layout since the last call.
+    pub(crate) fn take_part_tool(&mut self) -> bool {
+        self.canvas.take_part_tool()
+    }
+
     /// The portal drawn with the Portal tool and not yet saved.
     pub(crate) fn new_portal(&self) -> Option<&crate::layout_canvas::NewPortal> {
         self.canvas.new_portal()
