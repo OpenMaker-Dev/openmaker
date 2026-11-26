@@ -5,6 +5,20 @@ use crate::object::Rect;
 use crate::style::{ObjectStyle, ThemeStyles};
 use crate::wire::{Fields, Merged, RawField, Result, Value};
 
+/// A layout's Layout Setup word, its flags `f1` or its member flags `f0`,
+/// from its catalog member's copy (`[4, 5, L]`), else its catalog index
+/// entry's (`[4, 1, 7, L]`): FileMaker keeps both, and a reader that took
+/// the member's alone would drop what only the entry holds (#977). Each copy
+/// is its slot's own value, a big-endian unsigned integer of 1 to 8 bytes
+/// (not a split value). The one reading rule for every reader and the
+/// host's Layout Setup
+/// (`Layout::decode_from_tree`, `om_data::layout_catalog::layout_word`).
+pub fn stored_layout_word(member: Option<&[u8]>, entry: Option<&[u8]>) -> Option<u64> {
+    member
+        .and_then(om_hbam::slot::be_uint)
+        .or_else(|| entry.and_then(om_hbam::slot::be_uint))
+}
+
 /// `FMLayoutPB.LayoutDef`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LayoutDef {
@@ -90,7 +104,34 @@ impl LayoutDef {
     pub fn quick_find(&self) -> bool {
         self.flags & 0x8000 == 0
     }
+
+    /// Whether Table view shows the layout's parts of `kind` around its
+    /// table: Table View Properties includes the top navigation, header,
+    /// footer and bottom navigation parts, each by its own option, and
+    /// no other part this way (layout-model.md 4.2).
+    pub fn table_view_includes(&self, kind: PartKind) -> bool {
+        let bit = match kind {
+            PartKind::TopNavigation => TABLE_TOP_NAVIGATION,
+            PartKind::Header => TABLE_HEADER,
+            PartKind::Footer => TABLE_FOOTER,
+            PartKind::BottomNavigation => TABLE_BOTTOM_NAVIGATION,
+            _ => return false,
+        };
+        self.flags & bit != 0
+    }
 }
+
+/// Table View Properties' "Include header part": a bit of the effective
+/// layout flags (layout-model.md 4.2).
+pub const TABLE_HEADER: u64 = 0x4_0000;
+/// Table View Properties' "Include footer part" (layout-model.md 4.2).
+pub const TABLE_FOOTER: u64 = 0x8_0000;
+/// Table View Properties' "Include top navigation part" (layout-model.md
+/// 4.2).
+pub const TABLE_TOP_NAVIGATION: u64 = 0x2000_0000;
+/// Table View Properties' "Include bottom navigation part"
+/// (layout-model.md 4.2).
+pub const TABLE_BOTTOM_NAVIGATION: u64 = 0x4000_0000;
 
 /// Part kind from `PartDef.type` (layout-model.md 4.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

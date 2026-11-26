@@ -428,8 +428,16 @@ before the record commit writes it.
   after a reconnect.
 - **Related files.** A portal row of another file's table is previewed by
   that file's provider through the table's route, as its write goes
-  (related_owner.rs); the opened file maps its preview id to the owner's.
-  A layout of another file's table ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)) has no preview.
+  (related_owner.rs); the opened file maps its preview id to the owner's,
+  and to the layout the write goes through. So is a new record of a layout
+  of another file's table ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)):
+  its write naming the preview, outside a transaction or held in one, stores
+  what the preview drew, with no layout of the owning file's (but see
+  [#949](https://github.com/OpenMaker-Dev/openmaker/issues/949): in a
+  script's transaction with Skip auto-enter options, a preview made before
+  that file's first write there enters, and reserves, what the commit then
+  skips). So is a
+  related record of another file's table on such a layout.
 - **The desktop window's use.** OnObjectSave when leaving a changed field
   by clicking the layout's background or using keyboard Commit
   (an ordinary commit, #1070), previews the window's begun rows before its
@@ -773,6 +781,26 @@ but for a lookup's, which would write into it: a stray `0x80`
 (auto-entry.md) leaves the table writable. A stored calculation's unknown
 bits keep it read-only.
 
+An ordinary new record can fill an empty single-repetition global Text
+field with its constant, a calculation that reads no fields, or its
+creation serial. That value goes to the session immediately. It never
+becomes a cell of the new record. If the global already has a value,
+New Record returns 3 before reserving an ID or serial. Other rows in the
+table can still be edited. The scope excludes import with auto-entry,
+new records from a preview, and explicit script transactions. The desktop
+currently keeps local globals in memory for the session. See the native
+observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
+and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
+
+An ordinary single-repetition Text field in a local file can
+auto-enter a direct `$$` variable read. A Text value comes from the
+owning file's current script variables, and an unset variable gives an
+empty field. OpenMaker keeps the New Record snapshot through its preview
+and commit. That timing is inferred when the variable changes between
+those two steps. Hosted files, compound variable formulas, and non-Text
+variable values are outside this change.
+[FileMaker Pro measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1037#issuecomment-7185794811).
+
 **An auto-entered or validation formula may read an unstored
 calculation** of its own table ([#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); auto-entry.md, "Formulas over
 an unstored calculation or a summary field"). The calculation is
@@ -798,6 +826,18 @@ write with error 7. FileMaker continues evaluating past that limit. A
 preview treats a formula over a calculation that draws `Random`, the clock
 or a UUID, and a skip that calculation's value decides, as not known until
 the commit.
+
+A single-repetition Date field with both Creation Date and a calculated
+auto-entry value uses the creation-date rule on creation. An explicit
+assignment during scripted creation keeps the assigned date. A held create
+that also sets another input to the calculation returns error 3 when the
+calculation could replace the date. Updates that would run the calculation
+also return 3. FileMaker Pro measured re-evaluation after commit, and the
+desktop has yet to implement that path. The combined options with Prohibit
+modification or with evaluation enabled for all-empty inputs are
+unsupported. FileMaker Pro measured creation in a local file. Applying
+the same creation rule on a host is inferred.
+[Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7184309937).
 
 **A custom message** is shown for any rule of its field that a write
 breaks, not empty included. One stored as a calculation (`0x8000` with
@@ -1071,7 +1111,16 @@ same way is inferred, not measured.
 
 **Related records of another file.** A portal row or related field of a
 table a related file owns, on a layout of the opened file's own table,
-is written by that file (`related_owner.rs`, #1000):
+is written by that file (`related_owner.rs`, #1000). So is one on a layout
+of another file's table, whichever related file owns the record
+([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)): Browse
+offers that layout's portals and related fields as on a layout of the
+opened file's table (a table of the opened file by its own rules, another
+file's by its owner's), and their edits and a script's writes go to the
+file that owns each record. Insert into a container of such a related
+record of another file's table can fail there with 3: outside a
+transaction, its preparation plans the window's own record as the opened
+file's ([#957](https://github.com/OpenMaker-Dev/openmaker/issues/957)):
 - **The owner writes.** The opened file's Browse edits, a script's Set
   Field into it (one through a relationship that allows creation creates
   the record, its match fields taking the current record's values) and
@@ -1094,9 +1143,11 @@ is written by that file (`related_owner.rs`, #1000):
 - **Fields.** Ordinary stored text, number, date, time, timestamp and container
   fields are written. Container acquisitions run on the owning file's library
   under the ordinary save's transaction; reference adjustments route there too.
-  Repetitions remain refused with error 3. A global field is no
-  record's: Set Field into one sets that file's session value ("A related
-  file's globals", below).
+  A script's Set Field writes each repetition, by its cell, as the owner
+  checks it (`check_scalar_cells`); Browse offers only fields of one
+  repetition there ([#951](https://github.com/OpenMaker-Dev/openmaker/issues/951)).
+  A global field is no record's: Set Field into one sets that file's
+  session value ("A related file's globals", below).
 - **Transactions.** Inside the window's commit transaction (or a script's
   Open Transaction), the change is held in the owning file's transaction.
   On the opened file's connection the owning file joins the opened file's
@@ -1172,7 +1223,12 @@ is written by that file (`related_owner.rs`, #1000):
     New Record and Duplicate Record are the exception: they run their
     steps, which run on top of the paused script, so the record (and a
     duplicate's container references) is held in the transaction as a
-    script's is. Whether FileMaker holds them so is #411's question.
+    script's is. So is a save of the user's edits to a related record there
+    (a portal row, a related field), as a portal row's of another file's
+    table on a layout of the opened file's table is: the window commits
+    related records through the script write path, and the record's own
+    edits saved with them go along, where a save of those alone is refused.
+    Whether FileMaker holds them so is #411's question.
 - **The window's commit of a record across files** (#1006; it begins with
   `DataProvider::begin_record_commit`, a script's Open Transaction with
   `begin_transaction`). It is saved file by file, related files first and
@@ -1691,7 +1747,7 @@ which OpenMaker Server's scripts share) and the client's finds, joins and
 unique scans read those repetitions as empty, never as the cell the key
 would wrap around to. This is OpenMaker's choice; FileMaker's behaviour is
 unmeasured.
-Auto-enter lookups are performed in one form only: the
+Auto-enter lookups are performed for exact matches using the
 exact-match form FileMaker Pro 26.0.3 was seen to save and run
 (auto-entry.md, Lookups; schema-path.md 5.5), with any padding in its key
 buffers: as FileMaker Pro 26 writes it, as the Assets starter solution
@@ -1701,6 +1757,15 @@ FileMaker Server hosts holds (#993). Its option bytes, and the `01` before
 the starting occurrence, must be as FileMaker Pro writes them. It holds:
 - "if no exact match: do not copy", with "don't copy contents if empty"
   on or off;
+- "if no exact match: use" for a Text target, with either empty-copy
+  setting. The stored constant is copied on a miss. A blank fallback
+  (member `0b` absent) clears the target on a miss. If the relationship
+  finds an empty related value, the empty-copy setting decides whether
+  to clear or preserve the target. FileMaker Pro's local Text case was
+  measured ([results](https://github.com/OpenMaker-Dev/openmaker/issues/1020#issuecomment-7185793871)).
+  Its immediate Set Field timing is still outside the commit-time
+  lookup path, and hosted fallback behavior is unmeasured. A fallback
+  with a replacing auto-entered `Get ( UUID )` match key refuses with 3;
 - a stored text, number or date field of one repetition with no other
   auto-entry, copying a stored text, number or date value of one
   repetition (a data field or a stored calculation), a date field only
@@ -1769,7 +1834,7 @@ How OpenMaker performs it:
   unsorted relationship is unmeasured.
 
 Any other lookup keeps its table read-only:
-- the next lower or higher value (#146), or a constant;
+- the next lower or higher value (#146), or a fallback into another field type;
 - any other unknown byte of the definition, or a mix of the two stored
   forms;
 - several relationships;

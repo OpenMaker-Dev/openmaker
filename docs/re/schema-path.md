@@ -948,7 +948,7 @@ Assets           : 00 00 | 04 03 d0 00 04 | 7f | 02 01 08 | be 33 11 00 | 01 | 0
 
 | bytes | meaning |
 |-------|---------|
-| 0 | "If no exact match, then": `00` do not copy, `01` copy next lower value, `02` copy next higher value, `03` use the constant in member `0b` [O-run: l01-l04] |
+| 0 | "If no exact match, then": `00` do not copy, `01` copy next lower value, `02` copy next higher value, `03` use the constant in member `0b`, or empty when that member is absent [O-run: l01-l04, [FileMaker Pro 26.1.1](https://github.com/OpenMaker-Dev/openmaker/issues/1020#issuecomment-7185793871)] |
 | 1 | "Don't copy contents if empty": `01` OFF, `00` ON [O: the native pair differs only here]. Assets' `00` is ON [O: Assets' dialog, below] |
 | key string 1 | the occurrence looked up from ("Lookup from related table") [O: B], preceded by its length as the base table is in an occurrence's `02` |
 | next byte | padding: key string 1 sits in a 6-byte buffer (length byte and up to 5 bytes). `00` native, `7f` Assets (no setting the dialog shows, below) and `5e`, `5f`, `5a` in the engine's runs, so not meaningful [O-run, O]; `00`, `ff` and `24` in the 29 lookups of a solution FileMaker Server hosts, in production use [O, #993] |
@@ -1403,11 +1403,38 @@ and Half-Width Roman, then turned off.
 - Turned off, `0x40` alone was cleared; `07` stayed as it was.
 - The field's `fc`, `fc01` and `fc03`, and the catalog index's, changed with
   each save, as for any member change.
-- Translations: 2 Full-Width Katakana and 5 Half-Width Roman were seen. 1
-  Hiragana, 3 Half-Width Katakana and 4 Full-Width Roman follow from the
-  menu's order [I], not seen.
+- Translations [O from bin, FileMaker Pro 26.1.1 Mac arm64]:
+  `CEnterFuriganaPage::OnInitDialog` (`0x1002217bc`) builds the popup from
+  string resource 329, entries 2439-2444, in the order below.
+  `FuriganaSave` (`0x100221620`) writes the selected position minus one
+  through `DBField::SetYomiganaInput` (`0x18088a4` in DBEngine).
+  The setter writes `KEntry` (`07`) through `AuxFieldDefinition::Write`
+  (`0x1808658`), which puts the enum's low byte at offset 12.
+
+  | Byte | English popup label | XML `inputMode` |
+  | --- | --- | --- |
+  | 0 | As is | `AsEntered` |
+  | 1 | Hiragana | `Hiragana` |
+  | 2 | Full-Width Katakana | `2ByteKatakana` |
+  | 3 | Full-Width Roman | `2ByteRoman` |
+  | 4 | Half-Width Katakana | `1ByteKatakana` |
+  | 5 | Half-Width Roman | `1ByteRoman` |
+
+  The FMEngine XML reader `XMLFieldReader::ReadFuriganaInput`
+  (`0x37668`) maps a field's `Furigana` child using this same enum
+  and passes it to the same setter. The 26.0.3 desktop saves above
+  corroborate values 2 and 5. Values 3 and 4 differ from the earlier
+  inferred order.
+
+  In an offline generation check with FMUpgradeTool 26.0.3.309, five
+  English Tasks XML variants used modes `Hiragana` through
+  `1ByteRoman` in the table's order. They wrote bytes 1 through 5 at
+  offset 12 in `07` and set option `0x40` [O]. The generated references
+  had target id zero, so this check establishes the translation byte
+  and option. The two desktop saves establish real target references.
+
 - Not established:
-  - the dialog's exact entries besides those two;
+  - saved desktop files for the other translation options;
   - which fields it offers as the target (OpenMaker allows stored text
     fields of the same table [I]);
   - a target field whose id needs more than one byte (inferred from the

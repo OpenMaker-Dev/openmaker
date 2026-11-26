@@ -3655,6 +3655,7 @@ impl<'a> Evaluator<'a> {
         text: &str,
         record: Option<u64>,
         portal: Option<PortalRow>,
+        format: Option<&om_layout::DataFormat>,
     ) -> Option<String> {
         if !text.contains("<<$") && !text.contains("{{") {
             return Some(text.to_owned());
@@ -3666,7 +3667,22 @@ impl<'a> Evaluator<'a> {
                 ..Context::default()
             },
         };
-        self.with_host(|host| layout::merge_text(host, text, &context))
+        self.with_host(|host| {
+            layout::merge_text_with_symbols(host, text, &context, |kind, shown| {
+                match (kind, format) {
+                    (ValueType::Date | ValueType::Time, Some(format)) => {
+                        crate::document::data_format::display(
+                            &shown,
+                            kind,
+                            Some(format),
+                            &self.context(),
+                        )
+                        .into_owned()
+                    }
+                    _ => shown,
+                }
+            })
+        })
     }
 }
 
@@ -3871,6 +3887,37 @@ mod tests {
             summaries: SummaryCache::default(),
             group: Cell::new(None),
         }
+    }
+
+    #[test]
+    fn date_and_time_layout_symbols_use_the_objects_data_format() {
+        use om_data::calc::{Time, TimeStyle, Timestamp};
+        let calcs = Calculations::default();
+        let schema = portal_schema();
+        let mut eval = evaluator(&calcs, &schema);
+        let time = Time::from_micros((21 * 3600 + 3 * 60 + 4) * 1_000_000, TimeStyle::default());
+        eval.info.now =
+            Some(Timestamp::from_date_time(Date::from_ymd(2017, 4, 11).unwrap(), time).unwrap());
+        let format = om_layout::DataFormat {
+            date: om_layout::DateFormat {
+                flags: 1 << 24,
+                elements: [6, 1, 8, 0],
+                separators: ["".into(), " ".into(), ", ".into(), "".into(), "".into()],
+                ..Default::default()
+            },
+            time: om_layout::TimeFormat {
+                flags: 0x93,
+                minute_second_style: 1,
+                separator: ':',
+                ..Default::default()
+            },
+            font_height: 0,
+            number: Default::default(),
+            raw: Vec::new(),
+        };
+        let text =
+            eval.merge_text_in_portal("Run {{1002}} at {{CurrentTime}}", None, None, Some(&format));
+        assert_eq!(text.as_deref(), Some("Run April 11, 2017 at 21:03"));
     }
 
     #[test]
@@ -5192,7 +5239,7 @@ mod tests {
             assert_eq!(state.label.as_deref(), Some(expected), "{portal:?}");
             assert_eq!(
                 evaluator
-                    .merge_text_in_portal("Row {{RecordNumber}}", Some(1), portal)
+                    .merge_text_in_portal("Row {{RecordNumber}}", Some(1), portal, None)
                     .unwrap(),
                 format!("Row {expected}")
             );

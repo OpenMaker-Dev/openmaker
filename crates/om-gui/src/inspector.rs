@@ -7,11 +7,11 @@
 
 use egui::{vec2, Align, CornerRadius, RichText, Role, Sense, Stroke, Ui, WidgetInfo};
 use om_data::layout_objects::FIELD_CONTROLS;
-use om_data::ObjectGeom;
+use om_data::{FieldKind, ObjectGeom};
 
 use crate::icons::{self, Icon};
 use crate::layout_canvas::{FieldChoice, NewButton, NewField, NewText};
-use crate::session::Session;
+use crate::session::{RenderState, Session};
 use crate::{theme, widgets};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -236,6 +236,7 @@ impl Inspector {
         object: Option<&ObjectGeom>,
         frame: Option<om_data::GeomRect>,
         (editable, control): (bool, Option<&ControlView<'_>>),
+        notice: Option<&str>,
     ) -> InspectorEdit {
         let mut changed = InspectorEdit::default();
         ui.painter()
@@ -289,43 +290,36 @@ impl Inspector {
                     .inner_margin(egui::Margin::symmetric(10, 6))
                     .show(ui, |ui| {
                         ui.set_min_width((theme::INSPECTOR_WIDTH - 24.0).max(0.0));
+                        if let Some(notice) = notice {
+                            ui.label(notice);
+                        }
                         match self.tab {
                             Tab::Position => {
                                 changed.frame = self.position(ui, object, frame, editable)
                             }
                             Tab::Styles => {
-                                section(ui, "Styles", |ui| {
-                                    ui.label(
-                                        RichText::new(object.map_or("No object selected", |o| {
-                                            o.kind_name.as_str()
-                                        }))
-                                        .color(theme::CAPTION),
-                                    );
-                                    ui.label("Style information is unavailable.");
-                                });
+                                show_style(ui, object, stored_object(session, object));
                             }
                             Tab::Appearance => {
-                                section(ui, "Graphic", |ui| {
-                                    ui.label("Appearance information is unavailable.");
-                                });
-                                section(ui, "Text", |ui| {
-                                    ui.label("Text formatting is unavailable.");
-                                });
+                                show_appearance(ui, stored_object(session, object));
                             }
                             Tab::Data => {
+                                let name = object.and_then(|o| o.field_name.as_deref());
+                                let field = name.and_then(|name| {
+                                    session
+                                        .page
+                                        .as_ref()
+                                        .filter(|page| Some(page.key.layout_id) == session.layout)?
+                                        .data
+                                        .fields
+                                        .iter()
+                                        .find(|field| field.name == name)
+                                });
                                 section(ui, "Field", |ui| {
-                                    if let Some(name) = object.and_then(|o| o.field_name.as_deref())
-                                    {
+                                    if let Some(name) = name {
                                         ui.label("Display data from:");
                                         ui.label(RichText::new(name).strong());
-                                        if let Some(field) =
-                                            session.page.as_ref().and_then(|page| {
-                                                page.data
-                                                    .fields
-                                                    .iter()
-                                                    .find(|field| field.name == name)
-                                            })
-                                        {
+                                        if let Some(field) = field {
                                             ui.label(format!("Type: {:?}", field.kind));
                                         }
                                     } else if control.is_none() {
@@ -343,7 +337,11 @@ impl Inspector {
                                     ui.label("Behavior information is unavailable.");
                                 });
                                 section(ui, "Data Formatting", |ui| {
-                                    ui.label("Data formatting is unavailable.");
+                                    show_field_format(
+                                        ui,
+                                        field.map(|field| field.kind),
+                                        stored_object(session, object).map(|(_, object)| object),
+                                    );
                                 });
                             }
                         }
@@ -748,6 +746,227 @@ fn frame_grid(ui: &mut Ui, name: &str, values: [&mut f64; 4]) {
         });
 }
 
+fn stored_object<'a>(
+    session: &'a Session,
+    selection: Option<&ObjectGeom>,
+) -> Option<(&'a om_layout::Layout, &'a om_layout::object::LayoutObject)> {
+    let key = selection?.key;
+    let RenderState::Loaded(render) = &session.render else {
+        return None;
+    };
+    let layout = &render.layout;
+    if key == 0 || session.layout.map(u64::from) != Some(layout.id) {
+        return None;
+    }
+    let object = layout.objects.get(key)?;
+    Some((layout, object))
+}
+
+fn show_style(
+    ui: &mut Ui,
+    selection: Option<&ObjectGeom>,
+    stored: Option<(&om_layout::Layout, &om_layout::object::LayoutObject)>,
+) {
+    section(ui, "Styles", |ui| {
+        let Some(selection) = selection else {
+            ui.label("No object selected");
+            return;
+        };
+        ui.label(RichText::new(&selection.kind_name).color(theme::CAPTION));
+        let Some((_, object)) = stored else {
+            ui.label("Style information is unavailable.");
+            return;
+        };
+        let mut named = false;
+        if let Some(style) = &object.style {
+            let names = if style
+                .custom_style_display_names
+                .iter()
+                .any(|name| !name.is_empty())
+            {
+                &style.custom_style_display_names
+            } else {
+                &style.custom_style_names
+            };
+            for name in names.iter().filter(|name| !name.is_empty()) {
+                ui.label(name);
+                named = true;
+            }
+            if style.has_local_overrides() {
+                ui.label("Local style overrides");
+            }
+        }
+        if !named {
+            ui.label("No stored style name");
+        }
+    });
+}
+
+fn show_appearance(
+    ui: &mut Ui,
+    stored: Option<(&om_layout::Layout, &om_layout::object::LayoutObject)>,
+) {
+    let Some((layout, object)) = stored else {
+        section(ui, "Appearance", |ui| {
+            ui.label("Appearance information is unavailable.");
+        });
+        return;
+    };
+    ui.label(RichText::new("Normal state").color(theme::CAPTION));
+    section(ui, "Graphic", |ui| {
+        let style = layout.object_style(object, 1, 1);
+        if let Some(color) = style.background {
+            style_color(ui, "Fill color", color);
+        } else {
+            ui.label("No stored fill color");
+        }
+        for (side, color) in ["Top border", "Right border", "Bottom border", "Left border"]
+            .into_iter()
+            .zip(style.border_color)
+        {
+            if let Some(color) = color {
+                style_color(ui, side, color);
+            }
+        }
+    });
+    section(ui, "Text", |ui| {
+        let style = crate::document::text_style(layout, object, &[], 1);
+        if let Some(family) = style.font_family.as_deref() {
+            ui.label(format!("Font {family}"));
+        }
+        if let Some(size) = style.font_size {
+            ui.label(format!("{size:.2} pt"));
+        }
+        if let Some(color) = style.color {
+            style_color(ui, "Text color", color);
+        }
+        if style.font_size.is_none() && style.color.is_none() && style.font_family.is_none() {
+            ui.label("No stored text style");
+        }
+    });
+}
+
+fn style_color(ui: &mut Ui, label: &str, color: om_layout::style::Color) {
+    let color = crate::document::color(color);
+    ui.horizontal(|ui| {
+        let (swatch, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+        ui.painter()
+            .rect_filled(swatch, CornerRadius::same(2), theme::INSPECTOR_BG);
+        ui.painter()
+            .rect_filled(swatch, CornerRadius::same(2), color);
+        ui.painter().rect_stroke(
+            swatch,
+            CornerRadius::same(2),
+            Stroke::new(1.0, theme::DIVIDER),
+            egui::StrokeKind::Inside,
+        );
+        ui.label(label);
+    });
+}
+
+fn show_field_format(
+    ui: &mut Ui,
+    kind: Option<FieldKind>,
+    object: Option<&om_layout::object::LayoutObject>,
+) {
+    let (Some(kind), Some(object)) = (kind, object) else {
+        ui.label("Data formatting is unavailable.");
+        return;
+    };
+    if kind == FieldKind::Container {
+        if let Some(format) = object.graphic_format {
+            ui.label(if format.interactive() {
+                "Interactive content"
+            } else {
+                "Images"
+            });
+            match (format.shrink(), format.grow()) {
+                (true, true) => ui.label("Reduce or enlarge to fit"),
+                (true, false) => ui.label("Reduce to fit"),
+                (false, true) => ui.label("Enlarge to fit"),
+                (false, false) => ui.label("Maintain original size"),
+            };
+            if format.proportions() {
+                ui.label("Keep proportions");
+            }
+        } else {
+            ui.label("No stored graphic format");
+        }
+        return;
+    }
+    if kind == FieldKind::Text {
+        ui.label("No number, date, time or graphic format applies to a text field.");
+        return;
+    }
+    let Some(format) = &object.data_format else {
+        ui.label("No decoded data format");
+        return;
+    };
+    use om_layout::data_format::DateFormat;
+    let date = |date: &DateFormat| match date.format() {
+        0 => "Date as entered",
+        1 => "Custom date",
+        2 => "Numeric date with short year",
+        7 => "Numeric date with full year",
+        _ => "Unrecognized date format",
+    };
+    match kind {
+        FieldKind::Number => {
+            let number = &format.number;
+            if number.as_entered() {
+                ui.label("Number as entered");
+            } else if number.boolean() {
+                ui.label("Boolean text");
+            } else if number.general() {
+                ui.label("General number");
+            } else {
+                ui.label(if number.percent() {
+                    "Percent"
+                } else {
+                    "Decimal number"
+                });
+                if number.fixed_decimals() {
+                    ui.label(format!("Decimal places {}", number.decimal_places));
+                }
+                if number.show_symbol() && !number.percent() && !number.symbol.is_empty() {
+                    ui.label(format!("Symbol {}", number.symbol));
+                }
+            }
+        }
+        FieldKind::Date => {
+            ui.label(date(&format.date));
+        }
+        FieldKind::Time => {
+            ui.label(time_format_label(&format.time));
+        }
+        FieldKind::Timestamp => {
+            ui.label(date(&format.date));
+            ui.label(time_format_label(&format.time));
+        }
+        FieldKind::Text | FieldKind::Container => unreachable!("handled above"),
+    }
+}
+
+fn time_format_label(time: &om_layout::data_format::TimeFormat) -> &'static str {
+    if time.as_entered() {
+        "Time as entered"
+    } else if time.system_format() {
+        "System time format"
+    } else if time.show_hours() {
+        if time.clock_24h() {
+            "24-hour or elapsed time"
+        } else {
+            "12-hour time"
+        }
+    } else if time.show_minutes() {
+        "Elapsed minutes"
+    } else if time.show_seconds() {
+        "Elapsed seconds"
+    } else {
+        "No stored time components"
+    }
+}
+
 fn section(ui: &mut Ui, title: &str, contents: impl FnOnce(&mut Ui)) {
     egui::CollapsingHeader::new(RichText::new(title).strong())
         .default_open(true)
@@ -763,6 +982,79 @@ fn section(ui: &mut Ui, title: &str, contents: impl FnOnce(&mut Ui)) {
 #[cfg(test)]
 mod tests {
     use super::Units;
+
+    #[test]
+    fn inspector_reads_stored_objects_from_the_current_layout() {
+        use super::{stored_object, ObjectGeom, RenderState, Session};
+        use om_layout::object::LayoutObject;
+
+        let mut session = Session::new(
+            crate::session::Target {
+                host: String::new(),
+                file: "Inspector fixture".into(),
+                local: None,
+            },
+            25,
+        );
+        session.layout = Some(1);
+        let mut render = om_data::RenderLayout::default();
+        render.layout.id = 1;
+        render.layout.objects.objects.push(LayoutObject {
+            id: 7,
+            ..Default::default()
+        });
+        session.render = RenderState::Loaded(Box::new(render));
+        let selection = ObjectGeom {
+            key: 7,
+            ..Default::default()
+        };
+        assert!(stored_object(&session, Some(&selection)).is_some());
+        session.layout = Some(2);
+        assert!(stored_object(&session, Some(&selection)).is_none());
+    }
+
+    #[test]
+    fn inspector_summarizes_a_stored_numeric_format() {
+        use super::{section, show_field_format, FieldKind};
+        use egui_kittest::{kittest::Queryable, Harness};
+        use om_layout::{data_format::DataFormat, object::LayoutObject};
+
+        let mut format = DataFormat::new_field();
+        format.number.flags = 0x080c;
+        format.number.decimal_places = 2;
+        let object = LayoutObject {
+            data_format: Some(format),
+            ..Default::default()
+        };
+        let app = Harness::builder()
+            .with_size(egui::vec2(crate::theme::INSPECTOR_WIDTH, 140.0))
+            .with_context_setup(crate::theme::install)
+            .build_ui(|ui| {
+                section(ui, "Data Formatting", |ui| {
+                    show_field_format(ui, Some(FieldKind::Number), Some(&object));
+                });
+            });
+        app.get_by_label("Decimal number");
+        app.get_by_label("Decimal places 2");
+        app.get_by_label("Symbol $");
+    }
+
+    #[test]
+    fn component_only_times_are_not_labeled_as_clocks() {
+        use super::time_format_label;
+        use om_layout::data_format::TimeFormat;
+
+        let mut time = TimeFormat {
+            flags: 0x82,
+            ..Default::default()
+        };
+        assert_eq!(time_format_label(&time), "Elapsed minutes");
+        time.flags = 0x84;
+        assert_eq!(time_format_label(&time), "Elapsed seconds");
+        time.flags = 0x80;
+        assert_eq!(time_format_label(&time), "No stored time components");
+    }
+
     #[test]
     fn measurements_convert_from_layout_points() {
         assert_eq!(Units::Points.display(72.0), "72.00");

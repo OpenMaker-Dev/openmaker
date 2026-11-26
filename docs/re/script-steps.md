@@ -46,11 +46,17 @@ Scripts are members of catalog `[17]` (scripts.md): `[17, 5, S]` per script.
 | `04` | step list | the step descriptors, 28 bytes each, concatenated (chunked when large) [O] |
 | `05` | step data | one subtree per step, keyed by the step's data key (section 4) [O] |
 | `10` | `KName` | script name, masked SCSU text (chunked when long) [O] |
-| `13` | (`KCachedCountIgnoreFolders`, `KCompatibility`, `KDragSize` and `KPrefixKey` share the number) | u32, 0 in all 361 samples and on all 330 scripts of the 66 starter files, folders included [O]; meaning unknown (file-format.md 3.7) |
+| `13` | `KCompatibility` | big-endian u32 [O from bin]; 0 in all 361 samples and on all 330 scripts of the 66 starter files, folders included [O] |
 | `d8`, `d9` | `KUniqueID`, `KSourceUUID` | 16-byte UUIDs [O] |
 | `f0` | `KMemberFlags` | u64; values 0, 2, 8, 9, 0xa, 0xd, 0x18 seen; bit 0 marks a folder (scripts.md) [O]; bit 3 (`0x8`) leaves the member out of the Scripts menu: FileMaker's XML writes it as the `Options` value with `hidden="True"` (oracle, "Implementation notes (Script Workspace)") [O]; "run with full access" and Siri visibility (XML `runwithfullaccess`, `SiriShortcutVisible`) are not mapped [I] |
 | `f1` | `KPrivateMemberFlags` | u64, 0 [O] |
 | `fc`, `fc01`-`fc03` | mod count, user, account, timestamp | as for every catalog member (schema-path.md 8) [O] |
+
+[O from bin, FileMaker Pro 26.1.1 macOS arm64 FMEngine]
+`FMScript::GetCompatibility` (`0x4a2884`) and `SetCompatibility`
+(`0x4a2a60`) use `KCompatibility` on the script member, with 0 as
+the getter's fallback. Which UI actions set the word and what nonzero
+values mean remain unmeasured.
 
 Key constant names are the DBEngine `Draco::K*` constants; their values are
 written by `_GLOBAL__sub_I_DBGlobals.cpp` through GOT slots. All 229
@@ -1021,7 +1027,19 @@ the others belong to the platform that saved them and are kept as stored.
 | `Comm` in `87` (29 bytes) | u8 orientation (0 portrait, 2 landscape), f32 scale (1.0 = 100%), f32 x 4 paper rectangle in points relative to the printable origin (left, top, right, bottom: A4 = -8.5, -8.5, 586.77, 833.36), f32 x 2 printable width and height [O 7 steps against XML `PageSetup`: `Orientation`, `scale`, `size` = paper height and width in 1/100 inch]. The rectangle stays the upright sheet in every orientation and scale, while the printable size is in the page's own orientation and divided by the scale: US Letter on -18, -18, 594, 774 stores 576 x 734 portrait, 734 x 576 landscape, 1223.33 x 960 landscape at 60%, and 1835 x 1440 at 40% [O: the `Comm` chunks of seven Print Setup steps FileMaker Pro 26 for macOS saved, [#817](https://github.com/OpenMaker-Dev/openmaker/issues/817)] |
 | `Comm` in `88` (11 bytes) | u16 page numbering offset (0; 0x13 for "number pages from 20"), u16 from page, u16 to page (`ffff` or 9999 = all), u16 copies, u8 1 = all pages, u16 1 [O 11 steps against XML `Print/Pages All from to offset`, `Copies value`; collate not located] |
 | `PrNm` | printer name, UTF-32 text with a header [Low] |
-| `M_PM`, `M_PD`, `MMod` | macOS print records (PMPageFormat / PMPrintSettings XML property lists) [O tags] |
+| `M_PM`, `M_PD` | macOS print records (PMPageFormat / PMPrintSettings XML property lists) [O tags] |
+| `MMod` | a byte-for-byte copy of the value's `Comm`: twice after `M_PM` in `87`, once in `88` [O: every page setup and print settings FileMaker Pro 26 for macOS saved in a file, file-format.md 3.8]. Pro does not use it to choose between `Comm` and `M_PM` (file-format.md 3.8) |
+
+Which record FileMaker Pro reads when `Comm` and the macOS record
+disagree, and what it does with a value that holds only `Comm`, was
+measured on a file's own page setup: file-format.md 3.8. There, "Any
+Printer" stores A4 as the sheet -18, -18, 577, 824 around 559 x 783, and
+A4 landscape at 50% as 1566 x 1118 on the same sheet [O]. FileMaker Pro
+26.1.1 labels Print Setup's Restore "Specify page setup". The OK of the
+sheet it opens changes only the step. Running the step with Restore and
+without the dialog leaves the file's page setup as it was, while the OK
+of its dialog without Restore saves it in the file, as File > Page Setup
+does [O: file-format.md 3.8, run S].
 
 Print's stored records-to-print choice is `mStepValue` (XML `Print type`,
 14/14): 1 records being browsed, 2 current record, 3 blank record as

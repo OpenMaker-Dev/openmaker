@@ -166,7 +166,7 @@ and every response is one JSON object:
 | `set_part_options` | `layout` or `layout_name`, `expected_revision` (get_layout's `revision`, required), `part` (a part's `id` from get_layout: a body or a sub-summary), `options` (`page_break_before`, `restart_page_numbers`, `break_across_pages`, `discard_remainder`, each `true` or `false`; others keep their state), `page_break_after` (1 to 32,767, 0 for none), `sorted_by` (a leading sub-summary's field, of the layout's own table, as `field:TABLE.FIELD@File`) | `status` (`set`, `already_applied`), the `layout`, the `part`, its `options` and `page_break_after`, `previous_revision`, `revision`, and `verified` from a new connection. [Part options](#part-options) |
 | `set_field_control` | `object` (get_layout's field object reference), `expected_revision` (get_layout's `revision`, required), `control` (`edit_box`, `drop_down_list`, `pop_up_menu`, `checkbox_set`, `radio_button_set`, `drop_down_calendar`), `value_list` (get_value_lists' reference; required for the four list controls, left out to keep the object's) | `status` (`set`, `already_applied`), the `layout`, the `object`, the `control`, `previous_revision`, `revision`, and `verified` from a new connection. [Field controls](#field-controls) |
 | `set_layout_width` | `layout`/`layout_name`, `expected_revision` (get_layout's `revision`, required), `width` (points) | `status` (`set`, `already_applied`), the `layout`, its `width`, `previous_revision`, `revision`, and `verified` from a new connection. [Layout width](#layout-width) |
-| `layout_setup` | `layout`/`layout_name`, `expected_revision` (get_layout's `revision`, required), and any of `name`, `views` (some of `form`, `list`, `table`), `default_view`, `include_in_layout_menus` | `status` (`set_up`, `already_applied`), the `layout`, its `name`, `views`, `default_view` and `include_in_layout_menus`, `previous_revision`, `revision`, and `verified` from a new connection. [Layout Setup](#layout-setup) |
+| `layout_setup` | `layout`/`layout_name`, `expected_revision` (get_layout's `revision`, required), and any of `name`, `views` (some of `form`, `list`, `table`), `default_view`, `include_in_layout_menus`, `fixed_page_margins`, `page_margins` (`top`, `bottom`, `left`, `right` in points) | `status` (`set_up`, `already_applied`), the `layout`, its `name`, `views`, `default_view`, `include_in_layout_menus`, `fixed_page_margins` and the `page_margins` sent, `previous_revision`, `revision`, and `verified` from a new connection. [Layout Setup](#layout-setup) |
 | `delete_layout` | `layout`/`layout_name`, `expected_revision` (inspect's `layouts_revision`, required) | `status` (`deleted`, `already_applied`), the `layout`, `previous_revision`, `revision`, and `verified` from a new connection. [Deleting layouts](#deleting-layouts) |
 | `run_script` | `script`/`script_name`, optional `parameter` (text) and `expected_revision` | `status` (`completed`), the `script` and its `name`, the `revision` it ran at, `last_error` (the host's answer: the script's final Get ( LastError ), or its refusal) and `result` (the Exit Script text). [Running scripts](#running-scripts) |
 | `list_choices` | `object` (a `layout_object` reference), `record` (the record's id) | the `object`, the `record`, the `value_list` and each item's `value` (what choosing it stores) and `label` (what the control shows), with dividers marked; or the reason the list cannot be read. Reads the records the list's values come from. [Value-list choices](#value-list-choices) |
@@ -945,8 +945,12 @@ and the layout's exclusive locks:
   them (`options`, by name): `0x10` set for "Save record changes
   automatically" off, `0x20` for "Show field frames when record is
   active" on, `0x1` for "Delineate fields on current record only" on,
-  `0x10000000` for "Show current record indicator in List View" off, and
-  `0x8000` for "Enable Quick Find" off;
+  `0x10000000` for "Show current record indicator in List View" off,
+  `0x2000` for "Show alerts when field isn't modifiable or no records
+  are present" on (`show_field_alerts`), and `0x8000` for "Enable Quick
+  Find" off;
+- the Printing tab's "Use fixed page margins" in the same `f1`, `0x40`
+  set for on (`fixed_page_margins`; re/layout-model.md 4.2);
 - "Include in layout menus" cleared as bit `0x08` of the entry's `f0` and
   of the member's (a member keeps `f0` only when it is not 0);
 - the member's and the index's stamps counted up, as FileMaker Pro's
@@ -954,10 +958,44 @@ and the layout's exclusive locks:
 
 Other bits of `f1` are refused, as are a set of views with none available
 or without the default one, folders and separators, and an unusable name.
+`f1` and `f0` are read by one rule everywhere, the member's, else the
+entry's, each a big-endian integer of 1 to 8 bytes
+(`om_layout::stored_layout_word`, `om_data::layout_catalog::layout_word`):
+by the host's planner, by `layout_setup` and `get_layout` (both copies
+from one download of `[4]`), and by the desktop's dialog
+(`Layout::decode_from_tree`). FileMaker keeps both copies, but a layout
+whose words are only in its entry keeps them through a rename
+([#977](https://github.com/OpenMaker-Dev/openmaker/issues/977)). The edit
+token covers the member only, so on such a layout a concurrent change to a
+word only the entry holds, which leaves the member as it was (the member
+keeps `f0` only when it is not 0), is not seen as a conflict; FileMaker
+never stores a layout so.
 A request the layout already holds reports `already_applied`; any other at
 an old revision is a `conflict`. Pro also writes the layout's object store
 again and raises the stamp counts of the library items it shows; OpenMaker
 keeps both as stored (re/layout-model.md 10.11).
+
+With `page_margins`, the request is operation 23, operation 16's and the
+fixed page margins, planned together
+(`om_data::layout_catalog::plan_setup_with_margins`) and written in the
+same commit, so a refused setup changes no margins. The margins are
+`LayoutDef.customMargins`: the stored `Rect`'s four doubles rewritten in
+place (top, left, bottom, right), as FileMaker Pro rewrites them
+(re/layout-model.md 4.2), every other byte of the definition kept
+(`om_data::layout_placement::plan_margins`). Each margin is 0 to 14,400
+points (the largest paper's side; OpenMaker's bound, FileMaker Pro's is
+unmeasured); whether they leave room on the paper is checked when the
+layout prints. Margins the layout holds already change nothing. FileMaker
+Pro also recomputes `printColumnWidth` from the paper and the margins on
+its Layout Setup save; OpenMaker keeps it as stored, as the starter
+layouts keep 0 beside their margins, and so refuses to change the margins,
+or "Use fixed page margins", of a layout printing in columns (`0x400`).
+"Use fixed page margins" turned on for a layout that stores no margins it
+can read is refused without them, since it would print within the
+printer's;
+`layout_setup` then sends 36 points each, as the desktop's dialog shows
+them and every new layout stores them. `get_layout` reports a layout's
+`fixed_page_margins` and `page_margins`.
 
 ### Buttons on layouts
 
@@ -1849,7 +1887,7 @@ operation's fields.
 
 | operation | fields (pop order) | OK reply fields (pop order) |
 |-----------|--------------------|-----------------------------|
-| 1 Describe | none | `u32` operations (bit 2: replace steps, bit 3: create field, bit 4: place field, bit 5: describe security, bit 6: create layout, bit 7: place button, bit 8: place button step, bit 9: save, bit 11: set object frames, bit 12: delete objects, bit 13: duplicate layout, bit 14: delete layout, bit 15: place text, bit 16: Layout Setup, bit 17: layout width, bit 18: field control, bit 19: part options, bit 20: set text, bit 21: place portal, bit 22: change parts), `u8` may author, `u32` largest definition |
+| 1 Describe | none | `u32` operations (bit 2: replace steps, bit 3: create field, bit 4: place field, bit 5: describe security, bit 6: create layout, bit 7: place button, bit 8: place button step, bit 9: save, bit 11: set object frames, bit 12: delete objects, bit 13: duplicate layout, bit 14: delete layout, bit 15: place text, bit 16: Layout Setup, bit 17: layout width, bit 18: field control, bit 19: part options, bit 20: set text, bit 21: place portal, bit 22: change parts, bit 23: Layout Setup with margins), `u8` may author, `u32` largest definition |
 | 2 Replace script steps | `u32` length, the new definition as a wire slot list (one child of a root), 32-byte expected revision, `u64` script id | `u8` changed, 32-byte stored revision |
 | 3 Create field | `u64` table id (its key read big-endian), 32-byte expected fields revision, `u8` data type (1 text, 2 number, 3 date, 4 time, 5 timestamp), name, comment (empty for none), strings in the trailing-`u32` SCSU form | `u8` changed, `u64` field id (its key read big-endian), 32-byte stored fields revision |
 | 4 Place field | `u64` layout id, 32-byte expected layout revision, `u64` expected base-table id, `u64` occurrence id, `u64` field id (keys read big-endian), the frame as four `u64` IEEE-754 bit patterns (top, left, bottom, right, points), `u8` label (0 none, 1), and with one the label's text and its frame | `u8` changed, `u64` field object key, `u64` label object key (0 for none), 32-byte stored layout revision |
@@ -1865,6 +1903,7 @@ operation's fields.
 | 15 Place text | `u64` layout id, 32-byte expected layout revision, the frame as four `u64` IEEE-754 bit patterns (top, left, bottom, right, points), the text | as 4 Place field: `u8` changed, `u64` the text object's key, `u64` 0, 32-byte stored layout revision |
 | 16 Layout Setup | `u64` layout id, 32-byte expected layout revision, `u64` view flags `f1`, the name, `u8` hidden from the layout menus | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |
 | 17 Layout width | `u64` layout id, 32-byte expected layout revision, `u64` the width's IEEE-754 bit pattern (points) | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |
+| 23 Layout Setup with margins | as 16, then the fixed page margins as four `u64` IEEE-754 bit patterns (top, left, bottom, right, points), in one commit | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |
 | 18 Field control | `u64` layout id, 32-byte expected layout revision, `u64` object key, `u32` display type, `u64` value list key, `u8` whether the value list is given (0: keep the object's) | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |
 | 19 Part options | `u64` layout id, 32-byte expected layout revision, `u64` part key, `u64` `PartDef.flags`, `u32` page break after every N (0: none), `u64` break field's occurrence id (the layout's own), `u64` that occurrence's base table id, `u64` the field id, `u8` whether the break field is given (0: keep the part's) | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |
 | 20 Set text | `u64` layout id, 32-byte expected layout revision, `u64` object key, the new words (string) | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |

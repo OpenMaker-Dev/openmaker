@@ -68,49 +68,82 @@ pub(crate) fn browse(
             return;
         }
     }
+    if view == ViewMode::Table {
+        table(ui, session, document, calc, actions);
+        commit_canvas_click(&background, session, document, actions);
+        return;
+    }
     let Some(page) = loaded_page(ui, session) else {
         return;
     };
-    // Table view, and the views of a layout not drawn, move Tab through
-    // the current record's cells (`DocumentState::text_edit`).
+    // The views of a layout not drawn move Tab through the current
+    // record's cells (`DocumentState::text_edit`).
     document.resolve_tab(ui, session, false);
     document.settle_completions(ui);
     match view {
-        ViewMode::Form => match &session.geometry {
+        ViewMode::List => list_view(ui, session, page, document, calc, actions),
+        // Form view; Table view went above.
+        _ => match &session.geometry {
             Geometry::Loaded(geometry) => geometry_view(ui, geometry, document),
             Geometry::Loading => padded(ui, |ui| {
                 ui.spinner();
             }),
             Geometry::Unavailable => form_view(ui, session, document, calc, actions),
         },
-        ViewMode::List => list_view(ui, session, page, document, calc, actions),
-        ViewMode::Table => {
-            // Zoomed as Form and List view are: the grid, its header and its
-            // scroll areas in the document's zoom layer.
-            let factor = document.zoom.factor();
-            // The last column fills the width the table's previous frame
-            // left: at a new zoom the table is laid out once more before it
-            // shows, or it keeps the old zoom's width until the next input.
-            let shown = ui.scope_id().with("table zoom");
-            if ui.data(|data| data.get_temp::<f32>(shown)) != Some(factor) {
-                ui.data_mut(|data| data.insert_temp(shown, factor));
-                ui.ctx().request_discard("Table view zoom changed");
-            }
-            crate::document::zoom::show(ui, ui.available_size() / factor, factor, |ui| {
-                // The canvas below the rows, in their layer (the window's
-                // canvas is under it): a click there that no cell takes
-                // commits the record.
-                let canvas = ui.interact(
-                    ui.max_rect(),
-                    ui.scope_id().with("table_canvas"),
-                    Sense::click(),
-                );
-                table_view(ui, session, page, document, calc, actions);
-                commit_canvas_click(&canvas, session, document, actions);
-            });
-        }
     }
     commit_canvas_click(&background, session, document, actions);
+}
+
+/// Browse's Table view: the found set's grid, and on a drawn layout the
+/// parts its Table View Properties include around it
+/// (`document::show_table`), zoomed as Form and List view are.
+fn table(
+    ui: &mut Ui,
+    session: &Session,
+    document: &mut crate::document::DocumentState,
+    calc: Option<&crate::calc::Evaluator<'_>>,
+    actions: &mut Vec<Action>,
+) {
+    // The grid, its header, its scroll areas and the parts in the
+    // document's zoom layer.
+    let factor = document.zoom.factor();
+    // The last column fills the width the table's previous frame
+    // left: at a new zoom the table is laid out once more before it
+    // shows, or it keeps the old zoom's width until the next input.
+    let shown = ui.scope_id().with("table zoom");
+    if ui.data(|data| data.get_temp::<f32>(shown)) != Some(factor) {
+        ui.data_mut(|data| data.insert_temp(shown, factor));
+        ui.ctx().request_discard("Table view zoom changed");
+    }
+    crate::document::zoom::show(ui, ui.available_size() / factor, factor, |ui| {
+        // The canvas below the rows, in their layer (the window's
+        // canvas is under it): a click there that no cell takes
+        // commits the record.
+        let canvas = ui.interact(
+            ui.max_rect(),
+            ui.scope_id().with("table_canvas"),
+            Sense::click(),
+        );
+        let grid = |ui: &mut Ui,
+                    document: &mut crate::document::DocumentState,
+                    actions: &mut Vec<Action>| {
+            let Some(page) = loaded_page(ui, session) else {
+                return;
+            };
+            // Table view moves Tab through the current record's cells
+            // (`DocumentState::text_edit`).
+            document.resolve_tab(ui, session, false);
+            document.settle_completions(ui);
+            table_view(ui, session, page, document, calc, actions);
+        };
+        match &session.render {
+            crate::session::RenderState::Loaded(layout) => {
+                crate::document::show_table(ui, session, layout, document, calc, actions, grid)
+            }
+            _ => grid(ui, document, actions),
+        }
+        commit_canvas_click(&canvas, session, document, actions);
+    });
 }
 
 fn commit_canvas_click(
@@ -1251,6 +1284,39 @@ struct PartsHold {
 }
 
 impl LayoutWorkspace {
+    pub(crate) fn clear_history(&mut self) {
+        self.canvas.clear_history();
+    }
+
+    pub(crate) fn draft_edits(&self, session: &Session) -> (bool, bool) {
+        if self.saving || self.setting_up_button() {
+            return (false, false);
+        }
+        self.canvas.draft_edits(session)
+    }
+
+    pub(crate) fn edit_draft(
+        &mut self,
+        ctx: &egui::Context,
+        session: &Session,
+        edit: crate::layout_canvas::DraftEdit,
+    ) -> bool {
+        if self.saving || self.setting_up_button() {
+            return false;
+        }
+        self.canvas.edit_draft(ctx, session, edit)
+    }
+
+    pub(crate) fn revert(&mut self) {
+        self.clear_history();
+        self.drop_width();
+        self.drop_new_object();
+        self.drop_moves();
+        self.drop_deletions();
+        self.drop_controls();
+        self.drop_words();
+    }
+
     /// The next field draft to send on explicit Save Layout.
     pub(crate) fn new_field(&self) -> Option<&crate::layout_canvas::NewField> {
         self.canvas.new_field()
@@ -1271,6 +1337,21 @@ impl LayoutWorkspace {
         self.canvas.selection_count(session)
     }
 
+    pub(crate) fn select_all(&mut self, session: &Session) {
+        self.canvas.select_all(session);
+    }
+
+    pub(crate) fn nudge_selection(
+        &mut self,
+        session: &Session,
+        direction: crate::layout_canvas::NudgeDirection,
+    ) {
+        let before = self.canvas.checkpoint();
+        if self.canvas.nudge_selection(session, direction) {
+            self.canvas.record_command(before);
+        }
+    }
+
     /// How many selected objects Arrange's Align, Distribute and Resize To
     /// apply to (`CanvasState::arrangeable_count`).
     pub(crate) fn arrangeable_count(&self, session: &Session) -> usize {
@@ -1284,7 +1365,12 @@ impl LayoutWorkspace {
         session: &Session,
         arrangement: om_data::layout_arrange::Arrangement,
     ) -> Result<bool, om_data::layout_placement::Refusal> {
-        self.canvas.arrange(session, arrangement)
+        let before = self.canvas.checkpoint();
+        let changed = self.canvas.arrange(session, arrangement)?;
+        if changed {
+            self.canvas.record_command(before);
+        }
+        Ok(changed)
     }
 
     pub(crate) fn take_field_finished(&mut self) -> bool {
@@ -1377,8 +1463,10 @@ impl LayoutWorkspace {
             }
             PortalSetupAnswer::Done(choice) => {
                 self.portal_setup = None;
+                let before = self.canvas.checkpoint();
                 if let Some(portal) = self.canvas.new_portal_mut() {
                     portal.setup = Some(choice);
+                    self.canvas.record_command(before);
                 }
             }
         }
@@ -1420,10 +1508,12 @@ impl LayoutWorkspace {
                 action,
             }) => {
                 self.button_setup = None;
+                let before = self.canvas.checkpoint();
                 if let Some(button) = self.canvas.new_button_mut() {
                     button.label = label;
                     button.step = Some(step);
                     button.action = action;
+                    self.canvas.record_command(before);
                 }
             }
         }
@@ -1523,6 +1613,7 @@ impl LayoutWorkspace {
     /// window's, so it lasts when Part Setup closes before the answer (as
     /// another window coming forward closes it).
     pub(crate) fn hold_parts(&mut self, sent: PartsSent) {
+        self.clear_history();
         self.saving = true;
         self.parts_hold = Some(PartsHold {
             sent,
@@ -1572,7 +1663,15 @@ impl LayoutWorkspace {
     /// Delete the entire supported selection as an unsaved change. Validation
     /// precedes mutation, so a mixed unsupported set cannot lose only a subset.
     pub(crate) fn delete_selected(&mut self, session: &Session) -> bool {
-        !self.saving && self.canvas.delete_selection(session)
+        if self.saving {
+            return false;
+        }
+        let before = self.canvas.checkpoint();
+        let changed = self.canvas.delete_selection(session);
+        if changed {
+            self.canvas.record_command(before);
+        }
+        changed
     }
 
     /// The new field or button and the moved and deleted objects the
@@ -1679,10 +1778,16 @@ pub(crate) fn layout(
         Option<&om_data::host::CalcSchema>,
     ),
     state: &mut LayoutWorkspace,
-    scroll: &mut crate::document::scroll::Scroll,
+    document: &mut crate::document::DocumentState,
 ) {
     let LayoutPanels { inspector, objects } = panels;
-    scroll.begin_paint(session);
+    state.canvas.synchronize(session);
+    let before = if state.saving {
+        None
+    } else {
+        state.canvas.checkpoint()
+    };
+    document.scroll.begin_paint(session);
     let full = ui.max_rect();
     let left_width = if objects {
         crate::layout_objects::WIDTH
@@ -1733,7 +1838,7 @@ pub(crate) fn layout(
         fields,
         &mut state.canvas,
         state.saving,
-        scroll,
+        document,
     );
     if inspector {
         let rect = Rect::from_min_max(pos2(canvas.right(), full.top()), full.max);
@@ -1781,6 +1886,7 @@ pub(crate) fn layout(
                 selected.as_ref(),
                 shown,
                 (editable, view.as_ref()),
+                state.canvas.selection_notice(),
             );
             if let (Some(object), Some(frame)) = (&selected, edit.frame) {
                 state
@@ -1793,6 +1899,9 @@ pub(crate) fn layout(
                     .set_control(object.key, control, view.stored, revision);
             }
         }
+    }
+    if !state.saving {
+        state.canvas.record_frame(before, ui.ctx());
     }
     ui.allocate_rect(full, Sense::hover());
 }
@@ -1942,12 +2051,15 @@ mod tests {
             date: false,
         }];
         let mut state = LayoutWorkspace::default();
-        let mut scroll = DocumentState::default().scroll;
+        let mut document = DocumentState::default();
+        document.zoom.set_percent(200);
         let ctx = egui::Context::default();
         // A drag between layout points; the layout's origin is right of the
         // 22-point part strip.
         let mut drag = |state: &mut LayoutWorkspace, from: egui::Pos2, to: egui::Pos2| {
-            let (from, to) = (from + egui::vec2(22.0, 0.0), to + egui::vec2(22.0, 0.0));
+            let on_screen =
+                |point: egui::Pos2| Pos2::ZERO + (point.to_vec2() + vec2(22.0, 0.0)) * 2.0;
+            let (from, to) = (on_screen(from), on_screen(to));
             let button = |pos, pressed| egui::Event::PointerButton {
                 pos,
                 button: egui::PointerButton::Primary,
@@ -1981,7 +2093,7 @@ mod tests {
                                 },
                                 (&fields, None),
                                 state,
-                                &mut scroll,
+                                &mut document,
                             );
                         });
                 });
@@ -2015,7 +2127,14 @@ mod tests {
         assert_eq!(state.canvas.fields().len(), 2);
         let second = &state.canvas.fields()[1];
         assert_eq!((second.left, second.top), (200.0, 100.0));
-        state.drop_new_object();
+        assert!(state.edit_draft(&ctx, &session, crate::layout_canvas::DraftEdit::Undo));
+        assert_eq!(state.canvas.fields(), std::slice::from_ref(&drawn));
+        assert!(state.edit_draft(&ctx, &session, crate::layout_canvas::DraftEdit::Redo));
+        assert_eq!(state.canvas.fields().len(), 2);
+        state.rebase([7; 32], [8; 32]);
+        assert_eq!(state.draft_edits(&session), (false, false));
+        assert_eq!(state.new_field().unwrap().revision, Some([8; 32]));
+        state.revert();
         assert!(
             state.canvas.fields().is_empty(),
             "Revert discards every addition"

@@ -14,13 +14,12 @@ Initial formula is decoded from its compiled stream without field-name
 special cases. Lookups are performed only in the exact-match form below
 (Lookups); serial numbers as below (Serial numbers), reserved on the host.
 A container field a formula reads is read as its data, through the
-write's container reader. Other lookups, entry from the last visited
-record, related fields beyond the formulas docs/record-writes.md
-supports, globals other than one repetition of a non-container global of
-the record's own table read by an auto-entered or validation
-calculation, summary fields, unstored calculations other than those
-docs/record-writes.md lists, plug-in functions, custom functions that read fields and dependency cycles fail
-preflight (docs/record-writes.md, Limits).
+write's container reader. An auto-entered or validation calculation may
+read one repetition of a non-container global of its own table. Other
+global reads, entry from the last visited record, summary fields, plug-in
+functions, custom functions that read fields and dependency cycles fail
+preflight. The supported lookups, related reads and unstored calculations
+are listed in docs/record-writes.md, Limits.
 
 The provider preserves creation metadata on updates, refreshes modification
 variables, checks unique values with the server under a lock on the field's
@@ -160,6 +159,14 @@ requests `kDBCurrentDateOp`, `kDBCurrentTimeOp`, `kDBLocalTimeStampOp`,
 name and user name are distinct variables. The table describes the selected
 variable; it does not establish when creation and modification defaults are
 scheduled, including initialization of modification fields on creation.
+
+On FileMaker Pro 26.1.1, a local Text field with the calculated
+auto-enter `$$Marker` read the current file's variable at New Record.
+The two Text assignments produced two corresponding stored values. An
+unset variable produced empty and left out the stored cell. Set Field on
+an unrelated field, Commit and reopening kept those results. The check
+did not change the variable between New Record and Commit.
+[Native results](https://github.com/OpenMaker-Dev/openmaker/issues/1037#issuecomment-7185794811).
 
 In this file, a field calculation subtree is `<base-table>/3/5/<field>/5`.
 Child 4 contains its context, child 5 the formatted stream and child 6 the
@@ -351,10 +358,26 @@ lookups; the values are then read through it:
   data-entry conversion is applied.
 - An empty related value is copied as empty (asset 2's date and time).
 
-Not measured: scripts (Set Field) and imports in FileMaker Pro, which of
-several matching records an unsorted relationship gives, container
-fields, Relookup Field Contents, and the next lower or higher value or a
-constant.
+FileMaker Pro 26.1.1, a local two-table Text lookup over an equality
+relationship with "If no exact match: Use" selected
+([native steps and results](https://github.com/OpenMaker-Dev/openmaker/issues/1020#issuecomment-7185793871)):
+
+- New Record and Commit with the key untouched and empty leave the target
+  empty. Setting the key to a missing match copies the fallback immediately.
+  A blank fallback clears the target.
+- An exact match copies the related value. If that value is empty, "Don't
+  copy contents if empty" preserves the prior value. Neither empty-match
+  setting copies the fallback.
+- Explicitly clearing an existing key copies a nonempty fallback. The
+  results survived commit and reopen, with LastError 0 and no alert.
+- Lookup definition `08` stores mode byte `03`. FileMaker writes member
+  `0b` for a nonempty fallback and omits it for a blank fallback.
+
+Unmeasured for this option: explicit clear with a blank fallback, a replacing
+`Get ( UUID )` match key, hosting, imports and other field types. More generally,
+copying the next lower or higher value, container fields, Relookup Field
+Contents, and which of several matches an unsorted relationship gives remain
+unmeasured here.
 
 ## Calculations over related fields
 
@@ -453,6 +476,29 @@ A3 `2#`.
 Not measured: an unstored calculation over a related or global field, a
 chain of unstored calculations, a summary of another kind or over a
 sorted found set, and FileMaker Pro's own data entry.
+
+## Creation Date with a calculated auto-entry value
+
+FileMaker Pro 26.1.1 kept both options on one local Date field after
+reopening, in either authoring order. New Record yielded the creation
+date, including with a calculation that yields a different date and
+with replacement enabled. An explicit date assigned before the first
+commit survived reopening. The conditional formula reads its own field
+and returns that value when present. It does not read `Note`, so the
+unchanged date after editing `Note` does not establish re-evaluation.
+Closed copies store option words `0x00000009` (keep an existing value)
+and `0x00000089` (replace), both with Creation Date selector `0x00`
+and a saved calculation member. In a subsequent local run, changing a
+referenced `Start` date after reopening immediately replaced the creation
+date with `Start + 30` when replacement was enabled. With replacement off,
+clearing the target left it empty until a later `Start` edit calculated a
+new date. The latter formula did not read the target itself. The timing
+of a dependency edit before the first commit, the internal evaluation
+order at creation, the always-evaluate option, Prohibit modification and
+hosted behavior remain unmeasured.
+[Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7184309937).
+[Closed-file readback](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7185113183).
+[Post-creation measurements](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7185359635).
 
 ## A new record's own self-join
 
@@ -663,6 +709,24 @@ its serial back, whether an existing record whose on-commit field is
 empty gets a serial when it is next committed, which value a record keeps
 when a script or the user sets the field before an on-commit serial is
 generated, text without digits, and increments below 1.
+
+## Auto-entry into global storage
+
+FileMaker Pro 26.1.1 kept a Text field's Auto-Enter setting when its
+storage changed to global. In each disposable file the option word gained
+only `0x10000`. The constant-data member `0d`, calculation member `05`,
+or next-serial member `0c` remained, according to the option used.
+With the global initially empty, New Record set it to `X` for the
+constant and calculation cases, and to `1` for the serial case. Editing
+another field and committing kept that value. Set Field on the global
+then replaced it with `Y`, which survived a local reopen. All scripted
+steps returned 0 and continued without alerts. The hosted constant
+case on FileMaker Server 26.0.3 followed the same sequence in the open
+session. After reopening, the hosted global was empty again.
+[O, disposable FileMaker Pro runs](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7183655256).
+
+Unknowns include a second New Record with a nonempty global and a
+calculated default configured to keep an existing value.
 
 ## A stored calculation before the commit
 

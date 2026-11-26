@@ -4,19 +4,24 @@
 //! `IDD_LAYOUT_SETUP.nib` puts them, in a 485 x 428 pt window. OpenMaker
 //! sets what the shared operation sets (`DataProvider::set_layout_setup`,
 //! authoring operation 16): the Layout Name, "Include in layout menus", the
-//! General tab's five options, the views available and the default view.
+//! General tab's five options, the views available and the default view,
+//! and the Printing tab's fixed page margins (with them, operation 23: one
+//! commit).
 //! The General tab's pop-ups and Reset Quick Find show the layout's values,
-//! not offered; the Printing and Script Triggers tabs are not offered yet.
+//! not offered, and so does the Printing tab's "Print in N columns". Its
+//! column order and Facing Pages are not offered and show no state:
+//! where FileMaker stores them is unknown (#948). The Script Triggers tab
+//! is not offered yet.
 
 use egui::{vec2, Align2, CornerRadius, Id, Rect, Stroke, StrokeKind, UiBuilder};
-use om_data::layout_catalog::{general, views, LayoutSetupChange, MAX_NAME_CHARS};
+use om_data::layout_catalog::{general, printing, views, LayoutSetupChange, MAX_NAME_CHARS};
 
 use crate::icons::{self, Icon};
 use crate::theme;
 use crate::widgets;
 
 /// What the dialog's user did.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum LayoutSetupAnswer {
     Open,
     Cancel,
@@ -38,10 +43,18 @@ pub(crate) struct LayoutSetup {
     name: String,
     in_menus: bool,
     /// The General tab's options, on or off, in [`general::OPTIONS`]' order.
-    options: [bool; 5],
+    options: [bool; general::OPTIONS.len()],
     /// Form, List, Table available, and the default view's index.
     views: [bool; 3],
     default: usize,
+    /// The Printing tab: "Use fixed page margins", and the margins shown,
+    /// top, bottom, left and right in points, and as stored
+    /// (`LayoutDef.customMargins`), if they are.
+    fixed: bool,
+    margins: [f64; 4],
+    stored_margins: Option<[f64; 4]>,
+    /// "Print in N columns" as stored, shown, not offered.
+    columns: (bool, u32),
     tab: usize,
     /// The Layout Name has had its first frame: it opens with its text
     /// selected and the keyboard, as FileMaker Pro's does.
@@ -52,18 +65,29 @@ const VIEW_OFF: [u64; 3] = [views::FORM_OFF, views::LIST_OFF, views::TABLE_OFF];
 const VIEW_NAMES: [&str; 3] = ["Form View", "List View", "Table View"];
 /// Why an option is shown but not offered.
 const NOT_YET: &str = "OpenMaker does not change this option yet.";
+/// Why a Printing option shows no state: where FileMaker stores it is
+/// unknown (#948).
+const NOT_READ: &str = "OpenMaker does not read or change this option yet.";
 
 impl LayoutSetup {
-    /// The dialog for `layout` of window `window`, named `name`, with flags `f1`
-    /// `flags` and menu set `menu_set` (0 the file's), in the layout menus
-    /// or not, at revision `expected`.
+    /// The dialog for `layout` of window `window`, named `name`, with the
+    /// definition `def` (its flags `f1`, menu set, fixed page margins and
+    /// columns), in the layout menus or not, at revision `expected`.
     pub(crate) fn new(
         window: u32,
         (layout, expected): (u32, om_data::layout_placement::Revision),
         (name, occurrence): (String, String),
-        (flags, menu_set): (u64, u64),
+        def: &om_layout::LayoutDef,
         in_menus: bool,
     ) -> Self {
+        let (flags, menu_set) = (def.flags, def.menu_set_key);
+        // A layout without stored margins shows 36 points, which every
+        // starter layout and every new one stores [O, layout-model.md 4.1];
+        // with the box checked they are stored, so it prints within them.
+        let stored_margins = def
+            .custom_margins
+            .as_ref()
+            .map(|m| [m.top, m.bottom, m.left, m.right]);
         let views = VIEW_OFF.map(|bit| flags & bit == 0);
         let default = if flags & views::DEFAULT_TABLE != 0 {
             2
@@ -87,6 +111,13 @@ impl LayoutSetup {
             options: general::OPTIONS.map(|(.., bit, set_on)| (flags & bit != 0) == set_on),
             views,
             default,
+            fixed: flags & printing::FIXED_PAGE_MARGINS != 0,
+            margins: stored_margins.unwrap_or([36.0; 4]),
+            stored_margins,
+            columns: (
+                flags & printing::COLUMNS != 0,
+                def.print_column_count.max(1),
+            ),
             tab: 0,
             named: false,
         }
@@ -95,7 +126,10 @@ impl LayoutSetup {
     /// The flags the dialog's choices give: the view and option bits set as
     /// chosen.
     fn flags(&self) -> u64 {
-        let mut flags = self.stored & !(views::ALL | general::ALL);
+        let mut flags = self.stored & !(views::ALL | general::ALL | printing::ALL);
+        if self.fixed {
+            flags |= printing::FIXED_PAGE_MARGINS;
+        }
         for (on, bit) in self.views.iter().zip(VIEW_OFF) {
             if !on {
                 flags |= bit;
@@ -190,22 +224,31 @@ impl LayoutSetup {
                         place(ui, content(177.0, 120.0, 226.0, 22.0), &mut |ui| {
                             shown_popup(ui, "Show records from", &self.occurrence, 220.0);
                         });
-                        place(ui, content(49.0, 246.0, 71.0, 17.0), &mut |ui| {
+                        place(ui, content(49.0, 283.0, 71.0, 17.0), &mut |ui| {
                             ui.label("Menu Set:");
                         });
-                        place(ui, content(117.0, 244.0, 286.0, 22.0), &mut |ui| {
+                        place(ui, content(117.0, 281.0, 286.0, 22.0), &mut |ui| {
                             shown_popup(ui, "Menu Set", &self.menu_set, 280.0);
                         });
-                        place(ui, content(219.0, 280.0, 180.0, 22.0), &mut |ui| {
+                        place(ui, content(219.0, 313.0, 180.0, 22.0), &mut |ui| {
                             ui.add_enabled(false, egui::Button::new("Reset Quick Find"))
                                 .on_disabled_hover_text(NOT_YET);
                         });
-                        // The nib's places, in `general::OPTIONS`' order.
-                        let tops = [149.0, 173.0, 197.0, 221.0, 284.0];
-                        for ((on, (_, label, ..)), top) in
-                            self.options.iter_mut().zip(general::OPTIONS).zip(tops)
+                        // In `general::OPTIONS` order. The positions and
+                        // sizes around the wrapping field-alert row are
+                        // estimates based on the older General tab.
+                        let rows = [
+                            (149.0, 18.0),
+                            (173.0, 18.0),
+                            (197.0, 18.0),
+                            (221.0, 18.0),
+                            (245.0, 34.0),
+                            (317.0, 18.0),
+                        ];
+                        for ((on, (_, label, ..)), (top, height)) in
+                            self.options.iter_mut().zip(general::OPTIONS).zip(rows)
                         {
-                            place(ui, content(48.0, top, 286.0, 18.0), &mut |ui| {
+                            place(ui, content(48.0, top, 393.0, height), &mut |ui| {
                                 ui.checkbox(on, label);
                             });
                         }
@@ -266,6 +309,7 @@ impl LayoutSetup {
                             widgets::accessible_label(ui, combo.response.id, "Default view");
                         });
                     }
+                    2 => self.printing(ui, &content),
                     _ => {
                         place(ui, content(24.0, 40.0, 400.0, 17.0), &mut |ui| {
                             ui.label(
@@ -289,6 +333,7 @@ impl LayoutSetup {
                                 name: self.name.clone(),
                                 flags: self.flags(),
                                 hidden: !self.in_menus,
+                                margins: self.changed_margins(),
                             });
                         }
                     });
@@ -305,6 +350,132 @@ impl LayoutSetup {
             answer = LayoutSetupAnswer::Cancel;
         }
         answer
+    }
+}
+
+impl LayoutSetup {
+    /// The fixed page margins to set with the setup: the ones shown, when
+    /// they or "Use fixed page margins" changed, or when none are stored
+    /// and the layout is to print within them; `None` leaves the layout's
+    /// as they are (operation 16, which a host without operation 23 still
+    /// takes).
+    fn changed_margins(&self) -> Option<om_layout::Rect> {
+        let [top, bottom, left, right] = self.margins;
+        let box_changed = self.fixed != (self.stored & printing::FIXED_PAGE_MARGINS != 0);
+        let edited = self.margins != self.stored_margins.unwrap_or([36.0; 4]);
+        // With the box changed, operation 23 even for the same margins, so
+        // a host without it says so; turned on over no stored margins, the
+        // shown ones are stored. Otherwise only an edit sends them.
+        let changed = edited || (box_changed && (self.stored_margins.is_some() || self.fixed));
+        changed.then_some(om_layout::Rect {
+            top,
+            left,
+            bottom,
+            right,
+            ..Default::default()
+        })
+    }
+
+    /// The Printing tab, its controls at the nib's places (FileMaker Pro
+    /// 26.1.1's `IDD_LAYOUT_SETUP.nib`, its tab view 339 points high). The
+    /// margins are edited in points; with "Use fixed page margins" off they
+    /// are not offered and show the printer's, as FileMaker Pro's fields do
+    /// [O: layout-model.md 4.2], and the stored ones are kept. On a layout
+    /// printing in columns they are shown, not offered
+    /// (`layout_catalog::plan_setup_with_margins`).
+    fn printing(&mut self, ui: &mut egui::Ui, content: &dyn Fn(f32, f32, f32, f32) -> Rect) {
+        let place = |ui: &mut egui::Ui, rect: Rect, add: &mut dyn FnMut(&mut egui::Ui)| {
+            ui.scope_builder(UiBuilder::new().max_rect(rect), add);
+        };
+        // Shown as stored, not offered.
+        let (mut columns_on, mut count) = self.columns;
+        place(ui, content(61.0, 56.0, 78.0, 18.0), &mut |ui| {
+            ui.add_enabled(false, egui::Checkbox::new(&mut columns_on, "Print in"))
+                .on_disabled_hover_text(NOT_YET);
+        });
+        place(ui, content(138.0, 53.0, 42.0, 22.0), &mut |ui| {
+            let field = ui
+                .add_enabled(false, egui::DragValue::new(&mut count))
+                .on_disabled_hover_text(NOT_YET);
+            widgets::accessible_label(ui, field.id, "Columns");
+        });
+        place(ui, content(187.0, 56.0, 62.0, 17.0), &mut |ui| {
+            ui.label("columns");
+        });
+        // Not read: neither shows as chosen (#948).
+        for (label, x, width) in [("Across first", 121.0, 113.0), ("Down first", 279.0, 101.0)] {
+            place(ui, content(x, 96.0, width, 18.0), &mut |ui| {
+                ui.add_enabled(false, egui::RadioButton::new(false, label))
+                    .on_disabled_hover_text(NOT_READ);
+            });
+        }
+        let columns = self.columns.0;
+        place(ui, content(61.0, 156.0, 180.0, 18.0), &mut |ui| {
+            ui.add_enabled(
+                !columns,
+                egui::Checkbox::new(&mut self.fixed, "Use fixed page margins"),
+            )
+            .on_disabled_hover_text(
+                "OpenMaker keeps the page margins of a layout that prints in columns.",
+            );
+        });
+        let printer = om_layout::paper::printer_margins();
+        let shown = if self.fixed {
+            self.margins
+        } else {
+            [printer.top, printer.bottom, printer.left, printer.right]
+        };
+        // Top and Bottom at the left, Left and Right at the right.
+        let sides = [
+            ("Top:", 0, 78.0, 55.0, 136.0, 184.0),
+            ("Bottom:", 1, 74.0, 60.0, 136.0, 210.0),
+            ("Left:", 2, 227.0, 63.0, 292.0, 184.0),
+            ("Right:", 3, 227.0, 63.0, 292.0, 210.0),
+        ];
+        for (label, side, label_x, label_width, field_x, top) in sides {
+            place(ui, content(label_x, top, label_width, 17.0), &mut |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(label);
+                });
+            });
+            let mut value = shown[side];
+            // Leaving a field reparses the two decimals it shows (28.35
+            // for a centimeter's 28.3465), which is no edit.
+            let displayed: f64 = format!("{value:.2}").parse().unwrap_or(value);
+            let editable = self.fixed && !self.columns.0;
+            place(ui, content(field_x, top - 3.0, 60.0, 22.0), &mut |ui| {
+                let field = ui.add_enabled(
+                    editable,
+                    egui::DragValue::new(&mut value)
+                        .speed(1.0)
+                        .range(0.0..=om_data::layout_placement::MAX_MARGIN)
+                        .max_decimals(2),
+                );
+                widgets::accessible_label(ui, field.id, label.trim_end_matches(':'));
+                let field = if self.fixed && self.columns.0 {
+                    field.on_disabled_hover_text(
+                        "OpenMaker keeps the margins of a layout that prints in columns.",
+                    )
+                } else {
+                    field
+                };
+                if editable && field.changed() && value != displayed && value != shown[side] {
+                    self.margins[side] = value;
+                }
+            });
+            place(ui, content(field_x + 65.0, top, 29.0, 17.0), &mut |ui| {
+                ui.label("pt");
+            });
+        }
+        // Not read: shown neither on nor off (#948).
+        let mut facing = false;
+        place(ui, content(292.0, 237.0, 106.0, 18.0), &mut |ui| {
+            ui.add_enabled(
+                false,
+                egui::Checkbox::new(&mut facing, "Facing Pages").indeterminate(true),
+            )
+            .on_disabled_hover_text(NOT_READ);
+        });
     }
 }
 

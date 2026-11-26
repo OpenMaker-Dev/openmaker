@@ -186,7 +186,9 @@ Rendering consequences [I, from public FileMaker behavior and the part model]:
 form view draws one record (body once); list view repeats the body part per
 record inside a scrolling area, with header and footer fixed; table view is
 generated from the layout's fields (`Draco::TableLayoutBuilder`, which builds
-columns, grid lines from `tableGridStyle`, and summary rows).
+columns, grid lines from `tableGridStyle`, and summary rows), with the top
+navigation, header, footer and bottom navigation parts its Table View
+Properties include around it (below).
 
 Sub-summary parts in Browse [documented]: they "appear in Table View and List
 View when sorted by break fields, and update dynamically when you change data
@@ -232,6 +234,21 @@ of the starter templates in the FileMaker Pro installers has the bit set
 does in Browse is in script-runtime.md, Implementation notes (desktop
 client), Errors and dialogs.
 
+[O, 2026-11-26, FileMaker Pro 26.1.1 for macOS,
+[#353](https://github.com/OpenMaker-Dev/openmaker/issues/353)]
+Bit `0x2000` in the effective layout flags enables Layout Setup >
+General's **Show alerts when field isn't modifiable or no records are
+present**. On an English Tasks copy, Task Details' member and catalog
+entry flag words both moved from `0x10f3080d` to `0x10f3280d` after
+enabling the option and saving the layout. Reopen showed the checkbox
+still enabled. Clearing and saving it restored both original flag words.
+
+In Browse with zero records, clicking the same Task field with the
+option off showed no alert. With the option on, clicking showed
+"No records are present. To create a new record choose the New Record
+menu command." Typing without focus after the click with the option off
+still showed the regular focus alert.
+
 [O, 2026-11-14, FileMaker Pro 26.0.3, local disposable Tasks copies, #609]
 Bit `0x40` set means Layout Setup > Printing's **Use fixed page margins** is
 checked. On Task List, the effective flag word at both
@@ -242,7 +259,15 @@ that flag word; unchecking restored `0x10f30a0b`. Protobuf
 `LayoutDef.customMargins` (field 12 of `[4,5,<layout>,02]`) stores the
 rectangle in top/left/bottom/right order even with the option off. Pro also
 rewrote `printColumnWidth` and save metadata, so their changes do not
-identify the checkbox. With the box off and Format For set to **Any
+identify the checkbox. [O, 2026-11-25: the same copies' Task List
+`LayoutDef` re-read with `tools/fmp12_keytree.py`] Pro rewrote the stored
+`Rect` in place: top/bottom/left/right 50/60/70/80 is stored as its fields
+1-4 top 50, left 70, bottom 60, right 80. `printColumnWidth` (field 10)
+became the US Letter width less the left and right margins over
+`printColumnCount` (2): 270 with fixed 36 pt margins, 231 with 70/80, and
+288 with the box off (the printer's 18/18). Every save also wrote
+`layoutClientType` (field 17) 0 explicitly, 3 bytes the original lacked.
+With the box off and Format For set to **Any
 Printer**, Page Setup's paper help and Task List's disabled Printing fields
 read as follows [O, local disposable copies, #609]:
 
@@ -297,6 +322,60 @@ Two of these bits are Layout Setup's field delineation options:
 | `0x20` | Show field frames when record is active | [O] FileMaker Pro 26.0.3's Layout Setup sets it (10.11); Task List reads it off, and the bit is clear |
 
 With `0x1` set, a field's borders and fill show on the current record only. Claris documents that they then do not show "when you print, print to PDF, or preview" [Claris: "Showing field borders and fill for the current record"]. FileMaker Pro 26.0.3 prints none of the starter lists' field underlines [O, #263, 2026-11-13]. Its Task Details PDF draws the `fill-secondary-popup` pop-ups and the `fill-container` photo field with no fill or border operations at all, only their clip paths and text [O, [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201), 2026-11-13]. Fields in header, footer, summary and navigation parts never show borders and fill [Claris, same page].
+
+**Table View Properties** (Layout Setup > Views > Table > Properties)
+keep their options in the same flag word. The four part options are
+measured [O, FileMaker Pro 26.1.1 for macOS, [#927](https://github.com/OpenMaker-Dev/openmaker/issues/927)]:
+four separately saved copies of a one-record Contacts fixture, each with
+one option checked, changed the one bit in the table, against a copy with
+all four off, in both flag words (`[4,5,L,0xf1]` and `[4,1,7,L,0xf1]`).
+No leaf under the layout's `0d` changed. The saves also changed other
+save metadata; no save without a change was made to compare it with. The
+other
+options' bits come from the third-party table above, FileMaker Pro
+26.0.2's Save as XML read one option at a time [O, third party]; they
+have not been read back from a file FileMaker saved [U].
+
+| Bit | Option | Evidence |
+|---|---|---|
+| `0x10000`, `0x20000` | Grid: Horizontal, Vertical | third party |
+| `0x40000` | Include header part | 26.1.1 |
+| `0x80000` | Include footer part | 26.1.1 |
+| `0x100000` | Include column headers | third party |
+| `0x200000`, `0x400000` | Resizable columns, Reorderable columns | third party |
+| `0x800000` | Sort data when selecting column | third party |
+| `0x4000000` | named `customColumnOrder` there; no option of the dialog has this name [U] | third party |
+| `0x20000000` | Include top navigation part | 26.1.1 |
+| `0x40000000` | Include bottom navigation part | 26.1.1 |
+| `0x1_0000_0000` to `0x8_0000_0000` | macOS: System appearance, Comfortable formatting, Alternating row colors, Row numbers | third party |
+
+- **Claris's help** says to "Select the parts to display: top
+  navigation, header, footer, and bottom navigation", and that "These
+  settings matter only if you have defined the parts for the layout, and
+  they're only in effect in Table View"
+  ([Setting up form, list, and table views for a layout](https://help.claris.com/en/pro-help/content/form-list-table-views.html)).
+  [Layout part types](https://help.claris.com/en/pro-help/content/layout-part-types.html)
+  says each of the four shows in Table view only when its option is on,
+  and that navigation parts are not zoomed. The System appearance
+  options apply "only to the table, not to any of the selected layout
+  parts" [Claris, the first page].
+- **The starter layouts:** their `0xf30000` is the two grids and the four
+  column options on, and the four parts off [O].
+- **Where Pro's Table view puts the parts** [O, FileMaker Pro 26.1.1,
+  #927]:
+  - The top navigation and header parts are above the column headings, in
+    that order.
+  - The footer and bottom navigation parts stack at the window's bottom,
+    also with one record and a large gap above them; a footer alone is at
+    the window's bottom too.
+  - At 150% zoom the table, header and footer scale; the navigation parts
+    keep their 100% height.
+  - Scrolling sideways moves the columns, and the top navigation part's
+    text keeps its place in the window.
+- **Not measured** [U]: how the header, footer and bottom navigation
+  parts' objects behave when the table scrolls sideways (the measured
+  parts held no objects), whether Tab reaches the parts' fields, and the
+  pages of web viewers in them.
 
 ### 4.3 Parts
 
@@ -1223,8 +1302,8 @@ over every layout of the six English starter solutions [O]:
 | 4 | Icon at left, text at right | 10, all labelled and left-aligned: the 9 Details layouts' back buttons (a chevron left of "Assets", "Contacts" and so on, in the top navigation part) and Add Assignee's "Add Assignee" |
 | 5 | Text at left, icon at right | none |
 
-Claris documents the order, not the numbers. The starters use only 0, 1 and
-4, and two of them are measured:
+Claris's documentation lists the choices in order. The starter
+measurements cover selectors 1 and 4:
 - **1 is Image only [O].** FileMaker Pro 26.0.3's PDF of Task Details ([#201](https://github.com/OpenMaker-Dev/openmaker/issues/201),
   2026-11-13) draws the "Add Assignee" button, type 1 with that label stored,
   as its 13-point "+" icon centered in the 291-point frame (icon at 523-536,
@@ -1232,16 +1311,23 @@ Claris documents the order, not the numbers. The starters use only 0, 1 and
   stored label is kept but not shown.
 - **4 is Icon at left, text at right [O].** Pro's Preview and PDF of the Add
   Assignee layout show the "+" left of "Add Assignee" ([#201](https://github.com/OpenMaker-Dev/openmaker/issues/201), 14:27Z).
-- 0, 2, 3 and 5 follow from Claris's order [I].
 
-That Pro's Browse also hides a type 1 label is inferred from its Preview and
-PDF; Browse was not captured.
+A local FileMaker Pro 26.1.1 Browse check with a 100 × 90 pt frame,
+a 48 pt icon and a short label confirmed all four placement selectors
+and that an image-only button hides its label [O]. The vertical
+arrangements center the icon and label together, with the label across
+the frame's width. The gap between the icon and the text line box is
+about 8 pt [I from visible glyph bounds]. The left and right arrangements
+wrap the label beside the icon. A narrower 70 pt frame and longer label
+clip the text while the icon keeps its size. A popover button with the
+icon above matched the ordinary button.
+[Native Browse check](https://github.com/OpenMaker-Dev/openmaker/issues/1016#issuecomment-7185360328).
 
-OpenMaker's Browse and reports draw a type 1 button's icon alone and
-centered, and leave its stored label out. It stays the button's accessible
-name in Browse. Both draw a type 4 icon left of its label. Browse draws the
-other placements as icon left of label, and reports refuse them
-(portable-pdf.md, Buttons and groups).
+OpenMaker's Browse and Layout mode share these placement directions for
+buttons and popover buttons. Browse supplies evaluated calculated icons.
+Layout mode supplies stored library icons. An image-only button keeps its
+stored label as its accessible name in Browse. Reports support types 1
+and 4 (portable-pdf.md, Buttons and groups).
 
 ### 5.7 Anchoring (autosizing)
 
@@ -1916,11 +2002,16 @@ template carries copies of `com.filemaker.theme.universal_touch` and
 - A font is a member `[19, 5, F]`, `F` a two-byte key [O: the 66 starter
   files, file-format.md 3.7]: `10` the family name (`Helvetica Neue`, or a
   CSS list such as `arial,sans-serif`); `03`, on faces, the face's
-  PostScript name (`HelveticaNeue-Light`, `ArialMT`, `.SFNSText`); `02`,
-  `01 00` or `01 fe`, [I] a one-byte value as a key string, [I] the code
-  set (`fontCodeSet`), [U] what `fe` is; `d8` and the stamp. A theme names
-  a font the same two ways: `-fm-font-family(<family>, <code set or
-  PostScript name>)` (7.3).
+  PostScript name (`HelveticaNeue-Light`, `ArialMT`, `.SFNSText`); `02`
+  (`KStatus`) is its code set as a one-byte key string, `01 00` or
+  `01 fe` in the starter corpus; `d8` is its UUID and `fc` its stamp.
+  [O from bin: FileMaker
+  Pro 26.1.1 Mac arm64 DBEngine] `DBFontEntry::GetCodeSet` (`0x188d088`)
+  and `SetCodeSet` (`0x188daf0`) read and write the code-set byte.
+  `CreateNewPostScriptEntry` (`0x188cc00`) sets it to `fe` when creating
+  an entry identified by its PostScript name. Other code-set values are
+  unmeasured. A theme names a font the same two ways:
+  `-fm-font-family(<family>, <code set or PostScript name>)` (7.3).
 - Styled text model (`Draco::Text` in Support): Unicode text with character
   style runs (`CharacterStyle`: font, size, color, faces) and paragraph style
   runs (`ParagraphStyle`: alignment, indents, spacing, tabs); SCSU compression
@@ -2168,9 +2259,16 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   frame. A window that was there before is never taken.
   When eframe recreates a viewport's window (some builder
   changes), or a window moves to the root viewport, its views are made
-  again in the new native window. A test checks this in eframe's real event
-  loop under Xvfb, and another, on a WebKitGTK build, renders a page in a
-  second window's List rows, each row its own record's
+  again in the new native window. Where egui embeds a window's viewport
+  instead (a backend without more native windows), the window is an egui
+  window inside the root window, drawn in the root's coordinates: its views
+  are children of the root's native window at the objects' places there,
+  clipped to the egui window's content, and they hide under whatever egui
+  paints above that window (another embedded window raised over it, menus,
+  pop-ups); the root's own views hide under the embedded window. A test
+  checks the native windows in eframe's real event loop under Xvfb, and
+  another, on a WebKitGTK build, renders a page in a second window's List
+  rows, each row its own record's, with native and with embedded viewports
   (`tests/web_viewer_windows_native.rs`).
 - [Documented] [Claris, Working with web viewers on layouts](https://help.claris.com/en/pro-help/content/web-viewers.html)
   describes pages in Form and List; in Table view only in the header,
@@ -2188,7 +2286,8 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   its current record, whichever row's page called it (FileMaker's choice
   for either is unmeasured). A window shows at most 32 pages at once
   (OpenMaker's bound: each is a native browser view); further viewers show a
-  note. A web viewer stored inside a portal is painted once, over the
+  note, as does a viewer whose page would be more than 32,767 pixels across
+  or down (OpenMaker's bound: X11 sizes and places windows in 16 bits). A web viewer stored inside a portal is painted once, over the
   portal at its own place, as an object of the layout on the layout's
   record, and the portal's rows skip it (`paint_portal_web_viewers`);
   whether FileMaker stores such a viewer as a portal child at all is
@@ -2196,8 +2295,12 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   slide panel, and containers whose hide condition shows them on the
   layout's record. A viewer on a popover inside a portal shows nothing,
   since OpenMaker opens no popover inside a portal; FileMaker shows it,
-  when the popover is open, in the portal's first record's context. Table
-  parts ([#306](https://github.com/OpenMaker-Dev/openmaker/issues/306)) remain unsupported.
+  when the popover is open, in the portal's first record's context. In
+  Table view the parts its Table View Properties include (4.2) show their
+  web viewers, one page each that follows the current record, as a List's
+  header and footer do; the table's own rows show none
+  ([#306](https://github.com/OpenMaker-Dev/openmaker/issues/306)). Pro's
+  page there is unmeasured.
   Synthetic painter tests check each List row's own placement and address
   and the portal viewers' single placements (not under a closed popover or
   an inactive panel), and the registry test that commands reach the current
@@ -2221,8 +2324,8 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   epoch, file, layout and object; one from a destroyed view, a closed
   window or an earlier session is dropped.
 - Not yet: a Windows (WebView2) adapter, views in
-  native Wayland windows,
-  embedded viewports (a backend without native windows), Find mode's "Display content in Find
+  native Wayland windows, pages on cards (a card's own layer counts as
+  covering them: [#1028](https://github.com/OpenMaker-Dev/openmaker/issues/1028)), Find mode's "Display content in Find
   mode", progress bar and status messages, `GetLayoutObjectAttribute`'s
   `source`/`content` of a live page, `fmp:` URLs from pages, Reset clearing
   the history, and layout objects stacked above a viewer (the native view
@@ -2251,7 +2354,7 @@ small SVGs for the `-fm-icon` arrow, calendar, and check glyphs.
 | Layout-level styles | `KLayoutStyleDefs` | `ThemeStyles` protobuf |
 | Layout metadata | `KMetadataDefs` | [U] |
 | Layout script triggers | `KScriptTriggers` (`30`) | trigger cache and records, [file-metadata.md](file-metadata.md) section 7 |
-| [U] `16` | layout + `16` | `00 00` on every layout seen with it; FileMaker Pro 26 added it in the Layout mode saves that were looked at, Layout Setup's OK with Save Layout (10.14) and the save of a new portal (10.17); that every Layout mode save adds it is [U]; [I] `KGuides`, the layout's guides (file-format.md 3.7) |
+| Layout guides | layout + `KGuides` (`16`) | guide list, a big-endian i16 count followed by the guides (below) |
 | Table-view layout | layout + `0d` | the layout's own table view (`FMLayout::HasTableLayout`), objects at `0d/05/<object>` with their own trigger caches ([file-metadata.md](file-metadata.md) 7.1); a new file's, member by member, in 10.14 |
 | Per-object attributes | section 5.5 | calc formulas and binary records [U] |
 | Themes | `KThemeDefs`, `KStyleDefs`, `KMetadataDefs`, `KBaseThemeName`, `KBaseThemeVersion` | `ThemeStyles`, `ThemeMetadata` protobuf |
@@ -2260,6 +2363,17 @@ small SVGs for the `-fm-icon` arrow, calendar, and check glyphs.
 Each protobuf value is read through an `HBCharIStream` over the HBAM position
 and parsed with `ParseFromIstream` [O, `LayoutDef::Read` @0x2c979a, REA Evidence
 `ev_27e8f820a04654acb990a93b7a469680a290ee3f6de7c68e64a40089782d4126`].
+
+[O from bin, FileMaker Pro 26.1.1 Mac arm64 FMEngine]
+`FMLayout::GetGuideList` (`0x2d6dd0`) reads `KGuides` and
+`FMLayout::SaveLayout` (`0x2d1b1c`) writes it when the guide list is
+loaded. `GuideList::Read` (`0x2ee668`) and `Write` (`0x2ee848`) use a
+big-endian i16 count. Each `TGuide` record (`Read` at `0x2ee304`,
+`Write` at `0x2ee3d4`) is 13 bytes: one byte, a big-endian u32 flag
+word, and a big-endian eight-byte word. The last word's coordinate
+interpretation and the first byte's values need a nonempty native sample.
+The observed `00 00` leaf is an empty list
+([file-format.md](file-format.md) 3.7).
 
 ### 10.2 Server to client
 
@@ -2515,8 +2629,9 @@ With no style given, FMUpgradeTool wrote FileMaker's defaults:
 
 The flags were stored as given (`0x10f3080d`, Contact Details' Form-only
 flags). A second patch, a copy of Contact Details' element without
-objects, kept its styles and got `0x14f3080d`; what bit `0x4000000` means
-is [U].
+objects, kept its styles and got `0x14f3080d`. The third-party table of
+4.2 names bit `0x4000000` `customColumnOrder`, a Table View option [O,
+third party]; what it does is [U].
 
 [O] The stored catalogs number layouts without gaps (the six English
 starter solutions: positions 1 to n, ids 1 to n, `04` = n). Layout names
@@ -3465,11 +3580,9 @@ name 26.0.3.307a.
     set behind `Get ( FoundCount ) > 1000`), and when it computes it after
     the condition stops holding (#1023). Unmeasured; a hidden object shows
     nothing either way.
-14. FileMaker Pro 26.1.1's Layout Setup option "Show alerts when field
-    isn't modifiable or no records are present" (on in new files, off in
-    existing ones; Claris): where it is stored. No new symbol names it; a
-    `LayoutDef` flag bit is the likely place [I]. Needs a layout saved by
-    26.1.1 with the option on and off.
+14. For the Layout Setup alert option (4.2), compare the not-modifiable
+    field case and defaults on layouts created in a new file. The
+    stored flag and zero-record click case are measured.
 15. For the other 26.1.1 options (5.3.2, 5.3.4, 5.4.1): a layout saved by
     FileMaker Pro 26.1.1, to confirm the bits as stored; whether popover
     buttons offer the calculated icon; what FileMaker Pro 26.0 shows for

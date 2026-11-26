@@ -719,12 +719,78 @@ All locations share this codec. Owner keys are `Draco::K*` constants
 | object script trigger parameter | `4/5/<L>/5/<O>/48/...` | `KScriptTriggers` 0x30, `KParameter` 0x31 | 3 |
 | layout script trigger parameter | `4/5/<L>/48/5/<trigger>/49` | same | 7 |
 | custom function | `16/5/<id>/35`, no context; `16` name, `32` = `02` + u16 BE parameter count (checked on 218 functions with 0-21 parameters), `33` parameter names joined by `;`, `36` = `01`; 26.1.1's descriptions in `3` (calc-functions.md 6.0) | `KGlobalFunctions` 0x10, `KFunction` 0x23, `KArity` 0x20, `KParamList` 0x21 | 224 |
-| custom menu install-when; menu items | `65/5/<M>/37`; `65/5/<M>/<n>/<item>/<k>` (`n` not given; the starter files' menus have no items, file-format.md 3.7) | `KCustomMenus` 0x41, `KFilter` 0x25 | 4,970 |
+| custom menu install-when; menu items | decimal paths: `65/5/<M>/37`; `65/5/<M>/5/<item>/16` name and `65/5/<M>/5/<item>/37` install-when (see below) | `KCustomMenus` 0x41, `KFilter` 0x25 | 4,970 |
 | privilege set record access calculation, per table; only k = 9 seen, with formulas guarding deletion ("need to be able to delete own record") [I: 9 = delete] | `23/2/5/<P>/5/<T>/<k>` | | 3 |
 | other `K*Calc` constants (not seen in the corpus) | `KTempTextLayoutCalc` 0x8f, `KLayoutCalcs` 0x90, `KImportODBCAuthCalc` 0x91, `KFieldEntryCalc` 0x92, `KUserNameCalc` 0x73, `KPasswordCalc` 0x74, `KItemsCalc` 5 (value lists) | | 0 |
 
 Some FileMaker Server sample files keep layouts under `4/5/<L>/13/5/<O>/...`
 with the same attribute keys [O]. Counts are over all 747 files of section 11.
+
+### 8.1 Custom menu item storage
+
+[O from bin, FileMaker Pro 26.1.1 for macOS, arm64 FMEngine and DBEngine]
+The custom menu definition at `[41, 5, M, 02]` (hex) is `KType`, two
+big-endian u32s holding the base menu ID and flags. Menu items are in
+the separate `KList` stream `[41, 5, M, 07]` (`FMCustomMenu::LoadMenuItems`
+at `0x544284`, `SaveMenuItems` at `0x544554`).
+
+`CustomMenuItemList::Load` (`0x587480`) and `Save` (`0x5876a8`) read
+and write a big-endian i16 count and the item records in order.
+`CustomMenuItem::Read` (`0x5855d4`) and `Write` (`0x585730`) store
+these fields in each record:
+
+| Bytes | Content |
+| --- | --- |
+| 4 | Big-endian item flags |
+| 4 | Big-endian command ID (`GetCommandId`, `0x587f98`) |
+| 2 + 2 | Big-endian shortcut character and modifiers (`GetShortcut` and `SetShortcut`, `0x5869e4` and `0x586a54`) |
+| 2 + 2 + 4 | Inline step opcode, step value, and flags, big-endian |
+| 1 + length | The step's data key as a nested key string. The outer byte counts the bytes of the inner counted key, e.g. `02 01 01` for segment `01` |
+| 14 | The step's inline reference bytes (`mReserved`) |
+
+`ScriptStep::ReadForCustomMenu` (`0x517eac`) and
+`WriteForCustomMenu` (`0x517ff4`) handle the last three rows. This stream
+moves the opcode, value and flags before the references and uses a
+variable-width data key. The 28-byte script catalog descriptor uses a
+padded fixed-size key and a different order ([script-steps.md](script-steps.md) 2).
+The XML writer emits a step node when item flag `0x8` is set
+(`CustomMenuItemList::SerializeToXML`, `0x587a7c`, branch at `0x587d30`).
+Its submenu edge (flag `0x40000000`) uses the same 14-byte reference area for a
+custom menu member key (`GetSubMenu`, `0x588b94`).
+
+The item list is owned by the menu's catalog member
+(`FMCustomMenu::FMCustomMenu`, `0x5420d0`). Its keyed data is under
+`[41, 5, M, 05, I]`, where `05` is `KItems` and `I` is the
+inline step's data-key segment (`DBCatalogItemList::GetDataPos`, DBEngine
+`0x1a50220`). The item name and install calculations append `KName`
+`10` and `KFilter` `25` respectively (`CustomMenuItem::GetNameCalculation`,
+`0x585b78`, and `GetInstallCalculation`, `0x586134`).
+
+**Native witness [O, FileMaker Pro 26.1.1 macOS, [#703](https://github.com/OpenMaker-Dev/openmaker/issues/703)].**
+On an English Tasks copy, create an empty menu in Manage Custom Menus.
+Add a Command item with Action enabled, select Perform Script and choose
+Sort by Name from the list. Save and close. The menu is member `19` and
+its `07` holds a 39-byte stream:
+
+| Part | Bytes (hex) |
+| --- | --- |
+| Count | `00 01` |
+| Item flags, command ID and shortcut | `00 00 00 48 00 00 00 00 00 00 00 00` |
+| Step opcode, value and flags | `00 01 00 04 00 00 00 40` |
+| Step data key | `02 01 01` |
+| Step reference | `02 01 07` and 11 zero bytes |
+
+Opcode 1 is Perform Script. Step flag `0x40` is `kScriptKey`; the nested
+reference names `[11, 5, 07]`, whose stored name is Sort by Name. The
+data key names `[41, 5, 19, 05, 01]`, whose install calculation is at
+child `25`. The item store's `[41, 5, 19, 05, 00]` is `01 01` in
+this sample [O], and its meaning is unmeasured [U]. There was no script
+parameter. The menu was saved without installing it or running the
+action.
+
+The shipped starters have no item stream. This save confirms the listed
+script action and install calculation. Parameter-bearing actions,
+submenus and the item name calculation remain to be checked in files.
 
 ## 9. calc-tokens.csv
 

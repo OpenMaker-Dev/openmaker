@@ -925,6 +925,31 @@ compared. Limits:
   dragging its edge does not resize it.
 - The record-number column scrolls away with the others.
 
+**Table view's parts.** On a layout OpenMaker draws, Table view shows the
+top navigation, header, footer and bottom navigation parts that the
+layout's Table View Properties include, with their objects, around the
+grid ([#306](https://github.com/OpenMaker-Dev/openmaker/issues/306)).
+The options' bits and FileMaker Pro 26.1.1's placement of the parts are
+measured ([layout-model.md](re/layout-model.md) 4.2,
+[#927](https://github.com/OpenMaker-Dev/openmaker/issues/927)), and
+OpenMaker places them the same way: the top navigation and header parts
+above the column headings, the footer and bottom navigation parts below
+the rows, stacked at the window's bottom however few the rows. They do
+not scroll sideways with the columns. Their fields show the current
+record, and a web viewer in one of them shows one page that follows the
+current record, as in a List's header and footer. Limits:
+- **Zoom:** the parts zoom with the table. Pro keeps the navigation
+  parts at 100% ([#981](https://github.com/OpenMaker-Dev/openmaker/issues/981)).
+- **Tab:** Tab goes through the table's cells as it does without the
+  parts; from a part's field that has the keyboard it goes to the first
+  cell (Shift-Tab: the last). New Record's first field is the table's.
+  Whether Pro's Tab reaches the parts' fields is unmeasured.
+- **Unmeasured in Pro:** the pages of web viewers in the parts, and how
+  the header's, footer's and bottom navigation part's objects behave when
+  the table scrolls sideways.
+- **Find mode:** Table view in Find mode still draws its criteria grid
+  without the parts.
+
 **Limits.** List view shows no sub-summary parts, with a note saying why,
 when their groups cannot be read: a break field of another table, a summary
 or container break field, a malformed key, a related sort key before the
@@ -942,7 +967,7 @@ picture is drawn one pixel to a point whatever resolution (`DPI_`) it
 has; the file icon is OpenMaker's own, not the system's icon for the
 file's type; and only the starters' two graphic formats (5 and 7, centered)
 were compared with FileMaker Pro, the others are inferred from Claris's
-flag names. Zoom applies to loaded Form and List layouts and Find mode only (below).
+flag names. See [Zoom](#zoom) for which views support scaling.
 
 **Checks.** Regular tests use synthetic layouts and records. The ignored
 `live` tests (`cargo test -p om-gui --test live -- --ignored`) host a
@@ -1123,8 +1148,9 @@ is not shown; neither is compared with FileMaker Pro.
 
 ### Zoom
 
-Loaded Browse Form and List layouts, Browse Table view and Find mode's
-layout have document-local Actual Size, Zoom In and Zoom Out commands, in steps of 25, 50, 75, 100, 150, 200, 300 and 400 percent.
+Loaded Browse Form and List layouts, Browse Table view, Find mode's layout
+and the Layout mode canvas have document-local Actual Size, Zoom In and Zoom
+Out commands, in steps of 25, 50, 75, 100, 150, 200, 300 and 400 percent.
 The menu and keyboard controls scale the document's allocation, clipping,
 pointer input and accessibility bounds together; menus and toolbars keep the
 application scale. While the layout paints, egui treats the zoomed layer as
@@ -1181,10 +1207,11 @@ level, and Lock off restores those controls. A new window (New Window,
 the step or Window > New Window) takes the lock with the zoom of the window
 it opens from [I: inheritance has not been compared with FileMaker Pro].
 
-Limits: Layout mode and generic Form fallbacks are not zoomed (Preview scales its paper:
-[preview.md](preview.md); [#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)). Scroll bars
-inside the zoomed layer (List and Table view's) scale with it; FileMaker Pro's
-keep their size [I: unmeasured]. How FileMaker Pro scales Table view's
+Generic Form fallbacks keep their normal scale
+([#36](https://github.com/OpenMaker-Dev/openmaker/issues/36)). Preview scales its paper
+([preview.md](preview.md)). Scroll bars inside the zoomed layer (List and
+Table view and Layout mode) scale with it. FileMaker Pro's scrollbar size
+at different zoom levels is unmeasured. How FileMaker Pro scales Table view's
 header and row heights is unmeasured. A Table view column is resized from
 its divider in the header only, and a double click does not fit it to its
 contents; FileMaker Pro's divider behavior is unmeasured.
@@ -2120,8 +2147,31 @@ apply. The dialog has not been compared with FileMaker Pro's.
 
 ### Layout mode and Manage Layouts
 
-Layout mode renders the provider's `LayoutGeometry` at one point per UI
-point, with scrolling, part tabs, object selection and selection handles.
+Layout mode uses the provider's `LayoutGeometry` at the window zoom.
+When the decoded layout is available, the canvas uses its stored
+background, part colors, text, shapes, fields, button labels, button
+library icons and standalone library images. These use Browse's static
+paint routines in their normal style at the current draft frames. Button
+icons and labels use the saved placement. Merge text shows its stored
+markers and fields show their design names. The editor draws this artwork
+without evaluating record calculations or running document actions. If an icon
+cannot be resolved, a labeled button keeps its full-width label and an
+image-only button uses the canvas's outline and caption.
+Pasteboard objects, unsupported objects and geometry-only providers still
+use outlines and captions. Design-time web viewer placeholders are tracked
+in [#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019).
+The scrollable canvas, part tabs, objects and selection handles scale
+together. Placement, movement, resizing and the Inspector use the original
+layout points at every zoom. The toolbar, Objects pane and Inspector keep
+their size. The wheel and scroll bars scroll the canvas at every zoom.
+Touch drag to scroll is available at Actual Size.
+
+Objects that cross the layout edge retain their full outline, with artwork
+clipped to the layout. Borderless fields and text have a faint editing
+boundary. FileMaker's boundary display options have not been compared.
+Contents of closed popovers still appear on the canvas
+([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
+
 The Objects pane is 220 pt wide, lists the layout's objects front to back,
 filters by kind or known field name, and selects and reveals the matching
 canvas object. Inspector tabs are interactive; Position shows real bounds
@@ -2161,24 +2211,32 @@ stored tab order.
   definitions and the existing tools for other objects.
 - **Selection.** Plain click selects one saved object or field draft;
   Shift-click adds/removes it from the selection, on the canvas or in
-  Objects. Blank canvas clicks clear selection. Dragging any selected
-  movable member moves the whole selection, including a mix of saved
+  Objects. Blank canvas clicks clear selection. With the Selection tool,
+  Edit > Select All (Cmd/Ctrl+A) selects every shown canvas object and
+  field draft. A box starting on blank layout space replaces the selection
+  with the objects it crosses. Hold Cmd on macOS or Ctrl elsewhere to
+  select only objects entirely inside. Both use the canvas's existing
+  flat object list, including nested entries it already shows. Draft
+  text, buttons and portals keep their existing editors. Tool-specific
+  selection and popover-scoped boxes are not implemented. Dragging any
+  selected movable member moves the whole selection, including a mix of saved
   objects and unsaved field drafts. Origins snap to whole points, keeping
   each object's size and the spacing between whole-point members; fractional
   stored origins are rounded before saving. A Shift-drag of an unselected
   member adds it rather than replacing the selection (OpenMaker's choice;
   native Shift-drag axis constraints are not measured). If any member
-  cannot move, the selection stays put and Inspector states why. Delete
-  and Edit > Clear validate the whole selection before staging deletions;
+  cannot move, the selection stays put and Inspector states why.
+  Unmodified arrow keys nudge the selection by one layout point, through
+  the same whole-point frame and draft checks as a drag. A focused text
+  editor keeps its keys. Delete and Edit > Clear validate the whole
+  selection before staging deletions;
   an unsupported member refuses the whole action, without deleting peers.
   These changes stay unsaved until Save; Revert/Discard clears additions,
   moves and deletions. Selection belongs to the exact shown layout revision.
   Multiple-object Inspector frame/binding/control edits and handle resizing
   are not supported: Inspector shows the selected count and asks for a
-  single selection. It never edits an arbitrary member. Box selection,
-  groups, Select All and other bulk-formatting operations are not added by
-  this slice. Native mixed locked-object and bulk Inspector behavior has
-  not been measured.
+  single selection. It never edits an arbitrary member. Native mixed
+  locked-object and bulk Inspector behavior has not been measured.
 - **Drawing and choosing.** Each drag on the canvas adds an independent
   field draft, in whole points, as a dashed box over the layout. The
   ordinary Field tool returns to Selection after the drag; double-clicking
@@ -2230,6 +2288,24 @@ objects are stored and unfinished work remains staged; Revert discards only
 that remaining work. An unknown outcome keeps the draft for the existing
 idempotent/revision checks rather than assuming it was saved. The checked
 revision/table identity is rebased only after a known successful reply.
+
+**Undo and Redo.** Edit > Undo and Redo (Ctrl/Cmd-Z and Shift-Ctrl/Cmd-Z)
+step through this window's unsaved changes. Each drag or arrow-key nudge
+is one step. History covers moves, resizes, Arrange, deletions, layout
+width, field controls,
+text edits and staged placements and their settings. A focused text
+editor keeps its own keyboard undo and redo. On leaving the editor, the
+completed edit becomes part of the draft history. A new draft edit drops
+the redo branch. OpenMaker keeps up to 32 steps and clears history if the
+draft exceeds its snapshot budget. Applying a step clears selection.
+Undo and Redo remain available for a local draft after disconnect.
+History ends when Save Layout queues a write, when the user reverts the
+layout, when the layout revision changes, or when the user leaves the
+layout or mode. A Save Layout refusal before queuing a write keeps the
+history. Part boundaries, Part Setup and Layout Setup are immediate
+writes outside the draft. FileMaker Pro's precise
+menu labels, supported operations and history across Save are unmeasured
+([#902](https://github.com/OpenMaker-Dev/openmaker/issues/902)).
 
 OpenMaker chooses bindings and label/control options in Inspector rather
 than FileMaker's Specify Field dialog. The deferred layout-save workflow
@@ -2380,8 +2456,15 @@ the changes. A new field drawn meanwhile is placed after them, on the
 layout they made. Revert Layout drops them. While a layout has unsaved
 changes (moved or deleted objects or a new field), another layout, another mode and
 New Layout/Report are refused with an alert asking for Save Layout or
-Revert Layout. Saving them is OpenMaker's choice of UI (FileMaker Pro saves a layout's changes when the user leaves
-it or confirms), and so are the handles' size and the outline.
+Revert Layout. The desktop close controls check the affected drafts. A
+document window's close button checks that window, File > Close checks the
+file's windows, and Quit checks every open file. A layout save awaiting
+the host also keeps the affected windows open. After a connection drops,
+Revert Layout can still discard the local draft so the window can close.
+A script's Close Window step targeting another window can still discard
+its draft ([#978](https://github.com/OpenMaker-Dev/openmaker/issues/978)).
+Explicit saving, the handle sizes and the outline are OpenMaker's choices.
+FileMaker Pro saves layout changes when the user leaves or confirms them.
 
 **Arranging objects.** Arrange > Align (Left Edges, Vertical Centers,
 Right Edges, Top Edges, Horizontal Centers, Bottom Edges), Distribute
@@ -2453,13 +2536,33 @@ look is OpenMaker's.
 Limits: a stored object cannot be moved between parts or restyled;
 groups, portals, tab and slide controls, popovers and button bars and the
 objects inside them do not move and cannot be deleted, nor can objects
-showing a library image, a field's label or a popover button; only a stored text of one line of plain text can be retyped; and the Text tool places one line of plain text in the theme's text style, with no character styles. The Field, Text, Button and Portal tools place objects; the other tool buttons only select a tool. The provider exposes no
-object styles, autosizing, names or tooltips, so the Inspector does not
-show them, and the other property and arrangement controls stay disabled. Layouts without geometry keep the generic field
-view, which is not inspectable as document objects; they cannot be edited.
+showing a library image, a field's label or a popover button; only a stored text of one line of plain text can be retyped; and the Text tool places one line of plain text in the theme's text style, with no character styles. The Field, Text, Button and Portal tools place objects; the other tool buttons only select a tool. For a stored object, the Inspector shows its
+named style and calls out local styling beyond the object's stored
+rotation. Appearance shows known
+normal-state fill, border and text colors and the base font from Browse's
+style cascade. These properties are read-only. Appearance can show swatches
+for sides that draw no border, and Styles can list names the cascade skips
+([#886](https://github.com/OpenMaker-Dev/openmaker/issues/886)). Autosizing,
+names and tooltips are unavailable. Data Formatting shows OpenMaker's
+read-only summary of the decoded number, date, time or graphic format for
+a stored field whose type is known to the window. Its wording has not been
+compared with FileMaker Pro's Inspector
+([#891](https://github.com/OpenMaker-Dev/openmaker/issues/891)). Layouts
+without geometry keep the generic field view, which is not inspectable as
+document objects; they cannot be edited.
 The revision is the one the window read when it opened the file or after
 its last placement: a layout another client changed since is refused at
 Save Layout, not shown changed before.
+
+On a decoded layout, the canvas draws and picks objects on the front tab
+or slide of each control. It starts with the stored current tab, the
+stored default tab, or the first panel, in that order. The Objects list
+still includes inactive panels and their contents. Selecting one of those
+rows reveals its containing panels in this window. This is
+OpenMaker's editor navigation and makes no layout changes. Tab and slide
+navigation directly on the design surface, handoff of the last Browse
+panel, and FileMaker's box selection of an entire control across its panels
+are not implemented.
 
 Manage Layouts opens from File > Manage > Layouts, Layouts > Manage Layouts
 and the Layout mode Manage button. Search, row selection, double-click,
@@ -2513,17 +2616,40 @@ Neither FileMaker Pro's drag nor OpenMaker's stops at the rightmost
 object (re/layout-model.md 10.12).
 
 **Layout Setup.** Layouts > Layout Setup... and the layout bar's Layout
-Setup button (Layout mode, design access) open FileMaker Pro's Layout Setup
-dialog over the layout the window shows, its controls where Pro's places
-them (re/client-ui.md, "Layout Setup"). OK sets the Layout Name, "Include
-in layout menus", the General tab's five checkboxes, the views available
-and the default view with the
+Setup button (Layout mode, design access) open the dialog over the current
+layout. Its window and tabs follow FileMaker Pro 26.0.3
+(re/client-ui.md, "Layout Setup"). The General tab uses estimated widths
+and row spacing to fit the 26.1.1 field-alert checkbox. OK sets the
+Layout Name, "Include in layout menus", the General tab's checkboxes,
+the views available and the default view, and the Printing tab's "Use
+fixed page margins" and its Top, Bottom, Left and Right margins, with the
 operation `om-author`'s `layout_setup` uses (`DataProvider::set_layout_setup`;
 [authoring](authoring.md), "Layout Setup"); every window of the file then
-reads its layouts again. The General tab's Show records from and Menu Set
-show the layout's values and are not offered, nor are Reset Quick Find,
-the Printing and Script Triggers tabs or Manage Layouts' Edit. It is refused while the layout has unsaved
+reads its layouts again. The margins are edited in points (OpenMaker's
+choice: Pro's fields show the ruler's units), and are sent only when
+they or the box changed, with the setup in one commit. With the box off
+they are not offered and show the printer's, 18 / 40 / 18 / 18, as Pro's
+do (re/layout-model.md 4.2). On a layout printing in columns neither the
+box nor the margins are offered: Pro works the columns' width out from
+them, which OpenMaker does not. The General
+tab's Show records from and Menu Set, and the Printing tab's "Print in N
+columns", show the layout's values and are not offered. The column order
+and Facing Pages are not offered and show no state, since where FileMaker
+stores them is unknown
+([#948](https://github.com/OpenMaker-Dev/openmaker/issues/948)). Nor are
+Reset Quick Find, the Script Triggers tab or Manage Layouts' Edit offered. It is refused while the layout has unsaved
 changes, as New and Duplicate Layout are.
+
+In a drawn Browse Form with a loaded empty found set, clicking a bound
+edit box directly on the canvas shows the New Record alert when the
+General tab's "Show alerts when field isn't modifiable or no records are
+present" option is on. FileMaker Pro was measured with an empty table.
+OpenMaker applies the option to the empty found set shown in the window.
+Clicks on checkbox sets, radio button sets, pop-up menus and drop-down
+lists leave the New Record alert closed in OpenMaker. FileMaker Pro's
+behavior for these controls remains unmeasured. Field clicks inside
+popovers, nonmodifiable field clicks and defaults for new files remain open
+([#353](https://github.com/OpenMaker-Dev/openmaker/issues/353)).
 
 **Part Setup.** Layouts > Part Setup... (Layout mode, design access) opens
 FileMaker Pro's Part Setup over the layout the window shows, its controls

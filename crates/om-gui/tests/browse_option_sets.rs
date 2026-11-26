@@ -117,6 +117,8 @@ struct State {
     /// That menu's list is the related tints' Name values, shown by their
     /// Label, starting from Items instead (#290's related list).
     related_menu: bool,
+    /// The layout's one part is a header Table view includes (#306).
+    table_header: bool,
 }
 
 struct Provider(Arc<Mutex<State>>);
@@ -349,7 +351,7 @@ impl DataProvider for Provider {
     }
     fn render_layout(&mut self, _: u32) -> Result<Option<RenderLayout>, DataError> {
         let state = self.0.lock().unwrap();
-        Ok(Some(document(
+        let mut document = document(
             state.exit,
             state.keys,
             state.shade_without_arrow,
@@ -358,7 +360,13 @@ impl DataProvider for Provider {
             state
                 .label_menu
                 .then_some(if state.related_menu { 10 } else { 9 }),
-        )))
+        );
+        if state.table_header {
+            let layout = &mut document.layout;
+            layout.parts[0].part_type = 1;
+            layout.def.as_mut().unwrap().flags = om_layout::layout::TABLE_HEADER;
+        }
+        Ok(Some(document))
     }
     fn calc_schema(&mut self) -> Result<Option<Arc<CalcSchema>>, DataError> {
         Ok(Some(Arc::new(schema())))
@@ -744,6 +752,7 @@ fn state(exit: Exit) -> Arc<Mutex<State>> {
         tints: 0,
         label_menu: false,
         related_menu: false,
+        table_header: false,
     }))
 }
 
@@ -926,6 +935,32 @@ fn other_enters_a_value_and_edit_saves_the_list_values() {
     let updates = &state.lock().unwrap().updates;
     assert_eq!(updates.len(), 1);
     assert!(updates[0].contains("Code=Dr "), "{updates:?}");
+}
+
+/// Other… on a pop-up menu in a header Table view includes (#306) opens
+/// its dialog there too, and enters the value.
+#[test]
+fn other_works_in_a_header_table_view_includes() {
+    let state = state(Exit::None);
+    state.lock().unwrap().table_header = true;
+    let mut app = open(&state);
+    common::click(&mut app, "Table View");
+    common::wait_until(&mut app, "the table", |app| {
+        app.query_by_role_and_label(Role::Label, "Shade").is_some()
+    });
+    open_code_menu(&mut app);
+    app.get_by_role_and_label(Role::Button, "Other…").click();
+    app.run_steps(2);
+    common::wait_until(&mut app, "the Other… dialog", |app| {
+        app.query_by_role_and_label(Role::MultilineTextInput, "Other…")
+            .is_some_and(|node| node.is_focused())
+    });
+    app.event(egui::Event::Text("Dr".into()));
+    app.run_steps(2);
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "Dr entered", |app| {
+        menu_shows(app).as_deref() == Some("Dr")
+    });
 }
 
 /// A checkbox set shown as one checkbox without value (FileMaker Pro 26.1's

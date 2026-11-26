@@ -106,6 +106,8 @@ pub(crate) struct Session {
     /// The selected layout's geometry.
     pub geometry: Geometry,
     pub render: RenderState,
+    panel_contents: std::cell::OnceCell<om_layout::panels::PanelContents>,
+    pub layout_generation: u64,
     pub page_size: u32,
     /// The most recently loaded page of the selected layout.
     pub page: Option<Page>,
@@ -160,6 +162,8 @@ impl Session {
             layout: None,
             geometry: Geometry::Loading,
             render: RenderState::Loading,
+            panel_contents: Default::default(),
+            layout_generation: 0,
             page_size: page_size.max(1),
             page: None,
             pending: None,
@@ -190,6 +194,14 @@ impl Session {
             RenderState::Loaded(document) => document.layout.def.as_ref(),
             _ => None,
         }
+    }
+
+    pub fn empty_field_alert(&self) -> Option<&'static str> {
+        let layout = self.layout?;
+        if self.is_loading_records() || self.layout_masked() || !self.shows_layout(layout) {
+            return None;
+        }
+        om_data::layout_catalog::general::empty_field_alert(self.layout_def()?.flags, self.total())
     }
 
     pub fn view_enabled(&self, view: crate::app::ViewMode) -> bool {
@@ -316,6 +328,10 @@ impl Session {
         self.preview_page = 0;
         self.report.get_mut().take();
         self.pictures.clear();
+        self.panel_contents.take();
+        if self.layout != Some(layout_id) {
+            self.layout_generation = self.layout_generation.wrapping_add(1);
+        }
         let shown = Shown {
             layout: self.layout.replace(layout_id),
             geometry: std::mem::replace(&mut self.geometry, Geometry::Loading),
@@ -341,9 +357,13 @@ impl Session {
         let restored = self.shown.is_some();
         if let Some(shown) = self.shown.take() {
             self.revision = self.revision.wrapping_add(1);
+            if self.layout != shown.layout {
+                self.layout_generation = self.layout_generation.wrapping_add(1);
+            }
             self.layout = shown.layout;
             self.geometry = shown.geometry;
             self.render = shown.render;
+            self.panel_contents.take();
             self.page = Some(shown.page.expect("only shown layouts are kept"));
             self.current = shown.current;
             self.cache = shown.cache;
@@ -537,12 +557,26 @@ impl Session {
             return Ok(());
         }
         self.render = RenderState::Unavailable;
+        self.panel_contents.take();
         self.report.get_mut().take();
         self.pictures.clear();
         if let Some(layout) = result? {
             self.render = RenderState::Loaded(Box::new(layout));
         }
         Ok(())
+    }
+
+    pub fn panel_contents(&self) -> Option<&om_layout::panels::PanelContents> {
+        let RenderState::Loaded(render) = &self.render else {
+            return None;
+        };
+        if self.layout.map(u64::from) != Some(render.layout.id) {
+            return None;
+        }
+        Some(
+            self.panel_contents
+                .get_or_init(|| om_layout::panels::PanelContents::new(&render.layout.objects)),
+        )
     }
 
     /// The first record index of the page holding `index`.

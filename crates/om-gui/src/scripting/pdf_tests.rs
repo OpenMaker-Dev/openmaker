@@ -4897,13 +4897,13 @@ fn page_number_symbols_print_each_pages_number() {
             );
         }
     }
-    for symbol in ["{{PageCount}}", "{{1125}}", "{{AccountName}}"] {
+    for symbol in ["{{PageCount}}", "{{1125}}", "{{PrivilegeSetName}}"] {
         let mut counted = layout.clone();
         counted.objects.objects[1].text = Some(format!("Page {{{{PageNumber}}}} of {symbol}"));
         assert_eq!(
             render(&counted).unwrap_err(),
             "Layout merge symbols other than {{PageNumber}}, {{RecordNumber}}, \
-             {{CurrentDate}}, {{CurrentTime}} and {{UserName}} are unsupported",
+             {{CurrentDate}}, {{CurrentTime}}, {{UserName}} and {{AccountName}} are unsupported",
             "{symbol}"
         );
     }
@@ -4984,12 +4984,19 @@ fn layout_symbols_print_as_browse_shows_them() {
             var("$$suffix", "\" of 9\""),
             var("$before", "Get ( CurrentDate )"),
             pdf(&crate::scripting::files::file_line(path), false),
-            exit("Get ( LastError ) & \"|\" & Get ( UserName ) & \"|\" & $before & \"|\" & Get ( CurrentDate )"),
+            exit("Get ( LastError ) & \"|\" & Get ( UserName ) & \"|\" & $before & \"|\" & Get ( CurrentDate ) & \"|\" & Get ( AccountName )"),
         ]
     };
     let mut c = client(steps(&path));
     let mut document = symbols_document();
     let objects = &mut document.layout.objects.objects;
+    objects[1] = label(
+        2,
+        "By {{UserName}} on {{CurrentDate}} as {{AccountName}} / {{1032}}",
+        rect(12.0, 44.0, 500.0, 22.0),
+        10.0,
+        false,
+    );
     let body = objects.iter_mut().find(|o| o.id == 11).unwrap();
     *body = label(
         11,
@@ -5006,7 +5013,7 @@ fn layout_symbols_print_as_browse_shows_them() {
         ..Default::default()
     });
     let result = c.result();
-    let [error, user, before, after] = result.split('|').collect::<Vec<_>>()[..] else {
+    let [error, user, before, after, account] = result.split('|').collect::<Vec<_>>()[..] else {
         panic!("{result}");
     };
     assert_eq!(error, "0", "{:?}", crate::scripting::host::last_failure());
@@ -5029,7 +5036,13 @@ fn layout_symbols_print_as_browse_shows_them() {
         dates.push(after);
     }
     let mut headers: Vec<usize> = (dates.iter())
-        .flat_map(|date| text_origins(&pdf, 3, &format!("By {user} on {date}")))
+        .flat_map(|date| {
+            text_origins(
+                &pdf,
+                3,
+                &format!("By {user} on {date} as {account} / {account}"),
+            )
+        })
         .map(|o| o.0)
         .collect();
     headers.sort();
