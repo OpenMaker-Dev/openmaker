@@ -538,8 +538,9 @@ mod tests {
     /// ids are the same, so that the plain `faccessat` answers on a kernel
     /// before 5.8 or under a seccomp profile that refuses `faccessat2`
     /// (the directing agent's read of #842's second round); with
-    /// `AT_EACCESS` only when they differ.
+    /// `AT_EACCESS` only when they differ (rustix has none for Android).
     #[test]
+    #[cfg(not(target_os = "android"))]
     fn the_effective_ids_are_asked_for_only_when_they_differ() {
         use rustix::fs::AtFlags;
         assert_eq!(super::access_flags(true).unwrap(), AtFlags::empty());
