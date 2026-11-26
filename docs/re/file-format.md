@@ -530,11 +530,8 @@ only a `Tickle`, about a minute later, and at Close the file's op62 (type 5,
 attention `0x2000`; write-path.md 4.3). Nothing went at the OK or in the
 30 seconds after it. The hosted file, closed on the server, was
 byte-identical before and after, still with no `[2, 87]`. Reopening it in
-the same FileMaker Pro session showed US Letter, portrait, 100% [O]. A
-page setup accepted in a hosted file lasts while the file is open in
-that client: Pro does not write it to the host, and does not keep it
-after Close. Only [Full Access] was tried; that a lesser account writes
-nothing either is [I].
+the same FileMaker Pro session showed US Letter, portrait, 100% [O].
+The run did not read back the accepted setup before closing the file.
 
 **Unknowns.**
 - What FileMaker Pro for Windows stores, and which record it reads. [I]
@@ -545,8 +542,9 @@ nothing either is [I].
   `[2, 87]` at its OK. Whether a restore without the dialog changes the
   paper for the session (S did not check). When `[2, 88]` is written.
 - What `[2, 85]` and `[2, 86]` hold, beyond the inference above.
-- Whether any client writes a hosted file's page setup: another version,
-  or FileMaker Pro for Windows.
+- Whether another FileMaker Pro version or platform writes a hosted
+  file's page setup, whether the Print Setup step writes it on a hosted
+  file, and what happens with accounts that lack Full Access.
 
 ---
 

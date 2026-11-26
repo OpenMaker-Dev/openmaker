@@ -6,8 +6,11 @@ Legal, Tabloid, A3/A4/A5, custom width/height in points (72 points = one inch), 
 portrait/landscape. Custom dimensions are the unrotated sheet, 1–200 inches on each
 axis. Landscape swaps the axes once. A layout prints within its stored fixed margins
 when Layout Setup's "Use fixed page margins" is checked, and otherwise within
-the printer's margins, 18 / 40 / 18 / 18 points (top, bottom, left, right), for
-every paper ([portable PDF](portable-pdf.md#supported-layout-and-output-contract), #609).
+OpenMaker's printer margins, 18 / 40 / 18 / 18 points (top, bottom, left,
+right) for every paper ([portable PDF](portable-pdf.md#supported-layout-and-output-contract), #609).
+FileMaker Pro for macOS with Any Printer uses a 41-point bottom margin
+on A4 and 18 points on A3, A5 and Tabloid in the measured setups
+([file format](re/file-format.md) 3.8).
 Page Setup does not edit margins or layout metadata; a layout's fixed
 page margins are Layout Setup's (Printing tab; [desktop
 client](desktop-client.md), "Layout Setup"). A paper choice can leave a
@@ -60,12 +63,14 @@ the current layout. None of the starter solutions stores one.
 Nothing is written back: there is **no local disk persistence** and no write to
 the hosted file, so a Page Setup accepted in OpenMaker is lost when the file
 closes, and the file keeps the setup it had. Once accepted, the preference
-overrides layout orientation for every layout. For a hosted file this is what
-FileMaker Pro does: it sends nothing to the host, and the setup lasts while
-the file is open in that client. A local file, though, gets the setup at each
-Page Setup OK in FileMaker Pro ([file format](re/file-format.md) 3.8, [#876](https://github.com/OpenMaker-Dev/openmaker/issues/876)),
-which OpenMaker does not do yet
-([#112](https://github.com/OpenMaker-Dev/openmaker/issues/112)).
+overrides layout orientation for every layout. In the hosted FileMaker
+Pro 26.1.1 macOS test, File > Page Setup OK sent no write, and reopening
+restored the original setup. The run did not check the accepted setup
+again before closing. In the local controls, FileMaker Pro wrote the
+setup at each Page Setup OK
+([file format](re/file-format.md) 3.8, [#876](https://github.com/OpenMaker-Dev/openmaker/issues/876)).
+OpenMaker local persistence is tracked in
+[#112](https://github.com/OpenMaker-Dev/openmaker/issues/112).
 
 ## Script step 42
 

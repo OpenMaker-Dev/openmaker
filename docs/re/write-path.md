@@ -955,16 +955,18 @@ area, and releases the lock with the attention code, which queues the change
 notification (section 6). Section 5.5 gives the safer order a new server
 should use.
 
-### 5.9 A page setup accepted in FileMaker Pro is not sent (High: capture, 2026-11-26)
+### 5.9 Hosted Page Setup (High: capture, 2026-11-26)
 
-FileMaker Pro 26.1.1 for macOS writes a local file's page setup `[2, 87]`
-at Page Setup's OK, but sends nothing for a hosted one (file-format.md
-3.8, [#876](https://github.com/OpenMaker-Dev/openmaker/issues/876)). The setup was A4, landscape, 50%, as Admin, against
-FileMaker Server 26.0.3. After the open's requests, the relay recorded
+In the [#876](https://github.com/OpenMaker-Dev/openmaker/issues/876) hosted
+run, FileMaker Pro 26.1.1 for macOS accepted A4, landscape, 50% in File >
+Page Setup as Admin with Full Access, against FileMaker Server 26.0.3.
+After the open's requests, the relay recorded
 only a `Tickle` about a minute later and, at Close, the file's op62 (type 5,
 attention `0x2000`, 4.3). No lock, upload or commit went at the OK or in
 the 30 seconds after it. The hosted file was byte-identical before and
-after. A server therefore never sees a page setup from FileMaker Pro.
+after. Other client versions and platforms, the Print Setup step on a
+hosted file, and accounts with lesser privileges remain unmeasured
+(file-format.md 3.8).
 
 ---
 
