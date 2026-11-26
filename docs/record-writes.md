@@ -819,6 +819,16 @@ in memory for the session. See the native
 observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
 and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
 
+A local Text auto-enter calculation can read a single-repetition plain
+Text global from another table in the same file, through an unrelated
+occurrence. The field is read from the session, independent of the
+table's records. A held new record keeps the value read at creation. A
+formula that reads a missing or styled session value refuses the write.
+FileMaker Pro 26.1.1 copied the value at New Record, including with zero
+source rows.
+[Claris global-field documentation](https://help.claris.com/en/pro-help/content/global-fields.html)
+and [the timing check](https://github.com/OpenMaker-Dev/openmaker/issues/1051).
+
 Local desktop files can auto-enter Creation Time into a single-repetition
 Text field when the file and the desktop's configured system time format
 use hours without a leading zero, colon separators and a trailing AM/PM

@@ -111,6 +111,33 @@ fn check(host: &mut MemoryHost, context: &Context, cases: &[(&str, &str, i32)]) 
 }
 
 #[test]
+fn local_globals_are_read_without_a_related_match() {
+    let mut host = host();
+    host.add_occurrence(4, "Unrelated", 2);
+    for (table, record, marker) in [(2, 10, "alpha"), (3, 0, "beta")] {
+        host.add_field(
+            table,
+            4,
+            "Marker",
+            FieldInfo {
+                value_type: ValueType::Text,
+                repetitions: 1,
+                storage: eval::Storage::Global,
+            },
+        );
+        host.set(table, record, 4, 1, Value::text(marker));
+    }
+    check(
+        &mut host,
+        &on_record(),
+        &[
+            ("Unrelated::Marker", "alpha", 0),
+            ("Empty::Marker", "beta", 0),
+        ],
+    );
+}
+
+#[test]
 fn repeating_fields() {
     let mut h = host();
     check(

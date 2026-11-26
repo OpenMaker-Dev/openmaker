@@ -2166,6 +2166,7 @@ impl ServerHost {
             record_number: None,
             sequence: om_data::rules::WriteSequence::Unmeasured,
             file_variables: None,
+            other_globals: None,
         }
     }
 
