@@ -422,6 +422,9 @@ pub(crate) struct CanvasState {
     part_resize: Option<PartResize>,
     /// The Part tool was used on the layout: Part Definition opens.
     part_tool: bool,
+    /// A layout read again no longer has objects that unsaved control or
+    /// text changes were made to, and those changes were dropped.
+    dropped_drafts: bool,
 }
 
 /// A part boundary being dragged: the part's place in the layout's parts
@@ -463,6 +466,12 @@ impl CanvasState {
     /// A part's height dragged to, since the last call.
     pub(crate) fn take_part_resize(&mut self) -> Option<PartResize> {
         self.part_resize.take()
+    }
+
+    /// Whether unsaved changes to objects the layout no longer has were
+    /// dropped since the last call (another client deleted the objects).
+    pub(crate) fn take_dropped_drafts(&mut self) -> bool {
+        std::mem::take(&mut self.dropped_drafts)
     }
 
     /// Whether the Part tool was used on the layout since the last call:
@@ -1067,7 +1076,8 @@ impl CanvasState {
             ));
             self.geometry = geometry.cloned();
             // A control change for an object the layout no longer has (another
-            // window deleted it) could never be saved: it goes.
+            // window deleted it) could never be saved: it goes, and the
+            // window says so (`take_dropped_drafts`).
             if let Some(geometry) = &self.geometry {
                 let gone = |key: &u64| !geometry.objects.iter().any(|o| o.key == *key);
                 let controls: Vec<u64> = self
@@ -1085,6 +1095,7 @@ impl CanvasState {
                     .copied()
                     .collect();
                 let retyped = self.retyping.as_ref().is_some_and(|r| gone(&r.key));
+                self.dropped_drafts |= !controls.is_empty() || !words.is_empty() || retyped;
                 for key in controls {
                     self.control_sent(key);
                 }
@@ -2980,6 +2991,49 @@ mod tests {
         assert_eq!(state.deleted().revision, Some(before));
         assert_eq!(state.moved().revision, Some(saved));
         assert_eq!(state.new_field().unwrap().revision, Some(saved));
+    }
+
+    /// Unsaved text and control changes to an object another client
+    /// deleted are dropped when the layout is read again without it, and
+    /// the window is told, so the loss is not silent (#1048's re-check).
+    #[test]
+    fn changes_to_objects_deleted_elsewhere_are_dropped_and_reported() {
+        let mut session = Session::new(
+            Target {
+                host: "test".into(),
+                file: "test.fmp12".into(),
+                local: None,
+            },
+            25,
+        );
+        session.layout = Some(1);
+        let with = |keys: &[u64]| {
+            Geometry::Loaded(LayoutGeometry {
+                objects: keys
+                    .iter()
+                    .map(|&key| ObjectGeom {
+                        key,
+                        ..object([0.0, 0.0, 10.0, 10.0])
+                    })
+                    .collect(),
+                ..LayoutGeometry::default()
+            })
+        };
+        session.geometry = with(&[7, 8]);
+        let mut state = CanvasState::default();
+        state.synchronize(&session);
+        state.words.objects.insert(7, "Retyped".into());
+        state.controls.objects.insert(8, (2, None));
+        session.geometry = with(&[8]);
+        state.synchronize(&session);
+        assert!(state.words().objects.is_empty());
+        assert!(state.take_dropped_drafts());
+        assert!(!state.take_dropped_drafts());
+        // A read that keeps the changed object keeps its change, silently.
+        session.geometry = with(&[8, 9]);
+        state.synchronize(&session);
+        assert_eq!(state.controls().objects.len(), 1);
+        assert!(!state.take_dropped_drafts());
     }
 
     #[test]

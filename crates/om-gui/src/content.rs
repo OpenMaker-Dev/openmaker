@@ -1283,6 +1283,12 @@ struct PartsHold {
     answered: bool,
 }
 
+impl PartsHold {
+    fn layout(&self) -> u32 {
+        self.sent.at().0
+    }
+}
+
 impl LayoutWorkspace {
     pub(crate) fn clear_history(&mut self) {
         self.canvas.clear_history();
@@ -1394,6 +1400,12 @@ impl LayoutWorkspace {
     /// A part's height dragged to with the Selection tool, to send.
     pub(crate) fn take_part_resize(&mut self) -> Option<crate::layout_canvas::PartResize> {
         self.canvas.take_part_resize()
+    }
+
+    /// Whether unsaved changes were dropped with objects the layout no
+    /// longer has, since the last call.
+    pub(crate) fn take_dropped_drafts(&mut self) -> bool {
+        self.canvas.take_dropped_drafts()
     }
 
     /// Whether the Part tool was used on the layout since the last call.
@@ -1653,12 +1665,12 @@ impl LayoutWorkspace {
     /// whatever revision the read gave. A refusal (306) whose read could
     /// not reach the host's new catalog still shows the old revision, which
     /// [`Self::release_parts`] would wait on for good.
-    pub(crate) fn layout_read(&mut self, layout: u32) {
-        if self
-            .parts_hold
-            .as_ref()
-            .is_some_and(|hold| hold.answered && hold.sent.at().0 == layout)
-        {
+    /// A window that went to another layout meanwhile reads that one; its
+    /// read ends the hold too (`shows`: the layout the window shows now).
+    pub(crate) fn layout_read(&mut self, layout: u32, shows: Option<u32>) {
+        if self.parts_hold.as_ref().is_some_and(|hold| {
+            hold.answered && (hold.layout() == layout || shows != Some(hold.layout()))
+        }) {
             self.parts_hold = None;
             self.saving = false;
         }

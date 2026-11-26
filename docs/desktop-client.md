@@ -2527,7 +2527,8 @@ without a value list is not sent: an alert asks for one. A layout changed
 since it was shown is refused (306): the control changes are dropped and
 the layout read again; another refusal keeps them. Revert Layout drops
 them, and so does reading the layout again without the object (another
-window deleted it). A related field's control is offered too. Limits: the canvas outlines the changed object but does not draw the
+window or client deleted it), with an alert saying the changes to deleted
+objects could not be kept (a retyped text's words go the same way). A related field's control is offered too. Limits: the canvas outlines the changed object but does not draw the
 control until the layout is saved and read again; the options under Values
 from (the arrow, editing, other values, auto-complete, the checkbox icon)
 and the button that edits value lists are not offered, and the Data tab's

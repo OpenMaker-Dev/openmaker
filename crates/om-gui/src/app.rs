@@ -2920,6 +2920,17 @@ impl OpenMakerApp {
             self.w
                 .layout_workspace
                 .show_portal_setup(&ctx, self.w.calcs.schema().cloned(), own);
+            // Changes another client's deletion made impossible to save
+            // went with the objects: the window says so rather than drop
+            // them unseen.
+            // After an alert already shown, on a later frame.
+            if self.error.is_none() && self.w.layout_workspace.take_dropped_drafts() {
+                self.error = Some(
+                    "Another user deleted objects of this layout that you had changed. Those \
+                     changes could not be kept; the layout shows it as it is now."
+                        .into(),
+                );
+            }
             // The Part tool, single use as the Field tool is: Part
             // Definition opens, and the tool goes back to Selection.
             if self.w.layout_workspace.take_part_tool() {
@@ -6989,7 +7000,9 @@ impl OpenMakerApp {
                         self.worker_stopped = true;
                         // No answer will come for what waits on one.
                         self.part_setup = None;
-                        for id in self.window_ids() {
+                        // Hidden windows too, which Quit counts.
+                        let ids: Vec<u32> = self.docs().map(|d| d.id).collect();
+                        for id in ids {
                             self.with_window(id, |app| app.w.layout_workspace.abandon_parts());
                         }
                         self.fail(&worker::stopped_error());
@@ -7443,8 +7456,9 @@ impl OpenMakerApp {
                     return;
                 };
                 let read = session.accept_geometry(layout_id, result);
+                let shows = session.layout;
                 // The read a parts change's answer asked for has come.
-                self.w.layout_workspace.layout_read(layout_id);
+                self.w.layout_workspace.layout_read(layout_id, shows);
                 if let Err(err) = read {
                     self.fail(&err);
                 }
@@ -8089,9 +8103,19 @@ mod tests {
             // The read the answer asks for ends the hold, at whatever
             // revision: a 306 whose read could not reach the host's new
             // catalog shows the old one (#1048's second review).
-            workspace.layout_read(1);
+            workspace.layout_read(1, Some(1));
             assert!(!workspace.saving, "{result:?}");
         }
+        // A window that went to another layout before the answer reads
+        // that one: its read ends the hold too, and another layout's read
+        // while it still shows the changed one does not.
+        let mut workspace = crate::content::LayoutWorkspace::default();
+        workspace.hold_parts(sent.clone());
+        workspace.parts_answered(&sent, true, None);
+        workspace.layout_read(2, Some(1));
+        assert!(workspace.saving);
+        workspace.layout_read(2, Some(2));
+        assert!(!workspace.saving);
     }
 
     #[test]
