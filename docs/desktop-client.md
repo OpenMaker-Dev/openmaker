@@ -2252,9 +2252,10 @@ stored tab order.
   Objects. Blank canvas clicks clear selection. With the Selection tool,
   Edit > Select All (Cmd/Ctrl+A) selects standalone objects, locked objects,
   each group as one, both tab panels and their contents, and field drafts.
-  The front panel stays active. With Shape Tools, Select All selects
-  ungrouped rectangles, including those on inactive panels, and returns to
-  the Selection tool. Selected shapes on inactive panels get outlines.
+  The front panel stays active. OpenMaker maps its Shape Tools button to
+  the Rectangle tool for Select All. This selects ungrouped rectangles,
+  including those on inactive panels, and returns to the Selection tool.
+  Selected shapes on inactive panels get outlines.
   The combined handles span the visible selection. Locked objects can be
   selected and refuse frame edits and deletion. A box starting on blank
   layout space replaces the selection
@@ -2275,9 +2276,12 @@ stored tab order.
   member adds it rather than replacing the selection (OpenMaker's choice;
   native Shift-drag axis constraints are not measured). If any member
   cannot move, the selection stays put and Inspector states why.
-  Unmodified arrow keys nudge the selection by one layout point, through
-  the same whole-point frame and draft checks as a drag. A focused text
-  editor keeps its keys. Delete and Edit > Clear validate the whole
+  An arrow key nudges the selection by one layout point, Shift+arrow by
+  ten, and Option+arrow on macOS by one. All three use the same whole-point
+  frame and draft checks as a drag. The distances were measured in FileMaker
+  Pro on macOS at Actual Size. OpenMaker uses layout points at every zoom
+  and also applies the plain and Shift steps on other desktop platforms.
+  A focused text editor keeps its keys. Delete and Edit > Clear validate the whole
   selection before staging deletions;
   an unsupported member refuses the whole action, without deleting peers.
   These changes stay unsaved until Save; Revert/Discard clears additions,

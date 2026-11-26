@@ -491,6 +491,15 @@ front panel stayed active ([#909](https://github.com/OpenMaker-Dev/openmaker/iss
 group's empty space, a partly enclosed tab control, nested controls, and
 popover-scoped and portal selection were not measured.
 
+### Arrow-key steps
+
+[O] In FileMaker Pro 26.1.1 on macOS, a selected rectangle at Actual Size
+moved one layout point with Right or Down, ten points with Shift+Right or
+Shift+Down, and one point with Option+Right. The Position Inspector supplied
+the offsets on a synthetic Form layout ([#910](https://github.com/OpenMaker-Dev/openmaker/issues/910)).
+Other zoom levels, modifier combinations, and locked and grouped selections
+were not measured.
+
 ### Artwork and boundaries
 
 [O] FileMaker Pro 26.1.1, Minimalist theme, Actual Size and Sample Data

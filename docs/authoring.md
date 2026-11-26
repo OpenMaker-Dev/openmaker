@@ -610,6 +610,9 @@ frame and reports `already_applied`; any other request at an old revision
 is a `conflict`. `set_object_frames` reads the layout back over a new
 connection: at the revision the host reported, each object at its frame.
 
+`set_object_frames` and `move_objects` refuse objects locked in Layout
+mode with `unsupported`.
+
 The desktop's Layout mode moves and resizes objects the same way
 (`DataProvider::set_layout_object_frames`, the same request) at Save
 Layout ([desktop client](desktop-client.md), "Layout mode and Manage
@@ -698,6 +701,8 @@ answer finds none of the objects and reports `already_applied`; any other
 request at an old revision is a `conflict`. `delete_objects` reads the
 layout back over a new connection: at the revision the host reported,
 without the objects.
+
+`delete_objects` refuses objects locked in Layout mode with `unsupported`.
 
 The desktop's Layout mode deletes objects the same way
 (`DataProvider::delete_layout_objects`, the same request) at Save Layout.
