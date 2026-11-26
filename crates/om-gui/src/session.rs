@@ -106,6 +106,7 @@ pub(crate) struct Session {
     /// The selected layout's geometry.
     pub geometry: Geometry,
     pub render: RenderState,
+    panel_contents: std::cell::OnceCell<om_layout::panels::PanelContents>,
     pub page_size: u32,
     /// The most recently loaded page of the selected layout.
     pub page: Option<Page>,
@@ -160,6 +161,7 @@ impl Session {
             layout: None,
             geometry: Geometry::Loading,
             render: RenderState::Loading,
+            panel_contents: Default::default(),
             page_size: page_size.max(1),
             page: None,
             pending: None,
@@ -324,6 +326,7 @@ impl Session {
         self.preview_page = 0;
         self.report.get_mut().take();
         self.pictures.clear();
+        self.panel_contents.take();
         let shown = Shown {
             layout: self.layout.replace(layout_id),
             geometry: std::mem::replace(&mut self.geometry, Geometry::Loading),
@@ -352,6 +355,7 @@ impl Session {
             self.layout = shown.layout;
             self.geometry = shown.geometry;
             self.render = shown.render;
+            self.panel_contents.take();
             self.page = Some(shown.page.expect("only shown layouts are kept"));
             self.current = shown.current;
             self.cache = shown.cache;
@@ -545,12 +549,26 @@ impl Session {
             return Ok(());
         }
         self.render = RenderState::Unavailable;
+        self.panel_contents.take();
         self.report.get_mut().take();
         self.pictures.clear();
         if let Some(layout) = result? {
             self.render = RenderState::Loaded(Box::new(layout));
         }
         Ok(())
+    }
+
+    pub fn panel_contents(&self) -> Option<&om_layout::panels::PanelContents> {
+        let RenderState::Loaded(render) = &self.render else {
+            return None;
+        };
+        if self.layout.map(u64::from) != Some(render.layout.id) {
+            return None;
+        }
+        Some(
+            self.panel_contents
+                .get_or_init(|| om_layout::panels::PanelContents::new(&render.layout.objects)),
+        )
     }
 
     /// The first record index of the page holding `index`.
