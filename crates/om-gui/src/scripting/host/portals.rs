@@ -55,7 +55,7 @@ use om_layout::ObjectKind;
 use super::super::window::{Cells, PreparedDraft, RelatedDraft};
 use super::super::PortalRow;
 use super::writes::cell_of;
-use super::{data_error, Act, WorkerHost};
+use super::{data_error, note_failure, Act, WorkerHost};
 use crate::scripting::PortalIdentity as Row;
 
 /// A portal on the window's layout.
@@ -374,7 +374,7 @@ impl WorkerHost<'_> {
             records = match sorted {
                 Some(Ok(sorted)) => sorted,
                 _ => {
-                    self.s.failure = Some(ORDER_UNKNOWN.into());
+                    note_failure(ORDER_UNKNOWN.into());
                     return Err(ErrorCode::UNAVAILABLE.into());
                 }
             };
@@ -646,7 +646,7 @@ impl WorkerHost<'_> {
     /// rows, whose order is not known here.
     fn check_order(&mut self, portal: &Portal) -> HostResult {
         if portal.ordered {
-            self.s.failure = Some(ORDER_UNKNOWN.into());
+            note_failure(ORDER_UNKNOWN.into());
             return Err(ErrorCode::UNAVAILABLE.into());
         }
         Ok(())

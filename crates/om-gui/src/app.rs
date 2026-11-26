@@ -477,7 +477,9 @@ pub(crate) enum Action {
     ManageLicense,
     /// The app menu's Settings...: the Settings dialog.
     ShowSettings,
-    /// The Window menu's list: bring window `id` to the front.
+    /// Window > Show Window and the Window menu's list: bring window `id`
+    /// to the front, shown if it was hidden
+    /// (`OpenMakerApp::show_window`).
     SelectWindow(u32),
     /// Open the hosted file the connection form names (a sign-in's or Open
     /// Network File's Open, a launch's file).
@@ -836,8 +838,12 @@ const LOST_EDITS: &str = "The connection to this file was lost, and closing it w
 
 /// The alert for a launch command while files other than the front one
 /// are open: OpenMaker shows Home and opens files in a window no file
-/// holds, and closes only the front file to free it.
-const OTHER_FILES_OPEN: &str = "Other files are open. Close them first.";
+/// holds, and closes only the front file to free it. FileMaker has no
+/// such alert (its Home is a window of its own), so the wording is
+/// OpenMaker's; it names where a hidden file shows, as nothing else does
+/// (#679).
+const OTHER_FILES_OPEN: &str =
+    "Other files are open. Close them first: Window > Show Window lists them, hidden ones too.";
 
 /// What the window shows while no file is open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -973,6 +979,9 @@ pub struct OpenMakerApp {
     /// The windows' ids, titles and names (`Get ( WindowName )`), front
     /// first, as this frame began.
     window_list: Vec<(u32, String, String)>,
+    /// Window > Show Window's windows (`OpenMakerApp::show_window_list`),
+    /// hidden ones too, as this frame began.
+    show_window_list: Vec<(u32, String, bool)>,
     manage_layouts: Option<ManageLayouts>,
     new_layout: Option<NewLayout>,
     layout_setup: Option<LayoutSetup>,
@@ -1127,6 +1136,7 @@ impl OpenMakerApp {
             closed_windows: Default::default(),
             window_files: std::collections::HashMap::from([(windows::FIRST, 0)]),
             window_list: Vec::new(),
+            show_window_list: Vec::new(),
             manage_layouts: None,
             new_layout: None,
             layout_setup: None,
@@ -1445,6 +1455,7 @@ impl OpenMakerApp {
                 })
             })
             .collect();
+        self.show_window_list = self.show_window_list();
         self.quit_after_closes_done(&ctx);
         // The root window's close box quits: every open file's windows,
         // a hidden file's too, close first, as Quit closes them, and a
@@ -1789,6 +1800,7 @@ impl OpenMakerApp {
             objects: self.w.objects,
             window_title: &window_title,
             windows: &windows,
+            show_windows: &self.show_window_list,
             window: self.w.id,
             scripts: &self.w.scripts,
             scripts_read: self.w.scripts_read == windows::ScriptsRead::Read,
@@ -4080,10 +4092,16 @@ impl OpenMakerApp {
     /// FileMaker titles a document window `file (host)`; Set Window Title
     /// replaces it.
     fn window_title(&self) -> String {
-        if let (Some(title), Some(_)) = (&self.w.title, &self.w.session) {
+        self.doc_title(&self.w)
+    }
+
+    /// Window `doc`'s title ([`Self::window_title`]), whether or not the
+    /// app works on it.
+    pub(super) fn doc_title(&self, doc: &windows::Doc) -> String {
+        if let (Some(title), Some(_)) = (&doc.title, &doc.session) {
             return title.clone();
         }
-        match &self.w.session {
+        match &doc.session {
             Some(session) => {
                 let file = &session.target.file;
                 let stem = om_data::file_refs::file_stem(file);
@@ -4159,9 +4177,21 @@ impl OpenMakerApp {
                     ui.add_space(14.0);
                     let ok = widgets::dialog_button(ui, "OK", true, true);
                     // Alerts are modal: only OK, Return or Escape dismiss
-                    // them, never a click outside.
+                    // them, never a click outside. Only a new press: the
+                    // repeats of a key held since an earlier alert do not
+                    // dismiss the next one too (#859).
                     let key = ui.input(|input| {
-                        input.key_pressed(Key::Enter) || input.key_pressed(Key::Escape)
+                        input.events.iter().any(|event| {
+                            matches!(
+                                event,
+                                egui::Event::Key {
+                                    key: Key::Enter | Key::Escape,
+                                    pressed: true,
+                                    repeat: false,
+                                    ..
+                                }
+                            )
+                        })
                     });
                     if ok.clicked() || key {
                         actions.push(dismiss.clone());
@@ -5389,7 +5419,7 @@ impl OpenMakerApp {
                 // Another file's window waits while the front file's modal
                 // Manage dialog is open (`switch_blocked`): the front
                 // window, which shows it, keeps the focus.
-                let id = if self.bring_to_front(id) {
+                let id = if self.show_window(ctx, id) {
                     id
                 } else {
                     self.front_doc().id
@@ -6665,7 +6695,13 @@ impl OpenMakerApp {
         }
         self.w.connection_lost = Some(err.message.clone());
         let file = self.w.file_id;
-        for id in self.window_ids() {
+        // Hidden ones too, which Window > Show Window can show.
+        let ids: Vec<u32> = self
+            .docs()
+            .filter(|d| d.file_id == file)
+            .map(|d| d.id)
+            .collect();
+        for id in ids {
             self.with_window(id, |app| {
                 if app.w.file_id != file {
                     return;
@@ -6783,6 +6819,7 @@ impl OpenMakerApp {
             Reply::ConnectionLost(_)
             | Reply::HostMessages(_)
             | Reply::Reconnected(_)
+            | Reply::WindowShown(_)
             | Reply::Released => {}
             // Unwrapped for the file's windows in `on_response`; here, this
             // window's file takes the schema before the answer.
@@ -8046,7 +8083,11 @@ mod tests {
             })
             .unwrap();
         }
+        // A hidden window of the file is lost too (Window > Show Window
+        // can show it).
+        app.windows[0].hidden = true;
         app.lose_connection(&DataError::connection_lost("The host went away."));
+        assert!(app.docs().all(|d| d.connection_lost.is_some()));
         assert_eq!(app.w.id, 1, "the front window is unchanged");
         for (index, ctx) in contexts.iter().enumerate() {
             app.with_window(index as u32 + 1, |app| {
@@ -8790,6 +8831,79 @@ mod tests {
             assert!(app.docs().all(|doc| doc.session.is_none()), "{how}");
             assert!(app.quit_ready || app.quit_waiting.is_some(), "{how}");
         }
+    }
+
+    /// While a script runs or pauses, Escape on the app's alert (a pause's
+    /// message, a waiting alert) dismisses the alert, as Return does, and
+    /// does not reach the script; neither do the repeats of the held key.
+    /// A new Escape, and Command-period even with the alert up, stop it
+    /// (#859).
+    #[test]
+    fn escape_on_an_alert_during_a_script_dismisses_the_alert() {
+        let key = |key: Key, repeat: bool, modifiers: Modifiers| egui::RawInput {
+            events: vec![
+                egui::Event::ModifiersChanged(modifiers),
+                egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat,
+                    modifiers,
+                },
+            ],
+            ..Default::default()
+        };
+        let alert = || Some("The layout menus of \"Peer\" could not be read.".to_owned());
+        for paused in [false, true] {
+            let ctx = egui::Context::default();
+            let mut app = two_record_windows();
+            app.script.running = true;
+            app.script.paused = paused.then_some(None);
+            app.error = alert();
+            ctx.run_ui(key(Key::Escape, false, Modifiers::NONE), |ui| app.show(ui))
+                .drop_without_applying_deltas();
+            assert_eq!(app.error, None, "paused={paused}");
+            assert_eq!(app.script.paused, paused.then_some(None), "paused={paused}");
+        }
+        let ctx = egui::Context::default();
+        let mut app = two_record_windows();
+        app.script.running = true;
+        app.error = alert();
+        let frame = |app: &mut OpenMakerApp, input| {
+            ctx.run_ui(input, |ui| app.show(ui))
+                .drop_without_applying_deltas();
+        };
+        frame(&mut app, key(Key::Escape, false, Modifiers::NONE));
+        assert_eq!(app.error, None);
+        // The held key's repeats neither dismiss the next alert nor stop
+        // the script.
+        app.error = alert();
+        frame(&mut app, key(Key::Escape, true, Modifiers::NONE));
+        assert!(app.error.is_some(), "the next alert stays");
+        app.error = None;
+        frame(&mut app, key(Key::Escape, true, Modifiers::NONE));
+        assert!(!app.worker.abort_asked(), "the held key's repeat");
+        // egui reads a press of a key it holds down as a repeat: the key
+        // is released first.
+        let mut again = key(Key::Escape, false, Modifiers::NONE);
+        again.events.insert(
+            1,
+            egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            },
+        );
+        frame(&mut app, again);
+        assert!(app.worker.abort_asked(), "a new press");
+        let mut app = two_record_windows();
+        app.script.running = true;
+        app.error = alert();
+        frame(&mut app, key(Key::Period, false, Modifiers::COMMAND));
+        assert!(app.worker.abort_asked(), "Command-period");
+        assert!(app.error.is_some(), "the alert stays");
     }
 
     /// Quit while File > Close waits on a close trigger, from the menu or

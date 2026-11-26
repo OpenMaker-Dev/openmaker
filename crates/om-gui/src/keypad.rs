@@ -78,7 +78,7 @@ fn pressed_without_command(event: &Event) -> bool {
 }
 
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
-pub(crate) use event_loop::run;
+pub(crate) use event_loop::{install_logger, run};
 
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 mod event_loop {
@@ -219,14 +219,24 @@ mod event_loop {
     }
 
     /// Whether [`EframeErrors`] is the process's logger: installed now,
-    /// or by an earlier `run`. A logger of the process's own keeps it out.
+    /// or by an earlier `run` or [`install_logger`]. A logger of the
+    /// process's own keeps it out.
     fn catch_eframe_errors() -> bool {
-        static LOGGER: EframeErrors = EframeErrors;
+        install_logger(|errors| errors, log::LevelFilter::Error)
+    }
+
+    /// Whether [`EframeErrors`], passed through `wrap`, is the process's
+    /// logger, at `level`: installed now, or earlier. `wrap` passes every
+    /// record on to the logger it is given.
+    pub(crate) fn install_logger<L: log::Log + 'static>(
+        wrap: impl FnOnce(Box<dyn log::Log>) -> L,
+        level: log::LevelFilter,
+    ) -> bool {
         static INSTALLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *INSTALLED.get_or_init(|| {
-            let installed = log::set_logger(&LOGGER).is_ok();
+            let installed = log::set_boxed_logger(Box::new(wrap(Box::new(EframeErrors)))).is_ok();
             if installed {
-                log::set_max_level(log::LevelFilter::Error);
+                log::set_max_level(level);
             }
             installed
         })
