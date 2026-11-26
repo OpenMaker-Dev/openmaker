@@ -1155,6 +1155,14 @@ is written by that file (`related_owner.rs`, #1000):
     whose rules OpenMaker cannot plan still deletes
     ([#312](https://github.com/OpenMaker-Dev/openmaker/issues/312)). Which
     records the window shows after such a revert is unmeasured.
+  - **A script's Duplicate Record** of a record holding a container, on
+    such a layout, takes the copy's reference in that file's library
+    within that file's part ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)):
+    the owning file joins the transaction first (`adjust_container`), so
+    that Commit Transaction keeps the reference with the copy and Revert
+    Transaction gives it back. A copy refused before it is held gives its
+    reference back at once, counted as given back before the release is
+    sent, so that the revert does not give it back again.
   - **Still refused (3)** inside the transaction, on such a layout: the
     edits, new records and deletions the user makes there while the script
     is paused (the provider's create, update and delete calls,
