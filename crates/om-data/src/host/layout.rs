@@ -8,8 +8,10 @@
 //! a portal (`Context::portal`). `Self` is the object's content: a field
 //! object's value, a text or button object's text.
 
+use std::ops::Range;
+
 use om_calc::eval::{display, evaluate_formula, evaluate_text, CalcHost, Context, Evaluation};
-use om_calc::{Ctx, Value};
+use om_calc::{Ctx, Value, ValueType};
 use om_formula::Formula;
 use om_layout::LayoutObject;
 
@@ -313,8 +315,38 @@ pub(super) fn has_page_symbol(text: &str) -> bool {
 /// an optional `[repetition]`) and `{{symbols}}` replaced by their values
 /// in `context`. Other text, including unresolved `<<...>>`, is kept.
 pub fn merge_text(host: &mut dyn CalcHost, text: &str, context: &Context) -> String {
+    merge_text_with_symbols(host, text, context, |_, text| text)
+}
+
+/// Substitute layout text, giving the renderer the type of each evaluated
+/// symbol and its default display text. Merge variables use the normal
+/// calculation display text.
+pub fn merge_text_with_symbols(
+    host: &mut dyn CalcHost,
+    text: &str,
+    context: &Context,
+    format_symbol: impl FnMut(ValueType, String) -> String,
+) -> String {
+    merge_text_with_substitutions(host, text, context, format_symbol, |_| {})
+}
+
+/// The corresponding UTF-8 byte ranges before and after a token is filled in.
+pub struct TextSubstitution {
+    pub source: Range<usize>,
+    pub display: Range<usize>,
+}
+
+/// Substitute layout text and report each evaluated token's source and
+/// display byte ranges, including tokens that display as empty.
+pub fn merge_text_with_substitutions(
+    host: &mut dyn CalcHost,
+    text: &str,
+    context: &Context,
+    format_symbol: impl FnMut(ValueType, String) -> String,
+    substituted: impl FnMut(TextSubstitution),
+) -> String {
     // Unchecked, nothing fails: a failed value shows as `display` shows it.
-    merge(host, text, context, false).unwrap_or_default()
+    merge(host, text, context, false, format_symbol, substituted).unwrap_or_default()
 }
 
 /// [`merge_text`] for output that must not show a failed value, such as a
@@ -326,7 +358,7 @@ pub fn merge_text_checked(
     text: &str,
     context: &Context,
 ) -> Result<String, i32> {
-    merge(host, text, context, true)
+    merge(host, text, context, true, |_, text| text, |_| {})
 }
 
 fn merge(
@@ -334,18 +366,24 @@ fn merge(
     text: &str,
     context: &Context,
     checked: bool,
+    mut format_symbol: impl FnMut(ValueType, String) -> String,
+    mut substituted: impl FnMut(TextSubstitution),
 ) -> Result<String, i32> {
     let mut out = String::with_capacity(text.len());
+    let mut source = 0;
     for piece in pieces(text) {
-        let (formula, raw) = match piece {
+        let (formula, raw, symbol) = match piece {
             Piece::Text(text) => {
                 out.push_str(text);
+                source += text.len();
                 continue;
             }
-            Piece::Merge { inner, raw } => {
-                (is_variable_reference(inner).then(|| inner.to_owned()), raw)
-            }
-            Piece::Symbol { inner, raw } => (symbol_selector(inner).map(str::to_owned), raw),
+            Piece::Merge { inner, raw } => (
+                is_variable_reference(inner).then(|| inner.to_owned()),
+                raw,
+                false,
+            ),
+            Piece::Symbol { inner, raw } => (symbol_selector(inner).map(str::to_owned), raw, true),
         };
         match formula {
             Some(formula) => {
@@ -357,10 +395,22 @@ fn merge(
                 {
                     return Err(evaluation.code());
                 }
-                out.push_str(&display(&evaluation.value, host));
+                let shown = display(&evaluation.value, host);
+                let shown = if symbol {
+                    format_symbol(evaluation.value.value_type(), shown)
+                } else {
+                    shown
+                };
+                let start = out.len();
+                out.push_str(&shown);
+                substituted(TextSubstitution {
+                    source: source..source + raw.len(),
+                    display: start..out.len(),
+                });
             }
             None => out.push_str(raw),
         }
+        source += raw.len();
     }
     Ok(out)
 }

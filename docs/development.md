@@ -68,8 +68,8 @@ environment variables:
 | `OPENMAKER_PROVIDER=mock` | Use the mock provider |
 | `OPENMAKER_CLIENT_CERT`, `OPENMAKER_CLIENT_KEY` | PEM client identity (default: an in-memory one is generated) |
 | `OPENMAKER_CA_CERT` | Extra trusted certificate: a private CA's, or a server's self-signed one |
-| `WEBKIT_DISABLE_DMABUF_RENDERER` | Overrides OpenMaker's choice for web viewers on X servers without DRI3 (Xvfb, VNC) |
-| `WINIT_X11_SCALE_FACTOR` | The windows' scale on X11 (winit's), also for a web-viewer build on a Wayland session, which runs through XWayland |
+| `WEBKIT_DISABLE_DMABUF_RENDERER`, `WEBKIT_DMABUF_RENDERER_FORCE_SHM` | Either one overrides OpenMaker's choice for web viewers' rendering: WebKitGTK's DMA-BUF renderer off on X servers without DRI3 (Xvfb, VNC), pages through shared memory on NVIDIA's driver |
+| `WINIT_X11_SCALE_FACTOR` | The windows' scale on X11 (winit's), also for a web-viewer build on a Wayland session, which runs through XWayland: on a compositor that leaves X windows unstretched (Hyprland's `force_zero_scaling`), the desktop's scale would size them as native ones (not tried) ([web viewers](re/layout-model.md#96-web-viewer)) |
 | `OPENMAKER_PDF_WORKER` | The PDF worker executable to use instead of the one beside the program (above) |
 | `OPENMAKER_USER_NAME` | `Get ( UserName )` and the session name, whatever Settings' User Name says |
 | `OPENMAKER_SETTINGS` | The settings file to read and write instead of the OS account's ([desktop-client](desktop-client.md#settings)) |
@@ -703,10 +703,12 @@ of each dependency, unless there is a concrete reason not to.
 - **Dependencies.** Requirements are ordinary (`"0.4"`, not `"=0.4.42"`),
   and the lockfile follows the latest compatible releases. A pin, or a
   hold below a crate's latest major release, needs its concrete reason in
-  a comment beside it. The exact pins today are `webkit2gtk = "=2.0.2"`
-  and `javascriptcore-rs = "=1.1.2"` (`om-gui`, `web-viewer`): they must
-  match the versions `wry` uses, because `om-gui` installs its own page
-  message handler (wry's IPC drops messages from `data:` URLs).
+  a comment beside it. The exact pins today are `webkit2gtk = "=3.0.0"`
+  and `javascriptcore-rs = "=2.0.0"` (`om-gui`, `web-viewer`): they must
+  match the versions `wry` 0.58 uses, because `om-gui` installs its own
+  page message handler (wry's IPC drops messages from `data:` URLs). Move
+  them together with `wry`; a different version links the WebKitGTK
+  system library twice, which Cargo refuses.
 - **Checking.** `rustup check` shows a newer stable.
   `cargo update --dry-run --verbose` lists compatible updates, and as
   `Unchanged ... (available: ...)` the crates behind a newer major

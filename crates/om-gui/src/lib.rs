@@ -85,6 +85,7 @@ mod worker;
 
 pub use app::mobile::{ChromeCommand, ChromeMenu, ChromeState, MenuRow, MenuRowKind};
 pub use app::{CardFrame, Mode, OpenMakerApp, ViewMode, APP_TITLE};
+pub use connect::host_address;
 pub use document::PdfViewer;
 pub use theme::install as install_theme;
 
@@ -170,9 +171,11 @@ pub(crate) fn app_icon() -> Option<std::sync::Arc<egui::IconData>> {
 }
 
 /// Settle what web viewers need from the process environment: call it
-/// before any thread starts (`run` does). With the `web-viewer` feature on
-/// an X server without DRI3, WebKitGTK's DMA-BUF renderer is turned off,
-/// unless `WEBKIT_DISABLE_DMABUF_RENDERER` is already set; otherwise it does
+/// before any thread starts (`run` does). With the `web-viewer` feature,
+/// WebKitGTK's DMA-BUF renderer is turned off on an X server without DRI3,
+/// and sends its pages through shared memory where DRI3 hands out a device
+/// of NVIDIA's driver, unless `WEBKIT_DISABLE_DMABUF_RENDERER` or
+/// `WEBKIT_DMABUF_RENDERER_FORCE_SHM` is already set; otherwise it does
 /// nothing. Only the first call looks: a later one, such as `run`'s after
 /// the `om-gui` program's own, may come once threads run.
 pub fn prepare_web_viewers() {

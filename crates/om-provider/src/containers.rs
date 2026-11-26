@@ -363,6 +363,9 @@ impl NativeProvider {
         (read, reserve): (bool, bool),
         compute: impl Fn(&RecordPlan, &RecordEnvironment) -> Result<T, DataError>,
     ) -> Result<T, DataError> {
+        if reserve && mode == WriteMode::Create {
+            plan.check_creation_context(&environment.context, entry)?;
+        }
         // Each run but the last downloads one header or one member's data
         // the runs before did not: two per member the record names.
         let written = changes
@@ -646,10 +649,20 @@ impl NativeProvider {
         let field = field.as_str();
         let (table, field) = match table.field_by_name(field) {
             Some(f) if f.data_type == DataType::Container => {
+                let options = f.decoded_options();
+                if options
+                    .as_ref()
+                    .is_some_and(|o| o.pending_embedded_container_transfer())
+                {
+                    return Err(DataError::with_code(
+                        om_data::rules::error::UNAVAILABLE,
+                        format!(
+                            "Field {field} cannot be changed while its container storage transfer is pending."
+                        ),
+                    ));
+                }
                 if f.kind != om_hbam::FieldKind::Normal
-                    || !f
-                        .decoded_options()
-                        .is_some_and(|o| o.options & 0x1_0000 == 0)
+                    || !options.is_some_and(|o| o.options & 0x1_0000 == 0)
                 {
                     return Err(DataError::with_code(
                         om_data::rules::error::FIELD_LOCKED,

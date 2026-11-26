@@ -18,6 +18,12 @@ om-provider = { path = "../../crates/om-provider" }
 # The version om-gui uses.
 egui = "0.37"
 log = "0.4"
+# Saved hosts' certificate authorities (`trust`): read as the engine's
+# trust store reads them, and international names as DNS compares them.
+base64 = "0.22"
+idna = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
 thiserror = "2"
 zeroize = "1"
 # The bindings generator in mobile/bindings must be the same version.

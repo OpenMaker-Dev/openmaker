@@ -444,6 +444,13 @@ impl<'a> FileCalc<'a> {
         } else {
             match self.source.record(table, record)? {
                 Some(values) => {
+                    if values
+                        .unavailable_fields
+                        .as_ref()
+                        .is_some_and(|fields| fields.contains(&field))
+                    {
+                        return Err(CalcError::from_code(3).expect("nonzero"));
+                    }
                     version = values.mod_count;
                     values.get(field, repetition).cloned().unwrap_or_else(empty)
                 }
@@ -876,6 +883,7 @@ pub struct FileHost<'a> {
     /// Design function but `DatabaseNames` answers empty (calc-functions.md,
     /// "Design functions on FileMaker Server").
     pub file_context: bool,
+    pub(crate) creation_utc_sample: Option<&'a dyn Fn() -> Result<Value, CalcError>>,
     nested_reads: Cell<HostReads>,
 }
 
@@ -922,6 +930,7 @@ impl<'a> FileHost<'a> {
             interrupted: None,
             limits: CalcLimits::DEFAULT,
             file_context: false,
+            creation_utc_sample: None,
             nested_reads: Cell::default(),
         }
     }
@@ -1102,6 +1111,11 @@ impl CalcHost for FileHost<'_> {
 
     fn get(&mut self, selector: u8, context: &Context) -> Result<Value, CalcError> {
         self.reads.session = true;
+        if selector == session::selector::CURRENT_TIME_UTC_MILLISECONDS {
+            if let Some(sample) = self.creation_utc_sample {
+                return sample();
+            }
+        }
         if let Some(file) = self.imported_file(context) {
             use session::selector::{FILE_LOCALE_ELEMENTS, FILE_NAME, FILE_PATH};
             if matches!(

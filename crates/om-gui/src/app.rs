@@ -10,6 +10,7 @@ use egui::{
     vec2, CornerRadius, Id, Key, KeyboardShortcut, Modifiers, RichText, Ui, ViewportCommand,
 };
 use om_data::found::FindRequest;
+use om_data::layout_move::{Delta, NudgeDirection, NudgeStep};
 use om_data::scripts::save_records::{Format as SaveFormat, SaveRecords};
 use om_data::{DataError, DataProvider, LocalOpen};
 
@@ -18,7 +19,6 @@ use crate::content;
 use crate::content::PartsSent;
 use crate::icons::{self, Icon};
 use crate::layout_bar::{self, LayoutBarContext};
-use crate::layout_canvas::NudgeDirection;
 use crate::layout_setup::{LayoutSetup, LayoutSetupAnswer};
 use crate::licensing::{LicenseAction, LicenseDialog, LicenseKey, LicenseOperation};
 use crate::manage_layouts::{ManageLayouts, ManageLayoutsResult};
@@ -338,6 +338,15 @@ impl LayoutTool {
             Self::Text | Self::Shape | Self::Field | Self::Button | Self::Panel
         )
     }
+
+    fn select_all_filter(self) -> Option<om_data::layout_selection::SelectAll> {
+        use om_data::layout_selection::SelectAll;
+        match self {
+            Self::Selection => Some(SelectAll::Layout),
+            Self::Shape => Some(SelectAll::Kind(om_layout::ObjectKind::Rectangle)),
+            _ => None,
+        }
+    }
 }
 
 /// The fields Layout mode's Field tool can place: those of the layout's own
@@ -651,7 +660,7 @@ pub(crate) enum Action {
     /// Edit > Select All in Layout mode changes the window's selection.
     SelectAllLayoutObjects,
     /// An arrow key moves the selection in the current layout draft.
-    NudgeLayoutObjects(NudgeDirection),
+    NudgeLayoutObjects(Delta),
     /// Delete or Edit > Clear in Layout mode: delete the selected object,
     /// as a change Save Layout stores.
     DeleteLayoutObject,
@@ -1019,9 +1028,10 @@ pub struct OpenMakerApp {
     value_list_edit: Option<(u32, crate::document::value_dialogs::EditDialog)>,
     part_setup: Option<PartSetup>,
     error: Option<String>,
-    /// The error code and message of the last failure `fail` reported, for
-    /// OpenMaker Go to tell a refused account from other failures.
-    failure: Option<(Option<i32>, String)>,
+    /// The last failure `fail` reported, for OpenMaker Go to tell a refused
+    /// account, or a host whose certificate could not be verified, from
+    /// other failures.
+    failure: Option<DataError>,
     /// The host administrators' messages still to show, the first shown
     /// now ([`Self::host_message`]; #156), and when it was first shown
     /// (`InputState::time`).
@@ -1089,6 +1099,10 @@ pub struct OpenMakerApp {
     /// in it: Shift or Option was held as File > Open was chosen.
     open_file_asking: bool,
     viewport_windows: crate::web_viewer::ViewportWindows,
+    /// The layer of the viewport being drawn: the root's background, or the
+    /// egui window an embedded viewport is shown in. Web viewers hide under
+    /// what egui paints above it (`web_viewers.rs`).
+    viewport_layer: egui::LayerId,
     /// Open the form's file when the app first draws (`open_on_launch`).
     open_on_launch: bool,
     /// The reconnect of a file whose connection was lost (recovery.rs).
@@ -1211,6 +1225,7 @@ impl OpenMakerApp {
             file_panel: None,
             open_file_asking: false,
             viewport_windows: Default::default(),
+            viewport_layer: egui::LayerId::background(),
             open_on_launch: false,
             reconnect: None,
             open_file: None,
@@ -1505,7 +1520,10 @@ impl OpenMakerApp {
         // A window's cards are drawn on it, in its viewport
         // (window_styles.rs). Web viewers are children of the viewport's
         // native window: eframe gives out the root's, and the others' are
-        // found as they are shown (`ViewportWindows`).
+        // found as they are shown (`ViewportWindows`). An embedded
+        // viewport is an egui window in the root viewport, drawn in the
+        // root's coordinates: its web viewers are children of the root's
+        // native window, where that egui window shows them.
         let parent = self.native_parent;
         self.viewport_windows
             .begin(parent, !embedded && self.web.hosts_pages());
@@ -1536,7 +1554,7 @@ impl OpenMakerApp {
                 let embedded = class == egui::ViewportClass::EmbeddedWindow;
                 close = ui.input(|i| i.viewport().close_requested());
                 let parent = if embedded {
-                    Err(crate::web_viewer::Unavailable::Window)
+                    parent
                 } else {
                     self.viewport_windows.parent(id, &title)
                 };
@@ -1846,6 +1864,7 @@ impl OpenMakerApp {
             home: self.launcher.has_home(),
             find: &self.w.find,
             toolbar: self.w.show_toolbar,
+            toolbar_toggle_available: self.toolbar_toggle_available(),
             formatting: self.w.show_formatting,
             inspector: self.w.inspector,
             objects: self.w.objects,
@@ -2259,6 +2278,14 @@ impl OpenMakerApp {
                     toolbar::show(
                         ui,
                         &ToolbarContext {
+                            height: if cfg!(target_os = "macos")
+                                && self.w.mode == Mode::Browse
+                                && self.w.style == crate::scripting::WindowStyle::Document
+                            {
+                                theme::MACOS_BROWSE_TOOLBAR_HEIGHT
+                            } else {
+                                theme::TOOLBAR_HEIGHT
+                            },
                             mode: self.w.mode,
                             session,
                             find: &self.w.find,
@@ -2321,6 +2348,7 @@ impl OpenMakerApp {
                         self.w.document.zoom.percent(),
                         &self.w.uuid,
                     );
+                    window.toolbar_locked = self.w.toolbar_locked;
                     window.style = self.w.style.number();
                     window
                 });
@@ -3757,7 +3785,7 @@ impl OpenMakerApp {
     }
 
     fn can_select_all_layout_objects(&self, ctx: &egui::Context) -> bool {
-        self.w.tool == LayoutTool::Selection && self.layout_selection_session(ctx).is_some()
+        self.w.tool.select_all_filter().is_some() && self.layout_selection_session(ctx).is_some()
     }
 
     /// A dialog, alert or confirmation of the app's is open: the host's
@@ -4001,7 +4029,7 @@ impl OpenMakerApp {
                     let action = match key {
                         Key::S if modifiers.matches_exact(Modifiers::COMMAND) => Action::SaveLayout,
                         _ if layout_keys
-                            && self.w.tool == LayoutTool::Selection
+                            && self.w.tool.select_all_filter().is_some()
                             && *key == shortcuts::SELECT_ALL.logical_key
                             && modifiers.matches_exact(shortcuts::SELECT_ALL.modifiers) =>
                         {
@@ -4025,7 +4053,16 @@ impl OpenMakerApp {
                         {
                             Action::EditLayoutDraft(DraftEdit::Undo)
                         }
-                        _ if layout_keys && has_selection && modifiers.is_none() => {
+                        Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown
+                            if layout_keys && has_selection =>
+                        {
+                            let step = match *modifiers {
+                                Modifiers::NONE => NudgeStep::OnePoint,
+                                Modifiers::SHIFT => NudgeStep::TenPoints,
+                                #[cfg(target_os = "macos")]
+                                Modifiers::ALT => NudgeStep::OnePoint,
+                                _ => return true,
+                            };
                             let direction = match key {
                                 Key::ArrowLeft => NudgeDirection::Left,
                                 Key::ArrowRight => NudgeDirection::Right,
@@ -4033,7 +4070,7 @@ impl OpenMakerApp {
                                 Key::ArrowDown => NudgeDirection::Down,
                                 _ => return true,
                             };
-                            Action::NudgeLayoutObjects(direction)
+                            Action::NudgeLayoutObjects(direction.delta(step))
                         }
                         _ => return true,
                     };
@@ -4153,7 +4190,8 @@ impl OpenMakerApp {
                     }
                 }
             }
-            if input.consume_shortcut(&shortcuts::STATUS_TOOLBAR) {
+            if input.consume_shortcut(&shortcuts::STATUS_TOOLBAR) && self.toolbar_toggle_available()
+            {
                 actions.push(Action::ToggleToolbar);
             }
             if self.zooms() {
@@ -4592,6 +4630,10 @@ impl OpenMakerApp {
 
     fn full_menus(&self) -> bool {
         self.menu_commands() == om_data::host::privilege_set::MenuCommands::All
+    }
+
+    fn toolbar_toggle_available(&self) -> bool {
+        !self.w.toolbar_locked && !self.is_card(self.w.id)
     }
 
     /// The status toolbar and the layout bar: usable under Editing only
@@ -5507,16 +5549,22 @@ impl OpenMakerApp {
             }
             Action::RevertLayout => {}
             Action::SelectAllLayoutObjects => {
-                if self.can_select_all_layout_objects(ctx) {
+                if let Some(filter) = self
+                    .w
+                    .tool
+                    .select_all_filter()
+                    .filter(|_| self.can_select_all_layout_objects(ctx))
+                {
                     let session = self.w.session.as_ref().expect("checked layout");
-                    self.w.layout_workspace.select_all(session);
+                    self.w.layout_workspace.select_all(session, filter);
+                    self.w.tool = LayoutTool::Selection;
                     ctx.request_repaint();
                 }
             }
-            Action::NudgeLayoutObjects(direction) => {
+            Action::NudgeLayoutObjects(delta) => {
                 if self.layout_selection_session(ctx).is_some() {
                     let session = self.w.session.as_ref().expect("checked layout");
-                    self.w.layout_workspace.nudge_selection(session, direction);
+                    self.w.layout_workspace.nudge_selection(session, delta);
                     ctx.request_repaint();
                 }
             }
@@ -5598,7 +5646,24 @@ impl OpenMakerApp {
                 }
             }
             Action::DismissValueLists => self.value_lists = None,
-            Action::ToggleToolbar => self.w.show_toolbar = !self.w.show_toolbar,
+            Action::ToggleToolbar => {
+                if self.toolbar_toggle_available() {
+                    let was_shown = self.w.show_toolbar;
+                    self.w.show_toolbar = !was_shown;
+                    if self.w.style == crate::scripting::WindowStyle::Document
+                        && self.w.mode == Mode::Browse
+                        && self.mobile.is_none()
+                        && !self.w.hidden
+                    {
+                        if let Some(command) = self.w.placement.as_mut().and_then(|placement| {
+                            placement.resize_for_toolbar(was_shown, self.w.show_toolbar)
+                        }) {
+                            self.w.fit = None;
+                            ctx.send_viewport_cmd_to(self.viewport_of(self.w.id), command);
+                        }
+                    }
+                }
+            }
             Action::ToggleFormattingBar => self.w.show_formatting = !self.w.show_formatting,
             Action::RefuseTyping(refusal) => {
                 self.error = Some(refusal.message().into());
@@ -5916,6 +5981,15 @@ impl OpenMakerApp {
     /// Requests run in order, so the geometry is in by the time the records
     /// are and Form view does not flash the generic field list first.
     fn request_layout(&mut self, ctx: &egui::Context, key: Option<PageKey>) {
+        self.request_layout_with_origin(ctx, key, false);
+    }
+
+    fn request_layout_with_origin(
+        &mut self,
+        ctx: &egui::Context,
+        key: Option<PageKey>,
+        scripted: bool,
+    ) {
         // A layout the account may not see draws `<No Access>` (or the
         // blank opening page) and offers no record commands; it reads its
         // found set's ids and count only, which the toolbar shows, as
@@ -5948,12 +6022,14 @@ impl OpenMakerApp {
                 ctx,
                 Request::RecordCapabilities {
                     layout_id: key.layout_id,
+                    scripted,
                 },
             );
             self.request(
                 ctx,
                 Request::RenderLayout {
                     layout_id: key.layout_id,
+                    scripted,
                 },
             );
             self.request(
@@ -6947,7 +7023,7 @@ impl OpenMakerApp {
             return;
         }
         self.error = Some(err.message.clone());
-        self.failure = Some((err.code, err.message.clone()));
+        self.failure = Some(err.clone());
         self.status = ConnectStatus::Idle;
         self.opening = None;
     }
@@ -9498,6 +9574,9 @@ mod tests {
                 key: 1,
                 movable: true,
                 rect: old_frame,
+                selection: om_data::layout_selection::Target::Object(
+                    om_layout::ObjectKind::Rectangle,
+                ),
                 ..Default::default()
             }],
             revision: Some([1; 32]),
@@ -9529,8 +9608,16 @@ mod tests {
             events: vec![
                 key(Key::A, Modifiers::COMMAND),
                 key(Key::ArrowRight, Modifiers::NONE),
-                key(Key::ArrowRight, Modifiers::NONE),
+                key(
+                    Key::ArrowRight,
+                    if cfg!(target_os = "macos") {
+                        Modifiers::ALT
+                    } else {
+                        Modifiers::NONE
+                    },
+                ),
                 key(Key::ArrowUp, Modifiers::SHIFT),
+                key(Key::ArrowLeft, Modifiers::CTRL),
             ],
             ..Default::default()
         };
@@ -9556,18 +9643,21 @@ mod tests {
         assert_eq!(app.w.layout_workspace.selection_count(session), 1);
         assert!(app.w.layout_workspace.moved().frames.is_empty());
         assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 50.0);
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().top, 30.0);
 
         ctx.memory_mut(|m| m.surrender_focus(editor));
         frame(&mut app, input(), false);
         let session = app.w.session.as_ref().unwrap();
         assert_eq!(app.w.layout_workspace.selection_count(session), 2);
         assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 52.0);
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().top, 20.0);
         assert_eq!(
             app.w.layout_workspace.moved().frames[&1],
             om_data::GeomRect {
                 left: 22.0,
+                top: 20.0,
                 right: 42.0,
-                ..old_frame
+                bottom: 50.0,
             }
         );
         let undo = key(Key::Z, shortcuts::UNDO.modifiers);
@@ -9580,8 +9670,9 @@ mod tests {
             },
             false,
         );
-        assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 51.0);
-        assert_eq!(app.w.layout_workspace.moved().frames[&1].left, 21.0);
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().top, 30.0);
+        assert_eq!(app.w.layout_workspace.moved().frames[&1].top, 30.0);
+        assert_eq!(app.w.layout_workspace.moved().frames[&1].left, 22.0);
         frame(
             &mut app,
             egui::RawInput {
@@ -9591,7 +9682,9 @@ mod tests {
             false,
         );
         assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 52.0);
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().top, 20.0);
         assert_eq!(app.w.layout_workspace.moved().frames[&1].left, 22.0);
+        assert_eq!(app.w.layout_workspace.moved().frames[&1].top, 20.0);
 
         app.apply(&ctx, Action::RevertLayout);
         assert!(!app.w.layout_workspace.has_changes());
@@ -9610,12 +9703,20 @@ mod tests {
                 actions,
                 [
                     Action::SelectAllLayoutObjects,
-                    Action::NudgeLayoutObjects(NudgeDirection::Right),
+                    Action::NudgeLayoutObjects(Delta { dx: 1.0, dy: 0.0 }),
                     Action::SaveLayout
                 ]
             );
         })
         .drop_without_applying_deltas();
+        app.apply(&ctx, Action::SelectTool(LayoutTool::Shape));
+        assert!(app.can_select_all_layout_objects(&ctx));
+        let mut shape_input = input();
+        shape_input.events.truncate(1);
+        frame(&mut app, shape_input, false);
+        let session = app.w.session.as_ref().unwrap();
+        assert_eq!(app.w.tool, LayoutTool::Selection);
+        assert_eq!(app.w.layout_workspace.selection_count(session), 1);
     }
 
     #[test]
@@ -9649,7 +9750,7 @@ mod tests {
             },
         );
         for _ in 0..2 {
-            app.apply(&ctx, Action::NudgeLayoutObjects(NudgeDirection::Right));
+            app.apply(&ctx, Action::NudgeLayoutObjects(Delta { dx: 1.0, dy: 0.0 }));
         }
         assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 22.0);
         app.apply(&ctx, Action::SaveLayout);

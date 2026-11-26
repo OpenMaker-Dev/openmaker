@@ -186,7 +186,9 @@ Rendering consequences [I, from public FileMaker behavior and the part model]:
 form view draws one record (body once); list view repeats the body part per
 record inside a scrolling area, with header and footer fixed; table view is
 generated from the layout's fields (`Draco::TableLayoutBuilder`, which builds
-columns, grid lines from `tableGridStyle`, and summary rows).
+columns, grid lines from `tableGridStyle`, and summary rows), with the top
+navigation, header, footer and bottom navigation parts its Table View
+Properties include around it (below).
 
 Sub-summary parts in Browse [documented]: they "appear in Table View and List
 View when sorted by break fields, and update dynamically when you change data
@@ -320,6 +322,60 @@ Two of these bits are Layout Setup's field delineation options:
 | `0x20` | Show field frames when record is active | [O] FileMaker Pro 26.0.3's Layout Setup sets it (10.11); Task List reads it off, and the bit is clear |
 
 With `0x1` set, a field's borders and fill show on the current record only. Claris documents that they then do not show "when you print, print to PDF, or preview" [Claris: "Showing field borders and fill for the current record"]. FileMaker Pro 26.0.3 prints none of the starter lists' field underlines [O, #263, 2026-11-13]. Its Task Details PDF draws the `fill-secondary-popup` pop-ups and the `fill-container` photo field with no fill or border operations at all, only their clip paths and text [O, [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201), 2026-11-13]. Fields in header, footer, summary and navigation parts never show borders and fill [Claris, same page].
+
+**Table View Properties** (Layout Setup > Views > Table > Properties)
+keep their options in the same flag word. The four part options are
+measured [O, FileMaker Pro 26.1.1 for macOS, [#927](https://github.com/OpenMaker-Dev/openmaker/issues/927)]:
+four separately saved copies of a one-record Contacts fixture, each with
+one option checked, changed the one bit in the table, against a copy with
+all four off, in both flag words (`[4,5,L,0xf1]` and `[4,1,7,L,0xf1]`).
+No leaf under the layout's `0d` changed. The saves also changed other
+save metadata; no save without a change was made to compare it with. The
+other
+options' bits come from the third-party table above, FileMaker Pro
+26.0.2's Save as XML read one option at a time [O, third party]; they
+have not been read back from a file FileMaker saved [U].
+
+| Bit | Option | Evidence |
+|---|---|---|
+| `0x10000`, `0x20000` | Grid: Horizontal, Vertical | third party |
+| `0x40000` | Include header part | 26.1.1 |
+| `0x80000` | Include footer part | 26.1.1 |
+| `0x100000` | Include column headers | third party |
+| `0x200000`, `0x400000` | Resizable columns, Reorderable columns | third party |
+| `0x800000` | Sort data when selecting column | third party |
+| `0x4000000` | named `customColumnOrder` there; no option of the dialog has this name [U] | third party |
+| `0x20000000` | Include top navigation part | 26.1.1 |
+| `0x40000000` | Include bottom navigation part | 26.1.1 |
+| `0x1_0000_0000` to `0x8_0000_0000` | macOS: System appearance, Comfortable formatting, Alternating row colors, Row numbers | third party |
+
+- **Claris's help** says to "Select the parts to display: top
+  navigation, header, footer, and bottom navigation", and that "These
+  settings matter only if you have defined the parts for the layout, and
+  they're only in effect in Table View"
+  ([Setting up form, list, and table views for a layout](https://help.claris.com/en/pro-help/content/form-list-table-views.html)).
+  [Layout part types](https://help.claris.com/en/pro-help/content/layout-part-types.html)
+  says each of the four shows in Table view only when its option is on,
+  and that navigation parts are not zoomed. The System appearance
+  options apply "only to the table, not to any of the selected layout
+  parts" [Claris, the first page].
+- **The starter layouts:** their `0xf30000` is the two grids and the four
+  column options on, and the four parts off [O].
+- **Where Pro's Table view puts the parts** [O, FileMaker Pro 26.1.1,
+  #927]:
+  - The top navigation and header parts are above the column headings, in
+    that order.
+  - The footer and bottom navigation parts stack at the window's bottom,
+    also with one record and a large gap above them; a footer alone is at
+    the window's bottom too.
+  - At 150% zoom the table, header and footer scale; the navigation parts
+    keep their 100% height.
+  - Scrolling sideways moves the columns, and the top navigation part's
+    text keeps its place in the window.
+- **Not measured** [U]: how the header, footer and bottom navigation
+  parts' objects behave when the table scrolls sideways (the measured
+  parts held no objects), whether Tab reaches the parts' fields, and the
+  pages of web viewers in them.
 
 ### 4.3 Parts
 
@@ -537,6 +593,29 @@ children (fields and buttons); field displayType 6 with style type 66 (calendar)
 Its segments are Go to Layout buttons (step 6, value 5, the layout's key in
 `reserved`), each a single-step button like any other (section 5.6); the
 active segment is section 5.5.1.
+
+Slide navigation [O, FileMaker Pro 26.1.1]. In a synthetic three-panel control
+with swipe enabled, `dotObj` (field 19) stores `08 00` when Show navigation
+dots is on and `08 01` when it is off. Clicking a dot switches the active
+panel. The dots use component 26, normal state 1 and active state 7. In
+Enlightened the default dot is 9 pt. Setting 11 pt saves the dot's width
+and height (properties 109 and 110) as 11 pt, the dot container height
+(27/110) as 17 pt, and the contents bottom (8/119) as 23 pt. The default
+heights are 15 and 21 pt. The dot row is centered, with a gap of about
+4 pt and a row bottom inset of 3 pt in both cases. The theme stores a dot
+left margin of 0.33 em and a dot container bottom of 0.25 em. Relating
+these lengths to 12 pt for the measured theme is inferred. Other theme
+unit bases, missing flags, swipe and panel-switch triggers were not measured.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1031#issuecomment-7192568479).
+
+The contents component paints the panel's background and border and clips
+its child objects [O, FileMaker Pro 26.1.1]. A two-line label placed at the
+lower edge shows the portion inside the panel, and the remainder stays
+clipped even when the label is still present in accessibility. The same
+control with dots disabled has a taller contents frame: near 3 pt of its
+height remains below the border in Enlightened. Using the dot container's
+bottom inset for that remaining space is inferred from the measured
+geometry. [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1121#issuecomment-7192729802).
 
 Popovers [I: the field names]: a popover button's `popoverKey` is the object
 key of its popover, and the popover's `buttonKey` the key of its button. In
@@ -1246,8 +1325,8 @@ over every layout of the six English starter solutions [O]:
 | 4 | Icon at left, text at right | 10, all labelled and left-aligned: the 9 Details layouts' back buttons (a chevron left of "Assets", "Contacts" and so on, in the top navigation part) and Add Assignee's "Add Assignee" |
 | 5 | Text at left, icon at right | none |
 
-Claris documents the order, not the numbers. The starters use only 0, 1 and
-4, and two of them are measured:
+Claris's documentation lists the choices in order. The starter
+measurements cover selectors 1 and 4:
 - **1 is Image only [O].** FileMaker Pro 26.0.3's PDF of Task Details ([#201](https://github.com/OpenMaker-Dev/openmaker/issues/201),
   2026-11-13) draws the "Add Assignee" button, type 1 with that label stored,
   as its 13-point "+" icon centered in the 291-point frame (icon at 523-536,
@@ -1255,16 +1334,23 @@ Claris documents the order, not the numbers. The starters use only 0, 1 and
   stored label is kept but not shown.
 - **4 is Icon at left, text at right [O].** Pro's Preview and PDF of the Add
   Assignee layout show the "+" left of "Add Assignee" ([#201](https://github.com/OpenMaker-Dev/openmaker/issues/201), 14:27Z).
-- 0, 2, 3 and 5 follow from Claris's order [I].
 
-That Pro's Browse also hides a type 1 label is inferred from its Preview and
-PDF; Browse was not captured.
+A local FileMaker Pro 26.1.1 Browse check with a 100 × 90 pt frame,
+a 48 pt icon and a short label confirmed all four placement selectors
+and that an image-only button hides its label [O]. The vertical
+arrangements center the icon and label together, with the label across
+the frame's width. The gap between the icon and the text line box is
+about 8 pt [I from visible glyph bounds]. The left and right arrangements
+wrap the label beside the icon. A narrower 70 pt frame and longer label
+clip the text while the icon keeps its size. A popover button with the
+icon above matched the ordinary button.
+[Native Browse check](https://github.com/OpenMaker-Dev/openmaker/issues/1016#issuecomment-7185360328).
 
-OpenMaker's Browse and reports draw a type 1 button's icon alone and
-centered, and leave its stored label out. It stays the button's accessible
-name in Browse. Both draw a type 4 icon left of its label. Browse draws the
-other placements as icon left of label, and reports refuse them
-(portable-pdf.md, Buttons and groups).
+OpenMaker's Browse and Layout mode share these placement directions for
+buttons and popover buttons. Browse supplies evaluated calculated icons.
+Layout mode supplies stored library icons. An image-only button keeps its
+stored label as its accessible name in Browse. Reports support types 1
+and 4 (portable-pdf.md, Buttons and groups).
 
 ### 5.7 Anchoring (autosizing)
 
@@ -1584,6 +1670,16 @@ file. No CSS or font asset is copied into the implementation.
 | text align (74) | 1 left; 2 center; 3 right (`left_aligned_*`, `center_aligned_*`, `right_aligned_*`) | 4 justify inferred |
 | text transform (75) | 1 none (`fill-low-shadow-inverted-edit:placeholder`); 3 uppercase (`uppercase-secondary-text`, `separator-uppercase-highlight-buttonbar`) | 2 capitalize, 4 lowercase inferred; no such rule in the inspected installed theme CSS |
 | text vertical align (611) | 0 top (`field`, `small_valigned_top_editbox`); 1 center (`button`, `small_center_aligned_text`); 2 bottom (`small_bottom_aligned_text`, `medium_valigned_btmright_editbox`) | These are zero-based, unlike text-align |
+
+[O, FileMaker Pro 26.1.1] Browse draws no line on a Text object's edge
+when its resolved border style is unset, even with a set width and
+color. A Text object with only its top edge enabled retained red and
+1-point width on all four sides. Only the top had a resolved style
+(solid, 5), and only the top drew. Removing that last style left all
+edges invisible and the Inspector showed None, with the width and color
+still present. A control with all four styles set to solid drew all four
+edges. Other object kinds and modes were not checked.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1091#issuecomment-7191245927)
 
 [O] Where a field's text sits when its style stores no vertical align (611).
 None of the 156 field objects of the six English starters resolves 611 from
@@ -1966,6 +2062,13 @@ template carries copies of `com.filemaker.theme.universal_touch` and
   and right-to-left text (`direction`, `unicode-bidi`) are part of the model [O].
 - ICU 76 is bundled (Windows `icu*76.dll`, imported by Support) [O].
 
+[O, FileMaker Pro 26.1.1] At Actual Size, a 104 × 22 pt Text object
+using Helvetica Neue 16 pt displays the complete label `Top edge only`.
+A 102 × 22 pt control with the same style displays `All four edges`.
+Both fit on one line. The point sizes and family come from the same
+closed synthetic layout.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1104)
+
 ### 8.1 Stored character-style masks
 
 [O, FileMaker Pro 26.0.3 Mac Support] `CharacterStyle::Read` (0x1f7fdc)
@@ -1993,6 +2096,43 @@ the default style; those slots must not become explicit text overrides.
 A set face-mask bit can explicitly turn a face off. A run that changes only
 bold must inherit the default italic setting; a color-only run must inherit
 the layout's font and point size. Unknown bits and extension bytes remain raw.
+
+[O, FileMaker Pro 26.1.1] With the case-group mask `0x0030`, faces
+`0x0010` display the run in uppercase, `0x0020` in lowercase, and
+`0x0030` in title case. In a mixed Text object those commands changed
+only the selected word and kept its stored spelling. The same uppercase
+run over a complete Account Name symbol changed its display from `Admin`
+to `ADMIN`. Accessibility returned the underlying case.
+[Per-run native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1097#issuecomment-7192063512).
+
+[O, FileMaker Pro 26.1.1] With a format applied to the whole object,
+Uppercase retained `ß`
+and the `ﬂ` ligature, and changed `étude` to `ÉTUDE`. Title Case
+displayed `o'NEIL mACDONALD-sMITH 3RD aLPHA bETA` as
+`O'neil Macdonald-smith 3rd Alpha Beta`: apostrophes and hyphens kept
+their words together.
+[Whole-object native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1097#issuecomment-7193070314).
+Using the same character mappings and word boundaries within a run is
+inferred. Precedence between object and run styles, and title-case breaks
+at quotation marks, parentheses, slashes, and periods remain unmeasured.
+
+### 8.2 Styled merge values
+
+[O, FileMaker Pro 26.1.1, local synthetic file] Browse preserves the
+stored formatting of literal text on either side of an inserted layout
+symbol or merge field. A uniformly styled reference passes its style to
+the replacement. Where the opening delimiters, reference name and
+closing delimiters each had a different color, the entire replacement
+used the opening delimiter's color. Treating other attributes within a
+mixed reference the same way is inferred from this test. In the saved
+split examples, the opening delimiter and name shared a run. The closing
+delimiter kept its separate color through reopening. An empty field
+removed just the replacement, and the suffix kept its styling and line.
+A long field retained its style. Both lines of a two-line field used
+the replacement's style, and the suffix kept its own style on the second
+line. Different paragraph spacing and merge-variable styling were not
+measured.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1030)
 
 ## 9. Rendering stack
 
@@ -2039,6 +2179,20 @@ META, references, sample data). Charts: `ChartHighLevelRenderer`.
 Inferred paint order per object [I]: outer box shadow, background layers,
 border (or border image), inner shadow, `inner_border` component, content
 (text, icon, image), then child objects.
+
+[O, FileMaker Pro 26.1.1 on macOS] On solid square rectangles and
+buttons, an opaque outer shadow at horizontal +6 pt, vertical +3 pt, blur
+4 pt and spread 2 pt extends about 0 pt left, 2-2.5 pt up, 11-11.25 pt
+right and 8-8.4 pt down beyond the visible border. The inset shadow is
+clipped at the inside edge of the border to layout-point precision, below
+the button text and glyph. The two effects can be enabled together.
+The matching outer rectangle property is 122 with one field-19 shadow
+of type 1, inset 0, alpha 1 and the four lengths in points. [Native
+measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1034#issuecomment-7202993034)
+
+[I] The outer extents fit an offset rectangle expanded by the spread,
+with the blur extending about one blur distance beyond that edge.
+The samples do not identify FileMaker's exact blur kernel.
 
 ### 9.3 Graphics backends
 
@@ -2105,6 +2259,12 @@ Storage [O, 2026-11-02]:
   `om-layout` decodes it as `ObjectCalcs::web_address`; `tests/web_viewers.rs`
   checks the shipped template.
 
+[O, FileMaker Pro 26.1.1, macOS] With Automatically encode URL off,
+a calculated `data:text/html,` address containing literal HTML and a
+CSS color with a raw `#` displayed the styled text after the hash.
+Data URL fragments, other media types and base64 were outside that
+comparison. [Native check](https://github.com/OpenMaker-Dev/openmaker/issues/1129#issuecomment-7202980493)
+
 OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
 
 - Browse evaluates the address on the current record in Form view and on
@@ -2123,11 +2283,49 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   "Automatically encode URL" uses Insert from URL's encoding, and also
   encodes `#` in a `data:` URL. Views are incognito, without developer tools,
   new windows or downloads, and navigate only to http, https, data, blob,
-  file and about URLs. On an X server without DRI3 the process turns off
-  WebKitGTK's DMA-BUF renderer at startup (it draws blank pages there) unless
-  `WEBKIT_DISABLE_DMABUF_RENDERER` is set; the page bridge uses its own
-  `openmaker` script message handler (wry's IPC drops messages from `data:`
-  pages, whose URL it cannot parse).
+  file and about URLs. WebKitGTK's DMA-BUF renderer draws blank pages where
+  it cannot share its buffers with the X server, so at startup, unless
+  `WEBKIT_DISABLE_DMABUF_RENDERER` or `WEBKIT_DMABUF_RENDERER_FORCE_SHM` is
+  set, the process turns it off on an X server without DRI3, and has it
+  send pages through shared memory (still rendered on the GPU) where DRI3
+  hands out a device of NVIDIA's driver: there it cannot allocate its
+  buffers, nor, without GBM, import them (measured through XWayland with
+  NVIDIA 615 and Arch's WebKitGTK 2.54; an NVIDIA X server of its own, and
+  other drivers' failures, unmeasured). Debian's and Ubuntu's WebKitGTK
+  packages make a choice of their own on NVIDIA's driver
+  (`disable-nvidia-dmabuf.patch`, from WebKit pull request 18614) before
+  they read the variable. In Ubuntu 24.04's 2.52.6-0ubuntu0.24.04.2 it sends
+  pages through shared memory as well, and honours the variable. In
+  0ubuntu0.24.04.1 it turned the renderer off without shared memory, and
+  Debian bug 1142771 reports that crashing pages that need compositing
+  [reported, unmeasured here].
+- On Linux (`web_viewer/gtk.rs`) the page bridge posts to a script message
+  handler of its own, `openmaker` (wry's IPC drops messages from `data:`
+  pages, whose URL it cannot parse). WebKit shows a page's message
+  handlers to every frame of the page, and WebKitGTK does not say which
+  frame posted a message (its `WebKitFrame` belongs to the web process's
+  extension API), so the handler is registered in a script world of
+  OpenMaker's own, where no script of the page or of its frames runs. Two
+  scripts go into the main frame only, as each document starts and before
+  the page's own scripts: the `FileMaker` object, in the page's world, and
+  in OpenMaker's world a poster, which posts what `FileMaker` hands it
+  through an element that only the two hold (it is taken out of the
+  document at once). A view starts loading only once both halves and the
+  handler are in place. Another site's frame in the page reaches neither the
+  handler nor the main frame's `FileMaker`; a frame of the page's own
+  origin can call `parent.FileMaker` [I, OpenMaker's choice; FileMaker
+  Pro's scope for `FileMaker.PerformScript` in frames is unmeasured].
+  Unlike macOS's token, nothing has to reach a document after it commits,
+  and a page whose Content Security Policy forbids frames still posts.
+  `tests/web_viewer_native.rs` embeds a frame from another loopback port,
+  which posts to the handler and calls `parent.FileMaker`, and checks that
+  neither reaches the bridge and no script runs, and that the first
+  document's inline call does run. On both platforms the bridge's
+  messages are bounded where they arrive, on the thread that hears the page
+  and without waiting for the app: only well-formed ones are kept, and one
+  longer than 16 MiB, or one that would put more than 256 messages or
+  32 MiB (each counted as at least 1 KiB) in wait for the app, is dropped
+  [I, OpenMaker's bounds; FileMaker's are unmeasured].
 - On macOS (`web_viewer/appkit.rs`) AppKit's views live on the main thread,
   where the app's frames run: commands apply as they come, and a page is
   made at the end of the frame, with wry, as a child of the root window,
@@ -2142,18 +2340,21 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   from the OS's random source (without it the bridge stays off), and the
   last document's stops working as the next one commits, with what it
   posted that the app has not taken yet: another site's frame in the page
-  cannot post, nor can a page that learned an earlier document's token. Only
-  well-formed messages are kept; one longer than 16 MiB, or one that would
-  put more than 256 messages or 32 MiB (each counted as at least 1 KiB) in
-  wait for the app, is dropped. A page whose Content
-  Security Policy forbids frames (`frame-src 'none'`) cannot post at all.
+  cannot post, nor can a page that learned an earlier document's token. A
+  page whose Content Security Policy forbids frames (`frame-src 'none'`)
+  cannot post at all.
   For the same reason the history and loading state that Set Web Viewer's
   Back and Forward need are read through key-value coding. wry reports a
   load only when it commits and when it finishes, so each frame also looks
   at the page's `loading`: a navigation is loading from when it starts,
   and one that fails before committing ends a quarter of a second after it
-  stops loading. An address Foundation cannot read as a URL shows a blank
-  page [I, OpenMaker's choice; wry would panic on it]. Every window shows
+  stops loading. Before handing a `data:text/html,` address whose
+  payload starts with literal markup to Foundation, OpenMaker escapes
+  raw hashes so they stay in the HTML even when auto-encoding is off.
+  A trailing `#section` after the literal markup becomes page text
+  [I, OpenMaker's choice; FileMaker Pro's behavior is unmeasured].
+  An address Foundation cannot read as a URL shows a blank page
+  [I, OpenMaker's choice; wry would panic on it]. Every window shows
   its own pages: another window's AppKit window is found as
   `web_viewer/viewports.rs` says (below). `tests/web_viewer_native.rs`
   runs on macOS too, with the window's mouse events given to the view under
@@ -2171,16 +2372,48 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   every web viewer shows "Web viewer: unavailable on this display." Builds without the feature stay on native
   Wayland. Through XWayland:
   - **Scale** comes from the X server: XSETTINGS `Xft/DPI`, then the
-    `Xft.dpi` resource, then the monitor's size, unless
-    `WINIT_X11_SCALE_FACTOR` is set. A compositor that gives X clients no
-    scale draws them enlarged (unmeasured here).
-  - **Input** is X11's, with XIM for input methods.
+    `Xft.dpi` resource, then each monitor's size in RandR (winit 0.30: its
+    pixel density over 96 dpi, rounded to twelfths, at least 1), unless
+    `WINIT_X11_SCALE_FACTOR` is set. What a desktop at a higher scale shows
+    depends on its compositor. Measured 2026-11-26 with the mock provider,
+    comparing the same build through XWayland and natively on Wayland
+    (`DISPLAY` unset), by screenshot
+    ([evidence](../evidence/xwayland-scale/README.md)):
+    - **sway 1.12 (wlroots, headless)** gives XWayland the output's logical
+      size (a 1920 × 1080 output is 960 × 540 pixels on 254 × 143 mm at
+      scale 2, 1280 × 720 on 339 × 190 mm at 1.5) and stretches X windows by
+      the output's scale. With no XSETTINGS or `Xft.dpi` the app draws at
+      1, so its windows have the native windows' size but are blurred, at 2
+      and at 1.5. Native Wayland windows are sharp at both, 1.5 included
+      (winit follows fractional scales). [I] Raising
+      `WINIT_X11_SCALE_FACTOR` would only enlarge the stretched window (not
+      tried).
+    - **Hyprland 0.56 with `xwayland:force_zero_scaling`** (Omarchy's
+      default) does not stretch X windows: XWayland has the monitor's
+      pixels (1920 × 1080 on 600 × 340 mm at scale 2 as at 1) and no
+      `Xft.dpi`. At scale 1 the app draws at 1, as natively. At scale 2 it
+      still draws at 1: sharp, but half the size of the native window. [I]
+      `WINIT_X11_SCALE_FACTOR=2` (or an `Xft.dpi` of 192) would give it the
+      desktop's scale (not tried).
+    - WebKitGTK, in the app's process, takes GDK's scale from
+      `GDK_SCALE`, which some desktops set for X11 apps (Omarchy sets 2);
+      its pages then draw at that scale within objects the app draws at 1
+      ([#1086](https://github.com/OpenMaker-Dev/openmaker/issues/1086)).
+  - **Input** is X11's, with XIM for input methods (not measured).
   - **The clipboard** is X selections (arboard), which the compositor shares
     with Wayland applications.
 
   A test runs the real event loop with `WAYLAND_DISPLAY` naming no socket.
-  An XWayland window under a nested compositor was checked by hand, and no
-  Wayland desktop has been tried.
+  `tests/web_viewer_native.rs`, built from
+  [#1087](https://github.com/OpenMaker-Dev/openmaker/pull/1087)'s first
+  revision (its shared-memory choice on NVIDIA's driver; without it the page
+  stays blank there,
+  [#1085](https://github.com/OpenMaker-Dev/openmaker/issues/1085)), passed
+  on Hyprland's XWayland at scale 1 with `GDK_SCALE` unset; with
+  `GDK_SCALE=2` its click on the page misses
+  ([#1086](https://github.com/OpenMaker-Dev/openmaker/issues/1086)). A native
+  Wayland backend was studied and prototyped in
+  [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323).
 - Every window shows its own views. eframe 0.37 gives out only the root
   viewport's native window; another window's viewport is an immediate
   viewport whose X11 window OpenMaker finds from the server
@@ -2198,9 +2431,16 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   frame. A window that was there before is never taken.
   When eframe recreates a viewport's window (some builder
   changes), or a window moves to the root viewport, its views are made
-  again in the new native window. A test checks this in eframe's real event
-  loop under Xvfb, and another, on a WebKitGTK build, renders a page in a
-  second window's List rows, each row its own record's
+  again in the new native window. Where egui embeds a window's viewport
+  instead (a backend without more native windows), the window is an egui
+  window inside the root window, drawn in the root's coordinates: its views
+  are children of the root's native window at the objects' places there,
+  clipped to the egui window's content, and they hide under whatever egui
+  paints above that window (another embedded window raised over it, menus,
+  pop-ups); the root's own views hide under the embedded window. A test
+  checks the native windows in eframe's real event loop under Xvfb, and
+  another, on a WebKitGTK build, renders a page in a second window's List
+  rows, each row its own record's, with native and with embedded viewports
   (`tests/web_viewer_windows_native.rs`).
 - [Documented] [Claris, Working with web viewers on layouts](https://help.claris.com/en/pro-help/content/web-viewers.html)
   describes pages in Form and List; in Table view only in the header,
@@ -2218,7 +2458,8 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   its current record, whichever row's page called it (FileMaker's choice
   for either is unmeasured). A window shows at most 32 pages at once
   (OpenMaker's bound: each is a native browser view); further viewers show a
-  note. A web viewer stored inside a portal is painted once, over the
+  note, as does a viewer whose page would be more than 32,767 pixels across
+  or down (OpenMaker's bound: X11 sizes and places windows in 16 bits). A web viewer stored inside a portal is painted once, over the
   portal at its own place, as an object of the layout on the layout's
   record, and the portal's rows skip it (`paint_portal_web_viewers`);
   whether FileMaker stores such a viewer as a portal child at all is
@@ -2226,8 +2467,12 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   slide panel, and containers whose hide condition shows them on the
   layout's record. A viewer on a popover inside a portal shows nothing,
   since OpenMaker opens no popover inside a portal; FileMaker shows it,
-  when the popover is open, in the portal's first record's context. Table
-  parts ([#306](https://github.com/OpenMaker-Dev/openmaker/issues/306)) remain unsupported.
+  when the popover is open, in the portal's first record's context. In
+  Table view the parts its Table View Properties include (4.2) show their
+  web viewers, one page each that follows the current record, as a List's
+  header and footer do; the table's own rows show none
+  ([#306](https://github.com/OpenMaker-Dev/openmaker/issues/306)). Pro's
+  page there is unmeasured.
   Synthetic painter tests check each List row's own placement and address
   and the portal viewers' single placements (not under a closed popover or
   an inactive panel), and the registry test that commands reach the current
@@ -2251,8 +2496,8 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   epoch, file, layout and object; one from a destroyed view, a closed
   window or an earlier session is dropped.
 - Not yet: a Windows (WebView2) adapter, views in
-  native Wayland windows,
-  embedded viewports (a backend without native windows), Find mode's "Display content in Find
+  native Wayland windows, pages on cards (a card's own layer counts as
+  covering them: [#1028](https://github.com/OpenMaker-Dev/openmaker/issues/1028)), Find mode's "Display content in Find
   mode", progress bar and status messages, `GetLayoutObjectAttribute`'s
   `source`/`content` of a live page, `fmp:` URLs from pages, Reset clearing
   the history, and layout objects stacked above a viewer (the native view
@@ -2556,8 +2801,9 @@ With no style given, FMUpgradeTool wrote FileMaker's defaults:
 
 The flags were stored as given (`0x10f3080d`, Contact Details' Form-only
 flags). A second patch, a copy of Contact Details' element without
-objects, kept its styles and got `0x14f3080d`; what bit `0x4000000` means
-is [U].
+objects, kept its styles and got `0x14f3080d`. The third-party table of
+4.2 names bit `0x4000000` `customColumnOrder`, a Table View option [O,
+third party]; what it does is [U].
 
 [O] The stored catalogs number layouts without gaps (the six English
 starter solutions: positions 1 to n, ids 1 to n, `04` = n). Layout names

@@ -14,7 +14,7 @@
 //! Locks on shared state are always taken in one order: the file's store,
 //! then its lock table, then its registrations, then the mailboxes.
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use log::{info, warn};
@@ -88,6 +88,10 @@ pub const MAX_QUEUED_BYTES: usize = 0x20_0000;
 pub(crate) const UNAVAILABLE: u32 = 3;
 /// [`UNAVAILABLE`] as a lock reply's status, which is a u16.
 pub(crate) const LOCK_UNAVAILABLE: u16 = 3;
+/// FileMaker error 6, "File is read-only": what a server script's step
+/// that would change a file hosted read-only answers (script-runtime.md
+/// 13.28).
+pub(crate) const FILE_READ_ONLY: u32 = 6;
 
 /// One applied change, to notify other clients of.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -407,15 +411,18 @@ pub(crate) fn get_serial(req: &GetSerial, file: &str, tx: &mut Transaction<'_>) 
 /// ([`crate::engine::SetNextSerial`]): replace a field's next serial value
 /// within a commit, which the engine saves before it counts and takes back
 /// when it cannot, as a record commit. 102 for a table without the field,
-/// which changes nothing; 3 on a file hosted read-only, before anything is
-/// written or a commit begun, so no save is tried and none fails.
+/// which changes nothing; 6, "File is read-only", on a file hosted
+/// read-only, as the script host answers when the file was read-only
+/// before the step (inferred for this step: FileMaker Server's answer is
+/// unmeasured), before anything is written or a commit begun, so no save
+/// is tried and none fails.
 pub(crate) fn set_next_serial(
     op: SetNextSerial,
     file: &str,
     tx: &mut Transaction<'_>,
 ) -> Result<(), u32> {
     if tx.is_read_only() {
-        return Err(UNAVAILABLE);
+        return Err(FILE_READ_ONLY);
     }
     let SetNextSerial {
         table,
@@ -534,8 +541,51 @@ fn serial_value(
 /// does dropping the area, however its session ends.
 pub struct TempArea {
     root: OwnedNode,
-    /// [`memory`] of the nodes below `root`.
+    /// [`memory`] of the nodes below `root`, and the charge of `lost`.
     held: Charge,
+    /// The records whose upload a commit on this connection took and did
+    /// not store (its save failed and was taken back, or the engine gave no
+    /// commit's answer), each with that commit's transaction: a commit of
+    /// the transaction that names one again with nothing staged is refused
+    /// ([`unstorable`]), where it would be answered done with nothing
+    /// stored (#839 of github.com/OpenMaker-Dev/openmaker). An entry goes
+    /// only when the record is staged again (op14, in any transaction);
+    /// when its transaction is given up (op65 for it, or the op65 that
+    /// releases everything); when a commit of its transaction that names
+    /// the record for deletion is saved; and with the area. An op62 forgets
+    /// nothing: refusing too long is the safe side. Each is charged
+    /// [`lost_memory`], at most what its record was, so they are bounded as
+    /// the staged records they replace were.
+    lost: BTreeMap<KeyPath, Lost>,
+}
+
+/// A record whose upload a commit took and did not store ([`TempArea`]).
+#[derive(Debug)]
+struct Lost {
+    /// The transaction of the commit.
+    txn: u32,
+    /// What the entry is charged.
+    charge: usize,
+}
+
+/// What became of the records a commit took ([`TempArea::settle`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Taken {
+    /// The commit stored them.
+    Stored,
+    /// The commit of transaction `txn` did not store them: its save failed
+    /// and was taken back, or the engine gave no commit's answer.
+    Lost { txn: u32 },
+}
+
+/// About the memory an entry of [`TempArea`]'s lost records takes: its key
+/// path and the map's entry.
+fn lost_memory(path: &KeyPath) -> usize {
+    std::mem::size_of::<(KeyPath, Lost)>()
+        + path
+            .iter()
+            .map(|segment| std::mem::size_of::<Vec<u8>>() + segment.capacity())
+            .sum::<usize>()
 }
 
 impl TempArea {
@@ -544,7 +594,93 @@ impl TempArea {
         Self {
             root: OwnedNode::default(),
             held,
+            lost: BTreeMap::new(),
         }
+    }
+
+    /// The records commit `list` names whose upload an earlier commit of
+    /// transaction `txn` on this connection took and did not store, and
+    /// that were not staged again since ([`Taken::Lost`]).
+    pub fn lost_named(&self, list: &OwnedNode, txn: u32) -> BTreeSet<KeyPath> {
+        if self.lost.is_empty() {
+            return BTreeSet::new();
+        }
+        let mut named = BTreeSet::new();
+        for table in &list.children {
+            let Some(records) = table.child(RECORDS) else {
+                continue;
+            };
+            for entry in &records.children {
+                let path = vec![
+                    table.segment.clone(),
+                    RECORDS.to_vec(),
+                    entry.segment.clone(),
+                ];
+                if self.lost.get(&path).is_some_and(|lost| lost.txn == txn) {
+                    named.insert(path);
+                }
+            }
+        }
+        named
+    }
+
+    /// Forget that the upload of the record at `path` was lost, if it was
+    /// lost to a commit of transaction `txn` (`None`: of any): the record is
+    /// staged again (any), or a commit of the transaction deleted it.
+    pub fn forget_lost(&mut self, path: &KeyPath, txn: Option<u32>) {
+        if self
+            .lost
+            .get(path)
+            .is_some_and(|lost| txn.is_none_or(|txn| lost.txn == txn))
+        {
+            if let Some(lost) = self.lost.remove(path) {
+                self.held
+                    .shrink_to(self.held.bytes().saturating_sub(lost.charge));
+            }
+        }
+    }
+
+    /// The records commit `list` names for deletion whose upload an earlier
+    /// commit of transaction `txn` lost: forgotten once the commit is
+    /// saved ([`TempArea::forget_lost`]).
+    pub fn lost_deleted(&self, list: &OwnedNode, txn: u32) -> Vec<KeyPath> {
+        if self.lost.is_empty() {
+            return Vec::new();
+        }
+        let mut deleted = Vec::new();
+        for table in &list.children {
+            let Some(records) = table.child(RECORDS) else {
+                continue;
+            };
+            for entry in &records.children {
+                if entry.push || entry.value.as_deref() != Some(&[COMMIT_DELETED]) {
+                    continue;
+                }
+                let path = vec![
+                    table.segment.clone(),
+                    RECORDS.to_vec(),
+                    entry.segment.clone(),
+                ];
+                if self.lost.get(&path).is_some_and(|lost| lost.txn == txn) {
+                    deleted.push(path);
+                }
+            }
+        }
+        deleted
+    }
+
+    /// Forget the lost uploads of transaction `txn`, or of every
+    /// transaction (`None`): op65 gave the transaction up.
+    pub fn forget_lost_of(&mut self, txn: Option<u32>) {
+        let mut freed = 0;
+        self.lost.retain(|_, lost| {
+            let keep = txn.is_some_and(|txn| lost.txn != txn);
+            if !keep {
+                freed += lost.charge;
+            }
+            keep
+        });
+        self.held.shrink_to(self.held.bytes().saturating_sub(freed));
     }
 
     /// The memory the staged records take, as [`memory`] counts it.
@@ -624,12 +760,23 @@ impl TempArea {
     /// After the commit [`TempArea::lend`] lent to: the records it did not
     /// take (`unused`) go back where they were, and what those it took held
     /// is given back. Those of each list go back together ([`put_back`]).
-    pub fn settle(&mut self, lent: Lent, mut unused: Staged) {
+    /// Those it took are recorded as lost unless it stored them (`taken`):
+    /// called once the commit's outcome is known, its save done or taken
+    /// back, so that each record it lent is either staged again, stored, or
+    /// lost.
+    pub fn settle(&mut self, lent: Lent, mut unused: Staged, taken: Taken) {
         let mut held = self.held.bytes();
         let mut back: BTreeMap<KeyPath, Vec<OwnedNode>> = BTreeMap::new();
         for (mut path, size) in lent.0 {
             let Some(mut record) = unused.remove(&path) else {
                 held = held.saturating_sub(size);
+                if let Taken::Lost { txn } = taken {
+                    let charge = lost_memory(&path).min(size);
+                    held += charge;
+                    if let Some(old) = self.lost.insert(path, Lost { txn, charge }) {
+                        held = held.saturating_sub(old.charge);
+                    }
+                }
                 continue;
             };
             if let Some(segment) = path.pop() {
@@ -806,6 +953,13 @@ pub fn stage_upload(
     if needed > reading.bytes() && !reading.grow(needed - reading.bytes()) {
         return Err(StageError::Full);
     }
+    // A record staged again is no longer one whose upload a failed commit
+    // took.
+    for record in &records {
+        let mut path = dest.clone();
+        path.push(record.segment.clone());
+        area.forget_lost(&path, None);
+    }
     let before = area.held();
     let mut held = before + created;
     let count = records.len();
@@ -837,14 +991,19 @@ pub fn stage_upload(
 /// half-applied as FileMaker Server does, a new record whose id was not
 /// issued or a record already has, so it never replaces one, a staged
 /// record whose modification count is not a count, 5.4) is refused whole
-/// as [`CommitError::Refused`], its staged records left staged. A record it
-/// names with nothing staged for it, or the deletion of one that is not
-/// there, asks for nothing. The commit counts once the engine saved it: when it
-/// cannot be, every record is put back, the records stay locked and the
-/// save's error is returned as [`CommitError::NotSaved`], which fails the
-/// op70. `account` and `access` are the account the session logged in as
-/// and its privilege set then. Returns the reply, with the staged records
-/// the commit did not take, and the changes applied.
+/// as [`CommitError::Refused`], its staged records left staged. So is a
+/// commit naming a record whose upload an earlier commit of its
+/// transaction took and could not save, or a new record with nothing
+/// uploaded ([`unstorable`]); a record named in the edit form with nothing
+/// staged otherwise asks for nothing, as the deletion of one that is not
+/// there does. The commit counts once the engine saved it:
+/// when it cannot be, every record is put back, the records stay locked
+/// and the save's error is returned as [`CommitError::NotSaved`], which
+/// fails the op70; the uploads it took are then lost, and the connection
+/// records them as such ([`TempArea::settle`]). `account` and `access` are
+/// the account the session logged in as and its privilege set then.
+/// Returns the reply, with the staged records the commit did not take, and
+/// the changes applied.
 pub(crate) fn commit(
     op: CommitRecords,
     file: &str,
@@ -858,6 +1017,7 @@ pub(crate) fn commit(
         access,
         list,
         mut staged,
+        lost,
         withheld,
     } = op;
     // A file found read-only here, under the write lock (it can become so
@@ -897,7 +1057,7 @@ pub(crate) fn commit(
             Vec::new(),
         );
     }
-    if let Some(why) = unstorable(user, locks, &staged, &list, tx) {
+    if let Some(why) = unstorable(user, locks, &staged, &lost, &list, tx) {
         let refused = CommitError::Refused(format!(
             "commit refused: {why}; nothing was written, and the staged records stay staged"
         ));
@@ -1039,18 +1199,28 @@ fn refused_action(
 
 /// Why commit `list` cannot store every record it names, checked before
 /// [`commit_list`] writes any: the first entry it would have to leave out
-/// (see [`commit`]). An entry with nothing staged for it, and the deletion
-/// of a record that is not there, ask for nothing and pass. Only an entry
-/// marked new (`01`) creates a record, and only one whose id was issued and
-/// is free; an entry in the edit form for a record the file does not hold
-/// is refused, whatever its id (#840 of github.com/OpenMaker-Dev/openmaker:
-/// OpenMaker's choice until FileMaker Server is measured, write-path.md
-/// 3.4). It never brings back a record another session deleted, nor plants
-/// a record under an id an honest client's later new record would get.
+/// (see [`commit`]). The deletion of a record that is not there asks for
+/// nothing and passes. An entry other than a deletion with nothing staged
+/// for it is refused when its upload was taken by an earlier commit of the
+/// same transaction whose save failed (`lost`, [`TempArea::settle`]):
+/// answered done, the same commit sent again would say stored what is not
+/// (#839 of github.com/OpenMaker-Dev/openmaker); and when it is marked new,
+/// asking for a record nothing makes. An entry in the edit form with
+/// nothing staged otherwise asks for nothing and passes, as before: what
+/// FileMaker Server answers such an entry, and what FileMaker Pro sends
+/// when it leaves a record it locked unchanged, are unmeasured
+/// (docs/server-storage.md 5). Only an entry marked new (`01`) creates a
+/// record, and only one whose id was issued and is free; an entry in the
+/// edit form for a record the file does not hold is refused, whatever its
+/// id (#840 of github.com/OpenMaker-Dev/openmaker: OpenMaker's choice until
+/// FileMaker Server is measured, write-path.md 3.4). It never brings back a
+/// record another session deleted, nor plants a record under an id an
+/// honest client's later new record would get.
 fn unstorable(
     user: LockUser,
     locks: &mut Locks<'_>,
     staged: &Staged,
+    lost: &BTreeSet<KeyPath>,
     list: &OwnedNode,
     tx: &mut Transaction<'_>,
 ) -> Option<String> {
@@ -1073,6 +1243,37 @@ fn unstorable(
                 continue;
             }
             let Some(record) = staged.get(&path) else {
+                // Nothing staged asks for nothing, as on main before #839 of
+                // github.com/OpenMaker-Dev/openmaker, but for two entries:
+                // one whose upload an earlier commit of this transaction
+                // took and could not save, which answered done would say
+                // stored what is not, and one marked new, which asks for a
+                // record that nothing makes, so that done cannot be true
+                // (OpenMaker's choice; FileMaker Server unmeasured).
+                if lost.contains(&path) {
+                    return Some(match id {
+                        Some(id) => format!(
+                            "record {id}'s upload was taken by an earlier commit of this session \
+                             whose save failed; it must be uploaded again"
+                        ),
+                        None => format!(
+                            "{path:02x?}'s upload was taken by an earlier commit of this session \
+                             whose save failed; it must be uploaded again"
+                        ),
+                    });
+                }
+                if !entry.push && value == Some(&[COMMIT_NEW]) {
+                    return Some(match id {
+                        Some(id) => format!(
+                            "new record {id} was named with no upload; a commit creates a record \
+                             only from its upload"
+                        ),
+                        None => format!(
+                            "{path:02x?} was named as a new record with no upload; a commit \
+                             creates a record only from its upload"
+                        ),
+                    });
+                }
                 continue;
             };
             let Some(id) = id else {
@@ -1155,7 +1356,7 @@ fn commit_list(
                     continue;
                 }
                 let Some(mut record) = staged.remove(&path) else {
-                    warn!("{file:?}: commit of record {id} that was never uploaded");
+                    warn!("{file:?}: commit of record {id} skipped: nothing is staged for it");
                     continue;
                 };
                 if !modcount::counted(&record) {
@@ -1732,12 +1933,25 @@ mod tests {
         let before = area.root.clone();
         let (staged, lent) = area.lend(&list);
         assert_eq!(staged.len(), 1);
-        area.settle(lent, staged);
+        area.settle(lent, staged, Taken::Stored);
         assert_eq!((&area.root, area.held()), (&before, held));
         // Committing it leaves the destination's own nodes.
         let (_, lent) = area.lend(&list);
-        area.settle(lent, Staged::new());
+        area.settle(lent, Staged::new(), Taken::Stored);
         assert_eq!(area.held(), parents);
+        // A commit that took it and did not store it keeps it as lost, for
+        // its transaction alone, charged no more than the record was, until
+        // the transaction's locks are released.
+        stage_upload(&mut area, &dest, &upload(1, b"abc"), &mut reserve(1 << 20)).unwrap();
+        let staged = area.held();
+        let (_, lent) = area.lend(&list);
+        area.settle(lent, Staged::new(), Taken::Lost { txn: 7 });
+        assert!(area.held() > parents && area.held() < staged);
+        assert_eq!(area.lost_named(&list, 7).len(), 1);
+        assert!(area.lost_named(&list, 8).is_empty());
+        area.forget_lost_of(Some(7));
+        assert_eq!(area.held(), parents);
+        assert!(area.lost_named(&list, 7).is_empty());
         drop(area);
         assert_eq!(budget.in_use(), 0);
     }
@@ -1893,7 +2107,7 @@ mod tests {
                             .collect()
                     };
                     settle_each(&mut each, each_lent, unused(each_staged));
-                    once.settle(once_lent, unused(once_staged));
+                    once.settle(once_lent, unused(once_staged), Taken::Stored);
                     assert_eq!(once.root, each.root, "{at}");
                     assert_eq!(once.held(), each.held(), "{at}");
                 }

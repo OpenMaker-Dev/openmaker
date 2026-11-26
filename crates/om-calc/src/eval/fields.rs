@@ -136,6 +136,16 @@ impl Solver<'_> {
         let Some(info) = self.info(t) else {
             return Ok(Value::invalid());
         };
+        // A same-file global's value does not depend on a related record,
+        // even when the two table occurrences have no relationship.
+        if matches!(info.storage, Storage::Global)
+            && self.context.occurrence.is_some_and(|from| {
+                self.host.table_file(from) == self.host.table_file(t.occurrence)
+            })
+        {
+            let record = self.context.record.ok_or_else(no_record)?;
+            return self.read_record(&info, t, record);
+        }
         let record = match self.place(t.occurrence)? {
             Place::Context(r) | Place::Portal(r) => r,
             Place::Related { occurrence, record } => {

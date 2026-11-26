@@ -215,6 +215,14 @@ key, not its big-endian reading (docs/scripting.md open item).
 
   A local FileMaker Pro 26.1.1 check on disposable files measured a source
   whose only path is a global variable ([#988](https://github.com/OpenMaker-Dev/openmaker/issues/988#issuecomment-7183655010)).
+  A follow-up in FileMaker Pro 26.1.1 kept the peer closed with no alerts
+  during scripted Go to Layout from a local Home layout to a local layout
+  with a related field and back. Both steps returned 0. The field could
+  be visible or hidden, and the window on-screen or off-screen. A manual
+  switch to the visible field raised the missing-file alert and locate
+  dialog. Skipping resolution and delaying it until the next read were
+  not distinguished.
+  [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/988)
   Opening on a layout that reads only local fields showed no alert even
   with the variable unset. Switching to a layout that read the source
   then showed a Not Found alert naming the variable and a file chooser
