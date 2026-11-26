@@ -469,7 +469,7 @@ const QUIT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 pub(crate) const DELETE_RECORD_MESSAGE: &str = "Permanently delete this ENTIRE record?";
 
 /// Something the user asked for during a frame.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Action {
     /// List the files of the host at this address and port (Home's host
     /// pages).
@@ -6480,7 +6480,7 @@ impl OpenMakerApp {
             self.w.id,
             (layout, revision),
             (name, occurrence),
-            (def.flags, def.menu_set_key),
+            def,
             in_menus,
         ));
     }

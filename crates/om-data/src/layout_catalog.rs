@@ -137,12 +137,16 @@ pub enum Refusal {
     /// The request is not one this module makes, or the catalog lacks
     /// what the layout must be added to.
     Unsupported(String),
+    /// A value out of range, such as a negative page margin.
+    Invalid(String),
 }
 
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Refusal::Name(reason) | Refusal::Unsupported(reason) => f.write_str(reason),
+            Refusal::Name(reason) | Refusal::Unsupported(reason) | Refusal::Invalid(reason) => {
+                f.write_str(reason)
+            }
         }
     }
 }
@@ -1059,11 +1063,23 @@ pub mod general {
     pub const ALL: u64 = 0x10 | 0x20 | 0x1 | 0x1000_0000 | 0x8000;
 }
 
+/// Layout Setup's Printing options that OpenMaker sets, as bits of a
+/// layout's flags `f1` (layout-model.md 4.2).
+pub mod printing {
+    /// "Use fixed page margins": the layout prints within its stored
+    /// `customMargins` [O: FileMaker Pro 26.0.3 set it in the member's and
+    /// the index entry's flags, #609].
+    pub const FIXED_PAGE_MARGINS: u64 = om_layout::paper::FIXED_PAGE_MARGINS;
+    pub const ALL: u64 = FIXED_PAGE_MARGINS;
+    /// "Print in N columns", which OpenMaker's Layout Setup does not set.
+    pub const COLUMNS: u64 = 0x400;
+}
+
 /// Layout Setup's name and view flags for layout `layout`, set on the
 /// layout shown at revision `expected` (its member's
 /// `om_protocol::authoring::layout_revision`), as the window asks for it
 /// ([`crate::DataProvider::set_layout_setup`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LayoutSetupChange {
     pub layout: u32,
     pub expected: crate::layout_placement::Revision,
@@ -1071,6 +1087,79 @@ pub struct LayoutSetupChange {
     pub flags: u64,
     /// Left out of the layout menus.
     pub hidden: bool,
+    /// The Printing tab's fixed page margins, when they changed: set
+    /// before the flags, as their own edit
+    /// (`layout_placement::plan_margins`).
+    pub margins: Option<om_layout::Rect>,
+}
+
+/// [`plan_setup`], and with `margins` the layout's fixed page margins
+/// (`LayoutDef.customMargins`) in the same member, as
+/// `layout_placement::plan_margins` sets them: one commit, so a refused
+/// setup changes no margins. A layout printing in columns
+/// ([`printing::COLUMNS`]) keeps its margins: FileMaker Pro recomputes the
+/// columns' width from them when it saves Layout Setup (layout-model.md
+/// 4.2), which OpenMaker does not.
+pub fn plan_setup_with_margins(
+    catalog: &OwnedNode,
+    layout: u64,
+    (name, flags, hidden): (&str, u64, bool),
+    margins: Option<&om_layout::Rect>,
+) -> Result<SetUp, Refusal> {
+    let mut set = plan_setup(catalog, layout, name, flags, hidden)?;
+    let Some(margins) = margins else {
+        // "Use fixed page margins" on a layout that stores no margins would
+        // print within the printer's (`om_layout::paper`): the margins come
+        // with it, unless the definition holds readable ones. The flags it
+        // had are [`plan_setup`]'s, the member's or else the entry's.
+        let turned_on = flags & printing::FIXED_PAGE_MARGINS != 0
+            && stored_flags(catalog, layout)
+                .is_none_or(|stored| stored & printing::FIXED_PAGE_MARGINS == 0);
+        let margins_stored = crate::layout_placement::definition(&set.member)
+            .is_ok_and(|def| def.custom_margins.is_some());
+        if turned_on && !margins_stored {
+            return Err(Refusal::Invalid(
+                "This layout stores no fixed page margins: give them with \"Use fixed page \
+                 margins\"."
+                    .into(),
+            ));
+        }
+        return Ok(set);
+    };
+    if crate::layout_placement::already_margins(&set.member, margins) {
+        return Ok(set);
+    }
+    if flags & printing::COLUMNS != 0 {
+        return Err(Refusal::Unsupported(
+            "This layout prints in columns, whose width FileMaker Pro works out from the page \
+             margins; OpenMaker keeps its margins as they are."
+                .into(),
+        ));
+    }
+    let planned = crate::layout_placement::plan_margins(&set.member, margins).map_err(
+        |refusal| match refusal {
+            crate::layout_placement::Refusal::Invalid(why) => Refusal::Invalid(why),
+            crate::layout_placement::Refusal::Unsupported(why) => Refusal::Unsupported(why),
+        },
+    )?;
+    set.member = planned.member;
+    set.changes.extend(planned.changes);
+    set.changed = true;
+    Ok(set)
+}
+
+/// The view flags `f1` layout `layout` has: its member's, else its index
+/// entry's, as FileMaker keeps both ([`plan_setup`]).
+fn stored_flags(catalog: &OwnedNode, layout: u64) -> Option<u64> {
+    let key = uint_segment(layout);
+    let word = |path: &[&[u8]]| {
+        catalog
+            .at(path)
+            .and_then(|n| n.value.as_deref())
+            .and_then(be_uint)
+    };
+    word(&[&[MEMBERS], &key, &[VIEW_FLAGS]])
+        .or_else(|| word(&[&[INDEX], &[ENTRIES], &key, &[VIEW_FLAGS]]))
 }
 
 /// A layout's member and index after Layout Setup ([`plan_setup`]).
@@ -1089,9 +1178,10 @@ pub struct SetUp {
 /// `name` in the member `10`, its entry `[4, 1, 07, L, 10]` and the name
 /// list (re-keyed), `flags` in the member's and the entry's `f1`, and
 /// `hidden` ("Include in layout menus" cleared) as [`MENU_HIDDEN`] in their
-/// `f0` (layout-model.md 10.11). Only the view bits ([`views::ALL`]) and the
-/// General options' ([`general::ALL`]) may differ from the stored flags; at
-/// least one view stays available, and the default view is one of them.
+/// `f0` (layout-model.md 10.11). Only the view bits ([`views::ALL`]), the
+/// General options' ([`general::ALL`]) and "Use fixed page margins"
+/// ([`printing::ALL`]) may differ from the stored flags; at least one view
+/// stays available, and the default view is one of them.
 pub fn plan_setup(
     catalog: &OwnedNode,
     layout: u64,
@@ -1126,13 +1216,22 @@ pub fn plan_setup(
                 .into(),
         ));
     }
-    let stored = word(member, VIEW_FLAGS)
-        .or_else(|| word(&entry, VIEW_FLAGS))
+    let stored = stored_flags(catalog, layout)
         .ok_or_else(|| unsupported(format!("Layout {layout} has no readable view flags.")))?;
-    if (stored ^ flags) & !(views::ALL | general::ALL) != 0 {
+    if (stored ^ flags) & !(views::ALL | general::ALL | printing::ALL) != 0 {
         return Err(unsupported(
-            "OpenMaker's Layout Setup changes a layout's name, views and General options; \
-             its other settings are kept as stored."
+            "OpenMaker's Layout Setup changes a layout's name, views, General options and \
+             fixed page margins; its other settings are kept as stored."
+                .into(),
+        ));
+    }
+    // Which margins a layout prints within sets its columns' width, which
+    // FileMaker Pro works out again when it saves Layout Setup
+    // (layout-model.md 4.2) and OpenMaker does not.
+    if (stored ^ flags) & printing::FIXED_PAGE_MARGINS != 0 && flags & printing::COLUMNS != 0 {
+        return Err(unsupported(
+            "This layout prints in columns, whose width FileMaker Pro works out from the page \
+             margins; OpenMaker keeps whether it uses fixed page margins as it is."
                 .into(),
         ));
     }
@@ -1474,6 +1573,87 @@ mod tests {
         assert!(plan_delete(&alone, 3).is_err());
     }
 
+    /// Layout Setup with fixed page margins (operation 23) plans both in one
+    /// member: a refused setup (an empty name) changes no margins, margins
+    /// held already change nothing, and a layout printing in columns keeps
+    /// its margins.
+    #[test]
+    fn layout_setup_plans_its_margins_with_the_setup() {
+        let flags_at = |flags: u64| {
+            let mut catalog = contacts();
+            catalog.put(
+                &[&[MEMBERS], &[3], &[VIEW_FLAGS]],
+                OwnedNode::leaf(Vec::new(), flags.to_be_bytes().to_vec()),
+            );
+            catalog
+        };
+        let catalog = flags_at(0x10f3_080d);
+        let margins = om_layout::Rect {
+            top: 50.0,
+            left: 70.0,
+            bottom: 60.0,
+            right: 80.0,
+            ..Default::default()
+        };
+        let fixed = 0x10f3_084d;
+        let plan = |catalog: &OwnedNode, name: &str, flags: u64| {
+            plan_setup_with_margins(catalog, 3, (name, flags, false), Some(&margins))
+        };
+        let set = plan(&catalog, "Contact Details", fixed).unwrap();
+        assert!(set.changed);
+        assert!(crate::layout_placement::already_margins(
+            &set.member,
+            &margins
+        ));
+        assert!(plan(&catalog, "", fixed).is_err());
+        let mut stored = catalog.clone();
+        stored.put(&[&[MEMBERS], &[3]], set.member.clone());
+        stored.put(&[&[INDEX]], set.index.clone());
+        assert!(!plan(&stored, "Contact Details", fixed).unwrap().changed);
+        let columns = 0x10f3_0c4d;
+        assert!(matches!(
+            plan(&flags_at(columns), "Contact Details", columns),
+            Err(Refusal::Unsupported(_))
+        ));
+        // Nor does such a layout's "Use fixed page margins" change, which
+        // would change the margins its columns' width was worked out from.
+        let only_box = |catalog: &OwnedNode, flags: u64| {
+            plan_setup_with_margins(catalog, 3, ("Contact Details", flags, false), None)
+        };
+        assert!(only_box(&flags_at(0x10f3_0c0d), columns).is_err());
+        // The box alone on a layout storing no margins is refused: it would
+        // print within the printer's. On one storing them it is set.
+        assert!(only_box(&catalog, fixed).unwrap().changed);
+        let mut bare = catalog.clone();
+        let mut def = Vec::new();
+        om_layout::encode::double(8, 1024.0, &mut def);
+        bare.put(
+            &[&[MEMBERS], &[3], &[DEFINITION]],
+            OwnedNode::leaf(Vec::new(), def),
+        );
+        assert!(matches!(only_box(&bare, fixed), Err(Refusal::Invalid(_))));
+        assert!(plan(&bare, "Contact Details", fixed).unwrap().changed);
+        // The same with the flags it had only in its index entry, which
+        // Layout Setup reads when the member has none.
+        let mut entry_only = bare.clone();
+        entry_only.remove(&[&[MEMBERS], &[3], &[VIEW_FLAGS]]);
+        entry_only.put(
+            &[&[INDEX], &[ENTRIES], &[3], &[VIEW_FLAGS]],
+            OwnedNode::leaf(Vec::new(), 0x10f3_080d_u64.to_be_bytes().to_vec()),
+        );
+        assert!(matches!(
+            only_box(&entry_only, fixed),
+            Err(Refusal::Invalid(_))
+        ));
+        // And with a definition that does not read: no margins are known.
+        let mut unread = catalog.clone();
+        unread.put(
+            &[&[MEMBERS], &[3], &[DEFINITION]],
+            OwnedNode::leaf(Vec::new(), vec![0x0a, 0xff]),
+        );
+        assert!(matches!(only_box(&unread, fixed), Err(Refusal::Invalid(_))));
+    }
+
     /// Layout Setup renames Contact Details in its member, entry and name
     /// list, and sets its views in both `f1`s; other options, and a view
     /// set leaving no view or an unavailable default, are refused.
@@ -1537,8 +1717,10 @@ mod tests {
         );
         assert!(plan_setup(&damaged, 3, "Contact List", 0x10f3_080d, false).is_err());
         // "Save record changes automatically" off (`0x10`), a General
-        // option, is set in the member and the entry; `0x40`, no option
-        // Layout Setup sets, is refused.
+        // option, is set in the member and the entry, and so is `0x40`, "Use
+        // fixed page margins", as FileMaker Pro set it (#609); `0x400`,
+        // "Print in 2 columns", which OpenMaker's Layout Setup does not
+        // set, is refused.
         let saved_off = plan_setup(&catalog, 3, "Contact Details", 0x10f3_081d, false).unwrap();
         let word = |node: &OwnedNode| node.child(&[VIEW_FLAGS]).and_then(|n| n.value.clone());
         let flags = Some(0x10f3_081d_u64.to_be_bytes().to_vec());
@@ -1550,8 +1732,18 @@ mod tests {
                 .and_then(word),
             flags
         );
+        let fixed = plan_setup(&catalog, 3, "Contact Details", 0x10f3_084d, false).unwrap();
+        let flags = Some(0x10f3_084d_u64.to_be_bytes().to_vec());
+        assert_eq!(word(&fixed.member), flags);
+        assert_eq!(
+            fixed
+                .index
+                .at(&[&[ENTRIES], &uint_segment(3)])
+                .and_then(word),
+            flags
+        );
         for flags in [
-            0x10f3_084d,                        // not a Layout Setup bit
+            0x10f3_0c0d,                        // not a Layout Setup bit OpenMaker sets
             0x10f3_080f,                        // no view
             0x10f3_080d | views::DEFAULT_TABLE, // default not available
         ] {
