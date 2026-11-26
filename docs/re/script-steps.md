@@ -1027,7 +1027,19 @@ the others belong to the platform that saved them and are kept as stored.
 | `Comm` in `87` (29 bytes) | u8 orientation (0 portrait, 2 landscape), f32 scale (1.0 = 100%), f32 x 4 paper rectangle in points relative to the printable origin (left, top, right, bottom: A4 = -8.5, -8.5, 586.77, 833.36), f32 x 2 printable width and height [O 7 steps against XML `PageSetup`: `Orientation`, `scale`, `size` = paper height and width in 1/100 inch]. The rectangle stays the upright sheet in every orientation and scale, while the printable size is in the page's own orientation and divided by the scale: US Letter on -18, -18, 594, 774 stores 576 x 734 portrait, 734 x 576 landscape, 1223.33 x 960 landscape at 60%, and 1835 x 1440 at 40% [O: the `Comm` chunks of seven Print Setup steps FileMaker Pro 26 for macOS saved, [#817](https://github.com/OpenMaker-Dev/openmaker/issues/817)] |
 | `Comm` in `88` (11 bytes) | u16 page numbering offset (0; 0x13 for "number pages from 20"), u16 from page, u16 to page (`ffff` or 9999 = all), u16 copies, u8 1 = all pages, u16 1 [O 11 steps against XML `Print/Pages All from to offset`, `Copies value`; collate not located] |
 | `PrNm` | printer name, UTF-32 text with a header [Low] |
-| `M_PM`, `M_PD`, `MMod` | macOS print records (PMPageFormat / PMPrintSettings XML property lists) [O tags] |
+| `M_PM`, `M_PD` | macOS print records (PMPageFormat / PMPrintSettings XML property lists) [O tags] |
+| `MMod` | a byte-for-byte copy of the value's `Comm`: twice after `M_PM` in `87`, once in `88` [O: every page setup and print settings FileMaker Pro 26 for macOS saved in a file, file-format.md 3.8]. Pro does not use it to choose between `Comm` and `M_PM` (file-format.md 3.8) |
+
+Which record FileMaker Pro reads when `Comm` and the macOS record
+disagree, and what it does with a value that holds only `Comm`, was
+measured on a file's own page setup: file-format.md 3.8. There, "Any
+Printer" stores A4 as the sheet -18, -18, 577, 824 around 559 x 783, and
+A4 landscape at 50% as 1566 x 1118 on the same sheet [O]. FileMaker Pro
+26.1.1 labels Print Setup's Restore "Specify page setup". The OK of the
+sheet it opens changes only the step. Running the step with Restore and
+without the dialog leaves the file's page setup as it was, while the OK
+of its dialog without Restore saves it in the file, as File > Page Setup
+does [O: file-format.md 3.8, run S].
 
 Print's stored records-to-print choice is `mStepValue` (XML `Print type`,
 14/14): 1 records being browsed, 2 current record, 3 blank record as
