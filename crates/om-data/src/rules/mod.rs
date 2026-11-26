@@ -3113,13 +3113,18 @@ impl RecordPlan {
             })
     }
 
-    // Include editable inputs of a calculated match field for same-value
-    // writes and Relookup callers. Planning has already rejected cycles.
+    // Include inputs of stored calculations for same-value writes and
+    // Relookup. Auto-enter keys require a value change, so their inputs
+    // cannot relookup by writing the current value back.
     fn match_inputs(&self, field: u64) -> BTreeSet<u64> {
         let mut inputs = BTreeSet::from([field]);
         let mut pending = vec![field];
         while let Some(id) = pending.pop() {
-            for dependency in self.fields[&id].dependencies() {
+            let field = &self.fields[&id];
+            if !field.stored_calculation() {
+                continue;
+            }
+            for dependency in field.dependencies() {
                 if inputs.insert(*dependency) {
                     pending.push(*dependency);
                 }
@@ -9068,6 +9073,12 @@ mod tests {
         let keep = plan_for("Field1", 0x8);
         let kept = write(&keep, WriteMode::Update, &existing, Some("B"));
         assert_eq!(kept, BTreeMap::from([(1, Some("B".into()))]));
+        for plan in [&replace, &keep] {
+            assert_eq!(
+                plan.relookup_target("Field1").unwrap_err().code,
+                Some(error::UNAVAILABLE)
+            );
+        }
     }
 
     #[test]

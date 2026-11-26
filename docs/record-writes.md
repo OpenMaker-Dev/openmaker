@@ -1786,7 +1786,10 @@ How OpenMaker performs it:
   final key. An input edit that retains the key under "Do not replace
   existing value" also retains the prior looked-up value. FileMaker Pro
   exposes those changes at New Record and Set Field, and OpenMaker uses
-  the commit-time lookup path.
+  the commit-time lookup path. A same-value write to the input of an
+  auto-entered key does not rerun its lookup. OpenMaker refuses Relookup
+  Field Contents through that input with error 3. FileMaker has not been
+  measured for these two cases.
   [Native measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1036#issuecomment-7185794524).
 - A write that sets the lookup field itself keeps that value. Which came
   last is not known; this is OpenMaker's choice.
