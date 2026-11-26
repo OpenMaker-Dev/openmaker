@@ -16,7 +16,7 @@
 //! never changes. A request the rule refuses is answered `BAD_PARAM`, as a
 //! Perform naming an unknown connection always was.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
@@ -38,8 +38,8 @@ pub(crate) const READS: [u8; 2] = [Opcode::DownloadWithLock as u8, Opcode::Downl
 /// network-protocol.md 2), one of them the session's own.
 pub(crate) const MAX_JOINED: usize = 9;
 
-/// How often each kind of refused join is logged; the others are counted
-/// into the next line, so that a guesser cannot fill the disk.
+/// How often a refused join is logged; the others are counted into the
+/// next line, so that a guesser cannot fill the disk.
 const REFUSAL_LOG_INTERVAL: Duration = Duration::from_secs(10);
 
 /// A SHA-256 of the DER of a client certificate.
@@ -171,7 +171,9 @@ impl Drop for Seat {
 #[derive(Default)]
 pub(crate) struct Joins {
     grants: Mutex<HashMap<u32, Arc<Grant>>>,
-    refusals: Mutex<HashMap<&'static str, (Instant, u64)>>,
+    /// When a refused join was last logged, and the refusals of each kind
+    /// left out since.
+    refusals: Mutex<(Option<Instant>, BTreeMap<&'static str, u64>)>,
 }
 
 impl Joins {
@@ -233,26 +235,29 @@ impl Joins {
         }
     }
 
-    /// Log one refused join: at most one line of each kind every
-    /// [`REFUSAL_LOG_INTERVAL`], with how many were left out since.
+    /// Log one refused join: at most one line every
+    /// [`REFUSAL_LOG_INTERVAL`] whatever the refusal, with how many of each
+    /// kind were left out since. One interval for every kind, so that the
+    /// time a refusal takes, logged or not, tells nothing of which
+    /// condition failed, and so of whether a session has the id.
     pub fn refused(&self, peer: &str, id: u32, opcode: u8, refusal: Refusal) {
-        let kind = refusal.kind();
         let mut log = self.refusals.lock().unwrap_or_else(PoisonError::into_inner);
-        let now = Instant::now();
-        let entry = log
-            .entry(kind)
-            .or_insert((now - REFUSAL_LOG_INTERVAL * 2, 0));
-        if now.duration_since(entry.0) < REFUSAL_LOG_INTERVAL {
-            entry.1 += 1;
+        let (last, left_out) = &mut *log;
+        if last.is_some_and(|last| last.elapsed() < REFUSAL_LOG_INTERVAL) {
+            *left_out.entry(refusal.kind()).or_default() += 1;
             return;
         }
-        let left_out = std::mem::take(&mut entry.1);
-        entry.0 = now;
+        *last = Some(Instant::now());
+        let left_out = std::mem::take(left_out);
         drop(log);
-        let more = if left_out > 0 {
-            format!(" ({left_out} more refused as {kind} since the last such line)")
-        } else {
+        let more = if left_out.is_empty() {
             String::new()
+        } else {
+            let counts: Vec<String> = left_out
+                .iter()
+                .map(|(kind, n)| format!("{kind} {n}"))
+                .collect();
+            format!(" (refused since the last such line: {})", counts.join(", "))
         };
         info!("{peer}: refused op{opcode} naming session 0x{id:08x}: {refusal}{more}");
     }
