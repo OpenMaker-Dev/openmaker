@@ -1671,15 +1671,21 @@ templates).
   stored order, later ones over earlier ones. Merge variables are
   `<<$name>>` and `<<$$name>>` with an optional `[n]`; the symbols
   `{{CurrentDate}}`, `{{CurrentTime}}`, `{{UserName}}`, `{{PageNumber}}`
-  and `{{RecordNumber}}` show their `Get` selectors (Claris
-  documentation).
+  `{{RecordNumber}}` and `{{AccountName}}` show their `Get` selectors
+  (Claris documentation, “Inserting the date, page number, or other variable”).
   - [O] One hosted solution's layout text is stored as `Today is:
     {{1002}}`, the symbol a number where the name would be.
+  - [O] In a blank local file, FileMaker Pro 26.1.1 stored
+    `{{1032}}` after Insert > Other Symbol > AccountName. Browse and
+    Preview showed the authenticated account
+    ([native check](https://github.com/OpenMaker-Dev/openmaker/issues/598#issuecomment-7184700227)).
   - [I] The number is the selector's engine op, 1000 + its index (9.2,
     slot 13; calc-functions.md 2), so `{{1002}}` is CurrentDate (2). The
     numbers of the other symbols follow from the same table: CurrentTime
-    1029, UserName 1031, PageNumber 1015, RecordNumber 1020 and PageCount
-    1125. None of them has been seen in a file.
+    1029, UserName 1031, AccountName 1032, PageNumber 1015, RecordNumber
+    1020 and PageCount 1125. AccountName reads the authenticated account
+    for the file (calc-functions.md 6.1), independent of the User Name
+    preference.
   - OpenMaker reads these numbers, written as FileMaker writes numbers (no
     sign, no leading zero), as the symbols' names, and PageCount's where
     page symbols are checked. Any other number stays as typed.
