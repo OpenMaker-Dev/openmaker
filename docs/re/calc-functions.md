@@ -1360,6 +1360,17 @@ The last three full runs agreed on everything except:
   System Events placed the window at screen point 166, 150. After 10, 40
   it was at 76, 70.
 - Object bounds use the same origin.
+- [O, FileMaker Pro 26.1.1] With a secondary display above the primary,
+  ScreenWidth and ScreenHeight use the display containing the window.
+  WindowDesktopWidth and WindowDesktopHeight use that display's visible
+  area, excluding its menu bar and Dock where those occupy space.
+  WindowLeft and WindowTop continue to use the primary visible area's
+  upper-left origin. A negative Top moved a window to the upper
+  display and remained negative in the readback. A move back to the
+  primary kept an explicitly requested frame extending beyond its visible
+  edge. The values were read after each step and redraw. Same-step
+  changes and the initial display selection at file open were unmeasured.
+  [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1109#issuecomment-7191868818).
 
 #### O1 Session, window and machine (Contact Details, toolbar shown)
 
@@ -3196,9 +3207,11 @@ Implementation decisions (OpenMaker):
   (script-runtime.md 11).
   `SystemStorageAvailable` is the free space of the volume holding the
   hosted file (`statvfs`).
-- **Desktop window.** The desktop area is the X11 work area
-  (`_NET_WORKAREA` of the current desktop; the whole screen without one),
-  the frame the window system's outer rectangle, and the content area the
+- **Desktop window.** The desktop dimensions are the current display's
+  visible area on macOS, with positions relative to the primary work
+  area. On X11 they use `_NET_WORKAREA` of the current desktop;
+  without a platform work area they use the whole screen. The frame is the
+  window system's outer rectangle and the content area is the
   window's central panel below the status toolbar and layout bar.
   Move/Resize Window moves the frame to the given point of the desktop
   area and makes the outer frame the given size; hiding the toolbar gives
