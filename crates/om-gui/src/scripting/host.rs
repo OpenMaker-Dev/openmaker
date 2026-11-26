@@ -2383,7 +2383,8 @@ impl<'a> WorkerHost<'a> {
                 // commit would store them over what the window changed
                 // (#1104); a field the provider cannot know now keeps its
                 // stored value. The window's own changes come over them.
-                if let Some(pending) = self.pending_own(table, record) {
+                let pending = self.pending_own(table, record);
+                if let Some(pending) = &pending {
                     if !pending.unavailable.is_empty() {
                         values.unavailable_fields = Some(Arc::new(pending.unavailable.clone()));
                     }
@@ -2436,6 +2437,14 @@ impl<'a> WorkerHost<'a> {
                         .map(|(cell, value)| (*cell, value.clone()))
                         .collect();
                     apply_cells(&mut values, table, &typed, &cx);
+                }
+                if let Some(pending) = pending {
+                    let self_values = pending
+                        .proposed_self
+                        .iter()
+                        .filter_map(|cell| Some((*cell, pending.values.get(cell)?.clone())))
+                        .collect();
+                    apply_cells(&mut values, table, &self_values, &cx);
                 }
                 out.push((table.id, record, Arc::new(values)));
             }
