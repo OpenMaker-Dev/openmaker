@@ -327,7 +327,8 @@ impl NativeProvider {
             let table = owner.catalog.table(wire).cloned().ok_or_else(|| {
                 DataError::with_code(3, "The owning table definition is unavailable.")
             })?;
-            let planned = om_data::rules::RecordPlan::from_file_schema(&table, &tree, &file);
+            let planned =
+                om_data::rules::RecordPlan::from_desktop_file_schema(&table, &tree, &file);
             let reads: Vec<u64> = match &planned {
                 Ok(_) => Vec::new(),
                 Err(_) => crate::calc::rule_reads(&file, &table, &tree)

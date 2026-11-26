@@ -69,6 +69,9 @@ const SERIAL_ON_COMMIT: u32 = 0x200;
 /// or modification value, a serial number on creation, a constant, a
 /// calculation, a serial number on commit (schema-path.md 5.9, E40).
 const AUTO_ENTRY_MODES: u32 = 0x20f;
+/// Auto-enter options measured on global Text fields (#987): a constant,
+/// a calculation or a serial generated on creation.
+const GLOBAL_AUTO_ENTRY_MODES: u32 = 0x00e;
 /// "Do not evaluate if all referenced fields are empty" is off.
 const ALWAYS_EVALUATE: u32 = 0x20;
 const GLOBAL: u32 = 0x1_0000;
@@ -1031,6 +1034,10 @@ enum CustomMessage {
 }
 
 impl PlannedField {
+    fn auto_enters_global(&self) -> bool {
+        self.options.options & GLOBAL != 0 && self.options.options & GLOBAL_AUTO_ENTRY_MODES != 0
+    }
+
     /// The field's auto-entered or stored calculation and its validation
     /// calculation.
     fn formulas(&self) -> impl Iterator<Item = &Expression> {
@@ -1790,7 +1797,7 @@ impl RecordPlan {
     /// tables, occurrences or custom functions).
     #[cfg(test)]
     pub fn from_schema(table: &Table, tree: &KeyTree<'_>) -> Result<Self, DataError> {
-        Self::plan(table, tree, None)
+        Self::plan(table, tree, None, false)
     }
 
     /// The rules of `table` from its current definitions in `tree`, within
@@ -1801,13 +1808,24 @@ impl RecordPlan {
         tree: &KeyTree<'_>,
         file: &CalcSchema,
     ) -> Result<Self, DataError> {
-        Self::plan(table, tree, Some(file))
+        Self::plan(table, tree, Some(file), false)
+    }
+
+    /// The desktop's provider handles the session-global side of New
+    /// Record explicitly; the other planner callers only write rows.
+    pub fn from_desktop_file_schema(
+        table: &Table,
+        tree: &KeyTree<'_>,
+        file: &CalcSchema,
+    ) -> Result<Self, DataError> {
+        Self::plan(table, tree, Some(file), true)
     }
 
     fn plan(
         table: &Table,
         tree: &KeyTree<'_>,
         file: Option<&CalcSchema>,
+        global_defaults: bool,
     ) -> Result<Self, DataError> {
         let mut schema = file
             .cloned()
@@ -1871,6 +1889,7 @@ impl RecordPlan {
                         | BOOKKEEPING_OPTIONS
                         | AUTO_ENTRY_OPTIONS
                         | ALWAYS_EVALUATE
+                        | GLOBAL
                         | FURIGANA
                 }
                 _ => INDEX_OPTIONS | BOOKKEEPING_OPTIONS | AUTO_ENTRY_OPTIONS | GLOBAL | FURIGANA,
@@ -1878,7 +1897,15 @@ impl RecordPlan {
             if options.options & !allowed != 0 {
                 return Err(error("unsupported field options."));
             }
-            if global && options.options & AUTO_ENTRY_OPTIONS & !0x100 != 0 {
+            let auto_enters_global = global && options.options & AUTO_ENTRY_OPTIONS & !0x100 != 0;
+            if auto_enters_global
+                && (!global_defaults
+                    || options.options & AUTO_ENTRY_MODES & !GLOBAL_AUTO_ENTRY_MODES != 0
+                    || options.options & GLOBAL_AUTO_ENTRY_MODES == 0
+                    || field.data_type != DataType::Text
+                    || options.max_repetitions != 1
+                    || options.validation_options & !VALIDATE_ALWAYS != 0)
+            {
                 return Err(error("auto-entry into a global field is unsupported."));
             }
             if options.validation_options & !SUPPORTED_VALIDATION != 0 {
@@ -1979,7 +2006,15 @@ impl RecordPlan {
                         "repeating calculated fields are not supported for native writes.",
                     ));
                 }
-                Some(formula_at(FIELD_FORMULA, auto_calculation)?)
+                let formula = formula_at(FIELD_FORMULA, auto_calculation)?;
+                if auto_enters_global
+                    && (!formula.dependencies.is_empty() || !formula.related.is_empty())
+                {
+                    return Err(error(
+                        "auto-entry into a global that reads fields is unsupported.",
+                    ));
+                }
+                Some(formula)
             } else {
                 None
             };
@@ -2431,6 +2466,55 @@ impl RecordPlan {
         self.table
     }
 
+    /// These values belong to the file's globals, outside the new record.
+    pub fn has_global_auto_entry(&self, entry: Entry) -> bool {
+        !entry.skip_auto_enter && self.fields.values().any(PlannedField::auto_enters_global)
+    }
+
+    /// Prepare the constant and calculated defaults, and the serial fields
+    /// for which New Record must take a value. Refuse before reserving a
+    /// record or a serial when the global already has a value (#987).
+    pub fn new_record_globals(
+        &self,
+        entry: Entry,
+        globals: &RecordValues,
+        environment: &RecordEnvironment,
+    ) -> Result<(crate::GlobalChanges, Vec<Serial>), DataError> {
+        let mut values = crate::GlobalChanges::new();
+        let mut serials = Vec::new();
+        if entry.skip_auto_enter {
+            return Ok((values, serials));
+        }
+        let session = environment.session();
+        let mut remaining = session.calculation_budget();
+        let row = BTreeMap::new();
+        for (&id, field) in &self.fields {
+            if !field.auto_enters_global() {
+                continue;
+            }
+            if globals.get(id, 1).is_some_and(|value| !value.is_empty()) {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: auto-entry into a nonempty global is unsupported.",
+                        field.name
+                    ),
+                ));
+            }
+            if let Some(serial) = field.serial {
+                serials.push(serial);
+            } else if let Some(value) = &field.constant {
+                values.insert((id, 1), value.clone());
+            } else if let Some(expression) = &field.expression {
+                let value = self
+                    .evaluate_repetition(id, 1, expression, &row, &session, &mut remaining)
+                    .map_err(RunError::into_error)?;
+                values.insert((id, 1), value);
+            }
+        }
+        Ok((values, serials))
+    }
+
     /// The serial number fields of a new record written by `entry`: each
     /// one, unless the write skips auto-enter. The host reserves a value
     /// for each (op72 advancing the field's next value, write-path.md 3.2)
@@ -2448,6 +2532,7 @@ impl RecordPlan {
         }
         self.fields
             .values()
+            .filter(|field| !field.auto_enters_global())
             .filter_map(|field| field.serial)
             .collect()
     }
@@ -4243,7 +4328,7 @@ impl RecordPlan {
             if preview.is_some_and(|needed| !needed.contains(id)) {
                 continue;
             }
-            if entry.keeps(changes, *id) {
+            if field.auto_enters_global() || entry.keeps(changes, *id) {
                 continue;
             }
             if let Some(variable) = field.options.auto_entry_variable() {
@@ -4321,6 +4406,9 @@ impl RecordPlan {
                 continue;
             }
             let field = &self.fields[id];
+            if field.auto_enters_global() {
+                continue;
+            }
             if let Some(lookup) = &field.lookup {
                 if !self.fires(*id, lookup, mode, &dirty, changes, entry) {
                     continue;

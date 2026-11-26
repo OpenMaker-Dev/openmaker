@@ -706,6 +706,14 @@ pub enum Kind {
     Current,
     /// The tree written whatever the disk holds, from the change number the
     /// next save starts from: a compacted copy (hbam-writer.md 9.3).
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(
+            dead_code,
+            reason = "made by the desktop's Save a Copy as, built on Linux alone so far \
+                      (`local::LocalHost::prepare_copy`), and by tests"
+        )
+    )]
     Compacted,
 }
 
@@ -728,6 +736,14 @@ pub enum Target<'t, 'd> {
                   folder is not offered yet (section 6.10)"
     )]
     Folder(&'t Destination<'d>),
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(
+            dead_code,
+            reason = "made by the desktop's Save a Copy as, built on Linux alone so far \
+                      (`local::LocalHost::prepare_copy`), and by tests"
+        )
+    )]
     File(&'t mut File),
 }
 

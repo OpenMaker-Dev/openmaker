@@ -653,6 +653,27 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 xvfb-run -a cargo test --locked --workspace --no-fail-fast
 ```
 
+A pull request that touches `om-server` also builds it in release, where
+code under `cfg(debug_assertions)` and code only tests use drop out and can
+leave a variable or a variant unused, which the debug-build clippy above
+does not see. Both builds must succeed and print no `warning:` (the gate
+sets no `RUSTFLAGS`, so the output is read instead). In bash, with
+`pipefail` so that a build that fails fails the check even when `tee`
+does not:
+
+```bash
+set -o pipefail
+cargo build --locked --release -p om-server 2>&1 | tee release-build.log &&
+cargo test --locked --release -p om-server --lib --no-run 2>&1 | tee release-test-build.log &&
+! grep -h '^warning' release-build.log release-test-build.log
+```
+
+Only the lib's own tests are built: the integration tests call debug-only
+test hooks and do not build in release. This runs on the gate's machine,
+Linux; a code path built only on another platform is not checked here
+([#865](https://github.com/OpenMaker-Dev/openmaker/issues/865) found two such
+variants, which Linux constructs and macOS and Windows do not).
+
 While iterating, check only what you touched: `cargo test -p <crate>`,
 `cargo test -p <crate> --test <file>` for one integration-test file, or
 `cargo test -p <crate> --lib` to skip examples and integration tests. The

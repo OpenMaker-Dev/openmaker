@@ -1423,7 +1423,19 @@ impl NativeProvider {
         script: bool,
         (context, prepared, layout): (WriteContext, Option<om_data::PreparedId>, Option<u32>),
     ) -> Result<Record, DataError> {
-        self.begin_single_root_proof(table.id, cells.keys().copied().collect(), layout);
+        let mut globals = if plan.has_global_auto_entry(entry) {
+            if self.transaction_kind() != Some(TransactionKind::Record) || prepared.is_some() {
+                return Err(unavailable(
+                    "Auto-entry into a global is supported only for an ordinary new record.",
+                ));
+            }
+            self.leave_single_root_recovery()?;
+            let environment = self.rule_environment(table.id, plan, context.clone())?;
+            self.new_record_defaults(plan, entry, &environment)?
+        } else {
+            self.begin_single_root_proof(table.id, cells.keys().copied().collect(), layout);
+            records::NewGlobals::default()
+        };
         self.retain_creation_input(table.id, &cells, prepared);
         let supplied = cells.keys().copied().collect();
         let txn = self.transaction_id()?;
@@ -1470,6 +1482,7 @@ impl NativeProvider {
             .into_iter()
             .filter(|serial| !serials.contains_key(&serial.field));
         let reserved = self.reserve_serials(table.id, missing)?;
+        globals.reserve(self, table.id)?;
         serials.extend(reserved);
         for (field, value) in &serials {
             cells.entry(*field).or_insert_with(|| Some(value.clone()));
@@ -1509,6 +1522,7 @@ impl NativeProvider {
         let record = held_record(table, record as i64, None, &shown);
         self.bind_created_row(table.id, record.id as u64);
         self.remember_single_root();
+        globals.publish(self, table.id)?;
         Ok(record)
     }
 
@@ -1801,6 +1815,11 @@ impl NativeProvider {
         let txn = self.transaction_id()?;
         let entry = Entry::import(auto_enter);
         let reserve = record.is_none();
+        if reserve && plan.has_global_auto_entry(entry) {
+            return Err(unavailable(
+                "Auto-entry into a global during import is unsupported.",
+            ));
+        }
         let lock = record.is_some_and(|id| {
             u64::try_from(id)
                 .ok()

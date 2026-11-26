@@ -830,7 +830,8 @@ options are stored is in the specs named.
 - **Layout Setup**, General: "Show alerts when field isn't modifiable or
   no records are present", under "Show current record indicator in List
   View" (`IDD_LAYOUT_SETUP.nib`, SHA-256 `c3b0f9d5...`); on by default in new
-  files, off in existing ones (Claris). Storage unknown (layout-model.md 12).
+  files, off in existing ones (Claris). Storage and the measured empty
+  Form click are in layout-model.md 4.2.
 - **Portal Setup:** "Place row for new record at top"
   (`IDD_PORTAL_SETUP.nib`, `8862dd0a...`); layout-model.md 5.3.2.
 - **Inspector**, Data: "Show indicator for clipped contents" in the Edit

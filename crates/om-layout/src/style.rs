@@ -4,6 +4,9 @@
 //! Unsupported property payloads remain in `other`; they are never discarded.
 use crate::wire::{push_varints, Error, Fields, Merged, RawField, RawValue, Result, Value};
 
+/// FileMaker stores object rotation in the local style (layout-model.md 3).
+pub(crate) const ROTATION: i32 = 613;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Color {
     pub red: f32,
@@ -248,6 +251,18 @@ pub struct ObjectStyle {
     pub other: Vec<RawField>,
 }
 impl ObjectStyle {
+    /// Whether the object stores a local styling property. FileMaker also
+    /// stores rotation here for objects that use the theme's style.
+    pub fn has_local_overrides(&self) -> bool {
+        self.local_styles.as_ref().is_some_and(|styles| {
+            styles
+                .components
+                .iter()
+                .flat_map(|component| &component.properties)
+                .any(|property| property.id != ROTATION)
+        })
+    }
+
     pub fn decode(buf: &[u8]) -> Result<Self> {
         let mut out = Self::default();
         let mut local = Merged::default();
@@ -559,6 +574,21 @@ pub fn resolve_style(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn object_rotation_alone_is_not_a_local_style_override() {
+        let mut style = ObjectStyle::decode(&crate::encode::default_style(61)).unwrap();
+        assert!(!style.has_local_overrides());
+
+        style.local_styles.as_mut().unwrap().components[0]
+            .properties
+            .push(Property {
+                id: 64,
+                string: Some("Georgia".into()),
+                ..Default::default()
+            });
+        assert!(style.has_local_overrides());
+    }
 
     #[test]
     fn corner_radii_stored_as_coordinates_resolve_when_circular() {

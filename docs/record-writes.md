@@ -781,6 +781,17 @@ but for a lookup's, which would write into it: a stray `0x80`
 (auto-entry.md) leaves the table writable. A stored calculation's unknown
 bits keep it read-only.
 
+An ordinary new record can fill an empty single-repetition global Text
+field with its constant, a calculation that reads no fields, or its
+creation serial. That value goes to the session immediately. It never
+becomes a cell of the new record. If the global already has a value,
+New Record returns 3 before reserving an ID or serial. Other rows in the
+table can still be edited. The scope excludes import with auto-entry,
+new records from a preview, and explicit script transactions. The desktop
+currently keeps local globals in memory for the session. See the native
+observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
+and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
+
 **An auto-entered or validation formula may read an unstored
 calculation** of its own table ([#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); auto-entry.md, "Formulas over
 an unstored calculation or a summary field"). The calculation is
