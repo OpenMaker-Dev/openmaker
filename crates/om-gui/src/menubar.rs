@@ -840,6 +840,15 @@ fn layout_insert_menu(
     context: &MenuContext<'_>,
     actions: &mut Vec<Action>,
 ) {
+    // A long menu: in a short window it scrolls, as the Scripts menu does.
+    rows.scrolled(&mut |rows| layout_insert_rows(rows, context, actions));
+}
+
+fn layout_insert_rows(
+    rows: &mut dyn MenuRows,
+    context: &MenuContext<'_>,
+    actions: &mut Vec<Action>,
+) {
     let alt_cmd = |key| command(CMD.plus(Modifiers::ALT), key);
     pending(rows, "Field...", None);
     if rows.item("Part...", None, false, context.insert_part) {

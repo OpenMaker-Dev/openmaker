@@ -6869,6 +6869,11 @@ impl OpenMakerApp {
         };
         self.w.mode == Mode::Layout
             && self.design_allowed()
+            // As `apply` refuses it: no connection, edits held for a
+            // reconnect, or a script running.
+            && self.w.connection_lost.is_none()
+            && !self.recovery_holds()
+            && !self.script.busy()
             && session.layout.is_some()
             && geometry.revision.is_some()
             && !self.w.layout_workspace.saving
