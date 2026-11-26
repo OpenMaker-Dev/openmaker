@@ -860,6 +860,16 @@ did not change the answer. The calculation was unindexed (option word
 `0x00080000`). Each step returned 0 without an alert. Other relationship
 shapes, portal creation and hosted writes were not measured here.
 
+A follow-up used a value index on the Number calculation
+(`0x80080000`). Set Field still made Position 1 visible immediately,
+and Commit and reopen kept it. An exact Find for Position `==1`
+returned the new row and the seed with that value. The same result
+held for a plain value-indexed Text key or an indexed Text key with
+replacing `Get ( UUID )` auto-entry. Both related creates kept the
+copied match value. Ordinary New Record in the Child table generated
+a UUID and stored its own position, 3.
+[FileMaker Pro 26.1.1 comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7204904879)
+
 ## Serial numbers
 
 Option `0x2` generates a serial number when the record is created, `0x200`
