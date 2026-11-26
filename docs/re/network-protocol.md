@@ -1122,18 +1122,30 @@ follows it.
 | status | FileMaker name | Open observation |
 |--------|----------------|------------------|
 | `0x4fb3` | `kSpecification` | Not identified in a live Open reply; the older "cannot open" gloss had no evidence. |
-| `0x4fb5` | `kFileNotFound` | Observed for a name absent from the server and for a file in the hosted database folder with Admin API status `CLOSED` ([#939](https://github.com/OpenMaker-Dev/openmaker/issues/939)). |
+| `0x4fb5` | `kFileNotFound` | FileMaker Server returned it for an unhosted name and for a hosted file with Admin API status `CLOSED` ([#914](https://github.com/OpenMaker-Dev/openmaker/issues/914), [#939](https://github.com/OpenMaker-Dev/openmaker/issues/939)). |
 | `0x507c` | `kInstallCodeConflict` | An absent or invalid license key was refused at Open without a message string in the captured reply (F26). |
 | `0x0666` | `kHostBlockNewUsersEnabled` | Block New Users refusal captured in 5.6.4. |
 | `0x0004` | `kUnknownCommand` | No observed Open reply; it is not "file missing". |
 
-In the [#939](https://github.com/OpenMaker-Dev/openmaker/issues/939) relay
-capture, FileMaker Pro 26.1.1 for macOS used File > Hosts > Network File
-Path against FileMaker Server 26.0.3.309 for Ubuntu. For each of the closed
-and absent names it sent Open first with `.fmp12` and then with the bare
-name. All four replies were GIOP OK with status `0x4fb5`. Pro sent no Login
-and displayed Not Found for both names. The experiment did not cover a
-file in the process of opening or closing, or a paused file.
+Two relay captures on 2026-11-26 used FileMaker Pro 26.1.1 for macOS and
+FileMaker Server 26.0.3 for Ubuntu:
+
+- A related file's data source named an unhosted file. Pro sent six
+  pairs of Opens, each first with `.fmp12` and then with the bare name.
+  Every reply was GIOP OK with status `0x4fb5`, and Pro showed no alert
+  ([#914](https://github.com/OpenMaker-Dev/openmaker/issues/914)).
+- File > Hosts > Network File Path requested a hosted file that the
+  Admin API reported as `CLOSED` and an absent name as the control.
+  Pro tried each name with `.fmp12` and then bare. All four replies
+  were GIOP OK with status `0x4fb5`. Pro sent no Login and displayed
+  Not Found for both names ([#939](https://github.com/OpenMaker-Dev/openmaker/issues/939)).
+  FileMaker Server's replies during opening, closing and Pause remain
+  unmeasured.
+
+OpenMaker Server answers `0x4fb5` for unhosted names and still answers
+4 for a hosted file that is closing, closed or opening. The change
+for the measured `CLOSED` case is tracked in
+[#939](https://github.com/OpenMaker-Dev/openmaker/issues/939).
 
 Record/data transactions reuse the LIFO body with the HBAM slot codec:
 `RCUploadDownload::Call` (0x1d27a1c) frames `PushPtr`/`PushLen` + a packed slot
@@ -1307,8 +1319,9 @@ one's session there, related files and the files a script opens alike
 (#1011). A host whose certificate is not trusted gets no
 Login. No empty-password Login is sent [I: OpenMaker's choice, until what
 it stands for is known]. Otherwise:
-- An Open answered 4 ("file missing", above) or 0x4fb5 moves on to the
-  next path.
+- An Open answered 0x4fb5 (`kFileNotFound`, above), or 4, which OpenMaker
+  Server answers for a hosted file it is not serving (and answered for a
+  name it does not host before #914), moves on to the next path.
 - The first file the host has, or a file already open (the opened file
   included), is the data source's file.
 - A host that could not be reached (no connection: host lookup, connect
@@ -1325,8 +1338,8 @@ it stands for is known]. Otherwise:
 
 What is observed:
 - FileMaker Server answered 0x4fb5 (FileMaker's `kFileNotFound`) to the
-  Opens of related files it does not host (#739). OpenMaker Server answers
-  4.
+  Opens of related files it does not host (#739; captured through the
+  relay, 5.5).
 - Claris documents that FileMaker Pro searches a data source's paths in
   their order and uses the first file it finds.
 
