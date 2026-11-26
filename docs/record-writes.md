@@ -1081,7 +1081,9 @@ of another file's table, whichever related file owns the record
 offers that layout's portals and related fields as on a layout of the
 opened file's table (a table of the opened file by its own rules, another
 file's by its owner's), and their edits and a script's writes go to the
-file that owns each record:
+file that owns each record. Their container fields are not offered there:
+Insert into one prepares the window's own record as the opened file's, and
+fails with 3 ([#957](https://github.com/OpenMaker-Dev/openmaker/issues/957)):
 - **The owner writes.** The opened file's Browse edits, a script's Set
   Field into it (one through a relationship that allows creation creates
   the record, its match fields taking the current record's values) and
@@ -1184,7 +1186,12 @@ file that owns each record:
     New Record and Duplicate Record are the exception: they run their
     steps, which run on top of the paused script, so the record (and a
     duplicate's container references) is held in the transaction as a
-    script's is. Whether FileMaker holds them so is #411's question.
+    script's is. So is a save of the user's edits to a related record there
+    (a portal row, a related field), as a portal row's of another file's
+    table on a layout of the opened file's table is: the window commits
+    related records through the script write path, and the record's own
+    edits saved with them go along, where a save of those alone is refused.
+    Whether FileMaker holds them so is #411's question.
 - **The window's commit of a record across files** (#1006; it begins with
   `DataProvider::begin_record_commit`, a script's Open Transaction with
   `begin_transaction`). It is saved file by file, related files first and

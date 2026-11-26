@@ -355,7 +355,9 @@ The layout's related records in other tables, of this file or of a related
 file, are edited in Browse and written by a script (Set Field into a related
 field, a portal row's creation, Delete Portal Row) as on a layout of this
 file's table: each goes to the file that owns it
-([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)).
+([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). Insert into
+such a related record's container fails with 3 there
+([#957](https://github.com/OpenMaker-Dev/openmaker/issues/957)).
 Import Records on such a layout imports into its table through the owning
 file, as that file's own Import Records would, and a new row's record joins
 the window's found set. The layout is none of the owning file's, so an

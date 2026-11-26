@@ -2718,6 +2718,8 @@ fn a_layout_of_another_files_table_offers_its_related_records() {
     const OTHER: &str = "Other.fmp12";
     const REMOTE_NOTES: u64 = 0xd0_0043;
     const OTHER_TASKS: u64 = 0xd0_0044;
+    /// Related's Notes::Picture, a container.
+    const PICTURE: u64 = 3;
     let mut root = fixture::tree(&[], true);
     reference(&mut root, (REMOTE, "Remote Tasks"), 1, "Related");
     reference(&mut root, (REMOTE_NOTES, "Remote Notes"), 1, "Related");
@@ -2743,6 +2745,7 @@ fn a_layout_of_another_files_table_offers_its_related_records() {
     let shown = [
         (REMOTE, NAME),
         (REMOTE_NOTES, fixture::BODY),
+        (REMOTE_NOTES, PICTURE),
         (OTHER_TASKS, NAME),
         (OTHER_TASKS, fixture::DOUBLED),
         (OCCURRENCE, NAME),
@@ -2766,12 +2769,14 @@ fn a_layout_of_another_files_table_offers_its_related_records() {
         &[&[4], &[5], &notes_layout, &[7]],
         OwnedNode::leaf(
             Vec::new(),
-            om_layout::encode::append_to_store(&[], &[1, 2, 3, 4, 5], &objects),
+            om_layout::encode::append_to_store(&[], &[1, 2, 3, 4, 5, 6], &objects),
         ),
     );
+    let mut peer = fixture::tree(&[], true);
+    fixture::add_field(&mut peer, fixture::NOTES, PICTURE, "Picture", 1, 6, 0, 0, 0);
     let files = vec![
         (ROOT, root),
-        (RELATED, fixture::tree(&[], true)),
+        (RELATED, peer),
         (OTHER, fixture::tree(&[], true)),
     ];
     let host = Host::new("layout-related-offer", files);
@@ -2788,11 +2793,13 @@ fn a_layout_of_another_files_table_offers_its_related_records() {
     let related = &capabilities.related;
     // The layout's own record, as before (its later repetitions).
     assert!(related[&REMOTE].contains(&NAME), "{related:?}");
-    // Related's other table, by Related's rules.
+    // Related's other table, by Related's rules; not its container, which
+    // Insert cannot fill on such a layout yet (#957).
     assert!(
         related[&REMOTE_NOTES].contains(&fixture::BODY),
         "{related:?}"
     );
+    assert!(!related[&REMOTE_NOTES].contains(&PICTURE), "{related:?}");
     // A third file's table, by its owner's: not its calculation.
     let other = &related[&OTHER_TASKS];
     assert!(other.contains(&NAME) && other.contains(&COUNT), "{other:?}");
