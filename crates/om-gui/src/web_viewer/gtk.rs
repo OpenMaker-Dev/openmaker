@@ -659,20 +659,25 @@ fn place(x11: &RustConnection, hosted: &mut Hosted, geometry: Geometry, visible:
 }
 
 /// The text of a message a page posted to the bridge's handler, if it can
-/// be a bridge message: a string of ASCII, which is all the bridge posts
-/// (`encodeURIComponent`'s output), no longer than [`MAX_MESSAGE`]. Its
-/// length is read before it is copied out, so one too long is not copied;
-/// one JavaScriptCore cannot convert (an unpaired surrogate) is `None`.
+/// be a bridge message: a string of ASCII without a NUL, which is all the
+/// bridge posts (`encodeURIComponent`'s output), no longer than
+/// [`MAX_MESSAGE`]. Its length is read before it is copied out, so one too
+/// long is not copied; one JavaScriptCore cannot convert (an unpaired
+/// surrogate) is `None`.
 fn bridge_text(value: &javascriptcore::Value) -> Option<String> {
     if !value.is_string() {
         return None;
     }
     let units = utf16_length(value).filter(|&units| units <= MAX_MESSAGE)?;
-    // As bytes: the string's own length, where a C string would stop at
-    // a NUL.
+    // As bytes, the string's whole length, where a C string would stop at
+    // a NUL. Their number first, so that no more than the limit is read;
+    // ASCII has as many bytes as units. A raw NUL is never the bridge's,
+    // which encodes one as `%00`.
     let bytes = value.to_string_as_bytes()?;
-    let text = std::str::from_utf8(&bytes).ok()?;
-    (text.len() == units && text.is_ascii()).then(|| text.to_owned())
+    if bytes.len() != units || !bytes.is_ascii() || bytes.contains(&0) {
+        return None;
+    }
+    std::str::from_utf8(&bytes).ok().map(str::to_owned)
 }
 
 /// A JavaScript string's length in UTF-16 code units, which is at most its
@@ -709,9 +714,10 @@ mod tests {
         let message = "openmaker-perform-script&s=a&p=%C3%A9%00&o=0";
         assert_eq!(text(&format!("'{message}'")).as_deref(), Some(message));
         // An unpaired surrogate, which JavaScriptCore may fail to convert,
-        // other text that is not ASCII, and what is not text.
+        // other text that is not ASCII, a raw NUL, and what is not text.
         assert_eq!(text("'openmaker-perform-script&s=a\\uD800&p=&o=0'"), None);
         assert_eq!(text("'openmaker-perform-script&s=\\u00e9&p=&o=0'"), None);
+        assert_eq!(text("'openmaker-perform-script&s=a&p=b\\u0000c&o=0'"), None);
         assert_eq!(text("42"), None);
         // Longer than a message may be, by its length alone.
         let long = format!("'x'.repeat({})", super::MAX_MESSAGE + 1);
