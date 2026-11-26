@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use om_data::{
     Connection, DataError, DataProvider, Field, FieldKind, GeomRect, HostedFile, LayoutGeometry,
-    LayoutInfo, ObjectGeom, PartGeom, Record, RecordPage, RenderLayout,
+    LayoutInfo, ObjectGeom, PartGeom, PartIdentity, Record, RecordPage, RenderLayout,
 };
 use om_hbam::{serial, Catalog, KeySegment, KeyTree, RidList, SlotReader, Table};
 use om_protocol::{validate_client_license, LoginEnvironment, MachineInfo, NodeState};
@@ -5897,6 +5897,10 @@ impl DataProvider for NativeProvider {
                 .parts
                 .iter()
                 .map(|part| PartGeom {
+                    identity: Some(PartIdentity {
+                        key: part.id,
+                        part_type: part.part_type,
+                    }),
                     kind_name: part_kind(part.kind()).into(),
                     top: part.top,
                     height: part.height,

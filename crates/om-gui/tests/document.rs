@@ -295,6 +295,10 @@ impl DataProvider for DocumentProvider {
                     .parts
                     .iter()
                     .map(|part| om_data::PartGeom {
+                        identity: Some(om_data::PartIdentity {
+                            key: part.id,
+                            part_type: part.part_type,
+                        }),
                         top: part.top,
                         height: part.height,
                         kind_name: format!("{:?}", part.kind()),
