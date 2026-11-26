@@ -1025,10 +1025,15 @@ record's place in what the rules read:
 - **Hosted files** take the same answer, an inference (parity-unverified).
 - **Routed writes:** a portal row of another file's table carries the
   calling window's number to that file.
-- The number is also unavailable for a portal that sorts or filters, the
-  desktop's New Record command, and edits of stored records.
+- The desktop supplies the new position for New Record in an unsorted
+  found set, including when earlier rows are omitted. A stored Number
+  calculation consisting of `Get ( RecordNumber )` uses this answer at
+  creation. Unrelated edits leave its stored value alone
+  ([#1011](https://github.com/OpenMaker-Dev/openmaker/issues/1011)).
+- The number is unavailable for a portal that sorts or filters, new
+  records in a sorted desktop window, and edits of stored records.
 - **Edits that evaluate no such formula are written.** An auto-entered
-  calculation with no field inputs is evaluated only at creation.
+  or stored calculation with no field inputs is evaluated only at creation.
 - **The desktop window gives it in the measured shape only**
   (`begun_record_numbers`, `scripting/host/portals.rs`):
   - one record begun in a creation row, the only record of its table the

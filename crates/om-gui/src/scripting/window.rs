@@ -1402,9 +1402,27 @@ impl Window {
         privilege_set: Option<String>,
     ) -> Result<(), DataError> {
         let session = self.open_new_record(provider);
-        let made =
-            self.make_new_record(provider, session, (values, cells), (privilege_set, None))?;
+        let record_number = self.next_unsorted_record_number(provider);
+        let made = self.make_new_record(
+            provider,
+            session,
+            (values, cells),
+            (privilege_set, record_number),
+        )?;
         self.adopt_new_record(provider, made)
+    }
+
+    /// An unsorted window appends a new record to its current found set.
+    /// Its position is unknown when the provider cannot read that set or
+    /// keeps it sorted.
+    pub(super) fn next_unsorted_record_number(
+        &self,
+        provider: &mut dyn DataProvider,
+    ) -> Option<u64> {
+        let layout = self.state.layout?;
+        let (_, found) = provider.records_with_summary(layout, 0, 0, &[]).ok()?;
+        let found = found.filter(|found| !found.sorted)?;
+        found.found.checked_add(1)
     }
 
     /// Open the record session a new record is held in, as FileMaker Pro

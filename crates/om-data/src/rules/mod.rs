@@ -1962,9 +1962,7 @@ impl RecordPlan {
             } else {
                 None
             };
-            // An auto-entered or validation formula may read related fields
-            // (`related`); a stored calculation over one is unstored.
-            let formula_at = |key: u64, related: bool| -> Result<Expression, DataError> {
+            let formula_at = |key: u64, usage: FormulaUse| -> Result<Expression, DataError> {
                 let formula = field_node.and_then(|node| node.get(key));
                 let context = formula
                     .and_then(|node| node.get(4))
@@ -1974,7 +1972,7 @@ impl RecordPlan {
                     .and_then(|node| node.get(6))
                     .and_then(|n| n.assembled())
                     .ok_or_else(|| error("calculation code is missing."))?;
-                parse_code_with(&code, &context, related).map_err(|e| error(&e))
+                parse_formula(&code, &context, usage).map_err(|e| error(&e))
             };
             let computed = (kind == FieldKind::Calculation && !unstored) || auto_calculation;
             let expression = if computed {
@@ -1990,7 +1988,14 @@ impl RecordPlan {
                         "repeating calculated fields are not supported for native writes.",
                     ));
                 }
-                let formula = formula_at(FIELD_FORMULA, auto_calculation)?;
+                let usage = if auto_calculation {
+                    FormulaUse::Options
+                } else if field.data_type == DataType::Number {
+                    FormulaUse::StoredNumber
+                } else {
+                    FormulaUse::RecordOnly
+                };
+                let formula = formula_at(FIELD_FORMULA, usage)?;
                 if auto_enters_global
                     && (!formula.dependencies.is_empty() || !formula.related.is_empty())
                 {
@@ -2003,7 +2008,7 @@ impl RecordPlan {
                 None
             };
             let validation = if options.validation_options & VALIDATE_BY_CALCULATION != 0 {
-                Some(formula_at(FIELD_VALIDATION, true)?)
+                Some(formula_at(FIELD_VALIDATION, FormulaUse::Options)?)
             } else {
                 None
             };
@@ -2017,7 +2022,7 @@ impl RecordPlan {
                 } else if options.max_repetitions != 1 {
                     Err(format!("Field {} repeats.", field.name))
                 } else {
-                    formula_at(FIELD_FORMULA, false).map_err(|e| e.to_string())
+                    formula_at(FIELD_FORMULA, FormulaUse::RecordOnly).map_err(|e| e.to_string())
                 };
                 unstored_formulas.insert(field.id, readable);
             }
@@ -2115,7 +2120,7 @@ impl RecordPlan {
             } else if options.validation_options & VALIDATE_MESSAGE_CALCULATION != 0 {
                 // A message the rules cannot evaluate leaves the table
                 // writable: only the refusal's wording is at stake.
-                let formula = formula_at(FIELD_MESSAGE_FORMULA, false)
+                let formula = formula_at(FIELD_MESSAGE_FORMULA, FormulaUse::RecordOnly)
                     .ok()
                     .filter(|e| {
                         check_custom_functions(
@@ -6066,18 +6071,22 @@ const DYNAMIC_REFERENCES: &str =
 
 /// Expression operations the record-only host cannot evaluate faithfully.
 /// Apply this to both the formula and every reachable custom-function body.
-/// `option`: an auto-entered or validation formula, which may also read the
+/// `window_reads`: whether the operation can supply a selector from
 /// [`CONTEXT_SELECTORS`]. `design`: a host's recomputation of stored values,
 /// which answers the Design functions as the file's own calculation does
 /// ([`crate::host::FileHost::file_context`]).
-fn unsupported_rule_operation(expr: &Expr, option: bool, design: bool) -> Option<&'static str> {
+fn unsupported_rule_operation(
+    expr: &Expr,
+    window_reads: bool,
+    design: bool,
+) -> Option<&'static str> {
     match expr {
         Expr::PluginCall { function, .. } if design && is_design_function(*function) => None,
         Expr::PluginCall { .. } => Some("plug-in functions are unsupported in record rules."),
         expr if resolves_names_at_run_time(expr) => Some(DYNAMIC_REFERENCES),
         Expr::Get(selector)
             if !(RECORD_RULE_SELECTORS.contains(selector)
-                || option && CONTEXT_SELECTORS.contains(selector)) =>
+                || window_reads && CONTEXT_SELECTORS.contains(selector)) =>
         {
             Some("unsupported Get() selector.")
         }
@@ -6194,14 +6203,14 @@ pub(crate) fn stored_formula_problem(code: &[u8], context: &[u8]) -> Option<Stri
 /// relationships it reads through are ones the rules follow is the plan's
 /// to say (`related_hop`).
 pub(crate) fn option_formula_problem(code: &[u8], context: &[u8]) -> Option<String> {
-    parse_code_with(code, context, true).err()
+    parse_formula(code, context, FormulaUse::Options).err()
 }
 
 /// [`option_formula_problem`] for a calculated custom message, which the
 /// rules evaluate over the record alone ([`CustomMessage::Calculation`]):
 /// no related field, and no answer only the write's context gives.
 pub(crate) fn message_formula_problem(code: &[u8], context: &[u8]) -> Option<String> {
-    parse_code_with(code, context, false).err()
+    parse_code(code, context).err()
 }
 
 /// The occurrence (its key as the formula holds it) of the first field
@@ -6226,30 +6235,30 @@ pub(crate) fn first_field_occurrence(code: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn parse_code(code: &[u8], context: &[u8]) -> Result<Expression, String> {
-    parse_code_with(code, context, false)
+    parse_formula(code, context, FormulaUse::RecordOnly)
 }
 
-/// Decode a formula; with `related` (an auto-entered or validation
-/// formula), plain reads of other occurrences' fields are collected rather
-/// than refused (aggregates of them are), and the [`CONTEXT_SELECTORS`] are
-/// read.
-fn parse_code_with(code: &[u8], context: &[u8], related_reads: bool) -> Result<Expression, String> {
-    parse_formula(code, context, related_reads, false)
+#[derive(Clone, Copy)]
+enum FormulaUse {
+    RecordOnly,
+    /// At creation, a stored Number calculation can capture the record's
+    /// position (auto-entry.md, "Get ( RecordNumber )").
+    StoredNumber,
+    /// An auto-entered or validation formula can read related fields and
+    /// the operation's [`CONTEXT_SELECTORS`].
+    Options,
+    /// The host's recomputation can answer the Design functions.
+    Recompute,
 }
 
 /// [`parse_code`] for a host's recomputation of a stored calculation, which
 /// also answers the Design functions ([`unsupported_rule_operation`]).
 fn parse_recomputed(code: &[u8], context: &[u8]) -> Result<Expression, String> {
-    parse_formula(code, context, false, true)
+    parse_formula(code, context, FormulaUse::Recompute)
 }
 
-/// [`parse_code_with`], with the Design functions allowed when `design`.
-fn parse_formula(
-    code: &[u8],
-    context: &[u8],
-    related_reads: bool,
-    design: bool,
-) -> Result<Expression, String> {
+/// Decode a formula with the field reads and selectors its caller can answer.
+fn parse_formula(code: &[u8], context: &[u8], usage: FormulaUse) -> Result<Expression, String> {
     if code.len() > MAX_CODE {
         return Err("calculation is too large.".into());
     }
@@ -6268,6 +6277,13 @@ fn parse_formula(
         DecodeErrorKind::InvalidOpcode(op) => format!("unsupported calculation opcode {op:#04x}."),
         _ => format!("invalid calculation: {e}."),
     })?;
+    let related_reads = matches!(usage, FormulaUse::Options);
+    let window_reads = related_reads
+        || matches!(
+            (usage, &polish),
+            (FormulaUse::StoredNumber, Expr::Get(selector::RECORD_NUMBER))
+        );
+    let design = matches!(usage, FormulaUse::Recompute);
     let mut dependencies = BTreeSet::new();
     let mut related = BTreeSet::new();
     let mut whole = BTreeSet::new();
@@ -6342,7 +6358,7 @@ fn parse_formula(
                 problem = Some("LookupNext over related fields is unsupported.".into());
             }
             _ => {
-                if let Some(reason) = unsupported_rule_operation(e, related_reads, design) {
+                if let Some(reason) = unsupported_rule_operation(e, window_reads, design) {
                     problem = Some(reason.into());
                 }
             }
@@ -7440,6 +7456,47 @@ mod tests {
         assert_eq!(decoded(&updated, 22).as_deref(), Some("10/30/2026"));
         // Field 21 reads no field: it stays as it was computed at creation.
         assert!(!updated.values.contains_key(&21));
+    }
+
+    #[test]
+    fn stored_record_number_uses_creation_position_and_keeps_it_on_edit() {
+        let mut table = table();
+        table.fields.push(field(
+            23,
+            FieldKind::Calculation,
+            DataType::Number,
+            0,
+            0x80000,
+            0,
+        ));
+        let mut formulas = base_formulas();
+        formulas.push((23, 5, "Get ( RecordNumber )"));
+        let plan = plan_of(&table, &formulas, &[]).unwrap();
+        let changes = BTreeMap::from([(1, Some("Ada".into()))]);
+        let mut at_creation = environment();
+        at_creation.context.record_number = Some(3);
+        let created = plan
+            .prepare(WriteMode::Create, &BTreeMap::new(), &changes, &at_creation)
+            .unwrap();
+        assert_eq!(decoded(&created, 23).as_deref(), Some("3"));
+        assert!(plan
+            .prepare(
+                WriteMode::Create,
+                &BTreeMap::new(),
+                &changes,
+                &environment()
+            )
+            .is_err());
+
+        let mut row = existing();
+        row.insert(23, "3".into());
+        let edited = plan
+            .prepare(WriteMode::Update, &row, &changes, &environment())
+            .unwrap();
+        assert!(
+            !edited.values.contains_key(&23),
+            "preserve the stored number"
+        );
     }
 
     /// `Get ( LayoutNumber )`, `Get ( RecordNumber )`,

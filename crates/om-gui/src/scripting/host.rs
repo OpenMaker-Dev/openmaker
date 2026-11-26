@@ -2073,11 +2073,7 @@ impl<'a> WorkerHost<'a> {
             // provider's found set as it is now, not the window's last
             // read of it. A sorted found set's is unmeasured: the copy has
             // none, and such a calculation refuses the save (3).
-            let layout = window.state.layout.unwrap_or_default();
-            let record_number = match provider.records_with_summary(layout, 0, 0, &[]) {
-                Ok((_, Some(found))) if !found.sorted => Some(found.found + 1),
-                _ => None,
-            };
+            let record_number = window.next_unsorted_record_number(provider);
             window.make_new_record(
                 provider,
                 session,
