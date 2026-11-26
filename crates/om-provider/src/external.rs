@@ -608,6 +608,11 @@ pub(crate) struct ExternalFiles {
     /// The opened file's occurrences of other files' tables, as of the last
     /// [`Self::hydrate`].
     root_bindings: Vec<Binding>,
+    /// Local variable-backed occurrences wait for their first read. Once
+    /// a source opens successfully, its binding stays for the session.
+    variable_occurrences: BTreeSet<u64>,
+    variable_targets: BTreeMap<u64, Target>,
+    file_variables: om_data::calc::eval::Variables,
     /// Each imported occurrence (client-only id): its file's index in
     /// [`Self::files`] and its id there, as of the last [`Self::hydrate`].
     imported: BTreeMap<u64, (usize, u64)>,
@@ -714,10 +719,33 @@ impl ExternalFiles {
         Path::new(&self.root).parent().map(Path::to_path_buf)
     }
 
+    pub(crate) fn set_file_variables(&mut self, variables: &om_data::calc::eval::Variables) {
+        if self.local.is_some() && self.file_variables.revision() != variables.revision() {
+            self.file_variables = variables.clone();
+            self.read
+                .retain(|occurrence| !self.variable_occurrences.contains(occurrence));
+        }
+    }
+
+    pub(crate) fn local_source_variable(&self, name: &str) -> Option<&str> {
+        use om_data::calc::Value;
+        let Value::Text(value) = self.file_variables.get(name, 1)? else {
+            return None;
+        };
+        (!value.as_str().is_empty()).then(|| value.as_str())
+    }
+
     /// Whether a related file named `name` (with or without `.fmp12`, any
     /// case) is open beside a file opened from this computer. A family has
     /// one file of a name open (local.rs).
     pub fn has_local_file(&self, name: &str) -> bool {
+        if !om_data::file_refs::is_plain_name(name) {
+            let path = self
+                .local_folder()
+                .and_then(|folder| om_data::file_refs::local_database_path(name, &folder))
+                .and_then(|path| path.canonicalize().ok());
+            return path.is_some() && self.files.iter().any(|file| file.path == path);
+        }
         let key = hosted_key(name);
         self.files.iter().any(|file| {
             file.path
@@ -824,9 +852,24 @@ impl ExternalFiles {
         self.ca_scope = scope;
     }
 
-    /// Whether related files open only when something reads them.
+    /// Whether any related files wait until something reads them.
     pub fn on_demand(&self) -> bool {
-        self.on_demand
+        self.on_demand || !self.variable_occurrences.is_empty()
+    }
+
+    /// A local variable source needs the root schema kept for its first read.
+    pub fn has_local_variable_sources(&self, catalog: &Catalog, tree: &KeyTree<'_>) -> bool {
+        let mut seen = BTreeSet::new();
+        self.local.is_some()
+            && catalog
+                .table_occurrences
+                .iter()
+                .filter_map(|occurrence| occurrence.reference())
+                .any(|(source, _)| {
+                    source != 0
+                        && seen.insert(source)
+                        && matches!(source_files(tree, source, None), SourcePaths::Variable(_))
+                })
     }
 
     /// Ask for the files `schema`'s occurrences `occurrences` show (the
@@ -840,13 +883,16 @@ impl ExternalFiles {
         schema: &CalcSchema,
         occurrences: impl IntoIterator<Item = u64>,
     ) -> bool {
-        if !self.on_demand {
+        if !self.on_demand() {
             return false;
         }
         let mut more = false;
         let mut demand = Vec::new();
         let mut truncated = false;
         for occurrence in occurrences {
+            if !self.on_demand && !self.variable_occurrences.contains(&occurrence) {
+                continue;
+            }
             if !self.recovery_topology_incomplete {
                 if demand.len() < MAX_SOURCES {
                     demand.push(occurrence);
@@ -875,7 +921,11 @@ impl ExternalFiles {
                 more = true;
                 continue;
             }
-            if schema.is_pending(occurrence) {
+            if self.variable_occurrences.contains(&occurrence)
+                && schema.external_occurrence(occurrence).is_some()
+            {
+                more |= self.read.insert(occurrence);
+            } else if schema.is_pending(occurrence) {
                 let binding = match self.imported.get(&occurrence) {
                     Some(&(file, own)) => self
                         .files
@@ -1083,6 +1133,9 @@ impl ExternalFiles {
         self.routes.clear();
         self.owner_plans.get_mut().clear();
         self.resolved.clear();
+        self.variable_targets.clear();
+        self.variable_occurrences.clear();
+        self.file_variables.clear();
         self.failed.clear();
         self.not_hosted.clear();
         self.refused.clear();
@@ -1509,7 +1562,86 @@ impl ExternalFiles {
             .endpoint
             .as_ref()
             .map(|(host, port)| (host.as_str(), *port));
-        let root_bindings = bindings(catalog, tree, folder.as_deref(), endpoint, &root_name);
+        let mut root_bindings = bindings(catalog, tree, folder.as_deref(), endpoint, &root_name);
+        let mut variable_targets = BTreeMap::new();
+        let mut variable_warnings = Warnings::default();
+        self.variable_occurrences.clear();
+        if let Some(folder) = &folder {
+            let mut variables = BTreeMap::new();
+            let occurrences: Vec<_> = catalog
+                .table_occurrences
+                .iter()
+                .filter_map(|occurrence| {
+                    let Some((source, table)) = occurrence.reference().filter(|(id, _)| *id != 0)
+                    else {
+                        return None;
+                    };
+                    let variable = variables.entry(source).or_insert_with(|| {
+                        match source_files(tree, source, None) {
+                            SourcePaths::Variable(name) => Some(name),
+                            _ => None,
+                        }
+                    });
+                    variable.is_some().then_some((occurrence, source, table))
+                })
+                .collect();
+            let demanded: BTreeSet<_> = occurrences
+                .iter()
+                .filter_map(|(occurrence, source, _)| {
+                    self.read.contains(&occurrence.id).then_some(*source)
+                })
+                .collect();
+            for (occurrence, source, table) in occurrences {
+                self.variable_occurrences.insert(occurrence.id);
+                let target = if let Some(target) = self.variable_targets.get(&source) {
+                    Some(target)
+                } else if !demanded.contains(&source) {
+                    schema.set_pending(occurrence.id);
+                    None
+                } else {
+                    let variable = variables[&source].as_deref().expect("variable source");
+                    variable_targets
+                        .entry(source)
+                        .or_insert_with(|| {
+                            let path = self
+                                .local_source_variable(variable)
+                                .and_then(|value| {
+                                    om_data::file_refs::local_database_path(value, folder)
+                                })
+                                .and_then(|path| path.canonicalize().ok())
+                                .filter(|path| path.is_file());
+                            let Some(path) = path else {
+                                variable_warnings.push(format!(
+                                    "The file “{variable}” could not be opened.  (Not Found)"
+                                ));
+                                return None;
+                            };
+                            let name = path.file_name()?.to_string_lossy().into_owned();
+                            Some(Target {
+                                key: path.as_os_str().to_owned(),
+                                paths: vec![beside(&name)],
+                                name,
+                                path: Some(path),
+                                from: root_name.clone(),
+                                source: source_name(tree, source),
+                            })
+                        })
+                        .as_ref()
+                };
+                if let Some(target) = target {
+                    self.wanted_tables
+                        .entry(target.key.clone())
+                        .or_default()
+                        .insert(table);
+                    root_bindings.push(Binding {
+                        occurrence: occurrence.id,
+                        occurrence_name: occurrence.name.clone(),
+                        target: target.clone(),
+                        table,
+                    });
+                }
+            }
+        }
         self.occurrences.clear();
         for binding in &root_bindings {
             self.occurrences
@@ -1522,6 +1654,7 @@ impl ExternalFiles {
         // reported once something reads one of its occurrences.
         let read = self.on_demand.then_some(&self.read);
         let mut warnings = unavailable_sources(catalog, tree, endpoint, &root_name, read);
+        warnings.extend(variable_warnings.finish());
         // The data sources left untried, on demand: their occurrences wait.
         let mut deferred: BTreeSet<OsString> = BTreeSet::new();
         // Each file opened, by key: the opened file's own (`None`) and the
@@ -2032,6 +2165,11 @@ impl ExternalFiles {
             warnings.prepend(format!("This file references more than {MAX_FILES} related files; the rest were not opened."));
         }
         self.warnings = warnings.finish();
+        self.variable_targets
+            .extend(variable_targets.into_iter().filter_map(|(source, target)| {
+                let target = target?;
+                known.contains_key(&target.key).then_some((source, target))
+            }));
         // Added to: a data source resolved stays so until the file closes,
         // also when a later import stops part way. Related files are only
         // added to until then, so their indexes hold.
@@ -2947,7 +3085,7 @@ fn unavailable_sources(
             SourceName::Absent => format!("A data source of “{from}” used by {}", used_by()),
         };
         match paths {
-            SourcePaths::Files(_) => {}
+            SourcePaths::Files(_) | SourcePaths::Variable(_) => {}
             SourcePaths::Absent if !listed => warnings.push(format!(
                 "{subject} is not among the file's data sources as the host sent them, so its \
                  tables are unavailable."
@@ -3057,6 +3195,8 @@ fn read_source_name(tree: &KeyTree<'_>, source: u64) -> SourceName {
 enum SourcePaths {
     /// The files it names by relative references, in order (at least one).
     Files(Vec<Located>),
+    /// The sole path of a local source is read from a file variable.
+    Variable(String),
     /// Paths, none of them a relative reference.
     NoneFollowed,
     /// A list of no paths.
@@ -3090,6 +3230,11 @@ fn source_files(tree: &KeyTree<'_>, source: u64, endpoint: Option<(&str, u16)>) 
     match om_data::file_refs::decode(&bytes) {
         None => SourcePaths::Malformed,
         Some(paths) if paths.is_empty() => SourcePaths::Empty,
+        Some(paths)
+            if endpoint.is_none() && paths.len() == 1 && paths[0].global_variable().is_some() =>
+        {
+            SourcePaths::Variable(paths.into_iter().next().expect("one path").name)
+        }
         Some(_) => match followed_files(&bytes, endpoint) {
             files if files.is_empty() => SourcePaths::NoneFollowed,
             files => SourcePaths::Files(files),
