@@ -13,6 +13,7 @@ use super::*;
 struct Recorded {
     commands: Vec<String>,
     events: Vec<Event>,
+    frames: Vec<PageFrame>,
     started: usize,
 }
 
@@ -72,6 +73,9 @@ impl Backend for Recording {
     }
     fn poll(&mut self) -> Vec<Event> {
         std::mem::take(&mut self.0.borrow_mut().events)
+    }
+    fn frames(&mut self) -> Vec<PageFrame> {
+        std::mem::take(&mut self.0.borrow_mut().frames)
     }
     fn input(&mut self, view: u64, input: PageInput) {
         self.0
@@ -305,6 +309,31 @@ fn a_painted_page_gets_the_pointer_input_over_it() {
         commands(&recorded),
         ["input 1 Leave", "release focus to 4194305"]
     );
+}
+
+/// A painted page's newest frame is what Browse paints, until its view
+/// fails (its browser went away): then nothing of it is painted.
+#[test]
+fn a_painted_page_that_fails_is_no_longer_painted() {
+    let (mut viewers, recorded) = viewers();
+    let ctx = egui::Context::default();
+    let page = placement(Some("about:blank"));
+    viewers.reconcile(&ctx, &frame(std::slice::from_ref(&page), &[]));
+    recorded.borrow_mut().frames.push(PageFrame {
+        view: 1,
+        size: [2, 2],
+        rgba: vec![255; 16],
+    });
+    viewers.frames(&ctx);
+    let painted = |viewers: &WebViewers| viewers.pages(1, UUID, 3, 5, Some(9)).len();
+    assert_eq!(painted(&viewers), 1);
+    recorded.borrow_mut().events.push(Event::Failed {
+        view: 1,
+        generation: 0,
+        reason: "the page host ended".into(),
+    });
+    viewers.poll();
+    assert_eq!(painted(&viewers), 0);
 }
 
 #[test]

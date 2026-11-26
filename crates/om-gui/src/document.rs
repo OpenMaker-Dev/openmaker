@@ -8335,6 +8335,10 @@ fn paint_page(
     let window = to_window(ui, rect);
     let at = |p: egui::Pos2| (p.x - window.min.x, p.y - window.min.y);
     let on = response.hovered() || response.dragged();
+    // A press the page took: its release goes to the page wherever the
+    // pointer is, in whichever frame it comes.
+    let held_id = response.id.with("pressed");
+    let mut held = ui.data(|d| d.get_temp::<bool>(held_id)).unwrap_or(false);
     let mut input = Vec::new();
     let events = ui.input(|i| i.events.clone());
     for event in events.iter().cloned() {
@@ -8356,8 +8360,8 @@ fn paint_page(
                     _ => continue,
                 };
                 // A press on the page, and the release of a press it took.
-                if (pressed && response.hovered()) || (!pressed && (on || response.drag_stopped()))
-                {
+                if (pressed && response.hovered()) || (!pressed && (on || held)) {
+                    held = pressed;
                     let (x, y) = at(pos);
                     input.push(PageInput::Button {
                         x,
@@ -8386,6 +8390,13 @@ fn paint_page(
         // The document's scroll area leaves what the page scrolls.
         ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
     }
+    ui.data_mut(|d| {
+        if held {
+            d.insert_temp(held_id, true);
+        } else {
+            d.remove::<bool>(held_id);
+        }
+    });
     (input, on)
 }
 

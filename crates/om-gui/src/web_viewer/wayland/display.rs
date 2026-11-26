@@ -76,7 +76,12 @@ pub(crate) enum Request {
     Scale(i32),
 }
 
-/// A view's newest picture: premultiplied RGBA, `scale` pixels to a point.
+/// Each view's newest picture, which the display replaces as views commit
+/// and the app takes when it draws: a slot per view, not a queue, so a
+/// window that is not drawn holds at most one frame per view.
+pub(crate) type Frames = Arc<std::sync::Mutex<HashMap<u64, Frame>>>;
+
+/// A view's newest picture: premultiplied RGBA.
 pub(crate) struct Frame {
     pub view: u64,
     pub width: usize,
@@ -92,13 +97,9 @@ pub(crate) struct PageDisplay {
 }
 
 impl PageDisplay {
-    /// Start the display, sending frames to `frames` and calling `wake`
+    /// Start the display, putting frames in `frames` and calling `wake`
     /// after each.
-    pub fn start(
-        frames: Sender<Frame>,
-        wake: Box<dyn Fn() + Send>,
-        scale: i32,
-    ) -> Result<Self, String> {
+    pub fn start(frames: Frames, wake: Box<dyn Fn() + Send>, scale: i32) -> Result<Self, String> {
         let directory = tempfile::Builder::new()
             .prefix("openmaker-pages-")
             .tempdir_in(
@@ -164,7 +165,7 @@ struct State {
     views: HashMap<u64, WlSurface>,
     popups: Vec<PopupSurface>,
     callbacks: Vec<WlCallback>,
-    frames: Sender<Frame>,
+    frames: Frames,
     wake: Box<dyn Fn() + Send>,
     /// The view the pointer is over.
     pointer_view: Option<u64>,
@@ -175,7 +176,7 @@ struct State {
 fn run(
     (listener, directory): (ListeningSocket, tempfile::TempDir),
     requests: channel::Channel<Request>,
-    frames: Sender<Frame>,
+    frames: Frames,
     wake: Box<dyn Fn() + Send>,
     scale: i32,
     ready: Sender<Result<LoopSignal, String>>,
@@ -487,9 +488,10 @@ impl CompositorHandler for State {
                     height: data.height as usize,
                     rgba,
                 };
-                if self.frames.send(frame).is_ok() {
-                    (self.wake)();
+                if let Ok(mut frames) = self.frames.lock() {
+                    frames.insert(view, frame);
                 }
+                (self.wake)();
             }
         }
         buffer.release();

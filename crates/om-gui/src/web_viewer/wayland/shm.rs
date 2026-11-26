@@ -17,7 +17,7 @@ use smithay::reexports::wayland_server::{
 /// The largest buffer side and size taken (a page as large as a 16k
 /// display at twice its scale is not a web viewer).
 const MAX_SIDE: i32 = 16_384;
-const MAX_BYTES: i64 = 512 * 1024 * 1024;
+const MAX_BYTES: i64 = 256 * 1024 * 1024;
 
 /// A client's pool: its file, and the size it says the file has.
 pub(crate) struct Pool {

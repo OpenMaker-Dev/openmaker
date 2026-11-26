@@ -907,9 +907,13 @@ impl WebViewers {
         for frame in frames {
             newest.insert(frame.view, frame);
         }
+        // A frame larger than a texture can be is not shown (egui would
+        // panic): the backend sizes its pages below that.
+        let max = ctx.input(|i| i.max_texture_side);
         for (view, frame) in newest {
             if !self.views.iter().any(|v| v.id == view)
                 || frame.rgba.len() != frame.size[0] * frame.size[1] * 4
+                || frame.size.iter().any(|side| *side > max || *side == 0)
             {
                 continue;
             }
@@ -1116,6 +1120,8 @@ impl WebViewers {
                         .find(|v| v.id == view && v.generation == generation)
                     {
                         v.state = LoadState::Failed;
+                        // A painted page that failed shows no longer.
+                        self.textures.remove(&view);
                         self.fail_calls(view, OBJECT_MISSING);
                     }
                 }

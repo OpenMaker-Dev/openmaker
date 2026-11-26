@@ -18,13 +18,15 @@ mod shm;
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{channel, Receiver};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
 pub(crate) use display::TITLE;
-use display::{PageDisplay, Request};
+use display::{Frames, PageDisplay, Request};
 
 use super::{
     Backend, Event, Geometry, MessageBudget, NativeParent, Navigation, PageFrame, PageInput,
@@ -75,17 +77,43 @@ pub(crate) enum HostCommand {
     },
 }
 
+/// How many commands may wait for the host, and events for the app: a host
+/// that falls this far behind its commands is stopped, and one this far
+/// ahead of the app waits.
+const QUEUE: usize = 1024;
+/// The longest text kept of an event other than a bridge message.
+const MAX_TEXT: usize = 4096;
+/// How long a host whose stdin closed gets to end before it is killed.
+const END_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// A live view as the host has it.
+struct Hosted {
+    /// Its size in points and its zoom.
+    size: [i32; 2],
+    zoom: f64,
+    /// Its newest navigation's generation (a host that ends fails it with
+    /// that one), and the scale its window draws at.
+    generation: u64,
+    scale: i32,
+}
+
 pub(crate) struct WaylandBackend {
     display: PageDisplay,
-    host: Child,
-    stdin: Option<ChildStdin>,
+    /// Lines for the host's stdin, written by a thread of their own, so
+    /// that a host that stops reading never holds up the app.
+    commands: Option<SyncSender<Vec<u8>>>,
+    host: Option<Child>,
     events: Receiver<Option<Event>>,
-    frames: Receiver<display::Frame>,
-    /// Each live view's size and zoom as the host has them, and its newest
-    /// navigation's generation (a host that ends fails it with that one).
-    views: HashMap<u64, ([i32; 2], f64, u64)>,
+    /// Each view's newest frame, which the display replaces.
+    frames: Frames,
+    views: HashMap<u64, Hosted>,
+    /// Events the backend makes itself, for commands a host that ended
+    /// cannot carry out.
+    pending: Vec<Event>,
+    /// The scale the display's output has, and the largest texture side.
     scale: i32,
-    /// The host ended: its views failed, and new ones fail too.
+    max_side: i32,
+    /// The host ended, or was stopped: its views failed, and new ones fail.
     gone: bool,
     /// Bridge messages read from the host that the app has not polled.
     budget: MessageBudget,
@@ -105,18 +133,56 @@ fn points(pixels: i32, geometry: &Geometry) -> i32 {
     (pixels as f32 / geometry.pixels_per_point.max(0.01)).round() as i32
 }
 
+/// An event with its texts cut to what the app keeps: a function's result
+/// and a failure's reason are short when the host is honest (bridge
+/// messages are bounded by the budget instead).
+fn bounded(event: Event) -> Event {
+    let cut = |mut text: String| {
+        if text.len() > MAX_TEXT {
+            let mut end = MAX_TEXT;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+        }
+        text
+    };
+    match event {
+        Event::Evaluated { view, call, result } => Event::Evaluated {
+            view,
+            call,
+            result: cut(result),
+        },
+        Event::Failed {
+            view,
+            generation,
+            reason,
+        } => Event::Failed {
+            view,
+            generation,
+            reason: cut(reason),
+        },
+        event => event,
+    }
+}
+
 impl WaylandBackend {
     /// Start the display and the host; `Err` when either cannot.
     pub fn start(ctx: &egui::Context) -> Result<Self, Unavailable> {
         let program = host_program().ok_or(Unavailable::Platform)?;
         let scale = ctx.pixels_per_point().ceil() as i32;
-        let (frame_tx, frames) = channel();
+        let max_side = i32::try_from(ctx.input(|i| i.max_texture_side)).unwrap_or(i32::MAX);
+        let frames = Frames::default();
         let wake = ctx.clone();
-        let display = PageDisplay::start(frame_tx, Box::new(move || wake.request_repaint()), scale)
-            .map_err(|error| {
-                eprintln!("openmaker: web viewers: {error}");
-                Unavailable::Platform
-            })?;
+        let display = PageDisplay::start(
+            Arc::clone(&frames),
+            Box::new(move || wake.request_repaint()),
+            scale,
+        )
+        .map_err(|error| {
+            eprintln!("openmaker: web viewers: {error}");
+            Unavailable::Platform
+        })?;
         let mut host = Command::new(&program)
             .env("WAYLAND_DISPLAY", display.socket())
             .env("GDK_BACKEND", "wayland")
@@ -133,13 +199,26 @@ impl WaylandBackend {
                 eprintln!("openmaker: web viewers: {}: {error}", program.display());
                 Unavailable::Platform
             })?;
-        let stdin = host.stdin.take();
-        let stdout = host.stdout.take().ok_or(Unavailable::Platform)?;
-        let (event_tx, events) = channel();
+        let (Some(mut stdin), Some(stdout)) = (host.stdin.take(), host.stdout.take()) else {
+            reap(host);
+            return Err(Unavailable::Platform);
+        };
+        let (commands, lines) = sync_channel::<Vec<u8>>(QUEUE);
+        let writer = std::thread::Builder::new()
+            .name("openmaker-page-commands".into())
+            .spawn(move || {
+                for line in lines {
+                    if stdin.write_all(&line).and_then(|()| stdin.flush()).is_err() {
+                        break;
+                    }
+                }
+                // Dropping stdin ends the host.
+            });
+        let (event_tx, events) = sync_channel(QUEUE);
         let wake = ctx.clone();
         let budget = MessageBudget::default();
         let admitted = budget.clone();
-        std::thread::Builder::new()
+        let reader = std::thread::Builder::new()
             .name("openmaker-page-host".into())
             .spawn(move || {
                 let mut reader = BufReader::new(stdout);
@@ -153,82 +232,147 @@ impl WaylandBackend {
                         // to be believed any more.
                         Ok(_) if line.last() != Some(&b'\n') => break,
                         Ok(_) => {
-                            if let Ok(event) = serde_json::from_slice::<Event>(&line) {
-                                // As the X11 backend bounds its pages'.
-                                if let Event::Message { body, .. } = &event {
-                                    if !admitted.admit(body) {
-                                        continue;
-                                    }
+                            let Ok(event) = serde_json::from_slice::<Event>(&line) else {
+                                continue;
+                            };
+                            // As the X11 backend bounds its pages'.
+                            if let Event::Message { body, .. } = &event {
+                                if !admitted.admit(body) {
+                                    continue;
                                 }
-                                if event_tx.send(Some(event)).is_err() {
-                                    return;
-                                }
-                                wake.request_repaint();
                             }
+                            if event_tx.send(Some(bounded(event))).is_err() {
+                                return;
+                            }
+                            wake.request_repaint();
                         }
                     }
                 }
                 let _ = event_tx.send(None);
                 wake.request_repaint();
-            })
-            .map_err(|_| Unavailable::Platform)?;
+            });
+        if writer.is_err() || reader.is_err() {
+            reap(host);
+            return Err(Unavailable::Platform);
+        }
         Ok(WaylandBackend {
             display,
-            host,
-            stdin,
+            commands: Some(commands),
+            host: Some(host),
             events,
             frames,
             views: HashMap::new(),
+            pending: Vec::new(),
             scale,
+            max_side,
             gone: false,
             budget,
         })
     }
 
     fn send(&mut self, command: &HostCommand) {
-        let Some(stdin) = self.stdin.as_mut() else {
+        let Some(commands) = self.commands.as_ref() else {
             return;
         };
         let Ok(mut line) = serde_json::to_vec(command) else {
             return;
         };
         line.push(b'\n');
-        if stdin.write_all(&line).and_then(|()| stdin.flush()).is_err() {
-            self.stdin = None;
+        match commands.try_send(line) {
+            Ok(()) => {}
+            // A host this far behind is not taking its commands: it goes,
+            // and its views fail (`poll`).
+            Err(TrySendError::Full(_)) => self.stop(),
+            Err(TrySendError::Disconnected(_)) => self.commands = None,
         }
     }
 
-    /// Follow the scale the app draws at.
-    fn follow_scale(&mut self, geometry: &Geometry) {
-        let scale = geometry.pixels_per_point.ceil() as i32;
-        if scale != self.scale && scale > 0 {
+    /// End the host (its stdin closes; it is killed if it does not end).
+    fn stop(&mut self) {
+        self.commands = None;
+        self.gone = true;
+        if let Some(host) = self.host.take() {
+            reap(host);
+        }
+    }
+
+    /// The size the host makes a view `geometry` places: its content in
+    /// points, no more than a texture can hold at the display's scale.
+    fn size(&self, geometry: &Geometry) -> [i32; 2] {
+        let limit = (self.max_side / self.scale.max(1)).max(1);
+        [
+            points(geometry.content[2], geometry).clamp(1, limit),
+            points(geometry.content[3], geometry).clamp(1, limit),
+        ]
+    }
+
+    /// Draw at the largest scale any view's window needs: one window at 2
+    /// and another at 1 both get sharp pages.
+    fn follow_scale(&mut self) {
+        let scale = self
+            .views
+            .values()
+            .map(|v| v.scale)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        if scale != self.scale {
             self.scale = scale;
             self.display.send(Request::Scale(scale));
         }
     }
 }
 
+/// Wait for `host` to end, on a thread of its own, killing it after
+/// [`END_TIMEOUT`]: no zombie is left, and the app never waits.
+fn reap(mut host: Child) {
+    let _ = std::thread::Builder::new()
+        .name("openmaker-page-host-end".into())
+        .spawn(move || {
+            let until = Instant::now() + END_TIMEOUT;
+            while Instant::now() < until {
+                if !matches!(host.try_wait(), Ok(None)) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let _ = host.kill();
+            let _ = host.wait();
+        });
+}
+
 impl Drop for WaylandBackend {
     fn drop(&mut self) {
-        // Closing stdin ends the host; it is waited for so as to leave no
-        // zombie behind.
-        self.stdin = None;
-        let _ = self.host.wait();
+        // Closing the commands closes the host's stdin, which ends it.
+        self.stop();
     }
 }
 
 impl Backend for WaylandBackend {
     fn create(&mut self, view: u64, _parent: NativeParent, spec: ViewSpec) {
         if self.gone {
-            self.events_failed(view, 0);
+            self.pending.push(Event::Failed {
+                view,
+                generation: 0,
+                reason: "the page host ended".into(),
+            });
             return;
         }
-        self.follow_scale(&spec.geometry);
-        let size = [
-            points(spec.geometry.content[2], &spec.geometry),
-            points(spec.geometry.content[3], &spec.geometry),
-        ];
-        self.views.insert(view, (size, spec.geometry.zoom, 0));
+        let scale = spec.geometry.pixels_per_point.ceil() as i32;
+        self.views.insert(
+            view,
+            Hosted {
+                size: [1, 1],
+                zoom: spec.geometry.zoom,
+                generation: 0,
+                scale,
+            },
+        );
+        self.follow_scale();
+        let size = self.size(&spec.geometry);
+        if let Some(hosted) = self.views.get_mut(&view) {
+            hosted.size = size;
+        }
         self.send(&HostCommand::Create {
             view,
             url: spec.url,
@@ -241,17 +385,19 @@ impl Backend for WaylandBackend {
     }
 
     fn place(&mut self, view: u64, geometry: Geometry, _visible: bool) {
-        self.follow_scale(&geometry);
-        let size = [
-            points(geometry.content[2], &geometry),
-            points(geometry.content[3], &geometry),
-        ];
-        let Some(placed) = self.views.get_mut(&view) else {
+        let scale = geometry.pixels_per_point.ceil() as i32;
+        let Some(hosted) = self.views.get_mut(&view) else {
             return;
         };
-        if placed.0 != size || (placed.1 - geometry.zoom).abs() > f64::EPSILON {
-            placed.0 = size;
-            placed.1 = geometry.zoom;
+        hosted.scale = scale;
+        self.follow_scale();
+        let size = self.size(&geometry);
+        let Some(hosted) = self.views.get_mut(&view) else {
+            return;
+        };
+        if hosted.size != size || (hosted.zoom - geometry.zoom).abs() > f64::EPSILON {
+            hosted.size = size;
+            hosted.zoom = geometry.zoom;
             self.send(&HostCommand::Resize {
                 view,
                 width: size[0],
@@ -262,8 +408,16 @@ impl Backend for WaylandBackend {
     }
 
     fn navigate(&mut self, view: u64, generation: u64, navigation: Navigation) {
-        if let Some(placed) = self.views.get_mut(&view) {
-            placed.2 = generation;
+        if self.gone {
+            self.pending.push(Event::Failed {
+                view,
+                generation,
+                reason: "the page host ended".into(),
+            });
+            return;
+        }
+        if let Some(hosted) = self.views.get_mut(&view) {
+            hosted.generation = generation;
         }
         self.send(&HostCommand::Navigate {
             view,
@@ -273,11 +427,24 @@ impl Backend for WaylandBackend {
     }
 
     fn evaluate(&mut self, view: u64, call: u64, script: String) {
+        if self.gone {
+            // No result: the call fails.
+            self.pending.push(Event::Evaluated {
+                view,
+                call,
+                result: String::new(),
+            });
+            return;
+        }
         self.send(&HostCommand::Evaluate { view, call, script });
     }
 
     fn destroy(&mut self, view: u64) {
         self.views.remove(&view);
+        if let Ok(mut frames) = self.frames.lock() {
+            frames.remove(&view);
+        }
+        self.follow_scale();
         self.send(&HostCommand::Destroy { view });
     }
 
@@ -293,8 +460,11 @@ impl Backend for WaylandBackend {
     }
 
     fn frames(&mut self) -> Vec<PageFrame> {
-        self.frames
-            .try_iter()
+        let Ok(mut frames) = self.frames.lock() else {
+            return Vec::new();
+        };
+        std::mem::take(&mut *frames)
+            .into_values()
             .map(|f| PageFrame {
                 view: f.view,
                 size: [f.width, f.height],
@@ -304,7 +474,7 @@ impl Backend for WaylandBackend {
     }
 
     fn poll(&mut self) -> Vec<Event> {
-        let mut events = Vec::new();
+        let mut events = std::mem::take(&mut self.pending);
         for event in self.events.try_iter() {
             match event {
                 Some(event) => {
@@ -317,20 +487,14 @@ impl Backend for WaylandBackend {
             }
         }
         if self.gone && !self.views.is_empty() {
-            for (view, (_, _, generation)) in std::mem::take(&mut self.views) {
+            for (view, hosted) in std::mem::take(&mut self.views) {
                 events.push(Event::Failed {
                     view,
-                    generation,
+                    generation: hosted.generation,
                     reason: "the page host ended".into(),
                 });
             }
         }
         events
-    }
-}
-
-impl WaylandBackend {
-    fn events_failed(&mut self, view: u64, generation: u64) {
-        self.views.insert(view, ([0, 0], 1.0, generation));
     }
 }
