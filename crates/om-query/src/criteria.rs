@@ -1005,10 +1005,7 @@ fn phrase_matches(text: &[char], anywhere: bool, open_end: bool, value: &PhraseV
             return false;
         }
         let end = start + text.len();
-        if anywhere && !open_end && ends_word && value.inside[end] {
-            return false;
-        }
-        true
+        !(anywhere && !open_end && ends_word && value.inside[end])
     })
 }
 

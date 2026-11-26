@@ -21,7 +21,7 @@ the physical page context, and a text object's or button's `{{PageNumber}}`
 Save Records as PDF wrote it ([calc functions](re/calc-functions.md), O4).
 
 The other symbols Browse shows, `{{RecordNumber}}`, `{{CurrentDate}}`,
-`{{CurrentTime}}` and `{{UserName}}` (by name or by their selectors' numbers,
+`{{CurrentTime}}`, `{{UserName}}` and `{{AccountName}}` (by name or by their selectors' numbers,
 [calc values](re/calc-values.md), layout calculations), print as Browse shows
 them (`om_data::host::layout::merge_text`): each the value of its `Get`
 function, evaluated on the record the part prints, as a calculation field there
