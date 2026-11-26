@@ -1,13 +1,15 @@
 //! On macOS, the desktop client's executable (`om-gui`, not the PDF worker
 //! in src/bin) carries an Info.plist in its `__TEXT,__info_plist` section.
-//! It is run straight from the build, with no .app bundle around it, and
-//! AppKit names the app in the menu bar after the main bundle's
+//! Run straight from the build, with no .app bundle around it, AppKit
+//! names the app in the menu bar after the main bundle's
 //! `CFBundleName`, which for such an executable comes from that section;
 //! without it the menu bar shows the executable's name, "om-gui". Measured
 //! on macOS 27: the plist changes the menu bar's name, while setting the
 //! process name does not, and the Dock and Command-Tab keep the
 //! executable's name either way: LaunchServices names an unbundled process
 //! after its file ([#821](https://github.com/OpenMaker-Dev/openmaker/issues/821)).
+//! tools/package-macos.sh copies this plist into `OpenMaker.app`, whose
+//! Info.plist names the app there too.
 
 use std::path::PathBuf;
 

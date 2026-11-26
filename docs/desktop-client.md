@@ -37,14 +37,18 @@ own chrome uses are in [design.md](design.md). Related notes:
   to the front. Elsewhere, and in the GUI tests, which run without a native
   window, the menu bar is drawn inside each window. The window title is the
   platform's own.
-- The app menu is named OpenMaker. On macOS the client runs from the build
-  with no app bundle, so its executable carries an Info.plist (`build.rs`)
-  whose `CFBundleName` the menu bar shows; without it the menu bar would
-  show the executable's name. The Dock and Command-Tab still show `om-gui`:
-  LaunchServices names an unbundled process after its file
-  ([#821](https://github.com/OpenMaker-Dev/openmaker/issues/821)). Their
-  icon is OpenMaker's logo ([assets/README.md](assets/README.md)), which
-  eframe sets once the app runs. Every window carries the logo as its
+- The app menu is named OpenMaker. On macOS, `tools/package-macos.sh`
+  puts the client in an app bundle, `OpenMaker.app`
+  ([development.md](development.md#app-bundle-for-macos)), whose Info.plist
+  names it OpenMaker in the menu bar, the Dock, Command-Tab and Finder. Run
+  from the build with no bundle, its executable carries an Info.plist of
+  its own (`build.rs`) whose `CFBundleName` the menu bar shows, but the Dock
+  and Command-Tab show `om-gui`: LaunchServices names an unbundled process
+  after its file
+  ([#821](https://github.com/OpenMaker-Dev/openmaker/issues/821)). The
+  Dock's icon is OpenMaker's logo ([assets/README.md](assets/README.md)):
+  the bundle's, and once the app runs the one eframe sets, with or without
+  a bundle. Every window carries the logo as its
   window icon: Windows shows it in title bars, and eframe also makes it
   the first window's large taskbar icon (other windows' taskbar icons are
   unchecked); X11 window managers that draw window icons show it. Wayland
