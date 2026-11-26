@@ -29,6 +29,8 @@ pub(crate) struct Placement {
     /// which the content area gains when they are hidden.
     pub toolbar: bool,
     pub bars: f64,
+    /// A regular macOS viewport whose frame can follow a toolbar change.
+    pub toolbar_resizes_frame: bool,
     /// The menu bar was shown, and its height as last drawn, which the
     /// content area gains when it is hidden (and gives up when shown).
     pub menubar: bool,
@@ -98,6 +100,12 @@ pub(crate) fn placement(
         active: viewport.focused.unwrap_or(false),
         toolbar,
         bars: f64::from(bars),
+        toolbar_resizes_frame: cfg!(target_os = "macos")
+            && viewport.outer_rect.is_some()
+            && viewport.inner_rect.is_some()
+            && viewport.fullscreen != Some(true)
+            && viewport.maximized != Some(true)
+            && viewport.minimized != Some(true),
         menubar,
         menu: f64::from(menu),
         measured,
@@ -168,6 +176,30 @@ impl Placement {
         }
     }
 
+    /// FileMaker Pro's macOS toolbar comparison (#1040): the outer frame
+    /// changes by 55 points, with both bars changing the content area by
+    /// their full height at a fixed frame. Keep the last-drawn bar state
+    /// for `window_info`, which accounts for the visibility change.
+    pub(crate) fn resize_for_toolbar(
+        &mut self,
+        was_shown: bool,
+        shown: bool,
+    ) -> Option<egui::ViewportCommand> {
+        if !self.toolbar_resizes_frame || was_shown == shown {
+            return None;
+        }
+        let height = f64::from(crate::theme::MACOS_BROWSE_TOOLBAR_HEIGHT);
+        let delta = if shown { height } else { -height };
+        if self.inner.height + delta <= 0.0 {
+            return None;
+        }
+        self.move_resize(None, None, None, Some(self.frame.height + delta));
+        Some(egui::ViewportCommand::InnerSize(egui::vec2(
+            self.inner.width as f32,
+            self.inner.height as f32,
+        )))
+    }
+
     /// Adjust Window [Resize to Fit] (script-steps.md, Adjust Window): the
     /// outer frame's width and height that give the content area `layout`
     /// (its width and height in points) at `zoom`, with the bars as a
@@ -233,6 +265,7 @@ impl Placement {
             content: area,
             toolbar: false,
             bars: 0.0,
+            toolbar_resizes_frame: false,
             menubar: false,
             menu: 0.0,
             ..self.clone()
@@ -375,6 +408,7 @@ mod tests {
             active: false,
             toolbar: true,
             bars: 77.0,
+            toolbar_resizes_frame: false,
             menubar: false,
             menu: 0.0,
             measured: true,

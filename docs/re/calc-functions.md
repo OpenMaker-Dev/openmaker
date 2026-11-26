@@ -1577,6 +1577,15 @@ point title bar, the 52 point status toolbar and a 25 point layout bar
 [I]. The top-left object of the Top Navigation part ("Back to Contacts",
 layout 0, 0) sits at `WindowLeft`, `WindowTop + 105`.
 
+On FileMaker Pro 26.1.1 for macOS, an ordinary Browse window with both
+bars shown measured 962 pt outer height and 850 pt content height
+[O]. Hide returned 0 and left 907 pt outer and 875 pt content
+height. Restoring the same 962 pt frame with both bars hidden gave 930 pt
+of content. Showing the bars from that restored frame gave 1017 pt
+outer and 905 pt content height. The outer position and width stayed
+fixed. A lock change with the bars already visible kept the size.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1040#issuecomment-7188552787)
+
 #### O2 Focus and selection (Contact Details)
 
 The first state is reached with these steps:
