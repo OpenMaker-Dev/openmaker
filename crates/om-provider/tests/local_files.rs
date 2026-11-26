@@ -2943,7 +2943,7 @@ fn new_record_auto_enters_the_session_globals() {
     const SERIAL: u64 = 42;
     const REPLACING: u64 = 43;
     let folder = Folder::new("global-auto-entry");
-    let path = folder.file("Sample.fmp12", PASSWORD, |root| {
+    let path = folder.file(FILE, PASSWORD, |root| {
         for (id, label, options) in [
             (CONSTANT, "Default setting", 0x1_0004),
             (CALCULATED, "Calculated setting", 0x1_0008),
@@ -2979,7 +2979,9 @@ fn new_record_auto_enters_the_session_globals() {
         ..Default::default()
     };
     provider.begin_record_commit().unwrap();
-    let record = provider.write_record(&new).unwrap();
+    let record = provider
+        .write_record_with_creation(&new, om_data::RecordCreation::NewRecord)
+        .unwrap();
     let values = globals(&mut provider);
     for (field, text) in [
         (CONSTANT, "X"),
@@ -3008,8 +3010,31 @@ fn new_record_auto_enters_the_session_globals() {
     assert!(
         matches!(values.get(CONSTANT, 1), Some(Value::Text(value)) if value.as_str() == "Changed")
     );
+    // A duplicate without a record session and a portal write held in
+    // one both keep all nonempty globals and the serial counter.
+    let duplicate = om_data::ScriptWrite {
+        cells: [(NAME, Some("A note".into()))].into(),
+        ..new.clone()
+    };
+    assert_eq!(provider.write_record(&duplicate).unwrap_err().code, Some(3));
     provider.begin_record_commit().unwrap();
-    let second = provider.write_record(&new).unwrap();
+    let portal = om_data::ScriptWrite {
+        table: Some(TABLE),
+        cells: [(NAME, Some("Related row".into()))].into(),
+        ..new.clone()
+    };
+    assert_eq!(provider.write_record(&portal).unwrap_err().code, Some(3));
+    provider.revert_transaction().unwrap();
+    let values = globals(&mut provider);
+    for field in [CONSTANT, CALCULATED, SERIAL, REPLACING] {
+        assert!(
+            matches!(values.get(field, 1), Some(Value::Text(value)) if value.as_str() == "Changed")
+        );
+    }
+    provider.begin_record_commit().unwrap();
+    let second = provider
+        .write_record_with_creation(&new, om_data::RecordCreation::NewRecord)
+        .unwrap();
     let values = globals(&mut provider);
     for (field, text) in [
         (CONSTANT, "X"),
@@ -3044,6 +3069,40 @@ fn new_record_auto_enters_the_session_globals() {
         .unwrap()
         .unwrap();
     assert_eq!(next, "3");
+
+    // Use the same synthetic file over loopback to exercise the hosted
+    // client path, where ordinary New Record still refuses.
+    let (port, ca_pem) = om_server(&path, &folder.0.join("recordings"));
+    let client = rcgen::generate_simple_self_signed(vec!["OpenMaker".into()]).unwrap();
+    let mut hosted = NativeProvider::new(NativeConfig {
+        client_cert_pem: client.cert.pem().into_bytes(),
+        client_key_pem: client.key_pair.serialize_pem().into_bytes(),
+        additional_ca_pem: ca_pem,
+        callback_host: "127.0.0.1".into(),
+        machine: MachineInfo::default(),
+    });
+    hosted
+        .open(&Connection {
+            host: "127.0.0.1".into(),
+            port,
+            file: FILE.into(),
+            account: ACCOUNT.into(),
+            password: PASSWORD.into(),
+        })
+        .unwrap();
+    assert!(hosted.local_path().is_none());
+    hosted.set_global(TABLE, CONSTANT, 1, "Hosted").unwrap();
+    hosted.begin_record_commit().unwrap();
+    let error = hosted
+        .write_record_with_creation(&new, om_data::RecordCreation::NewRecord)
+        .unwrap_err();
+    assert_eq!(error.code, Some(3));
+    assert!(error.message.contains("auto-entry into a nonempty global"));
+    hosted.revert_transaction().unwrap();
+    assert!(
+        matches!(globals(&mut hosted).get(CONSTANT, 1), Some(Value::Text(value)) if value.as_str() == "Hosted")
+    );
+    hosted.close();
 }
 
 /// An auto-entered and a validation formula over a global field read the

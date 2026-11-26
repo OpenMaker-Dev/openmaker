@@ -131,6 +131,15 @@ pub struct HostMessage {
     pub server_name: String,
 }
 
+/// The operation creating a record through the desktop's write path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordCreation {
+    /// The window's ordinary New Record command or script step.
+    NewRecord,
+    /// A duplicate, related row, preview, or other write.
+    Other,
+}
+
 /// A script's write of one record (Set Field and the other field steps,
 /// committed by Commit Records or by leaving the record): the rules a
 /// script's writes follow apply, not a user's (`rules::Entry::script`;
@@ -1475,6 +1484,17 @@ pub trait DataProvider: Send {
             Some(id) => self.update_record(write.layout, id, write.fields.clone()),
             None => self.create_record(write.layout, write.fields.clone()),
         }
+    }
+
+    /// Write a record with its creation operation, for write rules that
+    /// depend on how the record was created. A provider without those
+    /// rules uses its ordinary write path.
+    fn write_record_with_creation(
+        &mut self,
+        write: &ScriptWrite,
+        _creation: RecordCreation,
+    ) -> Result<Record, DataError> {
+        self.write_record(write)
     }
 
     /// Set Field's own checks of `text` (the value as the step gives it)

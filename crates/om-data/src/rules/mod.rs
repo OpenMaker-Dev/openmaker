@@ -2441,12 +2441,14 @@ impl RecordPlan {
 
     /// Prepare the constant and calculated defaults, and the serial fields
     /// for which New Record must take a value. A calculated default with
-    /// replacement off keeps a nonempty global.
+    /// replacement off keeps a nonempty global. Without `allow_nonempty`,
+    /// a nonempty global refuses the creation before any serial is reserved.
     pub fn new_record_globals(
         &self,
         entry: Entry,
         globals: &RecordValues,
         environment: &RecordEnvironment,
+        allow_nonempty: bool,
     ) -> Result<(crate::GlobalChanges, Vec<Serial>), DataError> {
         let mut values = crate::GlobalChanges::new();
         let mut serials = Vec::new();
@@ -2460,14 +2462,22 @@ impl RecordPlan {
             if !field.auto_enters_global() {
                 continue;
             }
+            let nonempty = globals.get(id, 1).is_some_and(|value| !value.is_empty());
+            if nonempty && !allow_nonempty {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: auto-entry into a nonempty global requires New Record in a local file.",
+                        field.name
+                    ),
+                ));
+            }
             if let Some(serial) = field.serial {
                 serials.push(serial);
             } else if let Some(value) = &field.constant {
                 values.insert((id, 1), value.clone());
             } else if let Some(expression) = &field.expression {
-                if !field.options.calculation_replaces_existing()
-                    && globals.get(id, 1).is_some_and(|value| !value.is_empty())
-                {
+                if nonempty && !field.options.calculation_replaces_existing() {
                     continue;
                 }
                 let value = self

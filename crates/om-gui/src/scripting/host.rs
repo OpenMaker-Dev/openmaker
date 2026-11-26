@@ -2083,6 +2083,7 @@ impl<'a> WorkerHost<'a> {
                 session,
                 (values, cells),
                 (privilege_set, record_number),
+                om_data::RecordCreation::Other,
             )
         };
         let made = match made {
