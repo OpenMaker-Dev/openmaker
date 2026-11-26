@@ -1167,9 +1167,15 @@ record's place in what the rules read:
   set inserts it immediately after the current row when that row is known.
   Unrelated edits and later re-sorting leave its stored value alone.
   Automatic re-sorting after commit is a separate difference.
+  An unindexed stored Number calculation also gets position 1 when local
+  Set Field creates the first match of a direct, unsorted equality
+  relationship from a plain global Text key to a plain stored Text key.
+  The script can read that value and count the new match before Commit.
+  The parent's record is already stored and otherwise unedited. The
+  matching key and position are checked again at save.
   The same field definition refuses writes
   on hosted files and routed tables. Duplicate Record, portal creation
-  and other creates without the local New Record position refuse with 3
+  and other creates without a supported position refuse with 3
   ([#1011](https://github.com/OpenMaker-Dev/openmaker/issues/1011)).
 - The number is unavailable for a portal that sorts or filters, a sorted
   desktop window without a known insertion position, and edits of stored records.

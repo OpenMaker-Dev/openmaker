@@ -41,6 +41,23 @@ pub(crate) fn cell_of(field: u64, repetition: u32) -> u64 {
 }
 
 impl WorkerHost<'_> {
+    pub(super) fn assign_script_field(
+        &mut self,
+        field: FieldRef,
+        value: &Value,
+        direct_set_field: bool,
+    ) -> HostResult {
+        self.write_field(field, value, direct_set_field)?;
+        // A step's value is no longer being typed (6.3 O2).
+        if let Ok(name) = self.field_name(field) {
+            let state = &mut self.s.file.window.state;
+            if state.typing.as_deref() == Some(name.as_str()) {
+                state.typing = None;
+            }
+        }
+        Ok(())
+    }
+
     /// `schema`, or, when `occurrence` waits for its related file not open
     /// yet (`CalcSchema::is_pending`), the schema after that file opens: a
     /// step writing into it opens it now, as a read does (#983,
@@ -63,7 +80,12 @@ impl WorkerHost<'_> {
 
     /// Write `value` into `field` as a script step does (see the module
     /// documentation).
-    pub(super) fn write_field(&mut self, field: FieldRef, value: &Value) -> HostResult {
+    pub(super) fn write_field(
+        &mut self,
+        field: FieldRef,
+        value: &Value,
+        direct_set_field: bool,
+    ) -> HostResult {
         let Some(mut schema) = self.schema().cloned() else {
             // Without a calculation schema only the layout's own fields
             // are known, by name.
@@ -150,7 +172,7 @@ impl WorkerHost<'_> {
                 .map_err(|e| self.failed(e))?;
         }
         if related {
-            return self.set_related(field.occurrence, table, cell, text);
+            return self.set_related(field.occurrence, table, cell, text, direct_set_field);
         }
         let name = (repetition == 1).then_some(def.name.as_str());
         let (window, provider) = self.wp();
@@ -169,7 +191,7 @@ impl WorkerHost<'_> {
         let Some(field) = self.own_field(name) else {
             return self.set_named(name, text);
         };
-        self.write_field(field, &Value::text(text))
+        self.write_field(field, &Value::text(text), false)
     }
 
     /// The layout's field named `name` as a step's target.
