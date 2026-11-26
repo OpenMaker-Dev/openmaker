@@ -2490,7 +2490,7 @@ fn a_partly_saved_record_is_checked_and_resumed_from_its_bar() {
 /// other files saves each, one after the other (#1006).
 #[test]
 fn set_field_creates_and_edits_another_files_related_record() {
-    use fixture::{COUNT, NAME, OCCURRENCE};
+    use fixture::{COUNT, NAME, OCCURRENCE, SETTING};
     use om_data::DataProvider;
     use om_scripts::ScriptStep;
     const REMOTE: u64 = 0xd0_0040;
@@ -2501,7 +2501,24 @@ fn set_field_creates_and_edits_another_files_related_record() {
     show.set_text(0, Some("OK"));
     show.set_calculation(
         1,
-        Some(&fixture::calc("\"result:\" & $a & \"|\" & $b & \"|\" & $c")),
+        Some(&fixture::calc(
+            "\"result:\" & $a & \"|\" & $b & \"|\" & $c & \"|\" & $d",
+        )),
+    );
+    let mut names = fixture::names();
+    names.add_occurrence(REMOTE, "Remote Tasks", TABLE);
+    let mut cx = om_formula::Context::new(&names);
+    cx.occurrence = Some(OCCURRENCE);
+    let read =
+        om_formula::compile("Get ( LastError ) & \"/\" & Remote Tasks::Setting", &cx).unwrap();
+    let mut startup = ScriptStep::new(141);
+    startup.set_text(0, Some("$d"));
+    startup.set_calculation(
+        1,
+        Some(&om_scripts::Calculation::new(
+            Some(om_formula::formatted::encode(&read.tokens)),
+            om_formula::polish::encode(&read.expr),
+        )),
     );
     let script = fixture::script(
         1,
@@ -2518,6 +2535,10 @@ fn set_field_creates_and_edits_another_files_related_record() {
             fixture::set_field_in(OTHER, NAME, "\"Both\""),
             ScriptStep::new(75),
             fixture::set_variable("$c", "Get ( LastError )"),
+            // A related file's global, as a startup script sets one: that
+            // file's session value (#43).
+            fixture::set_field_in(REMOTE, SETTING, "\"startup\""),
+            startup,
             show,
         ],
     );
@@ -2583,7 +2604,7 @@ fn set_field_creates_and_edits_another_files_related_record() {
     common::wait_until(&mut app, "root loaded", |a| a.state().is_settled());
     common::open_menu(&mut app, "Scripts");
     common::click(&mut app, "Write related");
-    common::wait_for_label(&mut app, "result:0|0|0");
+    common::wait_for_label(&mut app, "result:0|0|0|0/startup");
     common::click(&mut app, "OK");
     common::wait_until(&mut app, "script ended", |a| {
         !a.state().script_running() && a.state().is_settled()

@@ -37,6 +37,17 @@ own chrome uses are in [design.md](design.md). Related notes:
   to the front. Elsewhere, and in the GUI tests, which run without a native
   window, the menu bar is drawn inside each window. The window title is the
   platform's own.
+- The Window menu's New Window runs the step. Show Window lists every open
+  file's windows but cards, front first, a hidden one in parentheses, and
+  scrolls when they do not fit; choosing one brings it to the front, shown
+  with its cards if it was hidden (`OpenMakerApp::show_window`, which the
+  list at the menu's end also runs), and tells the scripts' windows so,
+  also while the file's connection is lost. FileMaker documents only that
+  Show Window shows a hidden window by name; the rest is inferred, and
+  reduced menus leave Show Window enabled (OpenMaker's choice, unmeasured:
+  [#878](https://github.com/OpenMaker-Dev/openmaker/issues/878)).
+  Hide Window, Tile, Cascade and Bring All To Front are disabled
+  ([#54](https://github.com/OpenMaker-Dev/openmaker/issues/54)).
 - The app menu is named OpenMaker. On macOS, `tools/package-macos.sh`
   puts the client in an app bundle, `OpenMaker.app`
   ([development.md](development.md#app-bundle-for-macos)), whose Info.plist
@@ -173,9 +184,13 @@ unmeasured:
   veto or a refused save stops it. With another file open, hidden ones
   included, a layout with unsaved changes, or a lost connection with
   unsaved record changes, nothing closes and an alert says why ("Other
-  files are open. Close them first.", the Save Layout or Revert Layout
-  alert, or Reconnect or File > Close). FileMaker shows Home in a window
-  of its own and closes nothing.
+  files are open. Close them first: Window > Show Window lists them,
+  hidden ones too.", the Save Layout or Revert Layout alert, or Reconnect
+  or File > Close). FileMaker shows Home in a window of its own and closes
+  nothing, so it has no such alert: the wording is OpenMaker's. A file a
+  script opened hidden (a close trigger's too) stays open behind Home once
+  the visible file closes; Window > Show Window shows it in Home's place,
+  and File > Close then closes it.
 - A local file's location is its path, without FileMaker's `/Volumes/`
   prefix on macOS. A hosted file's location adds its port when that is not
   5003.

@@ -1094,7 +1094,9 @@ is written by that file (`related_owner.rs`, #1000):
 - **Fields.** Ordinary stored text, number, date, time, timestamp and container
   fields are written. Container acquisitions run on the owning file's library
   under the ordinary save's transaction; reference adjustments route there too.
-  Repetitions and global fields remain refused with error 3.
+  Repetitions remain refused with error 3. A global field is no
+  record's: Set Field into one sets that file's session value ("A related
+  file's globals", below).
 - **Transactions.** Inside the window's commit transaction (or a script's
   Open Transaction), the change is held in the owning file's transaction.
   On the opened file's connection the owning file joins the opened file's
@@ -1390,6 +1392,37 @@ preserving the typed spelling. This follows Claris's documented display
 model (script-runtime.md "Globals") as an inferred choice; native global
 readback, field-exit timing and local-file GUI parity remain unmeasured.
 Scripts retain their separate permissive assignment operation.
+
+**A related file's globals.** A global field of a table a related file
+owns is that file's session value, whichever occurrence names it
+([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)).
+- **Writes.** Set Field into one, from a layout of any table, and the
+  user's typing into one on a layout of that file's table, go to that
+  file's own provider (`global_owner`, through the table's route,
+  external.rs). It checks the field and its own account's field access
+  (201), and a user's typing by its own entry rules, as its own window
+  would (with the opened file's tables readable, as for its records'
+  entry checks). A layout of that file's table offers the typed globals
+  that file's rules and access allow, as a layout of this file's table
+  offers its own (`typed_globals`).
+- **Readers.** The value is kept in that file's provider, whose rules read
+  it (an auto-entry of a record it writes for this file), and in the
+  opened file's session values, which its calculations read through the
+  occurrence. The shared desktop values (desktop.rs) carry it to that
+  file's own window in this session. They are kept by file as external.rs
+  tells files apart (host, port and name, or path), so a file of the same
+  name on another host keeps its own. Nothing is sent to either host: a
+  new session reads the stored value.
+- **Evidence.** That FileMaker Pro keeps a related file's global as that
+  file's session value, so that its own layouts, calculations and scripts
+  read it, is inferred from Claris "Global fields" (a client's global
+  values are its own, per file) and from a hosted multi-file solution
+  whose startup script sets its data file's globals so; unmeasured in
+  OpenMaker's captures.
+- **Limit.** A value that file's own window sets afterwards is not read by
+  the rules of that file's records this file writes: that file's provider
+  here keeps the last value set through it, and its other values are the
+  stored ones ([#874](https://github.com/OpenMaker-Dev/openmaker/issues/874)).
 
 A field object showing later repetitions (2 through 255) accepts
 Browse typing for these globals and ordinary supported scalar fields, in

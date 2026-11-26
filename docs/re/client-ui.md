@@ -234,7 +234,14 @@ gray.
   Utilities..., Tools Marketplace, Create Add-on...
 - **Window**: New Window, Show Window >, Hide Window, Minimize Window ⌘M |
   Tile Horizontally, Tile Vertically, Cascade Windows, Bring All To Front |
-  ✓ current window title.
+  ✓ current window title. Claris documents Hide Window for hiding a
+  document window and Show Window > window name for showing one that was
+  hidden
+  ([FileMaker Pro 12 Help, "Arranging windows"](https://help.claris.com/archive/help/12/fmp/en/html/fmp_basics.3.30.html)).
+  [I] Show Window lists every open window, a hidden one's name in
+  parentheses, and choosing one also brings it to the front; not measured
+  in Pro 26, nor its order, its check mark, or whether reduced menus keep
+  it ([#878](https://github.com/OpenMaker-Dev/openmaker/issues/878)).
 - **Help**: search, FileMaker Pro Help, Keyboard Shortcuts | documentation and
   support links. Plug-in items (MBS) in the captures are not baseline chrome.
 

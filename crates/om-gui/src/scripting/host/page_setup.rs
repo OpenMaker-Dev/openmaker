@@ -1,5 +1,5 @@
 //! Print Setup (42); preferences change atomically, without a record commit.
-use super::WorkerHost;
+use super::{forget_failure, note_failure, WorkerHost};
 use crate::{
     page_setup::Settings,
     scripting::{Answer, Prompt, ScriptEvent},
@@ -29,12 +29,12 @@ impl WorkerHost<'_> {
     }
 
     fn page_setup_error(&mut self, message: String) -> HostError {
-        self.s.failure = Some(message);
+        note_failure(message);
         HostError::Error(ErrorCode(3))
     }
 
     pub(super) fn print_setup(&mut self, call: &StepCall<'_>) -> HostResult {
-        self.s.failure = None;
+        forget_failure();
         let restored = if call.step.has_flag(flag::RESTORE) {
             let node = call.step.data_leaf(0x87).ok_or_else(|| {
                 self.page_setup_error("Restored Page Setup has no page format".into())

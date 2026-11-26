@@ -4,7 +4,7 @@
 use om_data::runtime::{ErrorCode, HostError, HostResult, Mode};
 use om_layout::ObjectKind;
 
-use super::{data_error, WorkerHost};
+use super::{data_error, note_failure, WorkerHost};
 use crate::scripting::ObjectRefresh;
 
 impl WorkerHost<'_> {
@@ -19,7 +19,7 @@ impl WorkerHost<'_> {
         if self.s.file.window.state.mode != Mode::Browse
             || self.s.file.window.state.view == crate::scripting::View::Table
         {
-            self.s.failure = Some(
+            note_failure(
                 "Targeted refresh currently requires a Browse layout in Form or List view.".into(),
             );
             return Err(HostError::Unsupported);
@@ -51,7 +51,7 @@ impl WorkerHost<'_> {
         }
         .ok_or_else(missing)?;
         if matches!(object.kind(), ObjectKind::External | ObjectKind::Unknown(_)) {
-            self.s.failure = Some(
+            note_failure(
                 "Refreshing external or unknown layout object contents is unsupported.".into(),
             );
             return Err(HostError::Unsupported);
@@ -98,7 +98,7 @@ impl WorkerHost<'_> {
                         .is_some_and(|field| field.num_of_reps > 1)
             })
         {
-            self.s.failure = Some("Target refresh requires decoded layout calculations and supported contents; external objects and multi-repetition grids are unsupported.".into());
+            note_failure("Target refresh requires decoded layout calculations and supported contents; external objects and multi-repetition grids are unsupported.".into());
             return Err(HostError::Unsupported);
         }
         if !self.s.file.window.can_refresh_object() {

@@ -3905,6 +3905,14 @@ Globals (2026-10-29; Claris "Global fields")
   a global (any repetition) sets it, in Browse and Find mode (where it is
   no criterion, 13.19); a global container field is still 201. Before,
   Set Field into a global was 201 in both modes.
+- A global field of a related file's table, named through an occurrence of
+  the opened file (file-metadata.md 1.1), is that file's global, so a value
+  set through it is the client's session value of that file's global, which
+  that file's own layouts, calculations and scripts read [I: from the
+  per-file values Claris documents, and a hosted multi-file solution whose
+  startup script sets its data file's globals through such occurrences and
+  relies on them; not captured or measured]. OpenMaker sets it in that file
+  (record-writes.md, "A related file's globals").
 - A user's typing into a text global field on a layout sets the
   session's value too (the provider takes the global out of the record's
   changes; the layout offers text globals for editing), and Set Field By
@@ -4099,7 +4107,11 @@ Steps
   A paused script goes on in the window the user left in
   front. `Get ( WindowName )`, the window selectors the session answers
   and `WindowNames` answer for each window (front to back). Window > New
-  Window runs the step; the Window menu lists the windows. A window's own
+  Window runs the step; the Window menu lists the windows, and its Show
+  Window every open file's, a hidden one in parentheses: choosing one
+  brings it to the front, shown if it was hidden, and the scripts'
+  windows then have it shown too (client-ui.md; the list and parentheses
+  are inferred). A window's own
   close box closes it as the user's action (2026-10-30): OnWindowClose
   (and OnLastWindowClose for the file's last window, which closes the
   file), then its record's commit with OnRecordCommit; the window stays
