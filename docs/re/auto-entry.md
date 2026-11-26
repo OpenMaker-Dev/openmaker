@@ -350,10 +350,25 @@ lookups; the values are then read through it:
   data-entry conversion is applied.
 - An empty related value is copied as empty (asset 2's date and time).
 
-Not measured: scripts (Set Field) and imports in FileMaker Pro, which of
-several matching records an unsorted relationship gives, container
-fields, Relookup Field Contents, and the next lower or higher value or a
-constant.
+FileMaker Pro 26.1.1, a local two-table Text lookup over an equality
+relationship with "If no exact match: Use" selected
+([native steps and results](https://github.com/OpenMaker-Dev/openmaker/issues/1020#issuecomment-7185793871)):
+
+- New Record and Commit with the key untouched and empty leave the target
+  empty. Setting the key to a missing match copies the fallback immediately.
+  A blank fallback clears the target.
+- An exact match copies the related value. If that value is empty, "Don't
+  copy contents if empty" preserves the prior value. Neither empty-match
+  setting copies the fallback.
+- Explicitly clearing an existing key copies a nonempty fallback. The
+  results survived commit and reopen, with LastError 0 and no alert.
+- Lookup definition `08` stores mode byte `03`. FileMaker writes member
+  `0b` for a nonempty fallback and omits it for a blank fallback.
+
+Unmeasured for this option: explicit clear with a blank fallback, hosting,
+imports and other field types. More generally, copying the next lower or
+higher value, container fields, Relookup Field Contents, and which of
+several matches an unsorted relationship gives remain unmeasured here.
 
 ## Calculations over related fields
 

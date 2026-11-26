@@ -123,6 +123,7 @@ const SUPPORTED_VALIDATION: u32 = VALIDATE_BY_CALCULATION
 const FIELD_FORMULA: u64 = 5;
 const FIELD_VALUE_LIST: u64 = 0x07;
 const FIELD_LOOKUP: u64 = 0x08;
+const FIELD_LOOKUP_FALLBACK: u64 = 0x0b;
 const FIELD_CONSTANT: u64 = 0x0d;
 /// A child FileMaker Pro 26 left beside one lookup definition, `00000000`;
 /// its meaning is unknown (schema-path.md 5.5).
@@ -1046,21 +1047,24 @@ struct Lookup {
     copied: u64,
     /// "Don't copy contents if empty" off: an empty value is copied too.
     copy_empty: bool,
+    /// Value to copy when there is no matching record, including an empty value.
+    fallback: Option<String>,
     /// The field's table's match fields: a write changing one fires it.
     matches: Vec<u64>,
 }
 
-/// A lookup definition `08` for "if no exact match: do not copy"
-/// (schema-path.md 5.5): byte 0 `00` ("do not copy"), byte 1 "don't copy
-/// contents if empty" (`00` on, `01` off), then three fixed-size key
-/// buffers, each a key string's length, the key and padding: the occurrence
+/// A lookup definition `08` (schema-path.md 5.5): byte 0 `00` ("do not
+/// copy") or `03` ("use" the fallback from `0b`, empty when absent),
+/// byte 1 "don't copy contents if empty" (`00` on, `01` off), then three
+/// fixed-size key buffers, each a key string's length, the key and padding:
+/// the occurrence
 /// looked up from (6 bytes), the field copied (7), a byte `01` whose
 /// meaning is unknown, and the starting occurrence (6), 22 bytes in all.
 /// The padding is whatever the writer left there (`00`, `7f`, `5e` and
 /// others, which change no setting FileMaker Pro's dialog shows), so any
 /// value is read; every other byte must be as stated, and each key minimally
 /// encoded within its buffer. Anything else is `None`.
-fn exact_lookup(bytes: &[u8]) -> Option<Lookup> {
+fn exact_lookup(bytes: &[u8], fallback: Option<String>) -> Option<Lookup> {
     fn expect(bytes: &[u8], at: &mut usize, expected: &[u8]) -> Option<()> {
         let end = at.checked_add(expected.len())?;
         (bytes.get(*at..end)? == expected).then(|| *at = end)
@@ -1075,8 +1079,12 @@ fn exact_lookup(bytes: &[u8]) -> Option<Lookup> {
         (Key::from_id(id) == key).then(|| *at += size)?;
         Some(id)
     }
-    let mut at = 0;
-    expect(bytes, &mut at, &[0])?;
+    let fallback = match bytes.first()? {
+        0 => None,
+        3 => Some(fallback?),
+        _ => return None,
+    };
+    let mut at = 1;
     let copy_empty = match *bytes.get(at)? {
         0 => false,
         1 => true,
@@ -1092,6 +1100,7 @@ fn exact_lookup(bytes: &[u8]) -> Option<Lookup> {
         to,
         copied,
         copy_empty,
+        fallback,
         matches: Vec::new(),
     })
 }
@@ -1943,8 +1952,23 @@ impl RecordPlan {
                     None => true,
                     Some(n) => n.assembled().is_some_and(|b| *b == [0u8; 4]),
                 };
+                let fallback =
+                    if definition.first() == Some(&3) && field.data_type == DataType::Text {
+                        Some(
+                            match field_node.and_then(|n| n.get(FIELD_LOOKUP_FALLBACK)) {
+                                // FileMaker omits the member when the fallback box is blank.
+                                None => String::new(),
+                                Some(node) => node
+                                    .text()
+                                    .and_then(Result::ok)
+                                    .ok_or_else(|| error("lookup fallback is unreadable."))?,
+                            },
+                        )
+                    } else {
+                        None
+                    };
                 Some(
-                    exact_lookup(&definition)
+                    exact_lookup(&definition, fallback)
                         .filter(|_| seen)
                         .ok_or_else(|| error("unsupported lookup options."))?,
                 )
@@ -4348,10 +4372,13 @@ impl RecordPlan {
                 let keys = Self::lookup_keys(lookup, &row);
                 match environment.lookups.copied.get(id) {
                     Some((read_keys, found)) if *read_keys == keys => {
-                        if let Some(value) = found
-                            .as_ref()
-                            .filter(|v| lookup.copy_empty || !v.is_empty())
-                        {
+                        let value = match found {
+                            Some(value) => {
+                                Some(value).filter(|v| lookup.copy_empty || !v.is_empty())
+                            }
+                            None => lookup.fallback.as_ref(),
+                        };
+                        if let Some(value) = value {
                             assign(&mut row, &mut dirty, *id, value.clone());
                         }
                     }
@@ -8560,10 +8587,15 @@ mod tests {
                 right: 1,
             }],
         ));
-        let plan_for = |off: &[u8]| {
+        let plan_with_fallback = |off: &[u8], fallback: Option<&str>| {
             let mut on = OFF.to_vec();
             on[1] = 0;
-            let leaves = [(2, 8, off), (2, 0x26, &[0; 4][..]), (3, 8, &on[..])];
+            let mut leaves = vec![(2, 8, off)];
+            let stored = fallback.map(om_scsu::encode_scsu);
+            if let Some(stored) = &stored {
+                leaves.push((2, FIELD_LOOKUP_FALLBACK, stored.as_slice()));
+            }
+            leaves.extend([(2, 0x26, &[0; 4][..]), (3, 8, &on[..])]);
             let paths: Vec<Vec<Vec<u8>>> = leaves
                 .iter()
                 .map(|(field, key, _)| {
@@ -8581,6 +8613,7 @@ mod tests {
             }
             RecordPlan::from_file_schema(&table, &tree, &file)
         };
+        let plan_for = |off: &[u8]| plan_with_fallback(off, None);
         // Assets' form, with this test's keys: FileMaker Pro's dialog shows
         // its settings as ON's (#549), and it reads as the same lookup.
         let assets = [
@@ -8590,8 +8623,8 @@ mod tests {
         let mut on = OFF.to_vec();
         on[1] = 0;
         assert_eq!(
-            format!("{:?}", exact_lookup(&assets).unwrap()),
-            format!("{:?}", exact_lookup(&on).unwrap())
+            format!("{:?}", exact_lookup(&assets, None).unwrap()),
+            format!("{:?}", exact_lookup(&on, None).unwrap())
         );
         assert!(plan_for(&assets)
             .unwrap()
@@ -8621,8 +8654,8 @@ mod tests {
             padded[11..15].copy_from_slice(padding);
             padded[21] = last[i % last.len()];
             assert_eq!(
-                format!("{:?}", exact_lookup(&padded)),
-                format!("{:?}", exact_lookup(OFF)),
+                format!("{:?}", exact_lookup(&padded, None)),
+                format!("{:?}", exact_lookup(OFF, None)),
                 "{padded:02x?}"
             );
         }
@@ -8631,7 +8664,7 @@ mod tests {
             0x00, 0x01, 0x04, 0x03, 0xd0, 0x00, 0x03, 0x00, 0x02, 0x01, 0x17, 0x00, 0x02, 0x00,
             0x00, 0x01, 0x04, 0x03, 0xd0, 0x00, 0x01, 0x00,
         ];
-        let read = exact_lookup(&hosted).unwrap();
+        let read = exact_lookup(&hosted, None).unwrap();
         assert_eq!(
             (read.from, read.to, read.copied, read.copy_empty),
             (0xd0_0001, 0xd0_0003, 0x17, true)
@@ -8658,7 +8691,10 @@ mod tests {
             OFF[..21].to_vec(),
             longer,
         ] {
-            assert!(exact_lookup(&unsupported).is_none(), "{unsupported:02x?}");
+            assert!(
+                exact_lookup(&unsupported, None).is_none(),
+                "{unsupported:02x?}"
+            );
             let refused = plan_for(&unsupported).err().unwrap();
             assert!(refused.to_string().contains("unsupported lookup options"));
         }
@@ -8684,9 +8720,12 @@ mod tests {
             values.set(2, 1, Value::text(x));
             b.put_record(0x8007, id, values);
         }
-        let write = |mode, existing: &[(u64, &str)], k: &str| {
+        let write = |plan: &RecordPlan, mode, existing: &[(u64, &str)], key: Option<&str>| {
             let existing = existing.iter().map(|(f, v)| (*f, v.to_string())).collect();
-            let changes = BTreeMap::from([(1, Some(k.to_string()))]);
+            let changes = key
+                .into_iter()
+                .map(|key| (1, (!key.is_empty()).then(|| key.to_owned())))
+                .collect();
             let mut environment = environment();
             environment.lookups = plan
                 .read_lookups(mode, &existing, &changes, Entry::default(), &b)
@@ -8698,17 +8737,53 @@ mod tests {
         };
         let copied = Some(Some("COPIED_VALUE".to_string()));
         assert_eq!(
-            write(WriteMode::Create, &[], "K_MATCH"),
+            write(&plan, WriteMode::Create, &[], Some("K_MATCH")),
             (copied.clone(), copied)
         );
         let manual = [(1, "K_MATCH"), (2, "MANUAL_OFF"), (3, "MANUAL_ON")];
         assert_eq!(
-            write(WriteMode::Update, &manual, "K_NO_MATCH"),
+            write(&plan, WriteMode::Update, &manual, Some("K_NO_MATCH")),
             (None, None)
         );
         let manual = [(1, "K_NO_MATCH"), (2, "MANUAL_OFF"), (3, "MANUAL_ON")];
         assert_eq!(
-            write(WriteMode::Update, &manual, "K_EMPTY"),
+            write(&plan, WriteMode::Update, &manual, Some("K_EMPTY")),
+            (Some(None), None)
+        );
+
+        let with_fallback = plan_with_fallback(&changed(0, 3), Some("Unknown")).unwrap();
+        assert_eq!(
+            write(
+                &with_fallback,
+                WriteMode::Update,
+                &manual,
+                Some("K_MISSING")
+            ),
+            (Some(Some("Unknown".into())), None)
+        );
+        assert_eq!(
+            write(&with_fallback, WriteMode::Update, &manual, Some("K_EMPTY")),
+            (Some(None), None)
+        );
+
+        assert_eq!(
+            write(&with_fallback, WriteMode::Create, &[], None),
+            (None, None)
+        );
+        assert_eq!(
+            write(&with_fallback, WriteMode::Update, &manual, Some("")),
+            (Some(Some("Unknown".into())), None)
+        );
+        let mut guard = changed(0, 3);
+        guard[1] = 0;
+        let guarded = plan_with_fallback(&guard, Some("Unknown")).unwrap();
+        assert_eq!(
+            write(&guarded, WriteMode::Update, &manual, Some("K_EMPTY")),
+            (None, None)
+        );
+        let blank = plan_for(&changed(0, 3)).unwrap();
+        assert_eq!(
+            write(&blank, WriteMode::Update, &manual, Some("K_MISSING")),
             (Some(None), None)
         );
 
