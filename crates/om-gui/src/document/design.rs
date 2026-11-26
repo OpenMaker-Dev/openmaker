@@ -7,8 +7,8 @@ use egui::{Color32, Rect, Ui};
 use om_layout::{Layout, ObjectKind, TextRun};
 
 use super::{
-    color, layout_cache::LayoutCache, line, paint_box, paint_label_icon, paint_library_image,
-    paint_rich_text, Session,
+    color, layout_cache::LayoutCache, line, paint_box, paint_library_image, paint_rich_text,
+    Session,
 };
 
 pub(crate) struct Surface<'a> {
@@ -83,7 +83,15 @@ impl<'a> Surface<'a> {
             let Some(image) = object.graphic.as_ref().filter(|g| g.library_key != 0) else {
                 return false;
             };
-            return paint_library_image(ui, self.cache, self.layout, image.library_key, rect, None);
+            if self
+                .cache
+                .library_image(self.layout, image.library_key, None)
+                .is_none()
+            {
+                return false;
+            }
+            paint_library_image(ui, self.cache, self.layout, image.library_key, rect, None);
+            return true;
         }
         if matches!(
             kind,
@@ -92,7 +100,7 @@ impl<'a> Surface<'a> {
             let text = if kind == ObjectKind::Field {
                 Cow::Borrowed(field_caption)
             } else if !object.shows_label() {
-                Cow::Borrowed("")
+                return false;
             } else if let Some(words) = draft_words {
                 Cow::Borrowed(words)
             } else if object.text_runs.is_empty() {
@@ -109,15 +117,6 @@ impl<'a> Surface<'a> {
                         .collect(),
                 )
             };
-            let rect = paint_label_icon(
-                ui,
-                self.cache,
-                (self.layout, object),
-                rect,
-                text.is_empty(),
-                None,
-                (1, style.border_color[0]),
-            );
             let style = self.cache.text_style(self.layout, object, &[], 1);
             let rich = draft_words
                 .is_none()

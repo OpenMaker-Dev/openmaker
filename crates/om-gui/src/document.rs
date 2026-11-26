@@ -5285,20 +5285,50 @@ fn paint_object_repetition(
                 ),
                 false => String::new(),
             };
-            // A calculated icon uses the library icon until its formula
-            // can be evaluated in this Browse context.
+            let mut text_rect = rect;
+            let icon = match (&object.button, &object.popover_button) {
+                (Some(button), _) => Some((button.library_key, button.icon_size)),
+                (None, Some(button)) => Some((button.library_key, button.icon_size)),
+                (None, None) => None,
+            };
+            // A calculated icon (FileMaker Pro 26.1) is the SVG its formula
+            // gives on the record, in the library icon's place.
+            // Not evaluated (Find mode, or until its data is read): the
+            // library icon, if any [I: what Find mode shows is unmeasured].
             let svg = object
                 .active_icon_formula()
-                .and(calc_state.icon_svg.as_deref());
-            let text_rect = paint_label_icon(
-                ui,
-                &state.layout_cache,
-                (layout, object),
-                rect,
-                text.is_empty(),
-                svg,
-                (style_state, style.border_color[0]),
-            );
+                .and_then(|_| calc_state.icon_svg.clone());
+            // A library icon shows only with its key; a calculated one
+            // always, its size the button's icon size.
+            let shown = icon.filter(|(key, _)| svg.is_some() || *key != 0);
+            if let Some((library_key, icon_size)) = shown {
+                let size = (icon_size.max(1) as f32)
+                    .min(rect.width())
+                    .min(rect.height());
+                let center = if text.is_empty() {
+                    rect.center()
+                } else {
+                    pos2(rect.left() + size / 2.0 + 6.0, rect.center().y)
+                };
+                let icon = state
+                    .layout_cache
+                    .formatted_style(layout, object, &[], 4, style_state);
+                let tint = icon
+                    .icon_color
+                    .or(icon.color)
+                    .or(style.border_color[0])
+                    .map(color);
+                let at = Rect::from_center_size(center, vec2(size, size));
+                match &svg {
+                    Some(svg) => paint_calculated_icon(ui, svg, at, tint),
+                    None => {
+                        paint_library_image(ui, &state.layout_cache, layout, library_key, at, tint)
+                    }
+                }
+                if !text.is_empty() {
+                    text_rect.min.x += size + 10.0;
+                }
+            }
             let mut rich = object.rich_text.as_ref().map(std::borrow::Cow::Borrowed);
             if !conditions.is_empty() {
                 if let Some(rich) = &mut rich {
@@ -8247,44 +8277,6 @@ fn paint_icon(ui: &Ui, icon: Icon, side: f32, field: Rect, color: Option<Color32
     );
 }
 
-/// Paint a button's icon and return the space remaining for its label.
-fn paint_label_icon(
-    ui: &Ui,
-    cache: &layout_cache::LayoutCache,
-    (layout, object): (&Layout, &LayoutObject),
-    mut rect: Rect,
-    label_empty: bool,
-    svg: Option<&str>,
-    (state, border): (i32, Option<Color>),
-) -> Rect {
-    let icon = match (&object.button, &object.popover_button) {
-        (Some(button), _) => Some((button.library_key, button.icon_size)),
-        (None, Some(button)) => Some((button.library_key, button.icon_size)),
-        (None, None) => None,
-    };
-    let Some((key, size)) = icon.filter(|(key, _)| svg.is_some() || *key != 0) else {
-        return rect;
-    };
-    let size = (size.max(1) as f32).min(rect.width()).min(rect.height());
-    let center = if label_empty {
-        rect.center()
-    } else {
-        pos2(rect.left() + size / 2.0 + 6.0, rect.center().y)
-    };
-    let icon = cache.formatted_style(layout, object, &[], 4, state);
-    let tint = icon.icon_color.or(icon.color).or(border).map(color);
-    let at = Rect::from_center_size(center, vec2(size, size));
-    if let Some(svg) = svg {
-        paint_calculated_icon(ui, svg, at, tint);
-    } else {
-        paint_library_image(ui, cache, layout, key, at, tint);
-    }
-    if !label_empty {
-        rect.min.x += size + 10.0;
-    }
-    rect
-}
-
 fn paint_library_image(
     ui: &Ui,
     cache: &layout_cache::LayoutCache,
@@ -8292,14 +8284,12 @@ fn paint_library_image(
     key: u64,
     rect: Rect,
     tint: Option<Color32>,
-) -> bool {
-    let Some(image) = cache.library_image(layout, key, tint) else {
-        return false;
-    };
-    egui::Image::new(image)
-        .show_loading_spinner(false)
-        .paint_at(ui, rect);
-    true
+) {
+    if let Some(image) = cache.library_image(layout, key, tint) {
+        egui::Image::new(image)
+            .show_loading_spinner(false)
+            .paint_at(ui, rect);
+    }
 }
 
 /// Calculated SVGs by URI, ordered by when they were last drawn. Each
