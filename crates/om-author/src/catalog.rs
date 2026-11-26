@@ -980,7 +980,7 @@ pub static SCRIPT_CALLS: CommandSpec = CommandSpec {
     parse: |params| read(params).map(Command::ScriptCalls),
 };
 
-pub static ALL: [&CommandSpec; 41] = [
+pub static ALL: [&CommandSpec; 42] = [
     &CAPABILITIES,
     &INSPECT,
     &GET_SCRIPT,
