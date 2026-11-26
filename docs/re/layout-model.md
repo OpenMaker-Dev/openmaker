@@ -2280,6 +2280,8 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   stops loading. Before handing a `data:text/html,` address whose
   payload starts with literal markup to Foundation, OpenMaker escapes
   raw hashes so they stay in the HTML even when auto-encoding is off.
+  A trailing `#section` after the literal markup becomes page text
+  [I, OpenMaker's choice; FileMaker Pro's behavior is unmeasured].
   An address Foundation cannot read as a URL shows a blank page
   [I, OpenMaker's choice; wry would panic on it]. Every window shows
   its own pages: another window's AppKit window is found as
