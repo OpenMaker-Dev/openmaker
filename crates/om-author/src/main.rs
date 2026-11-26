@@ -49,6 +49,9 @@ commands (each prints one JSON response):
   set-object-frames LAYOUT --object REF --frame FRAME --expected-revision REV
                                      move or resize one object, then read the
                                      layout back
+  move-objects LAYOUT --object REF [--object REF ...]
+        --dx POINTS --dy POINTS --expected-revision REV
+                                     move the objects together in layout points
   arrange-objects LAYOUT --object REF --object REF [--object REF ...]
         --arrangement ID --expected-revision REV
                                      align, distribute or resize the objects
@@ -163,8 +166,8 @@ text, a move or a deletion the layout's revision from get-layout. For create-lay
 OCCURRENCE is --occurrence REF (occurrence:13631490@File.fmp12) or
 --occurrence-name NAME, LAYOUT the layout whose theme and width the new one
 takes (default: the first with a theme), and REV the file's layouts_revision
-from inspect. REF for set-object-frames, delete-objects, list-choices, choose-item and
-enter-other is a layout object reference from get-layout
+from inspect. REF for set-object-frames, move-objects, arrange-objects,
+delete-objects, list-choices, choose-item and enter-other is a layout object reference from get-layout
 (layout_object:1.4@File.fmp12), ID a record id and VALUE an item's stored
 value from list-choices. For
 complete-calculation, N for --cursor counts characters (default: the end of
@@ -222,9 +225,11 @@ struct Args {
     label_frame: Option<String>,
     parameter: Option<String>,
     object: Option<String>,
-    /// Every `--object`, in order (`arrange-objects`).
+    /// Every `--object`, in order.
     objects: Vec<String>,
     arrangement: Option<String>,
+    dx: Option<f64>,
+    dy: Option<f64>,
     record: Option<String>,
     value: Option<String>,
     text: Option<String>,
@@ -325,6 +330,8 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
                 args.object = Some(object);
             }
             "--arrangement" => args.arrangement = Some(value(&arg)?),
+            "--dx" => args.dx = Some(value(&arg)?.parse().map_err(|_| "--dx needs a number")?),
+            "--dy" => args.dy = Some(value(&arg)?.parse().map_err(|_| "--dy needs a number")?),
             "--record" => args.record = Some(value(&arg)?),
             "--value" => args.value = Some(value(&arg)?),
             "--layout-name" => args.layout_name = Some(value(&arg)?),
@@ -602,6 +609,18 @@ fn command(name: &str, args: &Args) -> Result<Command, String> {
             expected_revision: args.expected_revision.clone().ok_or(
                 "arrange-objects needs --expected-revision: the layout's revision from \
                  get-layout.",
+            )?,
+        }),
+        "move_objects" => Command::MoveObjects(api::MoveObjectsParams {
+            layout: args.layout.clone(),
+            layout_name: args.layout_name.clone(),
+            objects: args.objects.clone(),
+            dx: args
+                .dx
+                .ok_or("move-objects needs --dx: horizontal points.")?,
+            dy: args.dy.ok_or("move-objects needs --dy: vertical points.")?,
+            expected_revision: args.expected_revision.clone().ok_or(
+                "move-objects needs --expected-revision: the layout's revision from get-layout.",
             )?,
         }),
         "place_text" => Command::PlaceText(PlaceTextParams {
@@ -1047,6 +1066,7 @@ mod tests {
             frame: Some("10,60,120,20".into()),
             rows: Some("3".into()),
             object: Some("layout_object:1.4@F.fmp12".into()),
+            objects: vec!["layout_object:1.4@F.fmp12".into()],
             record: Some("1".into()),
             value: Some("v".into()),
             width: Some("900".into()),
@@ -1058,6 +1078,8 @@ mod tests {
             target_file: Some("B.fmp12".into()),
             value_list: Some("value_list:1@F.fmp12".into()),
             arrangement: Some("align_left_edges".into()),
+            dx: Some(-1.0),
+            dy: Some(2.0),
             ..Args::default()
         };
         // A text to place, where `--text` is not a formula's.

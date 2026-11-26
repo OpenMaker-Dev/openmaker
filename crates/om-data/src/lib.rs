@@ -30,6 +30,7 @@ pub mod found;
 pub mod host;
 pub mod layout_arrange;
 pub mod layout_catalog;
+pub mod layout_move;
 pub mod layout_objects;
 pub mod layout_placement;
 pub mod library_uses;
