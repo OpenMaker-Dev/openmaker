@@ -610,7 +610,11 @@ with a custom web address (operation 28, planned with
   reference of value `0d` for each field the address reads, the last key
   issued, and the layout's stamp. Every stored object and key is kept.
   The host checks that each field the address reads is a field of one of
-  the file's tables.
+  the file's tables, and that the address's text compiles again to the
+  calculation it stores (so the text Web Viewer Setup shows and what
+  Browse evaluates cannot differ). It compiles that text without the
+  file's names, so an address calling a custom or plug-in function is
+  refused.
 - **Frame and retries.** Its frame follows `place_field`'s rules. A
   request repeated after a lost answer finds the same viewer on top and
   reports `already_applied`. Any other request at an old revision is a

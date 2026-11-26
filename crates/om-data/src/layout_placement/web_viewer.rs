@@ -101,8 +101,20 @@ const VIEWER_FORMAT: [u8; 2] = [0x00, 0x0a];
 const VIEWER_REFERENCE: u8 = 0x0d;
 
 /// The most bytes of a web address's formatted and Polish streams together
-/// (OpenMaker's bound; a value above 1000 bytes is stored in chunks).
-pub const MAX_ADDRESS_BYTES: usize = 64 * 1024;
+/// (OpenMaker's bound, as the wire's: a value above 1000 bytes is stored in
+/// chunks).
+pub const MAX_ADDRESS_BYTES: usize = om_protocol_bound::MAX_WEB_ADDRESS_BYTES;
+
+/// The wire's bound, kept equal to the protocol's
+/// (`om_protocol::authoring::MAX_WEB_ADDRESS_BYTES`; om-data does not
+/// depend on om-protocol).
+mod om_protocol_bound {
+    pub const MAX_WEB_ADDRESS_BYTES: usize = 64 * 1024;
+}
+
+/// A field reference's index keys: the occurrence's and the field's key
+/// segments.
+type FieldKeys = (Vec<u8>, Vec<u8>);
 
 /// A web viewer to place on a layout's body.
 #[derive(Clone, Debug, PartialEq)]
@@ -185,30 +197,44 @@ pub fn compile_address(
     ))
 }
 
-/// The address's Polish stream decoded, refused when it does not decode,
-/// and its formatted stream checked the same way.
+/// The address's expression: its formatted stream (the text Web Viewer
+/// Setup shows) compiled again must give its Polish stream (what Browse
+/// evaluates), as FileMaker Pro's did (layout-model.md 10.19), so the two
+/// cannot disagree. Fields are keys in the formatted stream; an address
+/// that needs the file's names for more (a custom or plug-in function) is
+/// refused.
 fn address(viewer: &WebViewerPlacement) -> Result<om_formula::Expr, Refusal> {
     let invalid = |why: String| Refusal::Invalid(format!("The web address {why}."));
-    if viewer.polish.is_empty() {
-        return Err(invalid("is empty".into()));
+    if viewer.polish.is_empty() || viewer.formatted.is_empty() {
+        return Err(invalid("is empty, or has no text".into()));
     }
     if viewer.polish.len() + viewer.formatted.len() > MAX_ADDRESS_BYTES {
         return Err(invalid(format!(
             "takes more than {MAX_ADDRESS_BYTES} bytes"
         )));
     }
-    let expr = om_formula::polish::decode(&viewer.polish)
-        .map_err(|e| invalid(format!("is not a calculation OpenMaker reads ({e:?})")))?;
-    if !viewer.formatted.is_empty() {
-        om_formula::formatted::decode(&viewer.formatted)
-            .map_err(|e| invalid(format!("text does not read ({e:?})")))?;
+    let tokens = om_formula::formatted::decode(&viewer.formatted)
+        .map_err(|e| invalid(format!("text does not read ({e:?})")))?;
+    let names = om_formula::NoNames;
+    let expr =
+        om_formula::compile_tokens(&tokens, &om_formula::Context::new(&names)).map_err(|_| {
+            Refusal::Unsupported(
+                "The web address's text does not compile on its own; this version places \
+                 addresses that use the file's fields and FileMaker's functions only."
+                    .into(),
+            )
+        })?;
+    if om_formula::polish::encode(&expr) != viewer.polish {
+        return Err(invalid(
+            "text and the calculation evaluated are not the same calculation".into(),
+        ));
     }
     Ok(expr)
 }
 
 /// The fields `expr` reads, as the field reference index keys them: each
 /// occurrence's and field's key segments, once.
-fn referenced_fields(expr: &om_formula::Expr) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Refusal> {
+fn referenced_fields(expr: &om_formula::Expr) -> Result<Vec<FieldKeys>, Refusal> {
     let mut out = Vec::new();
     for field in expr.field_references() {
         let (Some(occurrence), Some(id)) = (field.occurrence.id(), field.field.id()) else {
@@ -403,7 +429,9 @@ pub fn plan_web_viewer(
 
 /// The web viewer an earlier placement of `viewer` made on `member`, if it
 /// is on top of its root stack with that frame, those options and that
-/// address: its key.
+/// address (both streams), and is the last object the layout issued: its
+/// key. As for the other placements, an identical viewer the layout had
+/// on top before is not told apart.
 pub fn already_placed_web_viewer(member: &OwnedNode, viewer: &WebViewerPlacement) -> Option<u64> {
     let layout = decode(member)?;
     let top = layout.objects.get(*layout.objects.root.last()?)?;
@@ -418,5 +446,9 @@ pub fn already_placed_web_viewer(member: &OwnedNode, viewer: &WebViewerPlacement
         &[FORMULA],
     ])?;
     let stored = om_scripts::Calculation::decode(formula)?;
-    (stored.polish.as_deref() == Some(&viewer.polish[..])).then_some(top.id)
+    let issued = last_issued(member).ok().flatten();
+    (stored.polish.as_deref() == Some(&viewer.polish[..])
+        && stored.formatted.as_deref() == Some(&viewer.formatted[..])
+        && issued == Some(top.id))
+    .then_some(top.id)
 }

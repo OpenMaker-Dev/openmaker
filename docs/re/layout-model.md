@@ -3513,7 +3513,8 @@ records above, but for `kSelected` in the object's flags, which no
 placement writes (10.5), and the object store, to which the viewer is
 appended with every stored byte kept. It writes only the option
 combinations measured above (W2's, W1's and W3's flags) with a custom
-address, and refuses the others. [O, 2026-11-26] For W2's and W1's setups
+address, and refuses the others; and only an address whose formatted
+stream compiles again to its Polish stream, as Pro's four did. [O, 2026-11-26] For W2's and W1's setups
 on the same starter's Contact Details (at 40/300/320/500, clear of the
 tab control), OpenMaker Server's records outside the object store were
 byte for byte Pro's, but for the viewer's UUID and the stamp's user and

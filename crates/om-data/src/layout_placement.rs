@@ -2740,16 +2740,16 @@ mod tests {
         assert_eq!(already_placed_web_viewer(member, &viewer), Some(key));
         assert_eq!(already_placed_web_viewer(&before, &viewer), None);
 
-        // A field the address reads: its reference, valued 0d.
-        let field = om_formula::Field {
-            flags: om_formula::Field::TABLE_PRESENT,
-            occurrence: om_formula::Key([&[3][..], &uint_segment(OCCURRENCE)].concat()),
-            field: om_formula::Key(vec![1, 7]),
-            repetition: 1,
-        };
+        // A field the address reads, as Pro stored W1's address
+        // `"https://example.com/?q=" & Contacts::Website` (field 7 of
+        // occurrence d0 00 02): its reference, valued 0d.
         let reads = WebViewerPlacement {
-            polish: om_formula::polish::encode(&om_formula::Expr::Field(field)),
-            formatted: Vec::new(),
+            formatted: unhex(
+                "1317322e2e2a296075753f223b372a363f7439353775652b67000c13017a00500c13017a0016040403d000020201070001",
+            ),
+            polish: unhex(
+                "501317322e2e2a296075753f223b372a363f7439353775652b670016040403d000020201070001",
+            ),
             ..viewer.clone()
         };
         let planned = plan_web_viewer(&before, &reads).unwrap();
@@ -2758,13 +2758,23 @@ mod tests {
                 .member
                 .at(&[
                     &[FIELD_INDEX],
-                    &uint_segment(OCCURRENCE),
+                    &[0xd0, 0, 2],
                     &[7],
                     &serial::encode(planned.viewer)
                 ])
                 .and_then(|n| n.value.clone()),
             Some(vec![0x0d])
         );
+        // Text and evaluated calculation that disagree are refused: the
+        // field shown would be neither read nor indexed.
+        let mismatched = WebViewerPlacement {
+            polish: viewer.polish.clone(),
+            ..reads
+        };
+        assert!(matches!(
+            plan_web_viewer(&before, &mismatched),
+            Err(Refusal::Invalid(_))
+        ));
 
         let unmeasured = WebViewerPlacement {
             flags: 0x800c,

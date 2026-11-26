@@ -1079,6 +1079,7 @@ mod tests {
             target_file: Some("B.fmp12".into()),
             value_list: Some("value_list:1@F.fmp12".into()),
             arrangement: Some("align_left_edges".into()),
+            address: Some("\"https://example.com\"".into()),
             ..Args::default()
         };
         // A text to place, where `--text` is not a formula's.

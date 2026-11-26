@@ -153,6 +153,10 @@ pub const MAX_STEP_DATA_BYTES: usize = 64 * 1024;
 /// The largest stream of a button's script parameter a request carries
 /// (each of its formatted and Polish streams).
 pub const MAX_PARAMETER_BYTES: usize = 64 * 1024;
+
+/// The most bytes of a web viewer's address a request carries: its
+/// formatted and Polish streams together, as the planner bounds them.
+pub const MAX_WEB_ADDRESS_BYTES: usize = 64 * 1024;
 pub const OP_SAVE: u32 = 1 << SAVE;
 pub const OP_SET_OBJECT_FRAMES: u32 = 1 << SET_OBJECT_FRAMES;
 pub const OP_DELETE_OBJECTS: u32 = 1 << DELETE_OBJECTS;
@@ -928,12 +932,10 @@ pub fn build_request(
             (b, PLACE_BUTTON, VERSION)
         }
         Request::PlaceWebViewer(place) => {
-            if place.formatted.len() > MAX_PARAMETER_BYTES
-                || place.polish.len() > MAX_PARAMETER_BYTES
-            {
+            if place.formatted.len() + place.polish.len() > MAX_WEB_ADDRESS_BYTES {
                 return Err(format!(
                     "A web address's calculation is at most {} KB.",
-                    MAX_PARAMETER_BYTES / 1024
+                    MAX_WEB_ADDRESS_BYTES / 1024
                 ));
             }
             let b = place
@@ -1311,11 +1313,14 @@ pub fn parse_request_within(
             let expected: Revision = r.pop_raw(32)?.try_into().expect("32 bytes");
             let frame = pop_frame(&mut r)?;
             let flags = r.pop_u32()?;
+            // Both streams within one bound, before either is read.
+            let mut left = MAX_WEB_ADDRESS_BYTES;
             let mut stream = || -> Result<Vec<u8>, PerformError> {
                 let len = r.pop_u32()? as usize;
-                if len > MAX_PARAMETER_BYTES {
+                if len > left {
                     return Err(PerformError::Truncated);
                 }
+                left -= len;
                 Ok(r.pop_raw(len)?.to_vec())
             };
             let formatted = stream()?;

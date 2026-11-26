@@ -637,6 +637,7 @@ fn mcp_2026_07_28_discovers_lists_and_applies_through_the_same_service() {
             "openmaker_delete_objects",
             "openmaker_place_text",
             "openmaker_place_portal",
+            "openmaker_place_web_viewer",
             "openmaker_create_layout",
             "openmaker_duplicate_layout",
             "openmaker_delete_layout",
