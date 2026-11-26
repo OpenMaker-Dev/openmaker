@@ -830,6 +830,8 @@ pub(crate) mod tests {
             failing_timestamps: Default::default(),
             #[cfg(debug_assertions)]
             read_only_before_write: Default::default(),
+            #[cfg(debug_assertions)]
+            join_lookup_delay: Default::default(),
         });
         // A client registered for the file's notifications.
         shared.connection_ids.lock().unwrap().insert(CLIENT);

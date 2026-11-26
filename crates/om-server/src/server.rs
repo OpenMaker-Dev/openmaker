@@ -243,6 +243,8 @@ impl Server {
                 failing_timestamps: Default::default(),
                 #[cfg(debug_assertions)]
                 read_only_before_write: AtomicBool::new(false),
+                #[cfg(debug_assertions)]
+                join_lookup_delay: Default::default(),
             }),
             schedules: Scheduler::new(),
             limits: ConnectionLimits::DEFAULT,
@@ -425,6 +427,18 @@ impl Server {
             .write()
             .expect("omitted list paths lock")
             .push(path.iter().map(|key| key.to_vec()).collect());
+        self
+    }
+
+    /// Hold each read on a connection without a session of its own for
+    /// `delay` once its attempt is taken from its address's allowance and
+    /// before the session it names is looked up (`crate::joins`). A test
+    /// fixture: many connections' requests then overlap at that point.
+    /// Only in debug builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn delaying_join_lookups(self, delay: Duration) -> Self {
+        let _ = self.shared.join_lookup_delay.set(delay);
         self
     }
 

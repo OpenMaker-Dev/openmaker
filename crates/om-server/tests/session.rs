@@ -3294,20 +3294,24 @@ fn an_administrators_disconnect_ends_joined_reads_at_once() {
 
 /// However many connections from one address try at once on its last
 /// attempt, one is looked at: the others are refused unexamined and
-/// closed.
+/// closed. Each lookup is held open, so that the requests overlap between
+/// taking an attempt and being refused.
+#[cfg(debug_assertions)]
 #[test]
 fn the_last_attempt_of_an_address_is_looked_at_once() {
     use om_protocol::{Resume, DEFAULT_MAX_RETURN};
     let file = fixture::TempFile::new("joined-last-attempt", &[], true);
     let port = server::start_configured(&file, |server| {
-        server.with_connection_limits(om_server::ConnectionLimits {
-            join_refusals: om_server::JoinRefusals {
-                per_address: 1,
-                refill: std::time::Duration::from_secs(3600),
-                per_connection: u32::MAX,
-            },
-            ..om_server::ConnectionLimits::DEFAULT
-        })
+        server
+            .with_connection_limits(om_server::ConnectionLimits {
+                join_refusals: om_server::JoinRefusals {
+                    per_address: 1,
+                    refill: std::time::Duration::from_secs(3600),
+                    per_connection: u32::MAX,
+                },
+                ..om_server::ConnectionLimits::DEFAULT
+            })
+            .delaying_join_lookups(std::time::Duration::from_millis(300))
     });
     let (owner, file_id) = Client::new().logged_in(port);
     let unknown = owner.identity().connection_id.wrapping_add(1);

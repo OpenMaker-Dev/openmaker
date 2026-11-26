@@ -617,6 +617,8 @@ pub(super) mod tests {
             failing_timestamps: Default::default(),
             #[cfg(debug_assertions)]
             read_only_before_write: Default::default(),
+            #[cfg(debug_assertions)]
+            join_lookup_delay: Default::default(),
         });
         let hosted = shared.hosting.by_name("work.fmp12").unwrap().clone();
         ServerHost::new(shared, hosted, 0x55, "Admin", Privileges::FullAccess)

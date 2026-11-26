@@ -273,6 +273,10 @@ pub(crate) struct Shared {
     /// ([`crate::ServerHandle::read_only_before_next_write`]).
     #[cfg(debug_assertions)]
     pub read_only_before_write: AtomicBool,
+    /// How long each join's lookup waits once its attempt is taken
+    /// ([`crate::Server::delaying_join_lookups`]).
+    #[cfg(debug_assertions)]
+    pub join_lookup_delay: std::sync::OnceLock<Duration>,
 }
 
 /// The sockets of a server's accepted connections, so that they can be
@@ -1779,6 +1783,10 @@ impl Connection {
     /// first request there, and the file it names as the session has it
     /// open now comes back.
     fn join(&mut self, session_id: u32, header: &Header) -> Result<FileGrant, Refusal> {
+        #[cfg(debug_assertions)]
+        if let Some(delay) = self.shared.join_lookup_delay.get() {
+            std::thread::sleep(*delay);
+        }
         let lookup =
             self.shared
                 .joins
