@@ -16,41 +16,48 @@
 //!
 //! **What is committed** is the simulator's own record, taken from the
 //! disks, not from any member's core: an entry of term `t` is committed
-//! once a majority of the members have held the same chain through it (its
-//! hash) durable while `state` recorded term `t` on each (Raft's
-//! acknowledgement in the entry's own term), and so is every entry before
-//! it. After every step it checks ([`Check`]):
+//! once a majority of the members have held term `t`'s chain through it
+//! durable while `state` recorded term `t` on each (Raft's acknowledgement
+//! in the entry's own term), as far as each was seen to hold it, up or
+//! not, and so is every entry before it. After every step it checks
+//! ([`Check`]):
 //! - at most one leader per term;
 //! - a leader decides an entry is committed only once the disks show it,
 //!   and that it is the entry they show;
 //! - a leader is elected only with every committed entry in its log;
 //! - a leader never loses an entry of its own log while it leads;
 //! - two logs that hold an entry of the same index and term hold the same
-//!   entry, over the whole range they share;
+//!   entry, over the whole range they share, every entry of it readable;
 //! - the committed position a member records is a committed entry;
 //! - a member applies, and publishes, only committed entries, and every
 //!   member's state after the same entry has the same root hashes, while
 //!   running and while an open replays;
 //! - a view shows only what is committed, and goes on reading the same;
 //! - what a member sends agrees with its disk: its term, a vote it grants,
-//!   an acknowledgement no further than its durable entry;
-//! - a vote goes only to a log as up to date as the voter's, as the two
-//!   disks say;
-//! - the leader of the newest term serves only with every entry committed
-//!   before its term;
+//!   the last entry a vote request gives, an acknowledgement within what
+//!   its append checked, on that append's chain and no further than its
+//!   durable entry;
+//! - a vote goes only to a candidate that asked, with a log as up to date
+//!   as the voter's, as the two disks say;
+//! - a serving leader's `empty` entry is its own, committed and published,
+//!   and the leader of the newest term serves only with every entry
+//!   committed before its term;
+//! - on a healthy network, a follower of a stable leader reaches the
+//!   leader's durable entry within a bound ([`World::watch_progress`]);
 //! - every member starts from what the faults left, and every error a
 //!   member's store returns follows a fault its disk injected during that
 //!   very call: an operation the store refuses otherwise is a defect.
 //!
-//! At the end the faults stop and the network heals: every member must
-//! start, one leader must serve, and every member must hold and publish
+//! At the end the faults stop and the network heals: the client writes at
+//! every tick for a while ([`World::steady`]); every member must start,
+//! one leader must serve, and every member must hold and publish
 //! everything committed, or be one the leader reports as behind
 //! ([`Core::behind`], state transfer not built). Then a minority goes down
-//! for good, and the rest must commit a new entry unless one of them is
-//! behind.
+//! for good, and the rest must commit a new entry unless the disks show
+//! one of them behind.
 //!
-//! `OM_STORE_SCALE=<n>` runs `n` times as many seeds, `OM_STORE_SEED=<s>`
-//! seed `s` alone.
+//! `OM_STORE_SCALE=<n>` runs `n` times as many seeds, `OM_STORE_SEEDS=<n>`
+//! seeds 0 to `n - 1`, `OM_STORE_SEED=<s>` seed `s` alone.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
@@ -2353,6 +2360,9 @@ fn seeds(default: u64) -> Vec<u64> {
     let read = |name: &str| std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok());
     if let Some(seed) = read("OM_STORE_SEED") {
         return vec![seed];
+    }
+    if let Some(n) = read("OM_STORE_SEEDS") {
+        return (0..n).collect();
     }
     (0..default.saturating_mul(read("OM_STORE_SCALE").unwrap_or(1))).collect()
 }
