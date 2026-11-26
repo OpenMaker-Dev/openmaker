@@ -32,10 +32,11 @@ desktop. What FileMaker Go does is in [go-client.md](re/go-client.md).
   certificate authorities it was given: that host and those hosts make
   up the list. Local hosts (Bonjour) are not listed. A private
   certificate authority (PEM) can be saved for a host and port; it is
-  used for that host only. Edit Host shows it, so clearing it there
-  removes it; Add Host keeps one already saved for the host unless
-  another is entered. The certificate is verified as the desktop client
-  verifies it.
+  used for that host only, its address matched in any case, as hosts
+  are. Saving an empty one removes only one the editor showed (Edit Host
+  shows the edited host's, Add Host none): one already saved for the host
+  is kept. The certificate is verified as the desktop client verifies
+  it.
 - **Favorites** and **Recent** keep references to local and hosted files;
   opening one signs in again. Rows can be removed, and a local file
   deleted after a confirmation.

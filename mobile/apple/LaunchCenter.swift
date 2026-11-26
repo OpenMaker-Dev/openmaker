@@ -440,9 +440,27 @@ struct LaunchCenter: View {
 
   private func key(_ host: SavedHost) -> String { authority(host.address, host.port) }
 
-  /// Certificate authorities are kept by the address as typed.
   private func storeAuthorities(_ saved: [String: String]) {
     certificates = (try? JSONEncoder().encode(saved)) ?? Data()
+  }
+
+  /// The certificate authority trusted for one host and port only, its
+  /// address matched in any case, as hosts are.
+  private func trusted(_ address: String, _ port: UInt16, in saved: [String: String]? = nil) -> String? {
+    let all = saved ?? authorities
+    let key = authority(address, port)
+    return all[key] ?? all.first { $0.key.caseInsensitiveCompare(key) == .orderedSame }?.value
+  }
+
+  /// Save `pem` as the certificate authority trusted for a host and port,
+  /// in place of any kept under its address in another case; an empty one
+  /// removes them.
+  private func trust(_ address: String, _ port: UInt16, _ pem: String, in saved: inout [String: String]) {
+    let key = authority(address, port)
+    for other in Array(saved.keys) where other.caseInsensitiveCompare(key) == .orderedSame {
+      saved[other] = nil
+    }
+    if !pem.isEmpty { saved[key] = pem }
   }
 
   private func storeHosts(_ list: [SavedHost]) {
@@ -479,18 +497,18 @@ struct LaunchCenter: View {
   private func editHost(_ host: SavedHost) {
     hostEdit = HostEdit(
       replaces: host, address: host.address, port: String(host.port), name: host.name,
-      certificate: authorities[key(host)] ?? "")
+      certificate: trusted(host.address, host.port) ?? "")
   }
 
   /// Save the host Add Host or Edit Host describes, checked as the
   /// desktop's Add Host checks one, or throw what to fix. The host goes in
   /// the place of the one it replaces, else of the one at its address and
   /// port in any case, which is not listed twice; the entries it replaces
-  /// no longer trust anything at their own address. Edit Host shows the
-  /// certificate authority it edits, so an empty one removes it; Add Host
-  /// shows none, so with an empty one a certificate authority already
-  /// trusted for the host is kept. A host whose page is shown stays shown,
-  /// at its new address.
+  /// no longer trust anything at their own address. An empty certificate
+  /// authority removes only one the editor showed (Edit Host shows the
+  /// edited host's, Add Host none): one saved for the host or an entry it
+  /// replaces is kept. A host whose page is shown stays shown, at its new
+  /// address.
   private func saveHost(_ edit: HostEdit) throws {
     let checked = try checkHost(
       address: edit.address, port: edit.port,
@@ -510,14 +528,13 @@ struct LaunchCenter: View {
     }
     if at == nil { updated.append(host) }
     var saved = authorities
+    let unseen = ([host] + replaced).filter { edit.replaces?.isHost($0) != true }
     let pem =
-      edit.replaces == nil && checked.certificate.isEmpty
-      ? ([host] + replaced).lazy.compactMap { saved[key($0)] }.first ?? ""
+      checked.certificate.isEmpty
+      ? unseen.compactMap { trusted($0.address, $0.port, in: saved) }.first ?? ""
       : checked.certificate
-    for old in replaced where old.address != host.address || old.port != host.port {
-      saved[key(old)] = nil
-    }
-    saved[key(host)] = pem.isEmpty ? nil : pem
+    for old in replaced { trust(old.address, old.port, "", in: &saved) }
+    trust(host.address, host.port, pem, in: &saved)
     storeHosts(updated)
     storeAuthorities(saved)
     hostEdit = nil
@@ -537,7 +554,7 @@ struct LaunchCenter: View {
     let removed = hosts.filter { $0.isHost(host) }
     var saved = authorities
     for old in removed + [host] {
-      saved[key(old)] = nil
+      trust(old.address, old.port, "", in: &saved)
       listings[key(old)] = nil
     }
     storeHosts(hosts.filter { !$0.isHost(host) })
@@ -552,7 +569,7 @@ struct LaunchCenter: View {
     let id = key(host)
     let asked = UUID()
     listings[id] = .pending(asked)
-    let endpoint = Host(address: host.address, port: host.port, certificate: authorities[id] ?? "")
+    let endpoint = Host(address: host.address, port: host.port, certificate: trusted(host.address, host.port) ?? "")
     let listing: Listing
     do {
       let names = try await Task.detached { try hostedFiles(host: endpoint) }.value
@@ -597,7 +614,7 @@ struct LaunchCenter: View {
   {
     let host = Host(
       address: file.address, port: file.port,
-      certificate: authorities[authority(file.address, file.port)] ?? "")
+      certificate: trusted(file.address, file.port) ?? "")
     let source: Source =
       file.local ? .local(path: file.url.path) : .hosted(host: host, file: file.name)
     let typed = license.trimmingCharacters(in: .whitespacesAndNewlines)

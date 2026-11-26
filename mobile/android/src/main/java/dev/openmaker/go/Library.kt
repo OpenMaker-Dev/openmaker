@@ -109,10 +109,10 @@ class Library(context: Context) {
      * already in the list at the same address and port, in any case, is
      * that host: it is not listed twice, and the entries it replaces no
      * longer trust anything at their own address. [certificate] is the
-     * certificate authority trusted for it. Edit Host shows the one it
-     * edits, so an empty one removes it; Add Host shows none, so with an
-     * empty one a certificate authority already trusted for the host is
-     * kept. The list and the certificate authorities change together.
+     * certificate authority trusted for it. An empty one removes only one
+     * the editor showed (Edit Host shows the edited host's, Add Host none):
+     * one saved for the host or an entry it replaces is kept. The list and
+     * the certificate authorities change together.
      */
     fun saveHost(replacing: SavedHost?, host: SavedHost, certificate: String) {
         val list = hosts
@@ -132,16 +132,14 @@ class Library(context: Context) {
                 }
                 .let { if (at == null) it + host else it }
         val pem =
-            if (replacing == null && certificate.isBlank()) {
-                (listOf(host) + replaced).firstNotNullOfOrNull { this.certificate(it.address, it.port).ifBlank { null } }.orEmpty()
-            } else {
-                certificate
+            certificate.ifBlank {
+                (listOf(host) + replaced)
+                    .filterNot { replacing?.isHost(it) == true }
+                    .firstNotNullOfOrNull { this.certificate(it.address, it.port).ifBlank { null } }
+                    .orEmpty()
             }
         val edit = prefs.edit().putHosts(updated)
-        // Certificate authorities are kept by the address as typed.
-        for (old in replaced) {
-            if (old.address != host.address || old.port != host.port) edit.trust(old.address, old.port, "")
-        }
+        for (old in replaced) edit.trust(old.address, old.port, "")
         edit.trust(host.address, host.port, pem).apply()
     }
 
@@ -153,17 +151,34 @@ class Library(context: Context) {
         edit.apply()
     }
 
-    /** The PEM certificate authority trusted for one host and port only. */
-    fun certificate(host: String, port: Int): String = prefs.getString("$CA_PREFIX$host:$port", "").orEmpty()
+    /**
+     * The PEM certificate authority trusted for one host and port only, its
+     * address matched in any case, as hosts are.
+     */
+    fun certificate(host: String, port: Int): String {
+        val key = caKey(host, port)
+        return prefs.getString(key, null)
+            ?: prefs.all.entries.firstOrNull { it.key.equals(key, ignoreCase = true) }?.value as? String
+            ?: ""
+    }
+
+    private fun caKey(host: String, port: Int) = "$CA_PREFIX$host:$port"
 
     private fun SharedPreferences.Editor.putHosts(list: List<SavedHost>) =
         putString(HOSTS, JSONArray(list.map { JSONArray().put(it.address).put(it.port).put(it.name) }).toString())
             .remove(LAST_HOST)
             .remove(LAST_PORT)
 
-    /** Save [pem] as the host's certificate authority; an empty one removes it. */
-    private fun SharedPreferences.Editor.trust(host: String, port: Int, pem: String) =
-        if (pem.isBlank()) remove("$CA_PREFIX$host:$port") else putString("$CA_PREFIX$host:$port", pem)
+    /**
+     * Save [pem] as the host's certificate authority, in place of any kept
+     * under its address in another case; an empty one removes them.
+     */
+    private fun SharedPreferences.Editor.trust(host: String, port: Int, pem: String): SharedPreferences.Editor {
+        val key = caKey(host, port)
+        for (other in prefs.all.keys) if (other.equals(key, ignoreCase = true)) remove(other)
+        if (pem.isNotBlank()) putString(key, pem)
+        return this
+    }
 
     /**
      * Copy a picked file into the documents folder under its own name. The
