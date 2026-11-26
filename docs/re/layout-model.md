@@ -2435,7 +2435,9 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
       compositor never tells it which layout is active, and switching
       layouts (US to Russian, say) is not followed.
     - **Edit keys.** egui's Copy, Cut and Paste reach the page as Ctrl+C,
-      X and V, in the page's own clipboard for now.
+      X and V, in the page's own clipboard for now. egui sends Paste only
+      when the system clipboard holds text, so with it empty Ctrl+V does
+      not reach the page at all, even after a copy inside the page.
     - **Input methods.** The input method's text goes to the page through
       `zwp_text_input_v3`: its preedit, shown in the page as it is
       composed, and its commit. The input method's window is placed by the
