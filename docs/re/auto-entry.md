@@ -162,13 +162,21 @@ Contacts::Initial has kind 2 and option word 0, so its result is stored.
 
 `0x80` (`kOverwriteExisting`, the auto-entry "replace existing value" bit)
 is set on an unstored Date calculation (`0x00060080`) in a solution FileMaker
-Server hosts, in production use [O, PM relay, sanitized]. No other
-calculation field carries it: none of the 110 in the 66 `.fmp12` files
+Server hosts, in production use [O, PM relay, sanitized]. The earlier
+survey found no other instances: none of the 110 in the 66 `.fmp12` files
 FileMaker Pro 26 for macOS ships, nor the 402 in the maintainer's other test
 files [O]. It has no
 auto-entry for it to qualify; that it is left over from an earlier
 definition of the field, and changes nothing, is [I]. What FileMaker Pro's
 dialogs show for it is unmeasured.
+
+FileMaker Pro 26.1.1 converted a replacing Number auto-enter calculation
+`Year ( Issued )` (`0x00000088`) to a stored indexed Number calculation.
+The converted field kept the replacement bit (`0x80000080`), while the
+fresh stored calculation had `0x80000000`. Both had one repetition and
+no validation flags. Both accepted New Record, an unrelated Text
+assignment, and Date assignments with the calculated years 2024 and
+2025 visible before commit and retained on reopen. [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204266349)
 
 ## Built-in variables and Get() expressions
 
