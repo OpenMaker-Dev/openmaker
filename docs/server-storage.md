@@ -1639,13 +1639,27 @@ staged records left staged
   recorded once the commit's outcome is known, so that each record the
   commit was lent ends up staged again, stored, or kept there; a commit of
   that transaction naming it with nothing staged is refused. The record is
-  forgotten when it is uploaded again; when an op62 of that transaction
-  leaves the transaction holding no lock on it, as the lock table says
-  after the release (a lock taken twice is still held after one op62, and
-  another transaction's op62 changes nothing); when an op65 releases that
-  transaction's locks, or all of the connection's; when a commit of that
-  transaction naming it for deletion is saved; and with the session. A
-  deletion by another session forgets nothing: the refusal stays true.
+  forgotten only:
+  - when it is uploaded again (op14), in any transaction;
+  - when the transaction is given up: op65 for it, or the op65 that
+    releases all of the connection's locks;
+  - when a commit of that transaction naming it for deletion is saved;
+  - with the session (the file closed, logout, the session's end).
+
+  op65 forgets whether or not the transaction held a lock: it is the
+  client giving the transaction up (FileMaker Pro sends it when its user
+  leaves the record, and starts the next change in a new transaction,
+  write-path.md 1.1, 4.4), so no commit of it is to come that the lost
+  upload was part of. An op62 forgets nothing, whoever sends it and
+  whatever it releases: it speaks of one lock, a commit may store a record
+  its transaction never locked, and every mistake in forgetting gives back
+  the "done" a lost upload must not get, where refusing too long only asks
+  the client to upload the record again. The price: after a failed save of
+  a record, a later commit of that record in the same transaction with
+  nothing uploaded is refused until the record is uploaded again or the
+  transaction is given up, even if the client unlocked it meanwhile; no
+  client is known to send one (OpenMaker's choice). A deletion by another
+  session forgets nothing: the refusal stays true.
   Each entry is charged to the client's upload memory, at most what its
   record was.
 - A record marked new (`01`) with nothing uploaded: a record is asked for

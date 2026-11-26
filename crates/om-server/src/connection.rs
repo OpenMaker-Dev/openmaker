@@ -1458,7 +1458,6 @@ impl Connection {
                         .get(&header.file_id)
                         .filter(|f| f.account.is_some())
                     {
-                        let (path, txn) = (request.path.clone(), request.txn);
                         let release = ReleaseLock {
                             connection: session.connection_id,
                             request,
@@ -1467,17 +1466,6 @@ impl Connection {
                             .engine
                             .submit(&file.hosted, Operation::ReleaseLock(release));
                         outcome.notices.deliver(&file.hosted, &shared.mailboxes);
-                        // Once the transaction holds no lock on the record,
-                        // as the lock table says after the release (a lock
-                        // taken twice is held after one op62), a commit of
-                        // it is no longer the one its failed save
-                        // interrupted. Another transaction's op62 changes
-                        // nothing.
-                        if let Reply::ReleaseLock { held: false } = outcome.reply {
-                            if let Some(temp) = session.temp.get_mut(&header.file_id) {
-                                temp.forget_lost(&path, Some(txn));
-                            }
-                        }
                     }
                     write::echo_header(&header)
                 })
@@ -1531,7 +1519,16 @@ impl Connection {
                         };
                         let operation = Operation::ReleaseLocks(release);
                         shared.engine.submit(&file.hosted, operation);
-                        // As for op62: the transaction's commits start over.
+                        // op65 gives the transaction up: FileMaker Pro
+                        // sends it when its user leaves the record and
+                        // starts the next change in a new transaction
+                        // (write-path.md 1.1, 4.4), so no commit of this
+                        // one is to come that its lost uploads were part
+                        // of; it says so whether or not the transaction
+                        // held a lock. An op62 speaks of one lock only and
+                        // forgets nothing: a client may commit a record it
+                        // never locked, and every mistake in forgetting
+                        // gives back the "done" a lost upload must not get.
                         if let Some(temp) = session.temp.get_mut(&header.file_id) {
                             temp.forget_lost_of(txn);
                         }

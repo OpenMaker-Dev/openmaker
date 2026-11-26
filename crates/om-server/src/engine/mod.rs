@@ -740,13 +740,7 @@ pub enum Reply {
     TakeLock(LockReply),
     UpgradeLock(LockReply),
     /// op62 is answered with the request's own header (write-path.md 4.3).
-    /// `held`: whether the lock user (the connection and the request's
-    /// transaction) still holds a lock on the path afterwards, a lock taken
-    /// twice and released once, or one of another type; true when the
-    /// operation did not run.
-    ReleaseLock {
-        held: bool,
-    },
+    ReleaseLock,
     /// op65 is answered with the request's own header (write-path.md 4.4).
     ReleaseLocks,
     /// The subtree stored (`true`; the engine's refusal of an operation it
@@ -1269,10 +1263,12 @@ pub fn run(
         }
         (Operation::ReleaseLock(op), _) => {
             let from = op.connection;
-            let (changes, held) = writes::unlock(op, locks);
             Outcome {
-                reply: Reply::ReleaseLock { held },
-                notices: Notices { from, changes },
+                reply: Reply::ReleaseLock,
+                notices: Notices {
+                    from,
+                    changes: writes::unlock(op, locks),
+                },
                 holds_read_only: None,
             }
         }
@@ -1498,7 +1494,7 @@ fn refusal(operation: Operation, why: &'static str) -> Outcome {
         }),
         Operation::TakeLock(_) => Reply::TakeLock(refused_lock),
         Operation::UpgradeLock(_) => Reply::UpgradeLock(refused_lock),
-        Operation::ReleaseLock(_) => Reply::ReleaseLock { held: true },
+        Operation::ReleaseLock(_) => Reply::ReleaseLock,
         Operation::ReleaseLocks(_) => Reply::ReleaseLocks,
         Operation::UploadToCatalog(_) => Reply::UploadToCatalog(Err(StorageError::refused(why))),
         Operation::ChangeSchema(_) => Reply::ChangeSchema(Err(SchemaNotChanged::Refused(why))),

@@ -263,14 +263,6 @@ impl LockTable {
         self.counts.get(&connection).copied().unwrap_or(0)
     }
 
-    /// Whether `user` holds any lock on `path`, of whatever type and
-    /// however many times taken.
-    pub fn holds_any(&self, path: &[Vec<u8>], user: LockUser) -> bool {
-        self.held
-            .get(path)
-            .is_some_and(|locks| locks.iter().any(|h| h.user == user))
-    }
-
     /// Whether `user` holds a lock of `lock_type` on `path`: taking it again
     /// only counts it once more ([`LockTable::lock`]).
     pub fn holds(&self, path: &[Vec<u8>], user: LockUser, lock_type: u16) -> bool {

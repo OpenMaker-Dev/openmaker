@@ -542,11 +542,11 @@ pub struct TempArea {
     /// the transaction that names one again with nothing staged is refused
     /// ([`unstorable`]), where it would be answered done with nothing
     /// stored (#839 of github.com/OpenMaker-Dev/openmaker). An entry goes
-    /// when the record is staged again; when an op62 of its transaction
-    /// leaves that transaction holding no lock on the record; when an op65
-    /// releases its transaction's locks, or all of the connection's; when a
-    /// commit of its transaction that names the record for deletion is
-    /// saved; and with the area. Each is charged
+    /// only when the record is staged again (op14, in any transaction);
+    /// when its transaction is given up (op65 for it, or the op65 that
+    /// releases everything); when a commit of its transaction that names
+    /// the record for deletion is saved; and with the area. An op62 forgets
+    /// nothing: refusing too long is the safe side. Each is charged
     /// [`lost_memory`], at most what its record was, so they are bounded as
     /// the staged records they replace were.
     lost: BTreeMap<KeyPath, Lost>,
@@ -619,8 +619,7 @@ impl TempArea {
 
     /// Forget that the upload of the record at `path` was lost, if it was
     /// lost to a commit of transaction `txn` (`None`: of any): the record is
-    /// staged again (any), its transaction no longer holds a lock on it
-    /// (op62), or a commit of the transaction deleted it.
+    /// staged again (any), or a commit of the transaction deleted it.
     pub fn forget_lost(&mut self, path: &KeyPath, txn: Option<u32>) {
         if self
             .lost
@@ -664,7 +663,7 @@ impl TempArea {
     }
 
     /// Forget the lost uploads of transaction `txn`, or of every
-    /// transaction (`None`): op65 released their locks.
+    /// transaction (`None`): op65 gave the transaction up.
     pub fn forget_lost_of(&mut self, txn: Option<u32>) {
         let mut freed = 0;
         self.lost.retain(|_, lost| {
@@ -1723,35 +1722,27 @@ fn names_a_change(code: u32) -> bool {
 /// anyone, so one op62 makes each other client receive at most one
 /// notification, about a path the sender had locked, no longer than a key
 /// (255 bytes). FileMaker Pro also sends op62 with an empty path to end a
-/// notification lock, which needs nothing here. Returns the notices, and
-/// whether the lock user still holds a lock on the path afterwards
-/// ([`crate::engine::Reply::ReleaseLock`]).
-pub(crate) fn unlock(op: ReleaseLock, locks: &mut Locks<'_>) -> (Vec<Change>, bool) {
+/// notification lock, which needs nothing here.
+pub(crate) fn unlock(op: ReleaseLock, locks: &mut Locks<'_>) -> Vec<Change> {
     let ReleaseLock {
         connection,
         request: req,
     } = op;
     if req.path.is_empty() {
-        return (Vec::new(), false);
+        return Vec::new();
     }
     let user = LockUser {
         connection,
         txn: req.txn,
     };
     let released = locks.unlock(&req.path, user, req.lock_type);
-    // Whether the lock user still holds the path: a lock taken twice is
-    // held after one op62 (write-path.md 4.3).
-    let held = locks.holds_any(&req.path, user);
     if released && names_a_change(req.attention_mask) {
-        return (
-            vec![Change {
-                path: req.path,
-                code: req.attention_mask,
-            }],
-            held,
-        );
+        return vec![Change {
+            path: req.path,
+            code: req.attention_mask,
+        }];
     }
-    (Vec::new(), held)
+    Vec::new()
 }
 
 /// op65: release a transaction's locks, or all of the connection's.
