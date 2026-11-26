@@ -1785,22 +1785,25 @@ impl NativeProvider {
                 let Some(catalog) = self.catalog.table(table) else {
                     return BTreeSet::new();
                 };
-                let names =
-                    match om_data::rules::RecordPlan::from_desktop_file_schema(catalog, tree, file)
-                    {
-                        Ok(plan) => plan.editable_fields(),
-                        // Refused while a related file its write rules read waits
-                        // to open: offered as the plan would offer it, as for the
-                        // layout's own table; the write opens the file and plans
-                        // first (#1139).
-                        Err(_) if self.rule_files_pending(file, catalog, tree) => catalog
-                            .fields
-                            .iter()
-                            .filter(|field| om_data::rules::user_editable(field))
-                            .map(|field| field.name.clone())
-                            .collect(),
-                        Err(_) => return BTreeSet::new(),
-                    };
+                let names = match om_data::rules::RecordPlan::from_desktop_file_schema(
+                    catalog,
+                    tree,
+                    file,
+                    self.plans_local_record_positions(),
+                ) {
+                    Ok(plan) => plan.editable_fields(),
+                    // Refused while a related file its write rules read waits
+                    // to open: offered as the plan would offer it, as for the
+                    // layout's own table; the write opens the file and plans
+                    // first (#1139).
+                    Err(_) if self.rule_files_pending(file, catalog, tree) => catalog
+                        .fields
+                        .iter()
+                        .filter(|field| om_data::rules::user_editable(field))
+                        .map(|field| field.name.clone())
+                        .collect(),
+                    Err(_) => return BTreeSet::new(),
+                };
                 // Containers take no typing but Insert Picture and File, on a
                 // stored container as `store_table_container` takes it.
                 let container = |field: &om_hbam::catalog::Field| {
@@ -3507,7 +3510,12 @@ impl DataProvider for NativeProvider {
         // offer them: the write opens the file and plans before anything is
         // sent (`plan_table`), and a refusal then fails it, the window's
         // drafts kept (#1139).
-        let planned = om_data::rules::RecordPlan::from_desktop_file_schema(table, &tree, &file);
+        let planned = om_data::rules::RecordPlan::from_desktop_file_schema(
+            table,
+            &tree,
+            &file,
+            self.plans_local_record_positions(),
+        );
         let deferred = planned.is_err() && self.rule_files_pending(&file, table, &tree);
         let plan: Option<BTreeSet<String>> = match &planned {
             Ok(plan) => Some(plan.editable_fields()),

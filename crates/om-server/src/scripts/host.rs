@@ -2357,7 +2357,9 @@ impl ServerHost {
         // If the record moved, the set was sorted, or the window shows
         // another table, what FileMaker stores is unmeasured (#298).
         if let Some(number) = record.context.record_number {
-            let at = usize::try_from(number).ok().and_then(|n| n.checked_sub(1));
+            let at = usize::try_from(number.value())
+                .ok()
+                .and_then(|n| n.checked_sub(1));
             let there = self.window().is_ok_and(|w| {
                 w.table == record.table
                     && w.sort.is_none()
@@ -4965,7 +4967,7 @@ impl Records for ServerHost {
         // unmeasured and stays unanswered (#298).
         let number = (window.sort.is_none()).then_some(window.found.len() as u64);
         if let Some(record) = &mut self.record {
-            record.context.record_number = number;
+            record.context.record_number = number.map(rules::RecordNumber::Window);
         }
         // The first field of the tab order gets the focus (s31, s33).
         self.focus_first_field();
