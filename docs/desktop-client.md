@@ -2165,8 +2165,8 @@ markers and fields show their design names. The editor draws this artwork
 without evaluating record calculations or running document actions. If an icon
 cannot be resolved, a labeled button keeps its full-width label and an
 image-only button uses the canvas's outline and caption.
-Pasteboard objects, unsupported objects and geometry-only providers still
-use outlines and captions. Design-time web viewer placeholders are tracked
+Unsupported objects and geometry-only providers still use outlines and
+captions. Design-time web viewer placeholders are tracked
 in [#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019).
 The scrollable canvas, part tabs, objects and selection handles scale
 together. Placement, movement, resizing and the Inspector use the original
@@ -2174,9 +2174,12 @@ layout points at every zoom. The toolbar, Objects pane and Inspector keep
 their size. The wheel and scroll bars scroll the canvas at every zoom.
 Touch drag to scroll is available at Actual Size.
 
-Objects that cross the layout edge retain their full outline, with artwork
-clipped to the layout. Borderless fields and text have a faint editing
-boundary. FileMaker's boundary display options have not been compared.
+Stored artwork is dimmed on the visible pasteboard to the right of the
+layout. Objects below the last part and behind the part strip still use
+outlines. Borderless fields and text have a faint editing boundary.
+FileMaker Pro 26.1.1 can toggle field and text boundaries separately, and
+its field boundaries include dotted baselines. OpenMaker uses fixed faint
+outlines ([client-ui.md](re/client-ui.md#artwork-and-boundaries)).
 Contents of closed popovers still appear on the canvas
 ([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
 

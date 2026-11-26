@@ -28,6 +28,8 @@ pub(crate) use history::DraftEdit;
 
 const PART_STRIP_WIDTH: f32 = 22.0;
 const PASTEBOARD_MARGIN: f32 = 48.0;
+// Approximate the contrast of Run C's blue rectangle on the right pasteboard.
+const PASTEBOARD_ARTWORK_OPACITY: f32 = 0.55;
 
 const CANNOT_MOVE_SELECTION: &str = "This selection includes an object OpenMaker cannot move. \
     No objects were moved.";
@@ -1781,9 +1783,17 @@ fn draw(
                     .id_salt("design_artwork")
                     .max_rect(surface),
             );
-            // Keep the current draft frame for layout and hit testing, but
-            // keep the paint inside the part strip and the width divider.
             artwork.set_clip_rect(ui.clip_rect().intersect(surface));
+            let right_pasteboard =
+                Rect::from_min_max(surface.right_top(), pos2(area.right(), surface.bottom()));
+            let mut pasteboard_artwork = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt("pasteboard_artwork")
+                    .max_rect(right_pasteboard),
+            );
+            pasteboard_artwork.set_clip_rect(ui.clip_rect().intersect(right_pasteboard));
+            pasteboard_artwork.multiply_opacity(PASTEBOARD_ARTWORK_OPACITY);
+            let artwork_bounds = surface.union(right_pasteboard);
             for (index, object) in geometry.objects.iter().enumerate() {
                 let Some(frame) = shown(object) else {
                     continue;
@@ -1806,17 +1816,26 @@ fn draw(
                     .map(|name| name.find("::").map_or(name, |at| &name[at..]))
                     .unwrap_or(&object.kind_name);
                 let draft_words = texts.words.objects.get(&object.key).map(String::as_str);
-                let painted = surface.intersects(rect)
-                    && design.is_some_and(|design| {
-                        design.paint_object(
-                            &mut artwork,
-                            object.key,
-                            rect,
-                            field_caption,
-                            draft_words,
-                        )
-                    });
-                if !painted || changed || !surface.contains_rect(rect) {
+                let mut painted = false;
+                if let Some(design) = design {
+                    // Paint the same frame on both sides of the divider so
+                    // fills, images and captions keep their original positions.
+                    for (region, art) in [
+                        (surface, &mut artwork),
+                        (right_pasteboard, &mut pasteboard_artwork),
+                    ] {
+                        if region.is_positive() && region.intersects(rect) {
+                            painted |= design.paint_object(
+                                art,
+                                object.key,
+                                rect,
+                                field_caption,
+                                draft_words,
+                            );
+                        }
+                    }
+                }
+                if !painted || changed || !artwork_bounds.contains_rect(rect) {
                     if rect.width() < 1.0 || rect.height() < 1.0 {
                         painter.line_segment([rect.min, rect.max], outline);
                     } else {
