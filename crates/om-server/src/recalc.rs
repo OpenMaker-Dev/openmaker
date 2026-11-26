@@ -385,6 +385,7 @@ fn clock_environment(account: &str, uuid: String, now: &jiff::Zoned) -> RecordEn
             host_timestamp: Some(timestamp.clone()),
             record_number: None,
             file_variables: None,
+            other_globals: None,
         },
         timestamp,
         date,
