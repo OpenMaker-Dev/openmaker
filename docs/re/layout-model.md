@@ -2238,9 +2238,22 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   "Automatically encode URL" uses Insert from URL's encoding, and also
   encodes `#` in a `data:` URL. Views are incognito, without developer tools,
   new windows or downloads, and navigate only to http, https, data, blob,
-  file and about URLs. On an X server without DRI3 the process turns off
-  WebKitGTK's DMA-BUF renderer at startup (it draws blank pages there) unless
-  `WEBKIT_DISABLE_DMABUF_RENDERER` is set.
+  file and about URLs. WebKitGTK's DMA-BUF renderer draws blank pages where
+  it cannot share its buffers with the X server, so at startup, unless
+  `WEBKIT_DISABLE_DMABUF_RENDERER` or `WEBKIT_DMABUF_RENDERER_FORCE_SHM` is
+  set, the process turns it off on an X server without DRI3, and has it
+  send pages through shared memory (still rendered on the GPU) where DRI3
+  hands out a device of NVIDIA's driver: there it cannot allocate its
+  buffers, nor, without GBM, import them (measured through XWayland with
+  NVIDIA 615 and Arch's WebKitGTK 2.54; an NVIDIA X server of its own, and
+  other drivers' failures, unmeasured). Debian's and Ubuntu's WebKitGTK
+  packages make a choice of their own on NVIDIA's driver
+  (`disable-nvidia-dmabuf.patch`, from WebKit pull request 18614) before
+  they read the variable. In Ubuntu 24.04's 2.52.6-0ubuntu0.24.04.2 it sends
+  pages through shared memory as well, and honours the variable. In
+  0ubuntu0.24.04.1 it turned the renderer off without shared memory, and
+  Debian bug 1142771 reports that crashing pages that need compositing
+  [reported, unmeasured here].
 - On Linux (`web_viewer/gtk.rs`) the page bridge posts to a script message
   handler of its own, `openmaker` (wry's IPC drops messages from `data:`
   pages, whose URL it cannot parse). WebKit shows a page's message

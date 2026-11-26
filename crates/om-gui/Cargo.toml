@@ -63,8 +63,10 @@ om-server = { path = "../om-server", default-features = false, features = ["sent
 # needs the WebKitGTK 4.1 and GTK 3 development files (Debian/Ubuntu:
 # libwebkit2gtk-4.1-dev) and pkg-config; running it, the WebKitGTK 4.1
 # runtime. Without it, web viewers show a note and their script steps fail.
-# On Linux its windows are on winit's X11 backend, also on a Wayland session.
-web-viewer = ["dep:wry", "dep:gtk", "dep:gdkx11", "dep:webkit2gtk", "dep:javascriptcore-rs", "winit/x11", "dep:x11-dl", "dep:xkbcommon-dl", "dep:getrandom"]
+# On Linux its windows are on winit's X11 backend, also on a Wayland session;
+# DRI3 tells which GPU driver the X server shares buffers with
+# (`web_viewer::gtk::prepare_environment`).
+web-viewer = ["dep:wry", "dep:gtk", "dep:gdkx11", "dep:webkit2gtk", "dep:javascriptcore-rs", "winit/x11", "dep:x11-dl", "dep:xkbcommon-dl", "dep:getrandom", "x11rb/dri3"]
 
 [target.'cfg(unix)'.dependencies]
 # Nonblocking open before checking local Insert/URL files, including FIFOs.
