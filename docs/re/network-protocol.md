@@ -1181,10 +1181,30 @@ follows it.
 | status | FileMaker name | Open observation |
 |--------|----------------|------------------|
 | `0x4fb3` | `kSpecification` | Not identified in a live Open reply; the older "cannot open" gloss had no evidence. |
-| `0x4fb5` | `kFileNotFound` | FileMaker Server 26.0.3 answered this when the requested file name was not hosted: relay capture of FileMaker Pro 26.1.1 on a FileMaker Server test VM, 2026-11-26, a hosted solution whose data source names a file the server does not host; FileMaker Pro sent Open for `<name>.fmp12` and then `<name>`, six such pairs, each answered GIOP OK with status `0x4fb5`, and showed no alert ([#914](https://github.com/OpenMaker-Dev/openmaker/issues/914)). Seen before in the desktop only. Whether a hosted but closed file answers the same is unknown ([#939](https://github.com/OpenMaker-Dev/openmaker/issues/939)); OpenMaker Server answers it for a name it does not host, and 4 for a hosted file that is closing, closed or opening, its earlier choice. |
+| `0x4fb5` | `kFileNotFound` | FileMaker Server returned it for an unhosted name and for a hosted file with Admin API status `CLOSED` ([#914](https://github.com/OpenMaker-Dev/openmaker/issues/914), [#939](https://github.com/OpenMaker-Dev/openmaker/issues/939)). |
 | `0x507c` | `kInstallCodeConflict` | An absent or invalid license key was refused at Open without a message string in the captured reply (F26). |
 | `0x0666` | `kHostBlockNewUsersEnabled` | Block New Users refusal captured in 5.6.4. |
 | `0x0004` | `kUnknownCommand` | No observed Open reply; it is not "file missing". |
+
+Two relay captures on 2026-11-26 used FileMaker Pro 26.1.1 for macOS and
+FileMaker Server 26.0.3 for Ubuntu:
+
+- A related file's data source named an unhosted file. Pro sent six
+  pairs of Opens, each first with `.fmp12` and then with the bare name.
+  Every reply was GIOP OK with status `0x4fb5`, and Pro showed no alert
+  ([#914](https://github.com/OpenMaker-Dev/openmaker/issues/914)).
+- File > Hosts > Network File Path requested a hosted file that the
+  Admin API reported as `CLOSED` and an absent name as the control.
+  Pro tried each name with `.fmp12` and then bare. All four replies
+  were GIOP OK with status `0x4fb5`. Pro sent no Login and displayed
+  Not Found for both names ([#939](https://github.com/OpenMaker-Dev/openmaker/issues/939)).
+  FileMaker Server's replies during opening, closing and Pause remain
+  unmeasured.
+
+OpenMaker Server answers `0x4fb5` for unhosted names and still answers
+4 for a hosted file that is closing, closed or opening. The change
+for the measured `CLOSED` case is tracked in
+[#939](https://github.com/OpenMaker-Dev/openmaker/issues/939).
 
 Record/data transactions reuse the LIFO body with the HBAM slot codec:
 `RCUploadDownload::Call` (0x1d27a1c) frames `PushPtr`/`PushLen` + a packed slot
@@ -2262,9 +2282,10 @@ clients send `0x20`).
 [ tree, N ][ u32 N ][ u64 0 ][ u64 0 ][ i16 0 ][ u8 0 ]
 ```
 
-A request whose every entry is current presumably returns the empty list
-`80 40` (derived; not observed). A larger tree pages like any download
-(5.6.6c; not observed).
+A comparison with no reported changes returns the empty list `80 40`
+[O: FileMaker Server 26.0.3.309, FileMaker Pro 26.1.1, short transport
+drop probe in 6.3]. A larger tree pages like any download (5.6.6c; not
+observed).
 
 **Vectors** (live, 2026-11-11; test project, host file id `0x168`). The
 request body after the header, then the reply:
@@ -2295,7 +2316,8 @@ and `[3, 17]` collapsed, the layout index `[4, 1]` changed, the indexes
 `[8006, 3]` collapsed.
 
 **What FileMaker Pro does with the reply** (from bin,
-`RecursiveNotifyChange`; Low on the effects, not observed): it reads the
+`RecursiveNotifyChange`; Low on effects beyond the observed case below):
+it reads the
 tree back and, for each leaf, raises a local change notification (the
 attention codes of write-path.md 6.3): a whole-catalog leaf, attention
 `0x202` (catalog, modify) on that key; a record `[T, 5, R]`, a record
@@ -2304,6 +2326,14 @@ notification `0x200` (modify) on its table; any other leaf `0x202`, or
 schema key it also raises attention 2 on the whole file. These make it
 drop or refetch its cached copies; nothing more is sent to the host for
 op89 itself.
+
+[O: short transport drop probe in 6.3, [#6](https://github.com/OpenMaker-Dev/openmaker/issues/6)]
+One comparison reply held a single `01 00` leaf at the file-reference
+index `[20, 01]` (hex). The very next request downloaded that index
+with op90. A comparison for the other open file returned `80 40` and
+was followed by file-level reads of `[02, 18]` and `[02, 1818]`.
+No records were edited in the probe. Refetches for changed record
+markers remain unmeasured.
 
 **OpenMaker Server** answers op89 with status 3 (a 2-byte reply), as for
 every opcode it does not handle. FileMaker Pro needs a 23-byte trailer
@@ -2560,8 +2590,20 @@ nothing; FileMaker Server logged A's drop 125.4 s after A's last request,
 and B's lock 145 s after A's was granted. The connection's paged downloads
 (5.6.6c) go with the session (inference).
 
-**What FileMaker Pro does** (from bin; not observed, the drop test needs
-FileMaker Pro on the capture Mac):
+**Short transport drop** [O: FileMaker Pro 26.1.1 on macOS and FileMaker
+Server 26.0.3.309 on Ubuntu, 2026-11-26,
+[#5](https://github.com/OpenMaker-Dev/openmaker/issues/5)]. Closing the
+recording relay for about two seconds dropped the active transport.
+On a fresh transport Pro sent `_is_a`, `Connect`, and Open for each
+of two open files. Both files logged in successfully and sent
+CompareModCounts (5.6.11). No GIOP `Reconnect` call appeared. The
+Tasks window kept its current record and advanced to the next after
+one navigation action, with no alert or credential prompt. There were
+no uncommitted edits in the probe. Longer outages and lock recovery
+remain unmeasured.
+
+**What FileMaker Pro does** (from bin unless covered by the short-drop
+observation above):
 
 1. A file whose connection is lost becomes a dead file, with a
    `ReconnectState` of `kIsConnected` 0, `kIsReconnecting` 1,

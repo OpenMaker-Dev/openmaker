@@ -499,6 +499,55 @@ fn a_set_up_layout_keeps_its_name_views_and_menus_after_a_restart() {
     reopened.stop();
 }
 
+/// A rename keeps what a layout's flags hold only in its catalog index
+/// entry (#977): "Use fixed page margins" (`f1` bit `0x40`) and "Include in
+/// layout menus" cleared (`f0` bit `0x08`) stay as they are, and both
+/// `layout_setup` and `get_layout` report them.
+#[test]
+fn a_rename_keeps_flags_the_layout_holds_only_in_its_index_entry() {
+    let mut tree = form_tree();
+    fixture::index_layouts(&mut tree);
+    for key in [0xf1u8, 0xf0] {
+        tree.remove(&[&[4], &[5], &[2], &[key]]);
+    }
+    for (key, value) in [(0xf1u8, 0x40u64), (0xf0, 0x08)] {
+        tree.put(
+            &[&[4], &[1], &[7], &[2], &[key]],
+            OwnedNode::leaf(Vec::new(), value.to_be_bytes().to_vec()),
+        );
+    }
+    let file = TempFile::from_tree("author-layout-setup-index", &tree);
+    let host = host(&file, "OpenMaker Server test");
+    let mut service = Service::new(target(&host, ACCOUNT, PASSWORD));
+    let get = |service: &mut Service, name: &str| {
+        ok(service.handle(&Command::GetLayout(LayoutParams {
+            layout: None,
+            layout_name: Some(name.into()),
+        })))
+    };
+    let notes = get(&mut service, "Notes");
+    assert_eq!(notes["fixed_page_margins"], true, "{notes:#}");
+    let set = ok(service.handle(&Command::LayoutSetup(LayoutSetupParams {
+        layout: Some(text(&notes["layout"]["ref"]).to_owned()),
+        layout_name: None,
+        expected_revision: text(&notes["revision"]).to_owned(),
+        name: Some("Meeting notes".into()),
+        views: None,
+        default_view: None,
+        include_in_layout_menus: None,
+        options: None,
+        fixed_page_margins: None,
+        page_margins: None,
+    })));
+    assert_eq!(set["status"], "set_up", "{set:#}");
+    assert_eq!(set["verified"]["fresh_connection"], true, "{set:#}");
+    assert_eq!(set["fixed_page_margins"], true);
+    assert_eq!(set["include_in_layout_menus"], false);
+    let renamed = get(&mut service, "Meeting notes");
+    assert_eq!(renamed["fixed_page_margins"], true, "{renamed:#}");
+    host.stop();
+}
+
 /// set_field_control shows the Name field as a pop-up menu with a value
 /// list, then as an edit box again; repeated, it reports already_applied; a
 /// calendar on the text field and a list control without a value list are

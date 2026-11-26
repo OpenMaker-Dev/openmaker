@@ -540,13 +540,18 @@ impl Server {
     /// Every operation's reads and writes through its transaction are
     /// checked too, against its starting tree with its writes applied in order
     /// ("The operations' transaction"; `engine::checking`), which shows
-    /// each moved operation's writes say all it changed. Only in debug
-    /// builds.
+    /// each moved operation's writes say all it changed. Each hosted
+    /// file's store copy, which the reads are compared on as well, is made
+    /// here, before any client reads the file, and so is that of a file
+    /// opened again later. Only in debug builds.
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn checking_reads(self) -> Self {
         self.shared.engine.check_reads();
         self.shared.engine.check_writes();
+        for file in self.shared.hosting.files() {
+            self.shared.engine.prepare_store_copy(&file);
+        }
         self
     }
 
