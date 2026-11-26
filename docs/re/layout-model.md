@@ -3514,10 +3514,9 @@ placement writes (10.5), and the object store, to which the viewer is
 appended with every stored byte kept. It writes only the option
 combinations measured above (W2's, W1's and W3's flags) with a custom
 address, and refuses the others; and only an address whose formatted
-stream compiles again to its Polish stream, as Pro's four did, whose
-whitespace and comment tokens hold nothing that would show as more of the
-calculation, whose
-fields are each stored with their occurrence (`TABLE_PRESENT`, as W1's),
+stream, printed as Web Viewer Setup shows it and compiled again as text,
+gives back the same tokens and the stored Polish stream, as Pro's four
+did; whose fields are each stored with their occurrence (`TABLE_PRESENT`, as W1's),
 and which calls no custom or plug-in function. [O, 2026-11-26] For W2's and W1's setups
 on the same starter's Contact Details (at 40/300/320/500, clear of the
 tab control), OpenMaker Server's records outside the object store were

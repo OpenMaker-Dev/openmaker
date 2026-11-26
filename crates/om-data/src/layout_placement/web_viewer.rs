@@ -226,30 +226,24 @@ fn address(viewer: &WebViewerPlacement) -> Result<om_formula::Expr, Refusal> {
     }
     let tokens = om_formula::formatted::decode(&viewer.formatted)
         .map_err(|e| invalid(format!("text does not read ({e:?})")))?;
-    // Whitespace and comments are skipped when the text is compiled but
-    // shown as they are: one holding other text would show a calculation
-    // other than the one stored (`Contacts::Website //` before
-    // `Related::Website`).
-    if let Some(token) = tokens.iter().find(|token| !plain_trivia(token)) {
-        return Err(invalid(format!(
-            "text holds whitespace or a comment that would show as more of the \
-             calculation ({token:?})"
-        )));
-    }
-    let names = om_formula::NoNames;
-    let expr =
-        om_formula::compile_tokens(&tokens, &om_formula::Context::new(&names)).map_err(|_| {
-            Refusal::Unsupported(
-                "The web address's text does not compile on its own; this version places \
-                 addresses that use the file's fields and FileMaker's functions only."
-                    .into(),
-            )
-        })?;
-    if om_formula::polish::encode(&expr) != viewer.polish {
+    // The text Web Viewer Setup shows is the formatted stream printed. It
+    // must read back, compiled as text, as exactly the stored tokens and
+    // the stored calculation: then what is shown is what Browse evaluates,
+    // whatever the tokens hold (comments, whitespace, variables named like
+    // fields). Fields are named by their keys here, as the file's names are
+    // not needed for that check.
+    let names = KeyNames::of(&tokens);
+    let ctx = om_formula::Context::new(&names);
+    let text = om_formula::print(&tokens, &ctx);
+    let compiled = om_formula::compile(&text, &ctx).map_err(|_| {
+        invalid("text does not read back as a calculation, so it cannot be shown as stored".into())
+    })?;
+    if compiled.tokens != tokens || om_formula::polish::encode(&compiled.expr) != viewer.polish {
         return Err(invalid(
             "text and the calculation evaluated are not the same calculation".into(),
         ));
     }
+    let expr = compiled.expr;
     // The address has no context of its own (`01 00`): a field written
     // without its occurrence would show a name that could stand for
     // another occurrence's field, so each one must be qualified.
@@ -274,23 +268,55 @@ fn address(viewer: &WebViewerPlacement) -> Result<om_formula::Expr, Refusal> {
     Ok(expr)
 }
 
-/// Whether `token` shows as what it is: not trivia, whitespace that is
-/// all white space, a block comment that does not end before its end, or a
-/// line comment whose only line break ends it.
-fn plain_trivia(token: &om_formula::Token) -> bool {
-    use om_formula::Token;
-    match token {
-        Token::Whitespace(text) => text.value.chars().all(char::is_whitespace),
-        Token::BlockComment(text) => !text.value.contains("*/"),
-        Token::LineComment(text) => {
-            let body = text
-                .value
-                .strip_suffix("\r\n")
-                .or_else(|| text.value.strip_suffix(['\r', '\n']))
-                .unwrap_or(&text.value);
-            !body.contains(['\r', '\n'])
+/// Names for the fields an address's tokens hold, made from their keys
+/// (`o<occurrence>::f<field>`), for printing the tokens and reading the text
+/// back: names of the file are not needed to check that the two agree.
+struct KeyNames {
+    occurrences: std::collections::BTreeMap<u64, String>,
+    fields: std::collections::BTreeMap<(u64, u64), String>,
+}
+
+impl KeyNames {
+    fn of(tokens: &[om_formula::Token]) -> Self {
+        let mut names = Self {
+            occurrences: Default::default(),
+            fields: Default::default(),
+        };
+        for token in tokens {
+            if let om_formula::Token::Field(field) = token {
+                if let (Some(occurrence), Some(id)) = (field.occurrence.id(), field.field.id()) {
+                    names
+                        .occurrences
+                        .insert(occurrence, format!("o{occurrence}"));
+                    names.fields.insert((occurrence, id), format!("f{id}"));
+                }
+            }
         }
-        _ => true,
+        names
+    }
+}
+
+impl om_formula::Names for KeyNames {
+    fn occurrence_name(&self, occurrence: u64) -> Option<&str> {
+        self.occurrences.get(&occurrence).map(String::as_str)
+    }
+
+    fn find_occurrence(&self, name: &str) -> Option<u64> {
+        self.occurrences
+            .iter()
+            .find(|(_, n)| n.as_str() == name)
+            .map(|(id, _)| *id)
+    }
+
+    fn field_name(&self, occurrence: u64, field: u64) -> Option<&str> {
+        self.fields.get(&(occurrence, field)).map(String::as_str)
+    }
+
+    fn find_field(&self, occurrence: u64, name: &str) -> Option<u64> {
+        self.fields
+            .iter()
+            .find(|((o, _), n)| *o == occurrence && n.as_str() == name)
+            .map(|((_, id), _)| *id)
     }
 }
 

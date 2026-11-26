@@ -2769,7 +2769,7 @@ mod tests {
         // field shown would be neither read nor indexed.
         let mismatched = WebViewerPlacement {
             polish: viewer.polish.clone(),
-            ..reads
+            ..reads.clone()
         };
         assert!(matches!(
             plan_web_viewer(&before, &mismatched),
@@ -2814,6 +2814,50 @@ mod tests {
             plan_web_viewer(&before, &hidden),
             Err(Refusal::Invalid(_))
         ));
+
+        // Text that would show other than it reads back is refused: a line
+        // comment with no return before `& Related::Website` (W1's tokens
+        // with it added), a variable named like a field, a line separator
+        // as whitespace, an unclosed nested block comment. Valid comments
+        // read back and pass.
+        let w1 = om_formula::formatted::decode(&reads.formatted).unwrap();
+        let with = |tokens: Vec<om_formula::Token>, polish: Vec<u8>| WebViewerPlacement {
+            formatted: om_formula::formatted::encode(&tokens),
+            polish,
+            ..viewer.clone()
+        };
+        let text = |t: &str| om_formula::Text::plain(t);
+        let mut hidden_tail = w1.clone();
+        hidden_tail.insert(2, om_formula::Token::LineComment(text(" ")));
+        let mut separator = w1.clone();
+        separator[1] = om_formula::Token::Whitespace(text("\u{2028}"));
+        let mut unclosed = w1.clone();
+        unclosed.insert(2, om_formula::Token::BlockComment(text("/* x")));
+        let variable = "Contacts::Website".to_owned();
+        for (case, placement) in [
+            ("line comment", with(hidden_tail, reads.polish.clone())),
+            ("line separator", with(separator, reads.polish.clone())),
+            ("unclosed comment", with(unclosed, reads.polish.clone())),
+            (
+                "variable",
+                with(
+                    vec![om_formula::Token::Variable(variable.clone())],
+                    om_formula::polish::encode(&om_formula::Expr::Variable(variable)),
+                ),
+            ),
+        ] {
+            assert!(
+                matches!(
+                    plan_web_viewer(&before, &placement),
+                    Err(Refusal::Invalid(_))
+                ),
+                "{case}"
+            );
+        }
+        let mut commented = w1.clone();
+        commented.insert(2, om_formula::Token::BlockComment(text(" a /* b */ c ")));
+        commented.insert(2, om_formula::Token::LineComment(text(" note\r")));
+        assert!(plan_web_viewer(&before, &with(commented, reads.polish.clone())).is_ok());
 
         let unmeasured = WebViewerPlacement {
             flags: 0x800c,
