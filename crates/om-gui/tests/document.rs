@@ -2093,7 +2093,7 @@ fn design_paints_stored_artwork_at_the_draft_frame() {
 }
 
 #[test]
-fn design_keeps_crossing_frames_and_places_fills_on_their_own_band() {
+fn design_dims_pasteboard_artwork_and_places_fills_on_their_own_band() {
     let mut provider = DocumentProvider::new(false);
     provider.design_geometry = true;
     provider.design_edges = true;
@@ -2116,14 +2116,20 @@ fn design_keeps_crossing_frames_and_places_fills_on_their_own_band() {
             _ => None,
         })
         .collect();
-    let (fill, clip) = rectangles
+    let (fill_index, (fill, clip)) = rectangles
         .iter()
-        .find(|(rect, _)| rect.fill == Color32::from_rgb(64, 128, 191))
+        .enumerate()
+        .find(|(_, (rect, _))| rect.fill == Color32::from_rgb(64, 128, 191))
         .expect("the crossing rectangle still has its authored fill");
-    assert!(clip.right() < fill.rect.right());
-    assert!(rectangles.iter().any(|(rect, clip)| {
-        rect.rect == fill.rect && rect.stroke.width > 0.0 && clip.right() >= rect.rect.right()
-    }));
+    assert!(clip.right() >= fill.rect.right());
+    let (fade, _) = rectangles[fill_index + 1..]
+        .iter()
+        .find(|(rect, _)| rect.fill == Color32::from_gray(0xe5).gamma_multiply(0.45))
+        .expect("the right pasteboard is dimmed above the artwork");
+    let divider = fill.rect.left() + 65.0;
+    assert_eq!(fade.rect.left(), divider);
+    assert!(fade.rect.right() >= fill.rect.right());
+    let pasteboard_click = egui::pos2((divider + fill.rect.right()) / 2.0, fill.rect.center().y);
     let header = rectangles
         .iter()
         .find(|(rect, _)| rect.fill == Color32::from_rgb(223, 239, 255))
@@ -2136,6 +2142,8 @@ fn design_keeps_crossing_frames_and_places_fills_on_their_own_band() {
             && rect.rect.height() == 25.0
             && rect.stroke.color == Color32::from_rgb(0xd6, 0xd6, 0xd6)
     }));
+    click_at(&mut app, pasteboard_click);
+    assert!(app.query_by_label("Resize top left").is_some());
 }
 
 #[test]

@@ -506,7 +506,26 @@ issued, free id (OpenMaker's choice until measured,
 [#840](https://github.com/OpenMaker-Dev/openmaker/issues/840); it never
 brings back a deleted record, nor lets a client plant a record under an id
 another client's next new record gets). An entry with nothing staged for it
-still asks for nothing.
+still asks for nothing (below).
+
+An entry, other than a deletion, naming a record with nothing uploaded for
+it (op14, 3.3): what FileMaker Server answers it is unmeasured, and so is
+whether FileMaker Pro ever sends one, for instance when it leaves a record
+it locked without a change
+([#1008](https://github.com/OpenMaker-Dev/openmaker/issues/1008)).
+FileMaker Pro uploads each record it commits new or changed before the
+op70 (0, 1.1), and in a capture against FileMaker Server 26.0.3 each of
+its five op70 was the request directly after an op14
+([#829, request by request](https://github.com/OpenMaker-Dev/openmaker/issues/829#issuecomment-7183624871)).
+OpenMaker Server answers an entry in the edit form with nothing uploaded
+done, with nothing stored for it, except for a record whose upload an
+earlier commit of the same transaction took and could not save, which it
+refuses with the whole commit: answered done, that commit sent again would
+say stored what is not. An entry marked new (`01`) with nothing uploaded
+it refuses with the whole commit too: a record is asked for that nothing
+makes, so done cannot be true
+([#839](https://github.com/OpenMaker-Dev/openmaker/issues/839); both
+OpenMaker's choice, FileMaker Server's answer unmeasured).
 
 Reply: the empty page (23 bytes) as for op14. Errors are not reported in
 the reply: FileMaker Server answered the same 23 bytes when it could not apply

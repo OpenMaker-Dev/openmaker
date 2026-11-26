@@ -63,6 +63,15 @@ itself, or a dependency cycle involving different fields, is outside this
 inference and remains refused. Native timing and the named-reference
 substitution have not been measured for this slice.
 
+FileMaker Pro 26.1.1 [measured the `Self` token](https://github.com/OpenMaker-Dev/openmaker/issues/1059)
+in a local Number field. A formula with an empty branch returning 0 stores
+0 at New Record and after an explicit clear. With replacement enabled,
+`Self + 1` in the nonempty branch stores 26 after Set Field of 25. With
+replacement disabled the same assignment stores 25. An unrelated edit
+keeps the value. The result is visible immediately and survives commit.
+Inferred: `Self` reads the proposed field value. Hosted files and other
+field types were not measured.
+
 ## Fixed field definition
 
 The definition is at `<base-table>/3/5/<field>/2`. The decoder accepts exactly
@@ -671,6 +680,19 @@ or related-values lists. Carry-over to them is inference, and this case
 does not distinguish validation being skipped from other internal timing
 that saves without a dialog. Hosted behavior is unmeasured.
 
+## Stored Evaluate with explicit dependencies
+
+FileMaker Pro 26.1.1 stored a Text calculation of the form
+`Evaluate ( "Given & Char ( 32 ) & Family" ; [ Given ; Family ] )`.
+New Record left it empty. Changing either listed field recomputed it at
+Set Field. A field the text also read and the list omitted did not trigger
+recalculation. The next listed change read its current value. The
+results persisted through commit and reopen. Reading the expression
+from a field was also allowed and writing the expression field itself
+triggered that variant. The literal definitions used option word
+`0x00080000` and stored their result cells. Hosted files were not compared.
+[Native results](https://github.com/OpenMaker-Dev/openmaker/issues/1072)
+
 ## Get ( CurrentTimeUTCMilliseconds )
 
 FileMaker Pro 26.1.1 in a local file displayed the UTC millisecond value
@@ -835,6 +857,22 @@ records had no cell for the global field. This measures the counter
 persisted at close. The timing of the counter write before close and
 the result of reverting a newly created record were not measured.
 [O, closed-file readback](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7185027447).
+
+### Self in a calculated global Text auto-entry
+
+[O, FileMaker Pro 26.1.1] A local single-repetition global Text field
+stores option `0x00010088` for a replacing calculation and `0x00010008`
+with replacement off. The measured formulas were
+`If ( IsEmpty ( Self ) ; "Initial" ; Self )` and the same formula with
+`Self & "!"` as the final branch. The empty-input control was left on.
+New Record sees the current global through Self. Set Field sees its
+proposed text through Self. With replacement off, a nonempty value
+survives either operation. Clearing the field re-enters the default.
+Writing an unrelated field leaves the global unchanged.
+These scripts all continued with LastError 0. The local global persisted
+across reopen. Hosted files, Browse typing, Duplicate Record and portal
+creation were not tested.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1095#issuecomment-7191245589)
 
 ## A stored calculation before the commit
 
