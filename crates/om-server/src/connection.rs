@@ -1209,9 +1209,6 @@ impl Connection {
     /// every lock it takes is used even when poisoned.
     fn end_session(&mut self) {
         if let Some(session) = self.session.take() {
-            // First, so that no other transport reads through the session
-            // while what it holds is released.
-            self.shared.joins.close(&session.grant);
             if let Some(client) = &session.access {
                 let events = &self.shared.events;
                 for file in session.open.values() {
@@ -1233,6 +1230,10 @@ impl Connection {
                 outcome.notices.deliver(&file, &self.shared.mailboxes);
                 file.registrations().retain(|r| r.connection != connection);
             }
+            // The locks go first and wait for nothing else; then no other
+            // transport reads through the session (a read already under
+            // way finishes, as one that came a moment earlier would).
+            self.shared.joins.close(&session.grant);
             self.shared.mailboxes.close(connection);
             self.shared.clients.ended(connection);
             // After the entry is gone no message can be queued for the
