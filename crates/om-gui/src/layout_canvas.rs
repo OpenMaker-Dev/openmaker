@@ -23,7 +23,9 @@ use crate::document::{zoom, DocumentState};
 use crate::session::{Geometry, Session};
 use crate::theme;
 
-use om_data::layout_selection::{SelectAll, Target as SelectionTarget};
+use om_data::layout_selection::{
+    self, Coverage, MarqueeFrame, SelectAll, Target as SelectionTarget,
+};
 
 mod history;
 pub(crate) use history::DraftEdit;
@@ -303,7 +305,7 @@ struct Drag {
 struct Selection(
     BTreeSet<usize>,
     Option<&'static str>,
-    // Whether to paint the separate Select All overlays.
+    // Whether to paint aggregate handles and selected inactive panel outlines.
     bool,
 );
 
@@ -327,12 +329,12 @@ impl Selection {
         self.0.extend(indices);
     }
 
-    fn select_all(&mut self, indices: impl IntoIterator<Item = usize>) {
+    fn replace_with_overlay(&mut self, indices: impl IntoIterator<Item = usize>, aggregate: bool) {
         self.replace(indices);
-        self.2 = true;
+        self.2 = aggregate;
     }
 
-    fn uses_select_all_overlay(&self) -> bool {
+    fn uses_aggregate_overlay(&self) -> bool {
         self.2
     }
 
@@ -827,8 +829,10 @@ impl CanvasState {
         } else {
             &[]
         };
-        self.selected
-            .select_all(selectable_frames(geometry, fields, shown).map(|(index, _)| index));
+        self.selected.replace_with_overlay(
+            selectable_frames(geometry, fields, shown).map(|(index, _)| index),
+            true,
+        );
         self.scroll_to_selected = false;
     }
 
@@ -1770,11 +1774,26 @@ fn draw(
                                     })
                                     .unwrap_or(input.modifiers.command)
                             });
-                            select_in_box(
-                                selected,
-                                rect.translate(-origin.to_vec2()),
-                                contained,
-                                selectable_frames(geometry, new.fields, shown),
+                            let bounds = rect.translate(-origin.to_vec2());
+                            let bounds = GeomRect {
+                                left: f64::from(bounds.left()),
+                                top: f64::from(bounds.top()),
+                                right: f64::from(bounds.right()),
+                                bottom: f64::from(bounds.bottom()),
+                            };
+                            let coverage = if contained {
+                                Coverage::Contains
+                            } else {
+                                Coverage::Intersects
+                            };
+                            let selected_frames = layout_selection::marquee(
+                                bounds,
+                                coverage,
+                                &marquee_frames(geometry, new.fields, present, visible),
+                            );
+                            selected.replace_with_overlay(
+                                selected_frames.indices,
+                                selected_frames.aggregate,
                             );
                             *scroll_to_selected = false;
                         }
@@ -2022,9 +2041,9 @@ fn draw(
                 );
             }
 
-            let show_all_selection = selected.uses_select_all_overlay();
+            let aggregate_selection = selected.uses_aggregate_overlay();
             let selection_frame = |object: &ObjectGeom| {
-                if show_all_selection {
+                if aggregate_selection {
                     present(object)
                 } else {
                     shown(object)
@@ -2038,7 +2057,7 @@ fn draw(
                         if let Some(field) = new
                             .fields
                             .get(index - geometry.objects.len())
-                            .filter(|_| show_all_selection)
+                            .filter(|_| aggregate_selection)
                         {
                             let rect = object_rect(origin, &geom_rect(field.frame()));
                             if rect.is_finite() {
@@ -2056,7 +2075,7 @@ fn draw(
                         continue;
                     }
                     draw_selection_outline(&painter, rect, object.locked);
-                    if show_all_selection {
+                    if aggregate_selection {
                         // Inactive children have outlines but do not extend
                         // the handles around the objects on screen.
                         if visible(object.key) {
@@ -2196,20 +2215,37 @@ fn selectable_frames<'a>(
         .filter(|(_, frame)| frame.is_finite())
 }
 
-fn select_in_box(
-    selected: &mut Selection,
-    bounds: Rect,
-    contained: bool,
-    frames: impl Iterator<Item = (usize, Rect)>,
-) {
-    selected.replace(frames.filter_map(|(index, frame)| {
-        let hit = if contained {
-            bounds.contains_rect(frame)
-        } else {
-            bounds.intersects(frame)
-        };
-        hit.then_some(index)
-    }));
+fn marquee_frames<'a>(
+    geometry: &'a LayoutGeometry,
+    fields: &[NewField],
+    present: impl Fn(&ObjectGeom) -> Option<GeomRect>,
+    visible: impl Fn(u64) -> bool,
+) -> Vec<MarqueeFrame<'a>> {
+    geometry
+        .objects
+        .iter()
+        .enumerate()
+        .filter_map(|(index, object)| {
+            Some(MarqueeFrame {
+                index,
+                object: Some(object),
+                rect: present(object)?,
+                visible: visible(object.key),
+            })
+        })
+        .chain(
+            fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| MarqueeFrame {
+                    index: geometry.objects.len() + index,
+                    object: None,
+                    rect: geom_rect(field.frame()),
+                    visible: true,
+                }),
+        )
+        .filter(|entry| object_rect(Pos2::ZERO, &entry.rect).is_finite())
+        .collect()
 }
 
 fn begin_selection_drag(

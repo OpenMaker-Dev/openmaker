@@ -477,6 +477,20 @@ documents that a lock protects an object from edits, moves and deletion.
 **Unknowns:** The all-object selection rules for portal and slide-control
 contents, the Option-held menu label, and how mixed locked selections edit.
 
+### Marquee
+
+[O] On the same synthetic form in FileMaker Pro 26.1.1, a marquee
+enclosing the standalone rectangle and crossing one member of the group
+selected the rectangle and the entire group. Neither group member was
+highlighted in Objects. A marquee surrounding the entire tab control
+selected both tab panels and their rectangles. Objects highlighted both
+panel rows while the tab control parent row stayed unhighlighted. The
+front panel stayed active ([#909](https://github.com/OpenMaker-Dev/openmaker/issues/909)).
+
+**Unknowns:** A live Command-drag was not captured. Selection across a
+group's empty space, a partly enclosed tab control, nested controls, and
+popover-scoped and portal selection were not measured.
+
 ### Artwork and boundaries
 
 [O] FileMaker Pro 26.1.1, Minimalist theme, Actual Size and Sample Data

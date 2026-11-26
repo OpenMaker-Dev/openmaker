@@ -471,6 +471,8 @@ pub struct ObjectGeom {
     pub key: u64,
     /// How this object participates in the Select All command.
     pub selection: layout_selection::Target,
+    /// The object's role in a marquee over the layout.
+    pub marquee: layout_selection::MarqueeRole,
     /// Whether FileMaker stores this object as locked in Layout mode.
     pub locked: bool,
     /// Whether Layout mode can move and resize it
