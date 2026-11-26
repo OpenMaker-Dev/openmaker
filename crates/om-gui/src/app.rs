@@ -1981,6 +1981,7 @@ impl OpenMakerApp {
                     !self.w.layout_workspace.saving
                         && self.w.layout_workspace.selection_count(session) > 0
                 }),
+            insert_part: self.can_insert_part(),
             layout_arrange: match self.w.session.as_ref() {
                 Some(session)
                     if self.w.mode == Mode::Layout
@@ -6872,6 +6873,39 @@ impl OpenMakerApp {
             def,
             in_menus,
         ));
+    }
+
+    /// Whether Insert > Part... can open Part Definition now: Layout mode
+    /// with design access, the layout read with its revision, no unsaved
+    /// change and nothing with the host, no Part Setup open, and a kind of
+    /// part Part Definition adds that the layout lacks. `InsertPart` checks
+    /// again when it runs.
+    fn can_insert_part(&self) -> bool {
+        let Some(session) = self.w.session.as_ref() else {
+            return false;
+        };
+        let (
+            crate::session::Geometry::Loaded(geometry),
+            crate::session::RenderState::Loaded(document),
+        ) = (&session.geometry, &session.render)
+        else {
+            return false;
+        };
+        self.w.mode == Mode::Layout
+            && self.design_allowed()
+            // As `apply` refuses it: no connection, edits held for a
+            // reconnect, or a script running.
+            && self.w.connection_lost.is_none()
+            && !self.recovery_holds()
+            && !self.script.busy()
+            && session.layout.is_some()
+            && geometry.revision.is_some()
+            && !self.w.layout_workspace.saving
+            && !self.w.layout_workspace.has_changes()
+            && self.part_setup.is_none()
+            && om_data::layout_placement::ADDABLE_PARTS
+                .iter()
+                .any(|kind| !document.layout.parts.iter().any(|p| p.part_type == *kind))
     }
 
     /// Part Setup over the layout the window shows in Layout mode: its

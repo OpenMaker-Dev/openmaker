@@ -2750,11 +2750,15 @@ closes it as it closes Layout Setup. A change refused because the layout
 changed meanwhile closes it; opened again, it shows the layout as it is
 now.
 
-**The Part tool.** Dragging the status toolbar's Part Tool button onto the
-layout, as Claris documents it (re/client-ui.md, "Part Setup"), or choosing
-the tool and clicking the layout, opens Part Definition alone, as Part
-Setup's Create opens it: the kinds of part the layout lacks offered (not
-sub-summaries), and OK adds the one chosen at its place in the order of
+**The Part tool and Insert > Part.** Dragging the status toolbar's Part
+Tool button onto the layout, as Claris documents it (re/client-ui.md, "Part
+Setup"), choosing the tool and clicking the layout, or Insert > Part...
+opens Part Definition alone, as Part Setup's Create opens it: the kinds of
+part the layout lacks offered (not sub-summaries), the first of them
+chosen (OpenMaker's rule, from FileMaker Pro 26.1.1's Insert > Part
+choosing Title Header on a layout with a top navigation part and a body;
+Pro's choice elsewhere, and its Part tool's, are unmeasured), and OK adds
+the one chosen at its place in the order of
 parts, at Create's heights, with the same operation. While OK is with the
 host the dialog stays, taking no input; it closes with Cancel or with the
 host's answer, and the tool goes back to Selection. Where the button is dropped does not matter: each kind of part
@@ -2764,6 +2768,17 @@ has every kind of part OpenMaker adds. Not compared with FileMaker Pro: the
 height Pro gives a part the Part tool adds, whether the drop point decides
 anything for the kinds OpenMaker adds, and what a click with the tool does
 (OpenMaker's choice).
+
+**Layout mode's Insert menu** has FileMaker Pro 26.1.1's items, in its
+order, with its submenus and shortcuts (re/client-ui.md, "Layout mode's
+Insert menu"). Part... works as above, enabled when Part Definition can open
+(the layout read, no unsaved change, nothing with the host, a kind of part
+missing). The other items are shown but not offered yet: Field... (Pro
+opens Specify Field; on the layout captured it inserted a selected edit box
+with its label at the bottom of the body), the items of the Graphic Object and
+Field/Control submenus (which open on them), the objects of the other tools, Picture..., the
+current date, time and user name, the symbols, Merge Field..., Merge
+Variable and Layout Calculation....
 
 **A part's boundary.** In Layout mode the Selection tool drags a part's
 lower boundary (a band across the layout and the part strip) to set its

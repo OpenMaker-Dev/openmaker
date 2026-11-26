@@ -2403,12 +2403,45 @@ fn part_setup_creates_and_deletes_a_header_and_the_body_boundary_is_dragged() {
         "97-part-tool-header",
         "the Header the Part tool added",
     );
-    drop(app);
     assert_eq!(
         read(&hosted),
         (
             vec![(1, 0.0, 110.0), (4, 110.0, 240.0), (7, 350.0, 22.0)],
             130.0
+        )
+    );
+
+    // Insert > Part... (#911) opens the same Part Definition with the first
+    // kind the layout lacks chosen, as FileMaker Pro 26.1.1's did: OK alone
+    // adds a Top Navigation part.
+    common::open_menu(&mut app, "Insert");
+    shot(&mut app, "98-insert-menu", "Layout mode's Insert menu");
+    common::click(&mut app, "Part...");
+    common::wait_until(&mut app, "Insert > Part's Part Definition", |app| {
+        app.query_by_role_and_label(Role::RadioButton, "Top Navigation")
+            .is_some()
+    });
+    shot(
+        &mut app,
+        "99-insert-part",
+        "Insert > Part..., the first kind offered chosen",
+    );
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "Insert > Part's part saved", |app| {
+        assert!(app.state().error().is_none(), "{:?}", app.state().error());
+        app.state().is_settled() && app.query_by_label("Top Navigation boundary").is_some()
+    });
+    drop(app);
+    assert_eq!(
+        read(&hosted),
+        (
+            vec![
+                (12, 0.0, 22.0),
+                (1, 22.0, 110.0),
+                (4, 132.0, 240.0),
+                (7, 372.0, 22.0)
+            ],
+            152.0
         )
     );
 }

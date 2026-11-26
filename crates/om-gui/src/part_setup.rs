@@ -162,7 +162,13 @@ impl PartSetup {
         if !ADDABLE_PARTS.iter().any(|&t| self.creatable(t)) {
             return Err("The layout has every kind of part OpenMaker adds.");
         }
-        self.creating = Some(None);
+        // The first kind offered is chosen, as FileMaker Pro 26.1.1's
+        // Insert > Part chose Title Header (re/client-ui.md, "Part Setup").
+        let first = TYPES
+            .iter()
+            .find(|(_, types, _)| types.len() == 1 && self.creatable(types[0]))
+            .map(|(_, types, _)| types[0]);
+        self.creating = Some(first);
         self.alone = true;
         Ok(self)
     }
