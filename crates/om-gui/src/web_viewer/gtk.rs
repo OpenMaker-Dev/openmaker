@@ -573,26 +573,16 @@ impl State {
             let manager = page
                 .user_content_manager()
                 .ok_or_else(|| "the page has no content manager".to_owned())?;
-            // WebKit has already copied the message into this process; one
-            // that is not text, too long, malformed or beyond the budget
-            // goes no further. Its length comes first, so that one too long
-            // is not copied again.
+            // WebKit has already copied the message into this process; only
+            // text the bridge could have posted, within the budget, goes
+            // further.
             let budget = self.budget.clone();
             manager.connect_script_message_received(Some(HANDLER), move |_, message| {
-                let Some(value) = message.js_value().filter(|v| v.is_string()) else {
+                let Some(body) = message.js_value().as_ref().and_then(bridge_text) else {
                     return;
                 };
-                let Some(units) = utf16_length(&value).filter(|&units| units <= MAX_MESSAGE) else {
-                    return;
-                };
-                let body = value.to_str();
-                // The bridge posts ASCII (`encodeURIComponent`'s): text that
-                // is not, or that the copy cut short at a NUL, is dropped.
-                if body.len() == units && body.is_ascii() && budget.admit(&body) {
-                    messages.send(Event::Message {
-                        view,
-                        body: body.into(),
-                    });
+                if budget.admit(&body) {
+                    messages.send(Event::Message { view, body });
                 }
             });
             if !manager.register_script_message_handler(HANDLER) {
@@ -668,6 +658,23 @@ fn place(x11: &RustConnection, hosted: &mut Hosted, geometry: Geometry, visible:
     }
 }
 
+/// The text of a message a page posted to the bridge's handler, if it can
+/// be a bridge message: a string of ASCII, which is all the bridge posts
+/// (`encodeURIComponent`'s output), no longer than [`MAX_MESSAGE`]. Its
+/// length is read before it is copied out, so one too long is not copied;
+/// one JavaScriptCore cannot convert (an unpaired surrogate) is `None`.
+fn bridge_text(value: &javascriptcore::Value) -> Option<String> {
+    if !value.is_string() {
+        return None;
+    }
+    let units = utf16_length(value).filter(|&units| units <= MAX_MESSAGE)?;
+    // As bytes: the string's own length, where a C string would stop at
+    // a NUL.
+    let bytes = value.to_string_as_bytes()?;
+    let text = std::str::from_utf8(&bytes).ok()?;
+    (text.len() == units && text.is_ascii()).then(|| text.to_owned())
+}
+
 /// A JavaScript string's length in UTF-16 code units, which is at most its
 /// length in UTF-8 bytes, read in JavaScript without copying the string.
 fn utf16_length(value: &javascriptcore::Value) -> Option<usize> {
@@ -686,4 +693,28 @@ fn clamp_i16(v: i32) -> i16 {
 
 fn clamp_u16(v: i32) -> u16 {
     v.clamp(1, i32::from(u16::MAX)) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use javascriptcore::ContextExt as _;
+
+    /// What a page posts reaches the app only as text the bridge could have
+    /// posted, and nothing it posts makes the handler panic (a panic in a
+    /// GTK callback aborts the app).
+    #[test]
+    fn only_text_the_bridge_could_post_is_taken_from_a_page() {
+        let context = javascriptcore::Context::new();
+        let text = |code: &str| super::bridge_text(&context.evaluate(code).expect("evaluates"));
+        let message = "openmaker-perform-script&s=a&p=%C3%A9%00&o=0";
+        assert_eq!(text(&format!("'{message}'")).as_deref(), Some(message));
+        // An unpaired surrogate, which JavaScriptCore may fail to convert,
+        // other text that is not ASCII, and what is not text.
+        assert_eq!(text("'openmaker-perform-script&s=a\\uD800&p=&o=0'"), None);
+        assert_eq!(text("'openmaker-perform-script&s=\\u00e9&p=&o=0'"), None);
+        assert_eq!(text("42"), None);
+        // Longer than a message may be, by its length alone.
+        let long = format!("'x'.repeat({})", super::MAX_MESSAGE + 1);
+        assert_eq!(text(&long), None);
+    }
 }
