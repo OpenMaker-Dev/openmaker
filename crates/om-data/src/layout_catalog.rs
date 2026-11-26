@@ -1059,11 +1059,21 @@ pub mod general {
     pub const ALL: u64 = 0x10 | 0x20 | 0x1 | 0x1000_0000 | 0x8000;
 }
 
+/// Layout Setup's Printing options that OpenMaker sets, as bits of a
+/// layout's flags `f1` (layout-model.md 4.2).
+pub mod printing {
+    /// "Use fixed page margins": the layout prints within its stored
+    /// `customMargins` [O: FileMaker Pro 26.0.3 set it in the member's and
+    /// the index entry's flags, #609].
+    pub const FIXED_PAGE_MARGINS: u64 = om_layout::paper::FIXED_PAGE_MARGINS;
+    pub const ALL: u64 = FIXED_PAGE_MARGINS;
+}
+
 /// Layout Setup's name and view flags for layout `layout`, set on the
 /// layout shown at revision `expected` (its member's
 /// `om_protocol::authoring::layout_revision`), as the window asks for it
 /// ([`crate::DataProvider::set_layout_setup`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LayoutSetupChange {
     pub layout: u32,
     pub expected: crate::layout_placement::Revision,
@@ -1071,6 +1081,10 @@ pub struct LayoutSetupChange {
     pub flags: u64,
     /// Left out of the layout menus.
     pub hidden: bool,
+    /// The Printing tab's fixed page margins, when they changed: set
+    /// before the flags, as their own edit
+    /// (`layout_placement::plan_margins`).
+    pub margins: Option<om_layout::Rect>,
 }
 
 /// A layout's member and index after Layout Setup ([`plan_setup`]).
@@ -1089,9 +1103,10 @@ pub struct SetUp {
 /// `name` in the member `10`, its entry `[4, 1, 07, L, 10]` and the name
 /// list (re-keyed), `flags` in the member's and the entry's `f1`, and
 /// `hidden` ("Include in layout menus" cleared) as [`MENU_HIDDEN`] in their
-/// `f0` (layout-model.md 10.11). Only the view bits ([`views::ALL`]) and the
-/// General options' ([`general::ALL`]) may differ from the stored flags; at
-/// least one view stays available, and the default view is one of them.
+/// `f0` (layout-model.md 10.11). Only the view bits ([`views::ALL`]), the
+/// General options' ([`general::ALL`]) and "Use fixed page margins"
+/// ([`printing::ALL`]) may differ from the stored flags; at least one view
+/// stays available, and the default view is one of them.
 pub fn plan_setup(
     catalog: &OwnedNode,
     layout: u64,
@@ -1129,10 +1144,10 @@ pub fn plan_setup(
     let stored = word(member, VIEW_FLAGS)
         .or_else(|| word(&entry, VIEW_FLAGS))
         .ok_or_else(|| unsupported(format!("Layout {layout} has no readable view flags.")))?;
-    if (stored ^ flags) & !(views::ALL | general::ALL) != 0 {
+    if (stored ^ flags) & !(views::ALL | general::ALL | printing::ALL) != 0 {
         return Err(unsupported(
-            "OpenMaker's Layout Setup changes a layout's name, views and General options; \
-             its other settings are kept as stored."
+            "OpenMaker's Layout Setup changes a layout's name, views, General options and \
+             fixed page margins; its other settings are kept as stored."
                 .into(),
         ));
     }
@@ -1537,8 +1552,10 @@ mod tests {
         );
         assert!(plan_setup(&damaged, 3, "Contact List", 0x10f3_080d, false).is_err());
         // "Save record changes automatically" off (`0x10`), a General
-        // option, is set in the member and the entry; `0x40`, no option
-        // Layout Setup sets, is refused.
+        // option, is set in the member and the entry, and so is `0x40`, "Use
+        // fixed page margins", as FileMaker Pro set it (#609); `0x400`,
+        // "Print in 2 columns", which OpenMaker's Layout Setup does not
+        // set, is refused.
         let saved_off = plan_setup(&catalog, 3, "Contact Details", 0x10f3_081d, false).unwrap();
         let word = |node: &OwnedNode| node.child(&[VIEW_FLAGS]).and_then(|n| n.value.clone());
         let flags = Some(0x10f3_081d_u64.to_be_bytes().to_vec());
@@ -1550,8 +1567,18 @@ mod tests {
                 .and_then(word),
             flags
         );
+        let fixed = plan_setup(&catalog, 3, "Contact Details", 0x10f3_084d, false).unwrap();
+        let flags = Some(0x10f3_084d_u64.to_be_bytes().to_vec());
+        assert_eq!(word(&fixed.member), flags);
+        assert_eq!(
+            fixed
+                .index
+                .at(&[&[ENTRIES], &uint_segment(3)])
+                .and_then(word),
+            flags
+        );
         for flags in [
-            0x10f3_084d,                        // not a Layout Setup bit
+            0x10f3_0c0d,                        // not a Layout Setup bit OpenMaker sets
             0x10f3_080f,                        // no view
             0x10f3_080d | views::DEFAULT_TABLE, // default not available
         ] {

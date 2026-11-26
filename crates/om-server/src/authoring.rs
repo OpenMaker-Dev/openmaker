@@ -75,14 +75,14 @@ use om_protocol::authoring::{
     self, catalog_revision, content_revision, layout_revision, legacy_catalog_revision,
     legacy_content_revision, status, ChangeParts, CreateField, CreateLayout, Created, DeleteLayout,
     DeleteObjects, Deleted, Described, DuplicateLayout, FieldControl, Frame, Framed, LayoutCreated,
-    LayoutSetup, LayoutWidth, Operation, PartOptions, PlaceButton, PlaceButtonStep, PlaceField,
-    PlacePortal, PlaceText, Placed, ReplaceScriptSteps, Replaced, Reply, Request, Revision,
-    SetObjectFrames, SetText, ValueListValues, MAX_DEFINITION_BYTES, MOD_ACCOUNT, MOD_COUNT,
-    MOD_TIME, MOD_USER, OP_CHANGE_PARTS, OP_CREATE_FIELD, OP_CREATE_LAYOUT, OP_DELETE_LAYOUT,
-    OP_DELETE_OBJECTS, OP_DESCRIBE_SECURITY, OP_DUPLICATE_LAYOUT, OP_FIELD_CONTROL,
-    OP_LAYOUT_SETUP, OP_LAYOUT_WIDTH, OP_PART_OPTIONS, OP_PLACE_BUTTON, OP_PLACE_BUTTON_STEP,
-    OP_PLACE_FIELD, OP_PLACE_PORTAL, OP_PLACE_TEXT, OP_REPLACE_SCRIPT_STEPS, OP_SAVE,
-    OP_SET_OBJECT_FRAMES, OP_SET_TEXT, OP_VALUE_LIST_VALUES,
+    LayoutMargins, LayoutSetup, LayoutWidth, Operation, PartOptions, PlaceButton, PlaceButtonStep,
+    PlaceField, PlacePortal, PlaceText, Placed, ReplaceScriptSteps, Replaced, Reply, Request,
+    Revision, SetObjectFrames, SetText, ValueListValues, MAX_DEFINITION_BYTES, MOD_ACCOUNT,
+    MOD_COUNT, MOD_TIME, MOD_USER, OP_CHANGE_PARTS, OP_CREATE_FIELD, OP_CREATE_LAYOUT,
+    OP_DELETE_LAYOUT, OP_DELETE_OBJECTS, OP_DESCRIBE_SECURITY, OP_DUPLICATE_LAYOUT,
+    OP_FIELD_CONTROL, OP_LAYOUT_MARGINS, OP_LAYOUT_SETUP, OP_LAYOUT_WIDTH, OP_PART_OPTIONS,
+    OP_PLACE_BUTTON, OP_PLACE_BUTTON_STEP, OP_PLACE_FIELD, OP_PLACE_PORTAL, OP_PLACE_TEXT,
+    OP_REPLACE_SCRIPT_STEPS, OP_SAVE, OP_SET_OBJECT_FRAMES, OP_SET_TEXT, OP_VALUE_LIST_VALUES,
 };
 use om_protocol::PerformError;
 use om_scripts::{Script, ScriptKind};
@@ -191,6 +191,7 @@ pub(crate) fn perform(
         | Operation::DeleteLayout
         | Operation::LayoutSetup
         | Operation::LayoutWidth
+        | Operation::LayoutMargins
         | Operation::FieldControl
         | Operation::PartOptions
         | Operation::ChangeParts
@@ -234,6 +235,7 @@ pub(crate) fn perform(
                 | OP_DELETE_LAYOUT
                 | OP_LAYOUT_SETUP
                 | OP_LAYOUT_WIDTH
+                | OP_LAYOUT_MARGINS
                 | OP_FIELD_CONTROL
                 | OP_PART_OPTIONS
                 | OP_CHANGE_PARTS
@@ -319,6 +321,7 @@ pub(crate) fn perform(
         Request::DeleteLayout(request) => author(DesignEdit::DeleteLayout(request))?,
         Request::LayoutSetup(request) => author(DesignEdit::LayoutSetup(request))?,
         Request::LayoutWidth(request) => author(DesignEdit::LayoutWidth(request))?,
+        Request::LayoutMargins(request) => author(DesignEdit::LayoutMargins(request))?,
         Request::FieldControl(request) => author(DesignEdit::FieldControl(request))?,
         Request::PartOptions(request) => author(DesignEdit::PartOptions(request))?,
         Request::ChangeParts(request) => author(DesignEdit::ChangeParts(request))?,
@@ -422,6 +425,7 @@ pub(crate) fn edit(
         DesignEdit::DeleteLayout(request) => delete_layout(ed, request),
         DesignEdit::LayoutSetup(request) => layout_setup(ed, request),
         DesignEdit::LayoutWidth(request) => layout_width(ed, request),
+        DesignEdit::LayoutMargins(request) => layout_margins(ed, request),
         DesignEdit::FieldControl(request) => field_control(ed, request),
         DesignEdit::PartOptions(request) => part_options(ed, request),
         DesignEdit::ChangeParts(request) => change_parts(ed, request),
@@ -1197,6 +1201,36 @@ fn layout_width(ed: &mut Editor<'_, '_, '_>, request: &LayoutWidth) -> Reply {
         },
         plan: |member: &OwnedNode, _: &Schema<'_>| {
             layout_placement::plan_width(member, width).map_err(placement_refused)
+        },
+    };
+    match edit_objects(ed, edit) {
+        Ok((changed, revision)) => Reply::Framed(Framed { changed, revision }),
+        Err(reply) => reply,
+    }
+}
+
+/// Operation 23: set a layout's fixed page margins, its member's
+/// definition planned with `layout_placement::plan_margins` and saved as an
+/// object edit is ([`edit_objects`]), the member stamped.
+fn layout_margins(ed: &mut Editor<'_, '_, '_>, request: &LayoutMargins) -> Reply {
+    let [top, left, bottom, right] = request.margins;
+    let margins = om_layout::Rect {
+        top,
+        left,
+        bottom,
+        right,
+        ..Default::default()
+    };
+    let edit = ObjectEdit {
+        layout: request.layout,
+        expected: request.expected,
+        objects: 0,
+        done: "given its new page margins",
+        already: |member: &OwnedNode, _: &Schema<'_>| {
+            layout_placement::already_margins(member, &margins)
+        },
+        plan: |member: &OwnedNode, _: &Schema<'_>| {
+            layout_placement::plan_margins(member, &margins).map_err(placement_refused)
         },
     };
     match edit_objects(ed, edit) {

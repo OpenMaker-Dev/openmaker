@@ -4,19 +4,21 @@
 //! `IDD_LAYOUT_SETUP.nib` puts them, in a 485 x 428 pt window. OpenMaker
 //! sets what the shared operation sets (`DataProvider::set_layout_setup`,
 //! authoring operation 16): the Layout Name, "Include in layout menus", the
-//! General tab's five options, the views available and the default view.
+//! General tab's five options, the views available and the default view,
+//! and the Printing tab's fixed page margins (operation 23, made first).
 //! The General tab's pop-ups and Reset Quick Find show the layout's values,
-//! not offered; the Printing and Script Triggers tabs are not offered yet.
+//! not offered, and so do the Printing tab's columns and Facing Pages; the
+//! Script Triggers tab is not offered yet.
 
 use egui::{vec2, Align2, CornerRadius, Id, Rect, Stroke, StrokeKind, UiBuilder};
-use om_data::layout_catalog::{general, views, LayoutSetupChange, MAX_NAME_CHARS};
+use om_data::layout_catalog::{general, printing, views, LayoutSetupChange, MAX_NAME_CHARS};
 
 use crate::icons::{self, Icon};
 use crate::theme;
 use crate::widgets;
 
 /// What the dialog's user did.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum LayoutSetupAnswer {
     Open,
     Cancel,
@@ -42,6 +44,14 @@ pub(crate) struct LayoutSetup {
     /// Form, List, Table available, and the default view's index.
     views: [bool; 3],
     default: usize,
+    /// The Printing tab: "Use fixed page margins", and the margins shown,
+    /// top, bottom, left and right in points, as stored
+    /// (`LayoutDef.customMargins`).
+    fixed: bool,
+    margins: [f64; 4],
+    stored_margins: [f64; 4],
+    /// "Print in N columns" as stored, shown, not offered.
+    columns: (bool, u32),
     tab: usize,
     /// The Layout Name has had its first frame: it opens with its text
     /// selected and the keyboard, as FileMaker Pro's does.
@@ -49,21 +59,31 @@ pub(crate) struct LayoutSetup {
 }
 
 const VIEW_OFF: [u64; 3] = [views::FORM_OFF, views::LIST_OFF, views::TABLE_OFF];
+/// "Print in N columns" (layout-model.md 4.2, bit `0x400`), shown, not
+/// offered.
+const COLUMNS: u64 = 0x400;
 const VIEW_NAMES: [&str; 3] = ["Form View", "List View", "Table View"];
 /// Why an option is shown but not offered.
 const NOT_YET: &str = "OpenMaker does not change this option yet.";
 
 impl LayoutSetup {
-    /// The dialog for `layout` of window `window`, named `name`, with flags `f1`
-    /// `flags` and menu set `menu_set` (0 the file's), in the layout menus
-    /// or not, at revision `expected`.
+    /// The dialog for `layout` of window `window`, named `name`, with the
+    /// definition `def` (its flags `f1`, menu set, fixed page margins and
+    /// columns), in the layout menus or not, at revision `expected`.
     pub(crate) fn new(
         window: u32,
         (layout, expected): (u32, om_data::layout_placement::Revision),
         (name, occurrence): (String, String),
-        (flags, menu_set): (u64, u64),
+        def: &om_layout::LayoutDef,
         in_menus: bool,
     ) -> Self {
+        let (flags, menu_set) = (def.flags, def.menu_set_key);
+        // A layout without stored margins shows FileMaker's 36 points, which
+        // every starter layout stores [O, layout-model.md 4.1].
+        let stored_margins = def
+            .custom_margins
+            .as_ref()
+            .map_or([36.0; 4], |m| [m.top, m.bottom, m.left, m.right]);
         let views = VIEW_OFF.map(|bit| flags & bit == 0);
         let default = if flags & views::DEFAULT_TABLE != 0 {
             2
@@ -87,6 +107,10 @@ impl LayoutSetup {
             options: general::OPTIONS.map(|(.., bit, set_on)| (flags & bit != 0) == set_on),
             views,
             default,
+            fixed: flags & printing::FIXED_PAGE_MARGINS != 0,
+            margins: stored_margins,
+            stored_margins,
+            columns: (flags & COLUMNS != 0, def.print_column_count.max(1)),
             tab: 0,
             named: false,
         }
@@ -95,7 +119,10 @@ impl LayoutSetup {
     /// The flags the dialog's choices give: the view and option bits set as
     /// chosen.
     fn flags(&self) -> u64 {
-        let mut flags = self.stored & !(views::ALL | general::ALL);
+        let mut flags = self.stored & !(views::ALL | general::ALL | printing::ALL);
+        if self.fixed {
+            flags |= printing::FIXED_PAGE_MARGINS;
+        }
         for (on, bit) in self.views.iter().zip(VIEW_OFF) {
             if !on {
                 flags |= bit;
@@ -266,6 +293,7 @@ impl LayoutSetup {
                             widgets::accessible_label(ui, combo.response.id, "Default view");
                         });
                     }
+                    2 => self.printing(ui, &content),
                     _ => {
                         place(ui, content(24.0, 40.0, 400.0, 17.0), &mut |ui| {
                             ui.label(
@@ -289,6 +317,7 @@ impl LayoutSetup {
                                 name: self.name.clone(),
                                 flags: self.flags(),
                                 hidden: !self.in_menus,
+                                margins: self.changed_margins(),
                             });
                         }
                     });
@@ -305,6 +334,98 @@ impl LayoutSetup {
             answer = LayoutSetupAnswer::Cancel;
         }
         answer
+    }
+}
+
+impl LayoutSetup {
+    /// The fixed page margins to set: the ones shown, when they differ
+    /// from the stored ones; `None` leaves the layout's as they are.
+    fn changed_margins(&self) -> Option<om_layout::Rect> {
+        let [top, bottom, left, right] = self.margins;
+        (self.margins != self.stored_margins).then_some(om_layout::Rect {
+            top,
+            left,
+            bottom,
+            right,
+            ..Default::default()
+        })
+    }
+
+    /// The Printing tab, its controls at the nib's places (FileMaker Pro
+    /// 26.1.1's `IDD_LAYOUT_SETUP.nib`, its tab view 339 points high). The
+    /// margins are edited in points; with "Use fixed page margins" off they
+    /// are not offered and show the printer's, as FileMaker Pro's fields do
+    /// [O: layout-model.md 4.2], and the stored ones are kept.
+    fn printing(&mut self, ui: &mut egui::Ui, content: &dyn Fn(f32, f32, f32, f32) -> Rect) {
+        let place = |ui: &mut egui::Ui, rect: Rect, add: &mut dyn FnMut(&mut egui::Ui)| {
+            ui.scope_builder(UiBuilder::new().max_rect(rect), add);
+        };
+        // Shown as stored, not offered.
+        let (mut columns_on, mut count) = self.columns;
+        place(ui, content(61.0, 56.0, 78.0, 18.0), &mut |ui| {
+            ui.add_enabled(false, egui::Checkbox::new(&mut columns_on, "Print in"))
+                .on_disabled_hover_text(NOT_YET);
+        });
+        place(ui, content(138.0, 53.0, 42.0, 22.0), &mut |ui| {
+            let field = ui
+                .add_enabled(false, egui::DragValue::new(&mut count))
+                .on_disabled_hover_text(NOT_YET);
+            widgets::accessible_label(ui, field.id, "Columns");
+        });
+        place(ui, content(187.0, 56.0, 62.0, 17.0), &mut |ui| {
+            ui.label("columns");
+        });
+        for (label, x, width) in [("Across first", 121.0, 113.0), ("Down first", 279.0, 101.0)] {
+            place(ui, content(x, 96.0, width, 18.0), &mut |ui| {
+                ui.add_enabled(false, egui::RadioButton::new(false, label))
+                    .on_disabled_hover_text(NOT_YET);
+            });
+        }
+        place(ui, content(61.0, 156.0, 180.0, 18.0), &mut |ui| {
+            ui.checkbox(&mut self.fixed, "Use fixed page margins");
+        });
+        let printer = om_layout::paper::printer_margins();
+        let shown = if self.fixed {
+            self.margins
+        } else {
+            [printer.top, printer.bottom, printer.left, printer.right]
+        };
+        // Top and Bottom at the left, Left and Right at the right.
+        let sides = [
+            ("Top:", 0, 78.0, 55.0, 136.0, 184.0),
+            ("Bottom:", 1, 74.0, 60.0, 136.0, 210.0),
+            ("Left:", 2, 227.0, 63.0, 292.0, 184.0),
+            ("Right:", 3, 227.0, 63.0, 292.0, 210.0),
+        ];
+        for (label, side, label_x, label_width, field_x, top) in sides {
+            place(ui, content(label_x, top, label_width, 17.0), &mut |ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(label);
+                });
+            });
+            let mut value = shown[side];
+            place(ui, content(field_x, top - 3.0, 60.0, 22.0), &mut |ui| {
+                let field = ui.add_enabled(
+                    self.fixed,
+                    egui::DragValue::new(&mut value)
+                        .speed(1.0)
+                        .range(0.0..=om_data::layout_placement::MAX_MARGIN)
+                        .max_decimals(2),
+                );
+                widgets::accessible_label(ui, field.id, label.trim_end_matches(':'));
+                if self.fixed && field.changed() {
+                    self.margins[side] = value;
+                }
+            });
+            place(ui, content(field_x + 65.0, top, 29.0, 17.0), &mut |ui| {
+                ui.label("pt");
+            });
+        }
+        let mut facing = false;
+        place(ui, content(292.0, 237.0, 106.0, 18.0), &mut |ui| {
+            ui.add_enabled(false, egui::Checkbox::new(&mut facing, "Facing Pages"))
+                .on_disabled_hover_text(NOT_YET);
+        });
     }
 }
 

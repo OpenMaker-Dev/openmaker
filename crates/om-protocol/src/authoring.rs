@@ -131,6 +131,7 @@ const SET_TEXT: u8 = 20;
 const VALUE_LIST_VALUES: u8 = 24;
 const PLACE_PORTAL: u8 = 21;
 const CHANGE_PARTS: u8 = 22;
+const LAYOUT_MARGINS: u8 = 23;
 
 /// Bits of [`Described::operations`].
 pub const OP_REPLACE_SCRIPT_STEPS: u32 = 1 << REPLACE_SCRIPT_STEPS;
@@ -156,6 +157,7 @@ pub const OP_DELETE_LAYOUT: u32 = 1 << DELETE_LAYOUT;
 pub const OP_PLACE_TEXT: u32 = 1 << PLACE_TEXT;
 pub const OP_LAYOUT_SETUP: u32 = 1 << LAYOUT_SETUP;
 pub const OP_LAYOUT_WIDTH: u32 = 1 << LAYOUT_WIDTH;
+pub const OP_LAYOUT_MARGINS: u32 = 1 << LAYOUT_MARGINS;
 pub const OP_FIELD_CONTROL: u32 = 1 << FIELD_CONTROL;
 pub const OP_PART_OPTIONS: u32 = 1 << PART_OPTIONS;
 pub const OP_SET_TEXT: u32 = 1 << SET_TEXT;
@@ -227,6 +229,7 @@ pub enum Request {
     DeleteLayout(DeleteLayout),
     LayoutSetup(LayoutSetup),
     LayoutWidth(LayoutWidth),
+    LayoutMargins(LayoutMargins),
     FieldControl(FieldControl),
     PartOptions(PartOptions),
     SetText(SetText),
@@ -264,6 +267,7 @@ pub enum Operation {
     DeleteLayout,
     LayoutSetup,
     LayoutWidth,
+    LayoutMargins,
     FieldControl,
     PartOptions,
     SetText,
@@ -492,6 +496,20 @@ pub struct LayoutWidth {
     pub expected: Revision,
     pub layout: u64,
     pub width: f64,
+}
+
+/// Set layout `layout`'s fixed page margins (`LayoutDef.customMargins`) to
+/// `margins` points, as insets top, left, bottom and right, if its member
+/// `[4, 5, L]` is at revision `expected` ([`catalog_revision`]); its
+/// definition's other bytes stay as stored (`docs/authoring.md`, "Layout
+/// Setup"). Whether the layout prints within them is "Use fixed page
+/// margins", a bit [`LayoutSetup`] sets. The reply is [`Reply::Framed`]
+/// with the member's revision.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayoutMargins {
+    pub expected: Revision,
+    pub layout: u64,
+    pub margins: [f64; 4],
 }
 
 /// Set custom value list `list`'s values to `values` (one item per entry,
@@ -765,6 +783,16 @@ pub fn build_request(
                 .push_raw(&set.expected)
                 .push_u64(set.layout);
             (b, LAYOUT_WIDTH, VERSION)
+        }
+        Request::LayoutMargins(set) => {
+            let b = set
+                .margins
+                .iter()
+                .rev()
+                .fold(b, |b, edge| b.push_u64(edge.to_bits()))
+                .push_raw(&set.expected)
+                .push_u64(set.layout);
+            (b, LAYOUT_MARGINS, VERSION)
         }
         Request::LayoutSetup(setup) => {
             let b = b
@@ -1114,6 +1142,16 @@ pub fn parse_request_within(
                 width,
             })
         }
+        Operation::LayoutMargins => {
+            let layout = r.pop_u64()?;
+            let expected: Revision = r.pop_raw(32)?.try_into().expect("32 bytes");
+            let margins = pop_frame(&mut r)?;
+            Request::LayoutMargins(LayoutMargins {
+                expected,
+                layout,
+                margins,
+            })
+        }
         Operation::LayoutSetup => {
             let layout = r.pop_u64()?;
             let expected: Revision = r.pop_raw(32)?.try_into().expect("32 bytes");
@@ -1303,6 +1341,7 @@ fn request_header(transaction: &[u8]) -> Result<(Reader<'_>, Operation), Perform
         (VERSION, DELETE_LAYOUT) => Operation::DeleteLayout,
         (VERSION, LAYOUT_SETUP) => Operation::LayoutSetup,
         (VERSION, LAYOUT_WIDTH) => Operation::LayoutWidth,
+        (VERSION, LAYOUT_MARGINS) => Operation::LayoutMargins,
         (VERSION, FIELD_CONTROL) => Operation::FieldControl,
         (VERSION, PART_OPTIONS) => Operation::PartOptions,
         (VERSION, CHANGE_PARTS) => Operation::ChangeParts,
@@ -1559,6 +1598,7 @@ pub fn parse_reply(request: &Request, result: &[u8]) -> Result<Reply, PerformErr
             Request::SetObjectFrames(_)
             | Request::LayoutSetup(_)
             | Request::LayoutWidth(_)
+            | Request::LayoutMargins(_)
             | Request::FieldControl(_)
             | Request::PartOptions(_)
             | Request::ChangeParts(_)
@@ -1786,6 +1826,11 @@ mod tests {
             layout: 3,
             width: 900.5,
         });
+        let margins = Request::LayoutMargins(LayoutMargins {
+            expected: [8; 32],
+            layout: 3,
+            margins: [50.0, 70.0, 60.0, 80.5],
+        });
         let setup = Request::LayoutSetup(LayoutSetup {
             expected: [6; 32],
             layout: 3,
@@ -1966,6 +2011,13 @@ mod tests {
                 Reply::Framed(Framed {
                     changed: true,
                     revision: [8; 32],
+                }),
+            ),
+            (
+                margins,
+                Reply::Framed(Framed {
+                    changed: true,
+                    revision: [3; 32],
                 }),
             ),
             (

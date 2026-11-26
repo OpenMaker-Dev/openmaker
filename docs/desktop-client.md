@@ -2502,12 +2502,17 @@ Setup button (Layout mode, design access) open FileMaker Pro's Layout Setup
 dialog over the layout the window shows, its controls where Pro's places
 them (re/client-ui.md, "Layout Setup"). OK sets the Layout Name, "Include
 in layout menus", the General tab's five checkboxes, the views available
-and the default view with the
+and the default view, and the Printing tab's "Use fixed page margins" and
+its Top, Bottom, Left and Right margins, with the
 operation `om-author`'s `layout_setup` uses (`DataProvider::set_layout_setup`;
 [authoring](authoring.md), "Layout Setup"); every window of the file then
-reads its layouts again. The General tab's Show records from and Menu Set
-show the layout's values and are not offered, nor are Reset Quick Find,
-the Printing and Script Triggers tabs or Manage Layouts' Edit. It is refused while the layout has unsaved
+reads its layouts again. The margins are edited in points (OpenMaker's
+choice: Pro's fields show the ruler's units), and are sent only when
+changed. With the box off they are not offered and show the printer's,
+18 / 40 / 18 / 18, as Pro's do (re/layout-model.md 4.2). The General
+tab's Show records from and Menu Set, and the Printing tab's columns and
+Facing Pages, show the layout's values and are not offered, nor are Reset
+Quick Find, the Script Triggers tab or Manage Layouts' Edit. It is refused while the layout has unsaved
 changes, as New and Duplicate Layout are.
 
 **Part Setup.** Layouts > Part Setup... (Layout mode, design access) opens

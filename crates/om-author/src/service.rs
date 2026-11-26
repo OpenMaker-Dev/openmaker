@@ -3461,7 +3461,7 @@ impl Service {
     /// (`om_data::layout_catalog::plan_setup`) through the host's authoring
     /// extension, then read the layout back over a new connection.
     fn layout_setup(&mut self, params: &LayoutSetupParams) -> Result<Value, AuthorError> {
-        use layout_catalog::{general, views, MENU_HIDDEN};
+        use layout_catalog::{general, printing, views, MENU_HIDDEN};
         let expected = parse_revision(&params.expected_revision)?;
         let layout = self.load_layout(&LayoutParams {
             layout: params.layout.clone(),
@@ -3516,6 +3516,20 @@ impl Service {
                 flags &= !bit;
             }
         }
+        if let Some(fixed) = params.fixed_page_margins {
+            if fixed {
+                flags |= printing::FIXED_PAGE_MARGINS;
+            } else {
+                flags &= !printing::FIXED_PAGE_MARGINS;
+            }
+        }
+        let margins = params.page_margins.map(|m| om_layout::Rect {
+            top: m.top,
+            left: m.left,
+            bottom: m.bottom,
+            right: m.right,
+            ..Default::default()
+        });
         let hidden = params
             .include_in_layout_menus
             .map_or(word(&layout.member, 0xf0) & MENU_HIDDEN != 0, |include| {
@@ -3532,13 +3546,45 @@ impl Service {
         };
         let mut opened = layout.opened;
         Self::require_grant(&mut opened, &catalog::LAYOUT_SETUP)?;
-        let set = opened.layout_setup_on_host(wire::LayoutSetup {
-            expected,
-            layout: layout.id,
-            name: name.clone(),
-            flags,
-            hidden,
+        // The margins are their own edit, made first; the setup follows at
+        // the revision it leaves (`om_provider`'s `set_layout_setup` does
+        // the same for the window).
+        let margins_set = margins.as_ref().map(|m| {
+            opened.layout_margins_on_host(wire::LayoutMargins {
+                expected,
+                layout: layout.id,
+                margins: [m.top, m.left, m.bottom, m.right],
+            })
         });
+        let set = match margins_set {
+            Some(Err(e)) => Err(e),
+            // At the revision the margins' edit left, only if it made one:
+            // margins already there answer the current revision, which must
+            // not stand in for a stale expected_revision.
+            Some(Ok(framed)) => opened
+                .layout_setup_on_host(wire::LayoutSetup {
+                    expected: if framed.changed {
+                        framed.revision
+                    } else {
+                        expected
+                    },
+                    layout: layout.id,
+                    name: name.clone(),
+                    flags,
+                    hidden,
+                })
+                .map(|set| wire::Framed {
+                    changed: set.changed || framed.changed,
+                    revision: set.revision,
+                }),
+            None => opened.layout_setup_on_host(wire::LayoutSetup {
+                expected,
+                layout: layout.id,
+                name: name.clone(),
+                flags,
+                hidden,
+            }),
+        };
         drop(opened);
         let label = layout_ref.clone();
         let set = set.map_err(|e| {
@@ -3567,7 +3613,13 @@ impl Service {
                     word(&fresh.member, 0xf1),
                     word(&fresh.member, 0xf0) & MENU_HIDDEN != 0,
                 );
-                if fresh.revision != set.revision || read != (Some(name.clone()), flags, hidden) {
+                let margins_read = margins
+                    .as_ref()
+                    .is_none_or(|m| layout_placement::already_margins(&fresh.member, m));
+                if fresh.revision != set.revision
+                    || read != (Some(name.clone()), flags, hidden)
+                    || !margins_read
+                {
                     return Err(AuthorError::new(
                         ErrorKind::VerificationFailed,
                         format!(
@@ -3616,6 +3668,10 @@ impl Service {
                 .iter()
                 .map(|(option, _, bit, set_on)| ((*option).to_owned(), json!((flags & bit != 0) == *set_on)))
                 .collect::<serde_json::Map<_, _>>(),
+            "fixed_page_margins": flags & printing::FIXED_PAGE_MARGINS != 0,
+            "page_margins": margins.map(|m| json!({
+                "top": m.top, "bottom": m.bottom, "left": m.left, "right": m.right,
+            })),
             "previous_revision": revision_text(&expected),
             "revision": revision_text(&set.revision),
             "verified": verified,
@@ -4019,6 +4075,12 @@ impl Service {
             "table": layout.table.map(|t| reference("table", t, &file)),
             "width": def.base_width,
             "responsive": def.layout_client_type == 2,
+            // Layout Setup > Printing: the layout prints within its page
+            // margins only with fixed_page_margins.
+            "fixed_page_margins": def.flags & layout_catalog::printing::FIXED_PAGE_MARGINS != 0,
+            "page_margins": def.custom_margins.as_ref().map(|m| json!({
+                "top": m.top, "bottom": m.bottom, "left": m.left, "right": m.right,
+            })),
             "parts": parts,
             "objects": objects,
             "root_stack": stack,
