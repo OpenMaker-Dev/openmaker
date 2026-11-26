@@ -2357,6 +2357,9 @@ impl OpenMakerApp {
             }
         }
         if mode != self.w.mode || state.layout != session.layout || state.focus.is_some() {
+            if mode != self.w.mode || state.layout != session.layout {
+                self.w.layout_workspace.clear_history();
+            }
             // A trigger that ends with the focus where the user put it
             // (the option set being entered) keeps the set's waiting
             // change; one that moved the focus or the context does not.

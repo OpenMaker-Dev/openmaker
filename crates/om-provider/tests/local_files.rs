@@ -972,6 +972,69 @@ fn name_of(provider: &mut dyn DataProvider, layout: u32, id: i64) -> Option<Stri
     text(&page, id, "Name").map(str::to_owned)
 }
 
+#[test]
+fn a_variable_source_opens_on_first_read_and_keeps_its_file() {
+    use om_data::calc::{eval::Variables, Value};
+    use om_data::host::CalcNeed;
+
+    let folder = Folder::new("variable-source");
+    let root_path = folder.file("Root.fmp12", PASSWORD, |root| {
+        related::reference_with(
+            root,
+            (PEER_ROWS, "Peer rows"),
+            0x8001,
+            "Peer",
+            &[("", "", "$$RelatedPath")],
+        );
+    });
+    folder.file("First.fmp12", PASSWORD, |_| {});
+    folder.file("Second.fmp12", PASSWORD, |_| {});
+    let mut root = clean_client();
+    root.open_local(&local(&root_path, Some((ACCOUNT, PASSWORD))))
+        .unwrap();
+    assert!(root.calc_schema().unwrap().unwrap().is_pending(PEER_ROWS));
+    assert!(root.related_file_warnings().is_empty());
+    assert!(!root.references_peer("First").unwrap());
+
+    let mut variables = Variables::new();
+    variables.set("$$RelatedPath", 1, Value::text("file:First.fmp12"));
+    root.set_file_variables(&variables);
+    assert_eq!(
+        root.local_source_variable("$$RelatedPath"),
+        Some("file:First.fmp12")
+    );
+    let needs = [CalcNeed::Occurrence {
+        occurrence: PEER_ROWS,
+    }];
+    root.calc_data(&needs).unwrap();
+    assert!(
+        root.references_peer("First").unwrap(),
+        "{:?}",
+        root.related_file_warnings()
+    );
+    let first = root
+        .calc_schema()
+        .unwrap()
+        .unwrap()
+        .occurrence(PEER_ROWS)
+        .unwrap()
+        .table;
+
+    variables.set("$$RelatedPath", 1, Value::text("file:Second.fmp12"));
+    root.set_file_variables(&variables);
+    root.calc_data(&needs).unwrap();
+    assert_eq!(
+        root.calc_schema()
+            .unwrap()
+            .unwrap()
+            .occurrence(PEER_ROWS)
+            .unwrap()
+            .table,
+        first
+    );
+    assert!(!root.references_peer("Second").unwrap());
+}
+
 /// One window's family of files on this computer: Root's occurrences show
 /// Peer's table, a script of Root opens Peer, and both write. Each file is
 /// served by one engine whatever opened it, writes go to the file that owns
@@ -2791,6 +2854,85 @@ fn starter_fields_read_as_the_fields_tab_lists_them() {
     );
     assert!(text("Contacts", "Contacts", "Initial").contains("= "));
     assert!(texts.values().any(|t| t.starts_with("= Total of ")));
+}
+
+#[test]
+fn new_record_auto_enters_the_session_globals() {
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
+    use om_data::calc::Value;
+    use om_data::host::CalcNeed;
+    use om_hbam::slot::uint_segment;
+
+    const CONSTANT: u64 = 40;
+    const CALCULATED: u64 = 41;
+    const SERIAL: u64 = 42;
+    let folder = Folder::new("global-auto-entry");
+    let path = folder.file("Sample.fmp12", PASSWORD, |root| {
+        for (id, label, options) in [
+            (CONSTANT, "Default setting", 0x1_0004),
+            (CALCULATED, "Calculated setting", 0x1_0008),
+            (SERIAL, "Serial setting", 0x1_0002),
+        ] {
+            fixture::add_field(root, TABLE, id, label, 1, 1, 0, options, 0);
+        }
+        let table = uint_segment(TABLE);
+        root.put(
+            &[&table, &[3], &[5], &uint_segment(CONSTANT), &[0x0d]],
+            om_scripts::text_node(&[], "X"),
+        );
+        fixture::add_formula(
+            root,
+            &fixture::names(),
+            (TABLE, OCCURRENCE),
+            CALCULATED,
+            5,
+            "\"Y\"",
+        );
+        fixture::set_field_serial_increment(root, TABLE, SERIAL, 1);
+        root.put(
+            &[&table, &[3], &[5], &uint_segment(SERIAL), &[0x0c]],
+            om_scripts::text_node(&[], "1"),
+        );
+    });
+    let mut provider = opened(&path);
+    let globals = |provider: &mut NativeProvider| {
+        provider
+            .calc_data(&[CalcNeed::Globals { table: TABLE }])
+            .unwrap()
+            .globals[&TABLE]
+            .clone()
+    };
+    let new = om_data::ScriptWrite {
+        layout: LAYOUT as u32,
+        ..Default::default()
+    };
+    provider.begin_record_commit().unwrap();
+    let record = provider.write_record(&new).unwrap();
+    let values = globals(&mut provider);
+    for (field, text) in [(CONSTANT, "X"), (CALCULATED, "Y"), (SERIAL, "1")] {
+        assert!(matches!(values.get(field, 1), Some(Value::Text(value)) if value.as_str() == text));
+    }
+    provider
+        .write_record(&om_data::ScriptWrite {
+            record: Some(record.id),
+            cells: [(NAME, Some("A note".into()))].into(),
+            ..new.clone()
+        })
+        .unwrap();
+    provider.set_global(TABLE, CONSTANT, 1, "Changed").unwrap();
+    provider.commit_transaction(false).unwrap();
+    assert_eq!(
+        name_of(&mut provider, LAYOUT as u32, record.id).as_deref(),
+        Some("A note")
+    );
+    let values = globals(&mut provider);
+    assert!(
+        matches!(values.get(CONSTANT, 1), Some(Value::Text(value)) if value.as_str() == "Changed")
+    );
+    provider.begin_record_commit().unwrap();
+    assert_eq!(provider.write_record(&new).unwrap_err().code, Some(3));
+    provider.revert_transaction().unwrap();
+    provider.close();
 }
 
 /// An auto-entered and a validation formula over a global field read the

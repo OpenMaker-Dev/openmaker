@@ -1251,6 +1251,39 @@ struct PartsHold {
 }
 
 impl LayoutWorkspace {
+    pub(crate) fn clear_history(&mut self) {
+        self.canvas.clear_history();
+    }
+
+    pub(crate) fn draft_edits(&self, session: &Session) -> (bool, bool) {
+        if self.saving || self.setting_up_button() {
+            return (false, false);
+        }
+        self.canvas.draft_edits(session)
+    }
+
+    pub(crate) fn edit_draft(
+        &mut self,
+        ctx: &egui::Context,
+        session: &Session,
+        edit: crate::layout_canvas::DraftEdit,
+    ) -> bool {
+        if self.saving || self.setting_up_button() {
+            return false;
+        }
+        self.canvas.edit_draft(ctx, session, edit)
+    }
+
+    pub(crate) fn revert(&mut self) {
+        self.clear_history();
+        self.drop_width();
+        self.drop_new_object();
+        self.drop_moves();
+        self.drop_deletions();
+        self.drop_controls();
+        self.drop_words();
+    }
+
     /// The next field draft to send on explicit Save Layout.
     pub(crate) fn new_field(&self) -> Option<&crate::layout_canvas::NewField> {
         self.canvas.new_field()
@@ -1280,7 +1313,10 @@ impl LayoutWorkspace {
         session: &Session,
         direction: crate::layout_canvas::NudgeDirection,
     ) {
-        self.canvas.nudge_selection(session, direction);
+        let before = self.canvas.checkpoint();
+        if self.canvas.nudge_selection(session, direction) {
+            self.canvas.record_command(before);
+        }
     }
 
     /// How many selected objects Arrange's Align, Distribute and Resize To
@@ -1296,7 +1332,12 @@ impl LayoutWorkspace {
         session: &Session,
         arrangement: om_data::layout_arrange::Arrangement,
     ) -> Result<bool, om_data::layout_placement::Refusal> {
-        self.canvas.arrange(session, arrangement)
+        let before = self.canvas.checkpoint();
+        let changed = self.canvas.arrange(session, arrangement)?;
+        if changed {
+            self.canvas.record_command(before);
+        }
+        Ok(changed)
     }
 
     pub(crate) fn take_field_finished(&mut self) -> bool {
@@ -1389,8 +1430,10 @@ impl LayoutWorkspace {
             }
             PortalSetupAnswer::Done(choice) => {
                 self.portal_setup = None;
+                let before = self.canvas.checkpoint();
                 if let Some(portal) = self.canvas.new_portal_mut() {
                     portal.setup = Some(choice);
+                    self.canvas.record_command(before);
                 }
             }
         }
@@ -1432,10 +1475,12 @@ impl LayoutWorkspace {
                 action,
             }) => {
                 self.button_setup = None;
+                let before = self.canvas.checkpoint();
                 if let Some(button) = self.canvas.new_button_mut() {
                     button.label = label;
                     button.step = Some(step);
                     button.action = action;
+                    self.canvas.record_command(before);
                 }
             }
         }
@@ -1535,6 +1580,7 @@ impl LayoutWorkspace {
     /// window's, so it lasts when Part Setup closes before the answer (as
     /// another window coming forward closes it).
     pub(crate) fn hold_parts(&mut self, sent: PartsSent) {
+        self.clear_history();
         self.saving = true;
         self.parts_hold = Some(PartsHold {
             sent,
@@ -1584,7 +1630,15 @@ impl LayoutWorkspace {
     /// Delete the entire supported selection as an unsaved change. Validation
     /// precedes mutation, so a mixed unsupported set cannot lose only a subset.
     pub(crate) fn delete_selected(&mut self, session: &Session) -> bool {
-        !self.saving && self.canvas.delete_selection(session)
+        if self.saving {
+            return false;
+        }
+        let before = self.canvas.checkpoint();
+        let changed = self.canvas.delete_selection(session);
+        if changed {
+            self.canvas.record_command(before);
+        }
+        changed
     }
 
     /// The new field or button and the moved and deleted objects the
@@ -1694,6 +1748,12 @@ pub(crate) fn layout(
     document: &mut crate::document::DocumentState,
 ) {
     let LayoutPanels { inspector, objects } = panels;
+    state.canvas.synchronize(session);
+    let before = if state.saving {
+        None
+    } else {
+        state.canvas.checkpoint()
+    };
     document.scroll.begin_paint(session);
     let full = ui.max_rect();
     let left_width = if objects {
@@ -1806,6 +1866,9 @@ pub(crate) fn layout(
                     .set_control(object.key, control, view.stored, revision);
             }
         }
+    }
+    if !state.saving {
+        state.canvas.record_frame(before, ui.ctx());
     }
     ui.allocate_rect(full, Sense::hover());
 }
@@ -2031,7 +2094,14 @@ mod tests {
         assert_eq!(state.canvas.fields().len(), 2);
         let second = &state.canvas.fields()[1];
         assert_eq!((second.left, second.top), (200.0, 100.0));
-        state.drop_new_object();
+        assert!(state.edit_draft(&ctx, &session, crate::layout_canvas::DraftEdit::Undo));
+        assert_eq!(state.canvas.fields(), std::slice::from_ref(&drawn));
+        assert!(state.edit_draft(&ctx, &session, crate::layout_canvas::DraftEdit::Redo));
+        assert_eq!(state.canvas.fields().len(), 2);
+        state.rebase([7; 32], [8; 32]);
+        assert_eq!(state.draft_edits(&session), (false, false));
+        assert_eq!(state.new_field().unwrap().revision, Some([8; 32]));
+        state.revert();
         assert!(
             state.canvas.fields().is_empty(),
             "Revert discards every addition"

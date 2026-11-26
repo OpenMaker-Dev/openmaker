@@ -6,6 +6,7 @@ use crate::schema::{Location, SlotKind};
 use crate::value::{bytes_node, node_bytes, node_text, renamed, text_node};
 use om_hbam::OwnedNode;
 use std::collections::BTreeMap;
+use std::mem::size_of;
 use std::sync::Arc;
 
 /// `ScriptStep::StepFlags` bits (script-steps.md 2.2).
@@ -325,6 +326,31 @@ impl StepData {
     /// A value on the step node itself (never seen; kept).
     pub fn node_value(&self) -> Option<&[u8]> {
         self.0.value.as_deref()
+    }
+
+    /// Approximate the memory retained by this parameter tree, stopping
+    /// at the caller's limit. A draft history can share the tree after the
+    /// live step changes, so the tree counts even though cloning is cheap.
+    pub fn memory_within(&self, limit: usize) -> Option<usize> {
+        const ENTRY_OVERHEAD: usize = 32;
+        let value_capacity = |value: &Option<Vec<u8>>| value.as_ref().map_or(0, Vec::capacity);
+        let mut remaining =
+            limit.checked_sub(size_of::<DataNodes>() + value_capacity(&self.0.value))?;
+        for slot in self.0.slots.values() {
+            remaining = remaining
+                .checked_sub(size_of::<Slot>() + ENTRY_OVERHEAD + value_capacity(&slot.value))?;
+        }
+        let nodes = self.0.keys.values().chain(&self.0.other).chain(
+            self.0
+                .slots
+                .values()
+                .flat_map(|slot| slot.children.values().chain(&slot.other)),
+        );
+        for node in nodes {
+            remaining = remaining.checked_sub(ENTRY_OVERHEAD)?;
+            remaining -= om_hbam::tree::memory_within(node, remaining)?;
+        }
+        Some(limit - remaining)
     }
 
     /// Replace or remove slot `n` with a stored slot node (the step text's

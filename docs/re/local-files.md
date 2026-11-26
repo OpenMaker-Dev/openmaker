@@ -1041,9 +1041,11 @@ its own requirements.
 - File Options' "Log in using" with the Guest account (3.1): OpenMaker
   asks, since it does not log in as [Guest]
   ([#19](https://github.com/OpenMaker-Dev/openmaker/issues/19)).
-- Related and other files from a local file (4): only plain names in the
-  same folder are followed. Folder-relative, absolute (`filemac:`,
-  `filewin:`, `filelinux:`), `fmnet` and other alternatives are skipped
+- Related and other files from a local file (4): plain names in the same
+  folder are followed. A stored global-variable path can also supply a
+  relative sibling or an absolute macOS path (file-metadata.md 1.1,
+  [#988](https://github.com/OpenMaker-Dev/openmaker/issues/988)).
+  Folder-relative, literal absolute, `fmnet` and other alternatives are skipped
   (their occurrences stay unresolved, with a warning); two files of the same name at
   once; a file another OpenMaker window or process has open (300). How
   FileMaker Pro orders and caches alternatives, and what it does on a
