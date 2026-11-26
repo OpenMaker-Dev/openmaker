@@ -8828,7 +8828,7 @@ mod tests {
         let mut app = two_record_windows();
         app.script.running = true;
         app.error = alert();
-        let mut frame = |app: &mut OpenMakerApp, input| {
+        let frame = |app: &mut OpenMakerApp, input| {
             ctx.run_ui(input, |ui| app.show(ui))
                 .drop_without_applying_deltas();
         };
@@ -8836,7 +8836,20 @@ mod tests {
         assert_eq!(app.error, None);
         frame(&mut app, key(Key::Escape, true, Modifiers::NONE));
         assert!(!app.worker.abort_asked(), "the held key's repeat");
-        frame(&mut app, key(Key::Escape, false, Modifiers::NONE));
+        // egui reads a press of a key it holds down as a repeat: the key
+        // is released first.
+        let mut again = key(Key::Escape, false, Modifiers::NONE);
+        again.events.insert(
+            1,
+            egui::Event::Key {
+                key: Key::Escape,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            },
+        );
+        frame(&mut app, again);
         assert!(app.worker.abort_asked(), "a new press");
         let mut app = two_record_windows();
         app.script.running = true;
