@@ -65,9 +65,8 @@ const AUTO_ENTRY_OPTIONS: u32 = 0x38f;
 /// A serial number generated when the record is committed, set instead of
 /// `0x2` (schema-path.md 5.9, E41).
 const SERIAL_ON_COMMIT: u32 = 0x200;
-/// The auto-entered values of which a field has one at most: a creation
-/// or modification value, a serial number on creation, a constant, a
-/// calculation, a serial number on commit (schema-path.md 5.9, E40).
+/// Auto-entry sources (schema-path.md 5.9, E40). The planner rejects
+/// multiple sources except for Creation Date with a calculated value.
 const AUTO_ENTRY_MODES: u32 = 0x20f;
 /// Auto-enter options measured on global Text fields (#987): a constant,
 /// a calculation or a serial generated on creation.
@@ -123,6 +122,7 @@ const SUPPORTED_VALIDATION: u32 = VALIDATE_BY_CALCULATION
 const FIELD_FORMULA: u64 = 5;
 const FIELD_VALUE_LIST: u64 = 0x07;
 const FIELD_LOOKUP: u64 = 0x08;
+const FIELD_LOOKUP_FALLBACK: u64 = 0x0b;
 const FIELD_CONSTANT: u64 = 0x0d;
 /// A child FileMaker Pro 26 left beside one lookup definition, `00000000`;
 /// its meaning is unknown (schema-path.md 5.5).
@@ -365,12 +365,50 @@ pub enum WriteLayout {
     Number(u64),
 }
 
+/// How much the writer can establish about the order of local edits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WriteSequence {
+    /// A host, routed write, or other writer without a measured sequence.
+    #[default]
+    Unmeasured,
+    /// A write through a layout of the opened local file.
+    Local,
+    /// A single field-setting step on an otherwise unchanged local row.
+    SingleLocalFieldStep,
+}
+
+/// The owning local file's script variables at the start of a write.
+#[derive(Clone)]
+pub struct WriteFileVariables(Arc<Variables>);
+
+impl WriteFileVariables {
+    pub fn new(variables: Arc<Variables>) -> Self {
+        Self(variables)
+    }
+}
+
+impl std::fmt::Debug for WriteFileVariables {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WriteFileVariables").finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for WriteFileVariables {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.revision() == other.0.revision()
+    }
+}
+
+impl Eq for WriteFileVariables {}
+
 /// What the operation making a write knows that its formulas may read
 /// ([`CONTEXT_SELECTORS`]). A value left out refuses a write whose
 /// evaluated formula reads it; it is never answered empty in its place.
 /// The operation supplies only what [`RecordPlan::context_reads`] names.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WriteContext {
+    /// Evidence for auto-entry whose result depends on entry order.
+    pub sequence: WriteSequence,
     /// `Get ( LayoutNumber )`.
     pub layout: WriteLayout,
     /// `Get ( CurrentPrivilegeSetName )`: the session's current set, the
@@ -385,6 +423,9 @@ pub struct WriteContext {
     /// typed into an unsorted portal's creation row: its place among the
     /// related records), never a position this planner infers.
     pub record_number: Option<u64>,
+    /// The local file's `$$` variables for directly reading a Text
+    /// auto-enter value. New Record's preview retains this snapshot.
+    pub file_variables: Option<WriteFileVariables>,
 }
 
 impl WriteContext {
@@ -729,6 +770,7 @@ pub(crate) struct Evaluation {
     /// The session's global values ([`RecordEnvironment::globals`]).
     globals: Option<Arc<RecordValues>>,
     /// `Get ( RecordNumber )` ([`WriteContext::record_number`]).
+    file_variables: Option<WriteFileVariables>,
     record_number: Option<u64>,
     /// [`RecordEnvironment::related_needs`].
     related_needs: Option<Arc<RelatedNeeds>>,
@@ -839,6 +881,7 @@ impl RecordEnvironment {
             related: self.lookups.related.clone(),
             globals: self.globals.clone(),
             record_number: context.record_number,
+            file_variables: context.file_variables.clone(),
             related_needs: self.related_needs.clone(),
             written: self.lookups.written,
             stored: BTreeMap::new(),
@@ -969,6 +1012,8 @@ pub struct RecordPlan {
     table: u64,
     fields: BTreeMap<u64, PlannedField>,
     evaluation_order: Vec<u64>,
+    /// (auto-entered result, equality key, inequality key) for #297.
+    grouped_self_joins: BTreeSet<(u64, u64, u64)>,
     /// The file's calculation schema with this table's current fields.
     schema: Arc<CalcSchema>,
 }
@@ -980,6 +1025,9 @@ struct PlannedField {
     editable: bool,
     /// A stored calculation or an auto-enter calculation.
     expression: Option<Expression>,
+    /// Creation Date supplies the value on create. The calculation's
+    /// dependencies identify updates with an unmeasured result.
+    creation_date_with_calculation: bool,
     /// Auto-entered constant data (`0d`).
     constant: Option<String>,
     validation: Option<Expression>,
@@ -1046,21 +1094,24 @@ struct Lookup {
     copied: u64,
     /// "Don't copy contents if empty" off: an empty value is copied too.
     copy_empty: bool,
+    /// Value to copy when there is no matching record, including an empty value.
+    fallback: Option<String>,
     /// The field's table's match fields: a write changing one fires it.
     matches: Vec<u64>,
 }
 
-/// A lookup definition `08` for "if no exact match: do not copy"
-/// (schema-path.md 5.5): byte 0 `00` ("do not copy"), byte 1 "don't copy
-/// contents if empty" (`00` on, `01` off), then three fixed-size key
-/// buffers, each a key string's length, the key and padding: the occurrence
+/// A lookup definition `08` (schema-path.md 5.5): byte 0 `00` ("do not
+/// copy") or `03` ("use" the fallback from `0b`, empty when absent),
+/// byte 1 "don't copy contents if empty" (`00` on, `01` off), then three
+/// fixed-size key buffers, each a key string's length, the key and padding:
+/// the occurrence
 /// looked up from (6 bytes), the field copied (7), a byte `01` whose
 /// meaning is unknown, and the starting occurrence (6), 22 bytes in all.
 /// The padding is whatever the writer left there (`00`, `7f`, `5e` and
 /// others, which change no setting FileMaker Pro's dialog shows), so any
 /// value is read; every other byte must be as stated, and each key minimally
 /// encoded within its buffer. Anything else is `None`.
-fn exact_lookup(bytes: &[u8]) -> Option<Lookup> {
+fn exact_lookup(bytes: &[u8], fallback: Option<String>) -> Option<Lookup> {
     fn expect(bytes: &[u8], at: &mut usize, expected: &[u8]) -> Option<()> {
         let end = at.checked_add(expected.len())?;
         (bytes.get(*at..end)? == expected).then(|| *at = end)
@@ -1075,8 +1126,12 @@ fn exact_lookup(bytes: &[u8]) -> Option<Lookup> {
         (Key::from_id(id) == key).then(|| *at += size)?;
         Some(id)
     }
-    let mut at = 0;
-    expect(bytes, &mut at, &[0])?;
+    let fallback = match bytes.first()? {
+        0 => None,
+        3 => Some(fallback?),
+        _ => return None,
+    };
+    let mut at = 1;
     let copy_empty = match *bytes.get(at)? {
         0 => false,
         1 => true,
@@ -1092,6 +1147,7 @@ fn exact_lookup(bytes: &[u8]) -> Option<Lookup> {
         to,
         copied,
         copy_empty,
+        fallback,
         matches: Vec::new(),
     })
 }
@@ -1178,15 +1234,20 @@ fn lookup_matches(
     }
     let mut matches = Vec::new();
     for predicate in &hop.predicates {
-        // Plain text, a supported stored calculation, or a parent's
-        // auto-entered UUID. Calculated keys are demanded after evaluation.
+        // Plain Text and calculated Text stored in the row. An auto-entry
+        // calculation may depend on this row but cannot read a relationship.
         let ours = fields.get(&predicate.left).is_some_and(|f| {
             f.data_type == DataType::Text
                 && f.options.max_repetitions == 1
-                && (f.stored_calculation() && f.in_row() && f.expression.is_some()
+                && f.in_row()
+                && (f.stored_calculation() && f.expression.is_some()
                     || f.options.field_kind == 1
                         && (f.options.options & !(INDEX_OPTIONS | BOOKKEEPING_OPTIONS) == 0
-                            || f.fresh_key()))
+                            || f.fresh_key()
+                            || f.options.auto_entry_calculation()
+                                && f.expression.as_ref().is_some_and(|expression| {
+                                    expression.related.is_empty() && expression.whole.is_empty()
+                                })))
         });
         if !ours
             || !to_table
@@ -1195,8 +1256,7 @@ fn lookup_matches(
                 .is_some_and(stored_text)
         {
             return Err(
-                "lookups need stored text match fields: supported stored calculations, plain fields \
-                 without auto-entry, or keys auto-entered as Get ( UUID ).",
+                "lookups need stored Text match fields: plain fields or supported calculated keys.",
             );
         }
         matches.push(predicate.left);
@@ -1242,7 +1302,7 @@ impl LookupSource<'_> {
     }
 
     /// `table`'s records, the related table's narrowed by the value index
-    /// of its first match field.
+    /// of the first equality predicate.
     fn narrowed(&self, table: u64) -> Result<Arc<[u64]>, om_calc::CalcError> {
         self.check()?;
         let all = self.inner.records(table)?;
@@ -1577,6 +1637,22 @@ impl PlannedField {
         self.options.validation_options & VALIDATE_ALWAYS != 0
     }
 
+    /// A direct `$$` read by the measured Text auto-enter form (#1037).
+    fn auto_entry_file_variable(&self) -> Option<&str> {
+        if self.options.field_kind != 1
+            || self.options.max_repetitions != 1
+            || !self.in_row()
+            || self.data_type != DataType::Text
+            || !self.options.auto_entry_calculation()
+        {
+            return None;
+        }
+        match &self.expression.as_ref()?.formula.polish {
+            Expr::Variable(name) if name.starts_with("$$") => Some(name),
+            _ => None,
+        }
+    }
+
     /// Whether the rules FileMaker checks as a value is entered (maximum
     /// characters, strict data types, range, value list) apply to `entry`:
     /// a script's Set Field is checked only against a field validated
@@ -1847,6 +1923,15 @@ impl RecordPlan {
             let unstored =
                 kind == FieldKind::Calculation && (options.options & UNSTORED != 0 || global);
             let auto_calculation = options.auto_entry_calculation();
+            // FileMaker used the creation date at New Record even with
+            // calculation replacement on. The test had editing allowed.
+            let creation_date_with_calculation = !global
+                && field.data_type == DataType::Date
+                && options.max_repetitions == 1
+                && options.options & AUTO_ENTRY_MODES == 0x9
+                && options.options & ALWAYS_EVALUATE == 0
+                && !options.auto_entry_editing_prohibited()
+                && options.auto_entry_variable() == Some(EntryVariable::CreationDate);
             let looked_up = options.options & LOOKUP != 0;
             let allowed = match kind {
                 // An unstored calculation is computed when read, and
@@ -1943,8 +2028,23 @@ impl RecordPlan {
                     None => true,
                     Some(n) => n.assembled().is_some_and(|b| *b == [0u8; 4]),
                 };
+                let fallback =
+                    if definition.first() == Some(&3) && field.data_type == DataType::Text {
+                        Some(
+                            match field_node.and_then(|n| n.get(FIELD_LOOKUP_FALLBACK)) {
+                                // FileMaker omits the member when the fallback box is blank.
+                                None => String::new(),
+                                Some(node) => node
+                                    .text()
+                                    .and_then(Result::ok)
+                                    .ok_or_else(|| error("lookup fallback is unreadable."))?,
+                            },
+                        )
+                    } else {
+                        None
+                    };
                 Some(
-                    exact_lookup(&definition)
+                    exact_lookup(&definition, fallback)
                         .filter(|_| seen)
                         .ok_or_else(|| error("unsupported lookup options."))?,
                 )
@@ -2044,7 +2144,9 @@ impl RecordPlan {
                     ));
                 }
             }
-            if (options.options & AUTO_ENTRY_MODES).count_ones() > 1 {
+            if (options.options & AUTO_ENTRY_MODES).count_ones() > 1
+                && !creation_date_with_calculation
+            {
                 return Err(error("multiple auto-entry modes are unsupported."));
             }
             if options.validation_unique() || options.validation_options & VALIDATE_EXISTING != 0 {
@@ -2153,6 +2255,7 @@ impl RecordPlan {
                     data_type: field.data_type,
                     editable,
                     expression,
+                    creation_date_with_calculation,
                     constant,
                     validation,
                     message,
@@ -2176,6 +2279,22 @@ impl RecordPlan {
             let lookup = field.lookup.as_ref().expect("a lookup");
             let matches = lookup_matches(&schema, table.id, &fields, lookup, field.data_type)
                 .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
+            // Creation skips mode-0 lookups when it generates a replacing UUID.
+            // Whether FileMaker applies a fallback in this case is unmeasured.
+            if lookup.fallback.is_some()
+                && matches.iter().any(|key| {
+                    let field = &fields[key];
+                    field.fresh_key() && field.options.calculation_replaces_existing()
+                })
+            {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: a lookup fallback with a replacing Get ( UUID ) key is unsupported.",
+                        field.name
+                    ),
+                ));
+            }
             if let Some(lookup) = fields.get_mut(&id).and_then(|f| f.lookup.as_mut()) {
                 lookup.matches = matches;
             }
@@ -2189,6 +2308,7 @@ impl RecordPlan {
             .filter(|(_, f)| f.formulas().any(|e| !e.related.is_empty()))
             .map(|(id, _)| *id)
             .collect();
+        let mut grouped_self_joins = BTreeSet::new();
         for id in reading {
             let field = &fields[&id];
             // Only the auto-entered formula's own reads evaluate it again;
@@ -2201,11 +2321,25 @@ impl RecordPlan {
                     .as_ref()
                     .is_some_and(|e| std::ptr::eq(e, expression));
                 for (occurrence, read) in &expression.related {
-                    let hop = related_hop(&schema, &fields, context, *occurrence, *read).map_err(
-                        |reason| DataError::new(format!("Field {}: {reason}", field.name)),
-                    )?;
+                    let first_auto_enter = own
+                        && !field.stored_calculation()
+                        && !field.options.calculation_replaces_existing()
+                        && expression.uses.get(occurrence).is_some_and(|uses| {
+                            uses.first && !uses.placed && uses.aggregated.is_empty()
+                        });
+                    let hop = related_hop(
+                        &schema,
+                        &fields,
+                        context,
+                        (*occurrence, *read),
+                        first_auto_enter,
+                    )
+                    .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
+                    if let Some((group, key)) = hop.grouped_keys {
+                        grouped_self_joins.insert((id, group, key));
+                    }
                     if own {
-                        matches.extend(hop);
+                        matches.extend(hop.match_fields);
                     }
                 }
             }
@@ -2419,6 +2553,7 @@ impl RecordPlan {
             table: table.id,
             fields,
             evaluation_order,
+            grouped_self_joins,
             schema: Arc::new(schema),
         })
     }
@@ -2840,10 +2975,13 @@ impl RecordPlan {
             }
             let keys = match keyed.get(&(lookup.from, lookup.to)) {
                 Some(keys) => keys.clone(),
-                None if lookup
-                    .matches
-                    .iter()
-                    .any(|m| self.fields[m].stored_calculation()) =>
+                // Wait for calculated keys to be evaluated. A caller may
+                // supply those final keys on its next read.
+                None if lookup.matches.iter().any(|m| {
+                    let field = &self.fields[m];
+                    field.stored_calculation()
+                        || field.options.auto_entry_calculation() && !field.fresh_key()
+                }) =>
                 {
                     continue
                 }
@@ -2967,15 +3105,20 @@ impl RecordPlan {
     ) -> bool {
         self.lookup_allowed(id, lookup, mode, changes, entry)
             && lookup.matches.iter().any(|m| {
-                dirty.contains(m)
-                    || (mode == WriteMode::Create && self.fields[m].stored_calculation())
-                    || {
-                        let inputs = self.match_inputs(*m);
-                        changes.keys().any(|cell| {
-                            self.cell_field(*cell)
-                                .is_some_and(|(field, _)| inputs.contains(&field))
-                        })
-                    }
+                if dirty.contains(m) || changes.contains_key(m) {
+                    return true;
+                }
+                // An auto-entered key can retain its old value even after
+                // an input edit. A stored calculation still follows its inputs.
+                if !self.fields[m].stored_calculation() {
+                    return false;
+                }
+                let inputs = self.match_inputs(*m);
+                mode == WriteMode::Create
+                    || changes.keys().any(|cell| {
+                        self.cell_field(*cell)
+                            .is_some_and(|(field, _)| inputs.contains(&field))
+                    })
             })
     }
 
@@ -3107,13 +3250,18 @@ impl RecordPlan {
             })
     }
 
-    // Include editable inputs of a calculated match field for same-value
-    // writes and Relookup callers. Planning has already rejected cycles.
+    // Include inputs of stored calculations for same-value writes and
+    // Relookup. Auto-enter keys require a value change, so their inputs
+    // cannot relookup by writing the current value back.
     fn match_inputs(&self, field: u64) -> BTreeSet<u64> {
         let mut inputs = BTreeSet::from([field]);
         let mut pending = vec![field];
         while let Some(id) = pending.pop() {
-            for dependency in self.fields[&id].dependencies() {
+            let field = &self.fields[&id];
+            if !field.stored_calculation() {
+                continue;
+            }
+            for dependency in field.dependencies() {
                 if inputs.insert(*dependency) {
                     pending.push(*dependency);
                 }
@@ -3211,10 +3359,15 @@ impl RecordPlan {
             .schema
             .path(from, to)
             .ok_or_else(crate::host::relationship_missing)?;
-        let key = path
-            .first()
-            .and_then(|hop| hop.predicates.first())
-            .map(|p| (p.right, keys.first().cloned().unwrap_or_default()));
+        // Only equality can use an exact value-index lookup. A preceding
+        // inequality is checked by the scan over those candidates.
+        let key = path.first().and_then(|hop| {
+            hop.predicates
+                .iter()
+                .zip(keys)
+                .find(|(predicate, _)| predicate.op == crate::meta::JoinOp::Equal)
+                .map(|(predicate, value)| (predicate.right, value.clone()))
+        });
         let overlay = LookupSource {
             inner: source,
             table: self.table,
@@ -3370,6 +3523,13 @@ impl RecordPlan {
                     .and_then(|t| t.fields.get(d))
                     .is_some_and(|f| f.global)
             })
+    }
+
+    /// Whether a direct Text auto-enter reads the local file's variables.
+    pub fn reads_auto_entry_file_variables(&self) -> bool {
+        self.fields
+            .values()
+            .any(|field| field.auto_entry_file_variable().is_some())
     }
 
     /// The [`CONTEXT_SELECTORS`] the table's auto-entered, stored and
@@ -4206,6 +4366,52 @@ impl RecordPlan {
         volatile
     }
 
+    /// Preserve the measured stored result when evaluation is deferred to
+    /// commit. A group set and then cleared is still an assignment, even
+    /// if it would appear unchanged in the final row.
+    fn check_grouped_self_join_write(
+        &self,
+        mode: WriteMode,
+        stored: &BTreeMap<u64, String>,
+        changes: &BTreeMap<u64, Option<String>>,
+        row: &BTreeMap<u64, String>,
+        environment: &RecordEnvironment,
+    ) -> Result<(), DataError> {
+        for &(result, group, key) in &self.grouped_self_joins {
+            let single_line = [stored, row].into_iter().all(|values| {
+                [group, key]
+                    .into_iter()
+                    .all(|id| values.get(&id).is_none_or(|value| single_line_key(value)))
+            });
+            let stored_group_empty = stored.get(&group).is_none_or(String::is_empty);
+            let group_assigned = changes.contains_key(&group);
+            let keeps_result = stored.get(&result).is_some_and(|value| !value.is_empty())
+                && !changes.contains_key(&result);
+            let safe_without_assignment = !group_assigned
+                && !changes.contains_key(&key)
+                && (stored_group_empty || keeps_result);
+            let measured_assignment = mode == WriteMode::Update
+                && environment.context.sequence == WriteSequence::SingleLocalFieldStep
+                && stored_group_empty
+                && group_assigned
+                && changes.len() == 1
+                && row.get(&group).is_some_and(|value| !value.is_empty());
+            if environment.context.sequence == WriteSequence::Unmeasured
+                || !single_line
+                || !(safe_without_assignment || measured_assignment)
+            {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: this grouped self-join needs a single local group-key assignment with single-line keys. No values were changed.",
+                        self.fields[&result].name
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// [`Self::compute_values`]'s whole computation: the record's cells as
     /// the write leaves them, those it changed, and those a preview
     /// (`preview`) left out.
@@ -4222,7 +4428,11 @@ impl RecordPlan {
         let mut deferred = BTreeSet::new();
         let mut evaluated = BTreeSet::new();
         let mut probed = BTreeSet::new();
+        let mut supplied_dependencies = None;
         let (mut row, mut dirty) = self.written(existing, changes, entry)?;
+        if !entry.skip_auto_enter {
+            self.check_grouped_self_join_write(mode, existing, changes, &row, environment)?;
+        }
         // A write that changes nothing changes nothing, unless it sets a
         // lookup's match field: FileMaker performs the lookup then, also on
         // the value the field had (auto-entry.md, Lookups, battery s41).
@@ -4354,10 +4564,13 @@ impl RecordPlan {
                 let keys = Self::lookup_keys(lookup, &row);
                 match environment.lookups.copied.get(id) {
                     Some((read_keys, found)) if *read_keys == keys => {
-                        if let Some(value) = found
-                            .as_ref()
-                            .filter(|v| lookup.copy_empty || !v.is_empty())
-                        {
+                        let value = match found {
+                            Some(value) => {
+                                Some(value).filter(|v| lookup.copy_empty || !v.is_empty())
+                            }
+                            None => lookup.fallback.as_ref(),
+                        };
+                        if let Some(value) = value {
                             assign(&mut row, &mut dirty, *id, value.clone());
                         }
                     }
@@ -4378,7 +4591,10 @@ impl RecordPlan {
             let Some(expression) = &field.expression else {
                 continue;
             };
-            if !field.stored_calculation() && (entry.skip_auto_enter || entry.keeps(changes, *id)) {
+            let combined_create = field.creation_date_with_calculation && mode == WriteMode::Create;
+            if !field.stored_calculation()
+                && (entry.skip_auto_enter || (entry.keeps(changes, *id) && !combined_create))
+            {
                 continue;
             }
             let depends_on_deferred = expression
@@ -4394,9 +4610,44 @@ impl RecordPlan {
             if !should_evaluate || !can_replace {
                 continue;
             }
+            if combined_create {
+                // New Record alone uses the creation date. A held create
+                // can also carry later edits before the first commit. Only
+                // those supplied inputs, not creation defaults, make this
+                // an unmeasured re-evaluation.
+                let affected = supplied_dependencies.get_or_insert_with(|| {
+                    self.computed_from(
+                        changes
+                            .keys()
+                            .filter_map(|cell| self.cell_field(*cell))
+                            .map(|(field, _)| field)
+                            .collect(),
+                    )
+                });
+                if !expression
+                    .dependencies
+                    .iter()
+                    .any(|dep| dep != id && affected.contains(dep))
+                {
+                    continue;
+                }
+            }
             if depends_on_deferred {
                 deferred.insert(*id);
                 continue;
+            }
+            if field.creation_date_with_calculation {
+                if !validate {
+                    deferred.insert(*id);
+                    continue;
+                }
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: recalculating the auto-entry combined with Creation Date is unsupported for this write. No values were changed.",
+                        field.name
+                    ),
+                ));
             }
             let globals = self.session_globals(*id, expression, &session)?;
             let mut remaining = session.calculation_budget();
@@ -4665,6 +4916,19 @@ impl RecordPlan {
         if session.written == Written::Unknown {
             return Ok(false);
         }
+        let path = self.schema.path(context, occurrence);
+        let hop = path.as_ref().and_then(|path| path.first());
+        let unequal = hop.is_some_and(grouped_unequal_self_join);
+        if unequal
+            && hop.is_some_and(|hop| {
+                hop.predicates.iter().any(|predicate| {
+                    row.get(&predicate.left)
+                        .is_some_and(|value| !single_line_key(value))
+                })
+            })
+        {
+            return Ok(false);
+        }
         // An empty match value relates nothing (file-metadata.md 4.3, rule
         // 2 [O]): with a match field on the record's side
         // empty, as the write computes it, the related set is empty, the
@@ -4673,18 +4937,14 @@ impl RecordPlan {
         // of a key left out is left out itself, and one read with other keys
         // is not answered. Only a field the record's row holds counts (not a
         // global or unstored calculation, whose value is not in it).
-        let empty_key = self
-            .schema
-            .path(context, occurrence)
-            .and_then(|path| path.first().cloned())
-            .is_some_and(|hop| {
-                hop.predicates.iter().any(|p| {
-                    self.fields.get(&p.left).is_some_and(PlannedField::in_row)
-                        && self
-                            .cells(p.left)
-                            .all(|cell| row.get(&cell).is_none_or(String::is_empty))
-                })
-            });
+        let empty_key = hop.is_some_and(|hop| {
+            hop.predicates.iter().any(|p| {
+                self.fields.get(&p.left).is_some_and(PlannedField::in_row)
+                    && self
+                        .cells(p.left)
+                        .all(|cell| row.get(&cell).is_none_or(String::is_empty))
+            })
+        });
         if empty_key && found.is_empty() {
             return Ok(true);
         }
@@ -4692,12 +4952,12 @@ impl RecordPlan {
         // pending deletes. s47 read committed membership, so a new row
         // with held peers cannot use these reads, even in the fallbacks
         // that are independent of the written row's own membership.
-        if let Written::New(own) = session.written {
+        if unequal || matches!(session.written, Written::New(_)) {
             let others = session.others_held.contains(&self.table)
                 || session
                     .held
                     .as_ref()
-                    .is_some_and(|held| held.holds_other(self.table, own));
+                    .is_some_and(|held| held.holds_other(self.table, session.written.id()));
             if others {
                 return Ok(false);
             }
@@ -4709,15 +4969,11 @@ impl RecordPlan {
                     && (f.given() || f.expression.is_some() && session.settled.contains(field))
             })
         };
-        let final_keys = self
-            .schema
-            .path(context, occurrence)
-            .and_then(|path| path.first().cloned())
-            .is_some_and(|hop| {
-                hop.predicates
-                    .iter()
-                    .all(|p| final_value(&p.left) && final_value(&p.right))
-            });
+        let final_keys = hop.is_some_and(|hop| {
+            hop.predicates
+                .iter()
+                .all(|p| final_value(&p.left) && final_value(&p.right))
+        });
         // Measured: a new record's auto-entry reading a one-hop self-join
         // by final match fields on both sides reads the other records
         // committed with its key, never itself. #1035's native cases (a
@@ -4731,12 +4987,8 @@ impl RecordPlan {
         // first related record read them in creation order. Not measured:
         // reads by place, sorted or non-equality joins with matches, and
         // the stored result when auto-entry keeps its creation-time value.
-        if let (Some(replaces), Written::New(own)) = (auto_entry, session.written) {
-            let hop = self
-                .schema
-                .path(context, occurrence)
-                .and_then(|path| path.first().cloned());
-            let unsorted_equal = hop.as_ref().is_some_and(|hop| {
+        if let (false, Some(replaces), Written::New(own)) = (unequal, auto_entry, session.written) {
+            let unsorted_equal = hop.is_some_and(|hop| {
                 !hop.sorted()
                     && hop
                         .predicates
@@ -4752,7 +5004,7 @@ impl RecordPlan {
                 && !uses.placed
                 && !uses.aggregated.is_empty()
                 && unsorted_equal
-                && hop.as_ref().is_some_and(|hop| {
+                && hop.is_some_and(|hop| {
                     hop.predicates.iter().any(|p| {
                         self.fields
                             .get(&p.left)
@@ -4790,6 +5042,12 @@ impl RecordPlan {
         if related.is_empty() && final_keys {
             return Ok(true);
         }
+        // For the grouped unequal case (#297), the record must be
+        // excluded both as written and as stored. Do not infer its
+        // membership from the cases measured for equality-only joins.
+        if unequal {
+            return Ok(false);
+        }
         let earlier = match session.written {
             Written::New(None) => !found.is_empty(),
             Written::New(Some(id)) | Written::Stored(id) => {
@@ -4797,11 +5055,7 @@ impl RecordPlan {
             }
             Written::Unknown => false,
         };
-        let sorted = self
-            .schema
-            .path(context, occurrence)
-            .and_then(|path| path.first().map(|hop| hop.sorted()))
-            .unwrap_or(true);
+        let sorted = hop.is_none_or(crate::host::Hop::sorted);
         let empty = |field: &u64| {
             row.get(field).is_none_or(String::is_empty)
                 && session.stored.get(field).is_none_or(String::is_empty)
@@ -5017,6 +5271,25 @@ impl RecordPlan {
             followed: std::cell::RefCell::default(),
         };
         let (mut locals, mut globals) = (Variables::new(), Variables::new());
+        if let Some(snapshot) = &session.file_variables {
+            let name = self.fields.get(&field).and_then(|rule| {
+                rule.expression
+                    .as_ref()
+                    .filter(|e| std::ptr::eq(*e, expression))
+                    .and_then(|_| rule.auto_entry_file_variable())
+            });
+            if let Some((name, value)) =
+                name.and_then(|name| snapshot.0.get(name, 1).map(|value| (name, value)))
+            {
+                if !matches!(value, Value::Text(_)) {
+                    return Err(RunError::Unread(DataError::with_code(
+                        error::UNAVAILABLE,
+                        "A non-Text script variable cannot be auto-entered into Text.",
+                    )));
+                }
+                globals.set(name, 1, value.clone());
+            }
+        }
         // Rules belong to the table's file, including when a root layout
         // edits an imported table. Caller layout/script identity stays outside
         // this record-only evaluation.
@@ -5524,6 +5797,7 @@ impl Expression {
             table,
             fields: BTreeMap::new(),
             evaluation_order: Vec::new(),
+            grouped_self_joins: BTreeSet::new(),
             schema: Arc::new(schema),
         };
         let first = InRepetition::Calculation(1);
@@ -6372,6 +6646,12 @@ fn parse_formula(
     })
 }
 
+struct RelatedWriteHop {
+    match_fields: Vec<u64>,
+    /// The equality and inequality keys of the measured self-join.
+    grouped_keys: Option<(u64, u64)>,
+}
+
 /// The match fields of this table through which a formula of `table`,
 /// evaluated from `context`, reads field `field` of `occurrence`, once the
 /// rules can follow it: another table's stored value of one repetition,
@@ -6379,14 +6659,16 @@ fn parse_formula(
 /// type, text or number: this table's a stored field, not global, which the
 /// write itself may compute (it is read again with that value, #1035), the
 /// other table's a stored one, auto-entered or not (its stored value is
-/// matched; a serial key, #187). Otherwise why not.
+/// matched; a serial key, #187). A keep-existing auto-entry can also read
+/// the first row through the grouped unequal self-join when the membership
+/// check in [`RecordPlan::answers_own`] can settle it. Otherwise why not.
 fn related_hop(
     schema: &CalcSchema,
     fields: &BTreeMap<u64, PlannedField>,
     context: u64,
-    occurrence: u64,
-    field: u64,
-) -> Result<Vec<u64>, &'static str> {
+    (occurrence, field): (u64, u64),
+    first_auto_enter: bool,
+) -> Result<RelatedWriteHop, &'static str> {
     use crate::host::FieldClass;
     use crate::meta::JoinOp;
     let to = schema
@@ -6417,7 +6699,14 @@ fn related_hop(
             "calculations over related fields through more than one relationship are unsupported.",
         );
     };
-    if hop.predicates.is_empty() || hop.predicates.iter().any(|p| p.op != JoinOp::Equal) {
+    let grouped_unequal = first_auto_enter
+        && schema
+            .occurrence(context)
+            .is_some_and(|from| from.table == to.table)
+        && grouped_unequal_self_join(hop);
+    if hop.predicates.is_empty()
+        || (!grouped_unequal && hop.predicates.iter().any(|p| p.op != JoinOp::Equal))
+    {
         return Err(
             "calculations over related fields through other than = predicates are unsupported.",
         );
@@ -6429,6 +6718,26 @@ fn related_hop(
              or by a summary or a value list of field values) are unsupported.",
         );
     }
+    let grouped_keys = if grouped_unequal {
+        let group = hop
+            .predicates
+            .iter()
+            .find(|p| p.op == JoinOp::Equal)
+            .expect("grouped join has an equality key")
+            .left;
+        let key = hop
+            .predicates
+            .iter()
+            .find(|p| p.op == JoinOp::NotEqual)
+            .expect("grouped join has an inequality key")
+            .left;
+        if !fields.get(&group).is_some_and(PlannedField::given) {
+            return Err("the group field of an unequal self-join must be written explicitly.");
+        }
+        Some((group, key))
+    } else {
+        None
+    };
     let mut matches = Vec::new();
     for predicate in &hop.predicates {
         // Auto-entered and stored calculation keys participate in the
@@ -6456,9 +6765,37 @@ fn related_hop(
                  number, stored, not global on this table's side.",
             );
         }
+        if grouped_unequal && ours != Some(ValueType::Text) {
+            return Err("auto-entry through an unequal self-join needs stored text match fields.");
+        }
         matches.push(predicate.left);
     }
-    Ok(matches)
+    Ok(RelatedWriteHop {
+        match_fields: matches,
+        grouped_keys,
+    })
+}
+
+fn single_line_key(value: &str) -> bool {
+    value
+        .split(['\r', '\n'])
+        .filter(|line| !line.is_empty())
+        .nth(1)
+        .is_none()
+}
+
+/// Unsorted, same-field predicates on a group key and a distinct row key.
+/// The caller establishes that both occurrences are of the same table.
+fn grouped_unequal_self_join(hop: &crate::host::Hop) -> bool {
+    use crate::meta::JoinOp::{Equal, NotEqual};
+    let [a, b] = hop.predicates.as_slice() else {
+        return false;
+    };
+    !hop.sorted()
+        && matches!((a.op, b.op), (Equal, NotEqual) | (NotEqual, Equal))
+        && a.left == a.right
+        && b.left == b.right
+        && a.left != b.left
 }
 
 /// The sort language whose text order OpenMaker's collation does not
@@ -7387,6 +7724,142 @@ mod tests {
         RecordPlan::from_schema(table, &tree)
     }
 
+    #[test]
+    fn creation_date_is_used_with_a_calculated_auto_entry_value() {
+        // The closed FileMaker Pro copies held both option words with
+        // selector 0 and a saved formula.
+        for options in [0x0000_0009, 0x0000_0089] {
+            let mut table = table();
+            table
+                .fields
+                .push(field(20, FieldKind::Normal, DataType::Date, 0, options, 0));
+            let mut formulas = base_formulas();
+            formulas.push((20, 5, "Date ( 1 ; 15 ; 2030 )"));
+            let plan = plan_of(&table, &formulas, &[]).unwrap();
+            let environment = environment();
+            let created = plan
+                .prepare(
+                    WriteMode::Create,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &environment,
+                )
+                .unwrap();
+            assert_eq!(
+                decoded(&created, 20).as_deref(),
+                Some(environment.date.as_str())
+            );
+
+            let explicit = "3/3/2031";
+            let saved = plan
+                .prepare_entry(
+                    WriteMode::Create,
+                    &BTreeMap::new(),
+                    &BTreeMap::from([(20, Some(explicit.into()))]),
+                    &environment,
+                    Entry {
+                        keep_written: true,
+                        ..Entry::script(false, false)
+                    },
+                )
+                .unwrap();
+            assert_eq!(decoded(&saved, 20).as_deref(), Some(explicit));
+
+            for extra in [ALWAYS_EVALUATE, 0x100] {
+                *table.fields.last_mut().unwrap() =
+                    field(20, FieldKind::Normal, DataType::Date, 0, options | extra, 0);
+                assert!(plan_of(&table, &formulas, &[])
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("multiple auto-entry modes"));
+            }
+        }
+    }
+
+    #[test]
+    fn combined_creation_date_refuses_inputs_set_before_first_commit() {
+        let mut table = table();
+        table.fields.retain(|field| field.id <= 2);
+        table.fields.extend([
+            field(20, FieldKind::Normal, DataType::Date, 0, 0x0000_0089, 0),
+            field(21, FieldKind::Calculation, DataType::Number, 0, 0, 0),
+        ]);
+        let environment = environment();
+        let entry = Entry {
+            keep_written: true,
+            ..Entry::script(false, false)
+        };
+        for expression in [
+            "Date ( 1 ; 15 ; 2030 ) + Length ( Field1 )",
+            "Date ( 1 ; 15 ; 2030 ) + Field21",
+        ] {
+            let formulas = [(20, 5, expression), (21, 5, "Length ( Field1 )")];
+            let plan = plan_of(&table, &formulas, &[]).unwrap();
+            let created = plan
+                .prepare_entry(
+                    WriteMode::Create,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &environment,
+                    entry,
+                )
+                .unwrap();
+            assert_eq!(
+                decoded(&created, 20).as_deref(),
+                Some(environment.date.as_str())
+            );
+
+            let result = plan.prepare_entry(
+                WriteMode::Create,
+                &BTreeMap::new(),
+                &BTreeMap::from([(1, Some("abc".into()))]),
+                &environment,
+                entry,
+            );
+            assert_eq!(
+                result.err().and_then(|error| error.code),
+                Some(error::UNAVAILABLE)
+            );
+        }
+    }
+
+    #[test]
+    fn combined_creation_date_refuses_updates_that_would_run_its_calculation() {
+        for (options, target_update, should_refuse) in [
+            (0x0000_0089, (1, Some("abc".into())), true),
+            (0x0000_0009, (20, None), true),
+            (0x0000_0009, (1, Some("abc".into())), false),
+            (0x0000_0089, (2, Some("unrelated".into())), false),
+        ] {
+            let mut table = table();
+            table.fields.retain(|field| field.id <= 2);
+            table
+                .fields
+                .push(field(20, FieldKind::Normal, DataType::Date, 0, options, 0));
+            let formulas = [(
+                20,
+                5,
+                "If ( IsEmpty ( Field20 ) ; Date ( 1 ; 15 ; 2030 ) ; \
+                 Date ( 1 ; 15 ; 2030 ) + Length ( Field1 ) )",
+            )];
+            let plan = plan_of(&table, &formulas, &[]).unwrap();
+            let stored = BTreeMap::from([(1, "previous".into()), (20, "11/26/2026".into())]);
+            let result = plan.prepare_entry(
+                WriteMode::Update,
+                &stored,
+                &BTreeMap::from([target_update]),
+                &environment(),
+                Entry::script(false, false),
+            );
+            if should_refuse {
+                assert_eq!(result.err().unwrap().code, Some(error::UNAVAILABLE));
+            } else {
+                assert_eq!(decoded(&result.unwrap(), 20), None, "date is unchanged");
+            }
+        }
+    }
+
     const INITIALS: &str = "Case ( not IsEmpty ( Field2 ) ; Left ( Field2 ; 1 ) ; \
                             not IsEmpty ( Field1 ) ; Left ( Field1 ; 1 ) )";
 
@@ -7512,6 +7985,8 @@ mod tests {
             // A row typed after two related rows of an unsorted portal
             // (#1038).
             record_number: Some(3),
+            sequence: WriteSequence::Unmeasured,
+            file_variables: None,
         };
         let created = write(known.clone(), WriteMode::Create).unwrap();
         assert_eq!(
@@ -8566,10 +9041,15 @@ mod tests {
                 right: 1,
             }],
         ));
-        let plan_for = |off: &[u8]| {
+        let plan_with_fallback = |off: &[u8], fallback: Option<&str>| {
             let mut on = OFF.to_vec();
             on[1] = 0;
-            let leaves = [(2, 8, off), (2, 0x26, &[0; 4][..]), (3, 8, &on[..])];
+            let mut leaves = vec![(2, 8, off)];
+            let stored = fallback.map(om_scsu::encode_scsu);
+            if let Some(stored) = &stored {
+                leaves.push((2, FIELD_LOOKUP_FALLBACK, stored.as_slice()));
+            }
+            leaves.extend([(2, 0x26, &[0; 4][..]), (3, 8, &on[..])]);
             let paths: Vec<Vec<Vec<u8>>> = leaves
                 .iter()
                 .map(|(field, key, _)| {
@@ -8587,6 +9067,7 @@ mod tests {
             }
             RecordPlan::from_file_schema(&table, &tree, &file)
         };
+        let plan_for = |off: &[u8]| plan_with_fallback(off, None);
         // Assets' form, with this test's keys: FileMaker Pro's dialog shows
         // its settings as ON's (#549), and it reads as the same lookup.
         let assets = [
@@ -8596,8 +9077,8 @@ mod tests {
         let mut on = OFF.to_vec();
         on[1] = 0;
         assert_eq!(
-            format!("{:?}", exact_lookup(&assets).unwrap()),
-            format!("{:?}", exact_lookup(&on).unwrap())
+            format!("{:?}", exact_lookup(&assets, None).unwrap()),
+            format!("{:?}", exact_lookup(&on, None).unwrap())
         );
         assert!(plan_for(&assets)
             .unwrap()
@@ -8627,8 +9108,8 @@ mod tests {
             padded[11..15].copy_from_slice(padding);
             padded[21] = last[i % last.len()];
             assert_eq!(
-                format!("{:?}", exact_lookup(&padded)),
-                format!("{:?}", exact_lookup(OFF)),
+                format!("{:?}", exact_lookup(&padded, None)),
+                format!("{:?}", exact_lookup(OFF, None)),
                 "{padded:02x?}"
             );
         }
@@ -8637,7 +9118,7 @@ mod tests {
             0x00, 0x01, 0x04, 0x03, 0xd0, 0x00, 0x03, 0x00, 0x02, 0x01, 0x17, 0x00, 0x02, 0x00,
             0x00, 0x01, 0x04, 0x03, 0xd0, 0x00, 0x01, 0x00,
         ];
-        let read = exact_lookup(&hosted).unwrap();
+        let read = exact_lookup(&hosted, None).unwrap();
         assert_eq!(
             (read.from, read.to, read.copied, read.copy_empty),
             (0xd0_0001, 0xd0_0003, 0x17, true)
@@ -8664,7 +9145,10 @@ mod tests {
             OFF[..21].to_vec(),
             longer,
         ] {
-            assert!(exact_lookup(&unsupported).is_none(), "{unsupported:02x?}");
+            assert!(
+                exact_lookup(&unsupported, None).is_none(),
+                "{unsupported:02x?}"
+            );
             let refused = plan_for(&unsupported).err().unwrap();
             assert!(refused.to_string().contains("unsupported lookup options"));
         }
@@ -8690,9 +9174,12 @@ mod tests {
             values.set(2, 1, Value::text(x));
             b.put_record(0x8007, id, values);
         }
-        let write = |mode, existing: &[(u64, &str)], k: &str| {
+        let write = |plan: &RecordPlan, mode, existing: &[(u64, &str)], key: Option<&str>| {
             let existing = existing.iter().map(|(f, v)| (*f, v.to_string())).collect();
-            let changes = BTreeMap::from([(1, Some(k.to_string()))]);
+            let changes = key
+                .into_iter()
+                .map(|key| (1, (!key.is_empty()).then(|| key.to_owned())))
+                .collect();
             let mut environment = environment();
             environment.lookups = plan
                 .read_lookups(mode, &existing, &changes, Entry::default(), &b)
@@ -8704,17 +9191,53 @@ mod tests {
         };
         let copied = Some(Some("COPIED_VALUE".to_string()));
         assert_eq!(
-            write(WriteMode::Create, &[], "K_MATCH"),
+            write(&plan, WriteMode::Create, &[], Some("K_MATCH")),
             (copied.clone(), copied)
         );
         let manual = [(1, "K_MATCH"), (2, "MANUAL_OFF"), (3, "MANUAL_ON")];
         assert_eq!(
-            write(WriteMode::Update, &manual, "K_NO_MATCH"),
+            write(&plan, WriteMode::Update, &manual, Some("K_NO_MATCH")),
             (None, None)
         );
         let manual = [(1, "K_NO_MATCH"), (2, "MANUAL_OFF"), (3, "MANUAL_ON")];
         assert_eq!(
-            write(WriteMode::Update, &manual, "K_EMPTY"),
+            write(&plan, WriteMode::Update, &manual, Some("K_EMPTY")),
+            (Some(None), None)
+        );
+
+        let with_fallback = plan_with_fallback(&changed(0, 3), Some("Unknown")).unwrap();
+        assert_eq!(
+            write(
+                &with_fallback,
+                WriteMode::Update,
+                &manual,
+                Some("K_MISSING")
+            ),
+            (Some(Some("Unknown".into())), None)
+        );
+        assert_eq!(
+            write(&with_fallback, WriteMode::Update, &manual, Some("K_EMPTY")),
+            (Some(None), None)
+        );
+
+        assert_eq!(
+            write(&with_fallback, WriteMode::Create, &[], None),
+            (None, None)
+        );
+        assert_eq!(
+            write(&with_fallback, WriteMode::Update, &manual, Some("")),
+            (Some(Some("Unknown".into())), None)
+        );
+        let mut guard = changed(0, 3);
+        guard[1] = 0;
+        let guarded = plan_with_fallback(&guard, Some("Unknown")).unwrap();
+        assert_eq!(
+            write(&guarded, WriteMode::Update, &manual, Some("K_EMPTY")),
+            (None, None)
+        );
+        let blank = plan_for(&changed(0, 3)).unwrap();
+        assert_eq!(
+            write(&blank, WriteMode::Update, &manual, Some("K_MISSING")),
             (Some(None), None)
         );
 
@@ -8824,11 +9347,11 @@ mod tests {
                 right: 1,
             }],
         ));
-        let plan_for = |key_options: u32, variable, key_code: &[u8]| {
+        let plan_for = |key_options: u32, variable, key_code: &[u8], lookup: &[u8]| {
             let leaves: [(u64, &[u64], &[u8]); 3] = [
                 (1, &[5, 4], &[3, 0xd0, 0, 6]),
                 (1, &[5, 6], key_code),
-                (2, &[8], LOOKUP),
+                (2, &[8], lookup),
             ];
             let paths: Vec<Vec<Vec<u8>>> = leaves
                 .iter()
@@ -8850,8 +9373,15 @@ mod tests {
         };
         // A starter's PrimaryKey: Get ( UUID ), replacing, prohibiting
         // modification, indexed.
-        let plan = plan_for(0x8000_0188, 0, &[0x9b, 0x65]).unwrap();
+        let plan = plan_for(0x8000_0188, 0, &[0x9b, 0x65], LOOKUP).unwrap();
         assert!(plan.editable_fields().contains("Field2"));
+        let mut fallback = LOOKUP.to_vec();
+        fallback[0] = 3;
+        let refused_fallback = plan_for(0x8000_0188, 0, &[0x9b, 0x65], &fallback).err();
+        assert_eq!(
+            refused_fallback.and_then(|e| e.code),
+            Some(error::UNAVAILABLE)
+        );
         // Relookup Field Contents' target: not this key, whose auto-entry
         // a write of it could replace (3); not the looked-up field, which
         // no lookup matches through (3); not a field the table lacks (102).
@@ -8868,10 +9398,10 @@ mod tests {
         assert_eq!(refused("Missing").code, Some(error::FIELD_MISSING));
         // Another auto-entry on the key (the creator's account name) keeps
         // the table read-only.
-        let other = plan_for(0x8000_0101, 4, &[0x9b, 0x65]);
+        let other = plan_for(0x8000_0101, 4, &[0x9b, 0x65], LOOKUP);
         assert!(other
             .err()
-            .is_some_and(|e| e.message.contains("auto-entered as Get ( UUID )")));
+            .is_some_and(|e| e.message.contains("stored Text match fields")));
 
         // The key is validated as a generated UUID (509 otherwise).
         const K0: &str = "0F3C1D2E-5A6B-4C7D-8E9F-A0B1C2D3E4F5";
@@ -8927,6 +9457,149 @@ mod tests {
     /// ascending, the one made first. Sorted by an unstored calculation,
     /// which `host::sort` orders as empty, or by text in Japanese, which it
     /// orders otherwise than FileMaker in places, the table stays read-only.
+    #[test]
+    fn a_lookup_uses_the_auto_entered_key_when_it_changes() {
+        use crate::host::{FieldDef, JoinOp, JoinPredicate, RelationshipDef};
+
+        const FROM: u64 = 0xd0_0006;
+        const TO: u64 = 0xd0_0007;
+        let mut file = CalcSchema::new("Lookups", Locale::en_us());
+        file.add_table(0x8007, "Directory");
+        file.add_field(0x8007, FieldDef::data(1, "Key", ValueType::Text));
+        file.add_field(0x8007, FieldDef::data(2, "Label", ValueType::Text));
+        file.add_occurrence(FROM, "Requests", 0x8006);
+        file.add_occurrence(TO, "Directory", 0x8007);
+        file.add_relationship(RelationshipDef::new(
+            4,
+            FROM,
+            TO,
+            vec![JoinPredicate {
+                op: JoinOp::Equal,
+                left: 2,
+                right: 1,
+            }],
+        ));
+        let mut directory = MemorySource::new();
+        for (id, key, label) in [(1, "A", "First"), (2, "B", "Second")] {
+            let mut values = RecordValues::default();
+            values.set(1, 1, Value::text(key));
+            values.set(2, 1, Value::text(label));
+            directory.put_record(0x8007, id, values);
+        }
+
+        let mut names = om_formula::NameTable::default();
+        names.add_occurrence(FROM, "Requests", 0x8006);
+        names.add_field(0x8006, 1, "Field1");
+        let mut compiler = om_formula::Context::new(&names);
+        compiler.occurrence = Some(FROM);
+        let plan_for = |formula, options| {
+            let table = Table {
+                id: 0x8006,
+                name: "Requests".into(),
+                fields: vec![
+                    field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                    field(2, FieldKind::Normal, DataType::Text, 0, options, 0),
+                    field(3, FieldKind::Normal, DataType::Text, 0, LOOKUP, 0),
+                ],
+            };
+            let formula = om_formula::compile(formula, &compiler).unwrap().expr;
+            let encoded = om_formula::polish::encode(&formula);
+            let context = om_formula::Key::from_id(FROM);
+            let definition = crate::field_options::Lookup {
+                from: FROM,
+                to: TO,
+                copied: 2,
+                copy_empty: true,
+                no_match: crate::field_options::NoMatch::DoNotCopy,
+            }
+            .encode()
+            .unwrap();
+            let leaves: [(&[u64], &[u8]); 3] = [
+                (&[2, FIELD_FORMULA, 4], &context.0),
+                (&[2, FIELD_FORMULA, 6], &encoded),
+                (&[3, FIELD_LOOKUP], &definition),
+            ];
+            let paths: Vec<Vec<Vec<u8>>> = leaves
+                .iter()
+                .map(|(suffix, _)| {
+                    [table.id, 3, 5]
+                        .into_iter()
+                        .chain(suffix.iter().copied())
+                        .map(om_hbam::slot::uint_segment)
+                        .collect()
+                })
+                .collect();
+            let mut tree = KeyTree::default();
+            for (keys, (_, value)) in paths.iter().zip(leaves) {
+                let path: Vec<KeySegment<'_>> = keys.iter().map(|key| KeySegment(key)).collect();
+                tree.insert(&path, om_hbam::slot::ChunkKind::Leaf, Some(value))
+                    .unwrap();
+            }
+            RecordPlan::from_file_schema(&table, &tree, &file).unwrap()
+        };
+
+        let write = |plan: &RecordPlan, mode, existing: &[(u64, &str)], input: Option<&str>| {
+            let existing = existing
+                .iter()
+                .map(|(id, text)| (*id, (*text).into()))
+                .collect();
+            let changes = input
+                .into_iter()
+                .map(|text| (1, Some(text.into())))
+                .collect();
+            let mut environment = environment();
+            let needs = Arc::new(RelatedNeeds::default());
+            environment.related_needs = Some(Arc::clone(&needs));
+            let entry = Entry::script(false, false);
+            let mut keyed = BTreeMap::new();
+            for pass in 0..2 {
+                environment.lookups = plan
+                    .read_lookups_with(
+                        mode,
+                        &existing,
+                        &changes,
+                        entry,
+                        &directory,
+                        (&keyed, Written::Unknown),
+                    )
+                    .unwrap();
+                let result = plan.compute(mode, &existing, &changes, &environment, entry);
+                keyed = needs.take();
+                if keyed.is_empty() {
+                    return result.unwrap();
+                }
+                assert_eq!(pass, 0, "lookup reread must use the final key");
+                assert_eq!(result.unwrap_err().code, Some(error::UNAVAILABLE));
+            }
+            unreachable!("each write computes at most one final key");
+        };
+
+        let from_constant = plan_for(r#""A""#, 0x8);
+        let created = write(&from_constant, WriteMode::Create, &[], None);
+        assert_eq!(created.get(&2), Some(&Some("A".into())));
+        assert_eq!(created.get(&3), Some(&Some("First".into())));
+
+        let replace = plan_for("Field1", 0x88);
+        assert!(write(&replace, WriteMode::Create, &[], None).is_empty());
+        let entered = write(&replace, WriteMode::Update, &[], Some("A"));
+        assert_eq!(entered.get(&2), Some(&Some("A".into())));
+        assert_eq!(entered.get(&3), Some(&Some("First".into())));
+
+        let existing = [(1, "A"), (2, "A"), (3, "Prior")];
+        let replaced = write(&replace, WriteMode::Update, &existing, Some("B"));
+        assert_eq!(replaced.get(&2), Some(&Some("B".into())));
+        assert_eq!(replaced.get(&3), Some(&Some("Second".into())));
+        let keep = plan_for("Field1", 0x8);
+        let kept = write(&keep, WriteMode::Update, &existing, Some("B"));
+        assert_eq!(kept, BTreeMap::from([(1, Some("B".into()))]));
+        for plan in [&replace, &keep] {
+            assert_eq!(
+                plan.relookup_target("Field1").unwrap_err().code,
+                Some(error::UNAVAILABLE)
+            );
+        }
+    }
+
     #[test]
     fn sorted_lookups_copy_the_first_record_in_the_sort() {
         use crate::host::{FieldClass, FieldDef, JoinOp, JoinPredicate, RelationshipDef};

@@ -29,6 +29,8 @@ struct DocumentProvider {
     writable: bool,
     styled: bool,
     conditional_color: bool,
+    design_geometry: bool,
+    design_edges: bool,
     duplicate_field: bool,
     /// Given's "Go to next object using" includes Return and the Enter
     /// key, as 123 of the starter solutions' 179 field objects do.
@@ -39,6 +41,8 @@ struct DocumentProvider {
     list: bool,
     /// The card is [`web_viewer_card`].
     web_viewer: bool,
+    /// The card is [`table_parts_card`] with these layout flags.
+    table_parts: Option<u64>,
     update_entered: Option<mpsc::Sender<()>>,
     update_gate: Option<mpsc::Receiver<()>>,
     /// Holds the page read that follows a save, like a slow server.
@@ -57,6 +61,8 @@ impl DocumentProvider {
             writable: false,
             styled: false,
             conditional_color: false,
+            design_geometry: false,
+            design_edges: false,
             duplicate_field: false,
             given_next_keys: false,
             show_field_alerts: false,
@@ -64,6 +70,7 @@ impl DocumentProvider {
             replacement: None,
             list: false,
             web_viewer: false,
+            table_parts: None,
             update_entered: None,
             update_gate: None,
             reload_gate: None,
@@ -248,11 +255,61 @@ impl DataProvider for DocumentProvider {
         })
     }
 
+    fn layout_geometry(&mut self, _: u32) -> Result<Option<om_data::LayoutGeometry>, DataError> {
+        Ok(self.design_geometry.then(|| {
+            let fixture = layout_fixture(self.design_edges);
+            let objects = fixture
+                .layout
+                .objects
+                .objects
+                .iter()
+                .filter(|object| (1..=5).contains(&object.id))
+                .map(|object| {
+                    let rect = object.bounds.as_ref().unwrap();
+                    let kind = match object.kind() {
+                        om_layout::ObjectKind::Field => "Field",
+                        om_layout::ObjectKind::Rectangle => "Rectangle",
+                        _ => "Text",
+                    };
+                    om_data::ObjectGeom {
+                        key: object.id,
+                        kind_name: kind.into(),
+                        rect: om_data::GeomRect {
+                            left: rect.left,
+                            top: rect.top,
+                            right: rect.right,
+                            bottom: rect.bottom,
+                        },
+                        field_name: fixture.field_bindings.get(&object.id).cloned(),
+                        movable: true,
+                        deletable: true,
+                    }
+                })
+                .collect();
+            om_data::LayoutGeometry {
+                width: fixture.layout.width(),
+                height: fixture.layout.height(),
+                objects,
+                parts: fixture
+                    .layout
+                    .parts
+                    .iter()
+                    .map(|part| om_data::PartGeom {
+                        top: part.top,
+                        height: part.height,
+                        kind_name: format!("{:?}", part.kind()),
+                    })
+                    .collect(),
+                revision: Some([1; 32]),
+            }
+        }))
+    }
+
     fn render_layout(&mut self, id: u32) -> Result<Option<RenderLayout>, DataError> {
         if id == 8 && self.replacement.is_some() {
             return Ok(None);
         }
-        let mut document = document();
+        let mut document = layout_fixture(self.design_edges);
         if self.show_field_alerts {
             document.layout.def.as_mut().unwrap().flags |=
                 om_data::layout_catalog::general::SHOW_FIELD_ALERTS;
@@ -395,6 +452,9 @@ impl DataProvider for DocumentProvider {
         }
         if self.web_viewer {
             web_viewer_card(&mut document.layout);
+        }
+        if let Some(flags) = self.table_parts {
+            table_parts_card(&mut document.layout, flags);
         }
         if self.duplicate_field {
             let index = document
@@ -677,11 +737,55 @@ fn document() -> RenderLayout {
     }
 }
 
+fn layout_fixture(design_edges: bool) -> RenderLayout {
+    let mut fixture = document();
+    if design_edges {
+        // Keep the pasteboard visible at the test window's width, and
+        // store the lower band first to catch position-by-index painting.
+        let layout = &mut fixture.layout;
+        layout.def.as_mut().unwrap().base_width = 400.0;
+        let frame = layout
+            .objects
+            .objects
+            .iter_mut()
+            .find(|object| object.id == 4)
+            .unwrap()
+            .bounds
+            .as_mut()
+            .unwrap();
+        frame.left = 335.0;
+        frame.right = 455.0;
+        layout.parts[0].style = Some(om_layout::ObjectStyle {
+            local_styles: Some(StyleSet {
+                components: vec![ComponentStyle {
+                    component: 1,
+                    state: 1,
+                    properties: vec![Property {
+                        id: 7,
+                        color: Some(Color {
+                            red: 0.875,
+                            green: 0.9375,
+                            blue: 1.0,
+                            alpha: 1.0,
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        layout.parts.reverse();
+    }
+    fixture
+}
+
 /// The card with only its title and name fields, and on its right a web
 /// viewer over a picture (a globe drawn for this test). The viewer is
 /// anchored left, top and bottom (layout-model.md 5.7): the window's spare
-/// height stretches it, and the record-edits bar takes some of that height
-/// back. The picture keeps its place. Without a live view the viewer shows
+/// height stretches it, and a shorter window takes that height back. The
+/// picture keeps its place. Without a live view the viewer shows
 /// OpenMaker's own note over the picture.
 fn web_viewer_card(layout: &mut Layout) {
     const GLOBE: u64 = 0x51;
@@ -719,6 +823,61 @@ fn web_viewer_card(layout: &mut Layout) {
             data: svg.into(),
         },
     );
+}
+
+/// The card with only its title, in the header, and its name fields, and
+/// below them a footer with a note and a web viewer; `flags` are its
+/// effective layout flags, Table View Properties' among them. The header
+/// and footer are tinted so that a capture shows where they are.
+fn table_parts_card(layout: &mut Layout, flags: u64) {
+    let tint = |red: f32, green: f32, blue: f32| om_layout::ObjectStyle {
+        local_styles: Some(StyleSet {
+            components: vec![ComponentStyle {
+                component: 1,
+                state: 1,
+                properties: vec![Property {
+                    id: 7,
+                    color: Some(Color {
+                        red,
+                        green,
+                        blue,
+                        alpha: 1.0,
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    layout.def.as_mut().unwrap().flags = flags;
+    layout.parts[0].style = Some(tint(0.85, 0.91, 0.98));
+    layout.parts[1].height = 160.0;
+    layout.parts.push(Part {
+        id: 3,
+        part_type: 7,
+        top: 200.0,
+        height: 90.0,
+        style: Some(tint(0.93, 0.93, 0.88)),
+        ..Default::default()
+    });
+    layout
+        .objects
+        .objects
+        .retain(|object| matches!(object.id, 1 | 3 | 5));
+    layout
+        .objects
+        .objects
+        .push(label(60, None, "TOTALS FOOTER", 20.0, 230.0));
+    layout.objects.objects.push(LayoutObject {
+        external: Some(ExternalObject {
+            type_code: ExternalObject::WEB_VIEWER,
+            ..Default::default()
+        }),
+        ..object(61, 13, None, 400.0, 205.0, 380.0, 80.0)
+    });
+    layout.objects.root = vec![1, 3, 5, 60, 61];
 }
 
 /// Render the window to `name`.png in the `OM_SCREENSHOTS` folder and add
@@ -1767,6 +1926,74 @@ fn a_list_layout_repeats_the_body_and_fetches_as_it_scrolls() {
     );
 }
 
+/// Table view draws the layout's header and footer parts around its table
+/// only as Table View Properties include each (layout-model.md 4.2, #306):
+/// the header above the column headings, the footer below the rows, at the
+/// window's bottom.
+#[test]
+fn table_view_shows_the_parts_its_properties_include() {
+    use om_layout::layout::{TABLE_FOOTER, TABLE_HEADER};
+    for (flags, header, footer) in [(TABLE_HEADER, true, false), (TABLE_FOOTER, false, true)] {
+        let mut provider = DocumentProvider::new(false);
+        provider.table_parts = Some(flags);
+        let mut app = open_provider(provider);
+        app.get_by_label("TOTALS FOOTER");
+        common::click(&mut app, "Table View");
+        common::wait_until(&mut app, "the table", |app| {
+            app.query_by_role_and_label(Role::Label, "Family").is_some()
+        });
+        let heading = app.get_by_role_and_label(Role::Label, "Given").rect();
+        let title = app.query_by_label("CLIENT CARD").map(|node| node.rect());
+        let note = app.query_by_label("TOTALS FOOTER").map(|node| node.rect());
+        assert_eq!(title.is_some(), header, "flags {flags:#x}: the header");
+        assert_eq!(note.is_some(), footer, "flags {flags:#x}: the footer");
+        if let Some(title) = title {
+            assert!(
+                title.bottom() <= heading.top(),
+                "the header is above the table"
+            );
+        }
+        if let Some(note) = note {
+            let window = app.ctx.content_rect();
+            assert!(
+                note.top() > heading.bottom() + 200.0 && note.bottom() < window.bottom(),
+                "the footer is at the window's bottom: {note:?} in {window:?}"
+            );
+        }
+    }
+}
+
+/// A manual capture of Table view's parts (#306): the layout with Table
+/// View Properties' header and footer included, then with neither.
+/// `OM_SCREENSHOTS=<folder> cargo test -p om-gui --test document
+/// table_view_parts_capture -- --ignored`
+#[test]
+#[ignore = "manual capture: requires OM_SCREENSHOTS, a folder for its PNGs"]
+fn table_view_parts_capture() {
+    use om_layout::layout::{TABLE_FOOTER, TABLE_HEADER};
+    for (flags, name, line) in [
+        (
+            TABLE_HEADER | TABLE_FOOTER,
+            "table-view-header-footer",
+            "Table view with the header and footer parts included",
+        ),
+        (
+            0,
+            "table-view-no-parts",
+            "Table view with neither part included",
+        ),
+    ] {
+        let mut provider = DocumentProvider::new(false);
+        provider.table_parts = Some(flags);
+        let mut app = open_provider(provider);
+        common::click(&mut app, "Table View");
+        common::wait_until(&mut app, "the table", |app| {
+            app.query_by_role_and_label(Role::Label, "Family").is_some()
+        });
+        shot(&mut app, name, line);
+    }
+}
+
 fn select_tab(app: &mut common::App, label: &str) {
     app.get_by_role_and_label(Role::Tab, label).click();
     app.run_steps(3);
@@ -1823,6 +2050,92 @@ fn rendered_text(app: &common::App, text: &str) -> Option<Arc<egui::Galley>> {
         .shapes
         .iter()
         .find_map(|shape| find(&shape.shape, text))
+}
+
+#[test]
+fn design_paints_stored_artwork_at_the_draft_frame() {
+    let mut provider = DocumentProvider::new(false);
+    provider.design_geometry = true;
+    let mut app = open_provider(provider);
+    common::click(&mut app, "Edit Layout");
+    common::wait_for_label(&mut app, "Rectangle (object 5)");
+    if std::env::var_os("OM_SCREENSHOTS").is_some() {
+        shot(&mut app, "layout-design", "the Client Card in Layout mode");
+    }
+    assert!(rendered_text(&app, "CLIENT CARD").is_some());
+    assert!(rendered_text(&app, "Contact: <<Given>> <<Family>>").is_some());
+    assert!(rendered_text(&app, "Contact: Clara Mason").is_none());
+
+    let fill = |app: &common::App| {
+        app.output()
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                Shape::Rect(rect) if rect.fill == Color32::from_rgb(64, 128, 191) => {
+                    assert!(
+                        shape.clip_rect.left() > app.get_by_label("Layout canvas").rect().left(),
+                        "artwork stays clear of the part strip"
+                    );
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("the rectangle uses the file's theme fill")
+    };
+    let before = fill(&app);
+    common::click(&mut app, "Rectangle (object 5)");
+    app.key_press(egui::Key::ArrowLeft);
+    app.run_steps(3);
+    assert_eq!(fill(&app), before.translate(egui::vec2(-1.0, 0.0)));
+    common::open_menu(&mut app, "Layouts");
+    common::click(&mut app, "Revert Layout");
+    assert_eq!(fill(&app), before);
+}
+
+#[test]
+fn design_keeps_crossing_frames_and_places_fills_on_their_own_band() {
+    let mut provider = DocumentProvider::new(false);
+    provider.design_geometry = true;
+    provider.design_edges = true;
+    let mut app = open_provider(provider);
+    common::click(&mut app, "Edit Layout");
+    common::wait_for_label(&mut app, "Rectangle (object 5)");
+    if std::env::var_os("OM_SCREENSHOTS").is_some() {
+        shot(
+            &mut app,
+            "layout-design-edges",
+            "Layout with a pasteboard edge and unsorted parts",
+        );
+    }
+    let rectangles: Vec<_> = app
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            Shape::Rect(rect) => Some((rect, shape.clip_rect)),
+            _ => None,
+        })
+        .collect();
+    let (fill, clip) = rectangles
+        .iter()
+        .find(|(rect, _)| rect.fill == Color32::from_rgb(64, 128, 191))
+        .expect("the crossing rectangle still has its authored fill");
+    assert!(clip.right() < fill.rect.right());
+    assert!(rectangles.iter().any(|(rect, clip)| {
+        rect.rect == fill.rect && rect.stroke.width > 0.0 && clip.right() >= rect.rect.right()
+    }));
+    let header = rectangles
+        .iter()
+        .find(|(rect, _)| rect.fill == Color32::from_rgb(223, 239, 255))
+        .expect("the header has its own authored fill")
+        .0;
+    assert_eq!(header.rect.height(), 40.0);
+    assert!(header.rect.bottom() < fill.rect.top());
+    assert!(rectangles.iter().any(|(rect, _)| {
+        rect.rect.width() == 140.0
+            && rect.rect.height() == 25.0
+            && rect.stroke.color == Color32::from_rgb(0xd6, 0xd6, 0xd6)
+    }));
 }
 
 #[test]
@@ -2064,7 +2377,9 @@ fn zoomed_form_keeps_chrome_size_and_edits_the_clicked_field() {
 
 /// A manual capture of the web viewer's own note (#391): one window, at
 /// rest and with its record being edited, which takes no bar (#871), so
-/// the anchored viewer keeps its size over the picture.
+/// the anchored viewer keeps its size over the picture; then a shorter
+/// window, where the viewer is back at its stored height and its middle
+/// is over the picture; then that window taller again at 200%.
 /// `OM_SCREENSHOTS=<folder> cargo test -p om-gui --test document
 /// web_viewer_note -- --ignored`
 #[test]
@@ -2089,5 +2404,21 @@ fn web_viewer_note_over_a_picture_at_rest_and_while_editing() {
         &mut app,
         "web-viewer-note-record-edits",
         "the same window with its record being edited",
+    );
+    app.set_size(egui::vec2(1060.0, 520.0));
+    shot(
+        &mut app,
+        "web-viewer-note-short-window",
+        "a shorter window: the viewer at its stored height",
+    );
+    app.set_size(egui::vec2(1060.0, 1000.0));
+    for _ in 0..2 {
+        common::click(&mut app, "View");
+        common::click(&mut app, "Zoom In");
+    }
+    shot(
+        &mut app,
+        "web-viewer-note-zoom-200",
+        "a taller window at 200%",
     );
 }

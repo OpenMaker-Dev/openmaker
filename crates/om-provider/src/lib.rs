@@ -4074,6 +4074,7 @@ impl DataProvider for NativeProvider {
                     record_number: None,
                     prepared: None,
                     creation: om_data::RecordCreation::Other,
+                    single_field_step: false,
                 },
             )?;
             if let Ok(record) = u64::try_from(id) {
@@ -4248,6 +4249,7 @@ impl DataProvider for NativeProvider {
                         record_number: write.record_number,
                         prepared,
                         creation: om_data::RecordCreation::Other,
+                        single_field_step: false,
                     },
                 )?;
                 owner.script_table_record(
@@ -4288,6 +4290,7 @@ impl DataProvider for NativeProvider {
                 } else {
                     om_data::RecordCreation::Other
                 },
+                single_field_step: write.single_field_step && write.table.is_none(),
             },
         )?;
         if let Ok(id) = u64::try_from(record.id) {

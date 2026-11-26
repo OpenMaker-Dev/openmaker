@@ -2164,6 +2164,8 @@ impl ServerHost {
             // A record a script makes is given its position by New Record
             // (#298); other writes' record number is unmeasured.
             record_number: None,
+            sequence: om_data::rules::WriteSequence::Unmeasured,
+            file_variables: None,
         }
     }
 

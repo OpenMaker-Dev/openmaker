@@ -761,8 +761,8 @@ impl Action {
 
     /// Whether the window can still do this once the connection to the
     /// host is lost: close (the file closes window by window), quit,
-    /// dismiss, bring another window to the front, discard local layout
-    /// edits, and change only how the window looks.
+    /// dismiss, bring another window to the front, edit local layout draft
+    /// history, and change only how the window looks.
     fn works_offline(&self) -> bool {
         matches!(
             self,
@@ -786,6 +786,7 @@ impl Action {
                 | Action::CloseDisconnectedFile(_)
                 | Action::DiscardEntryCandidates
                 | Action::RevertLayout
+                | Action::EditLayoutDraft(_)
                 | Action::ZoomIn
                 | Action::ZoomOut
                 | Action::ActualSize
@@ -1088,6 +1089,10 @@ pub struct OpenMakerApp {
     /// in it: Shift or Option was held as File > Open was chosen.
     open_file_asking: bool,
     viewport_windows: crate::web_viewer::ViewportWindows,
+    /// The layer of the viewport being drawn: the root's background, or the
+    /// egui window an embedded viewport is shown in. Web viewers hide under
+    /// what egui paints above it (`web_viewers.rs`).
+    viewport_layer: egui::LayerId,
     /// Open the form's file when the app first draws (`open_on_launch`).
     open_on_launch: bool,
     /// The reconnect of a file whose connection was lost (recovery.rs).
@@ -1210,6 +1215,7 @@ impl OpenMakerApp {
             file_panel: None,
             open_file_asking: false,
             viewport_windows: Default::default(),
+            viewport_layer: egui::LayerId::background(),
             open_on_launch: false,
             reconnect: None,
             open_file: None,
@@ -1504,7 +1510,10 @@ impl OpenMakerApp {
         // A window's cards are drawn on it, in its viewport
         // (window_styles.rs). Web viewers are children of the viewport's
         // native window: eframe gives out the root's, and the others' are
-        // found as they are shown (`ViewportWindows`).
+        // found as they are shown (`ViewportWindows`). An embedded
+        // viewport is an egui window in the root viewport, drawn in the
+        // root's coordinates: its web viewers are children of the root's
+        // native window, where that egui window shows them.
         let parent = self.native_parent;
         self.viewport_windows
             .begin(parent, !embedded && self.web.hosts_pages());
@@ -1535,7 +1544,7 @@ impl OpenMakerApp {
                 let embedded = class == egui::ViewportClass::EmbeddedWindow;
                 close = ui.input(|i| i.viewport().close_requested());
                 let parent = if embedded {
-                    Err(crate::web_viewer::Unavailable::Window)
+                    parent
                 } else {
                     self.viewport_windows.parent(id, &title)
                 };
@@ -1643,7 +1652,6 @@ impl OpenMakerApp {
             && self.design_allowed()
             && self.full_menus()
             && !self.script.busy()
-            && self.w.connection_lost.is_none()
             && !self.recovery_holds()
             && !self.dialog_over_document()
             && !ctx.text_edit_focused()
@@ -1846,6 +1854,7 @@ impl OpenMakerApp {
             home: self.launcher.has_home(),
             find: &self.w.find,
             toolbar: self.w.show_toolbar,
+            toolbar_toggle_available: self.toolbar_toggle_available(),
             formatting: self.w.show_formatting,
             inspector: self.w.inspector,
             objects: self.w.objects,
@@ -2321,6 +2330,7 @@ impl OpenMakerApp {
                         self.w.document.zoom.percent(),
                         &self.w.uuid,
                     );
+                    window.toolbar_locked = self.w.toolbar_locked;
                     window.style = self.w.style.number();
                     window
                 });
@@ -4148,7 +4158,8 @@ impl OpenMakerApp {
                     }
                 }
             }
-            if input.consume_shortcut(&shortcuts::STATUS_TOOLBAR) {
+            if input.consume_shortcut(&shortcuts::STATUS_TOOLBAR) && self.toolbar_toggle_available()
+            {
                 actions.push(Action::ToggleToolbar);
             }
             if self.zooms() {
@@ -4587,6 +4598,10 @@ impl OpenMakerApp {
 
     fn full_menus(&self) -> bool {
         self.menu_commands() == om_data::host::privilege_set::MenuCommands::All
+    }
+
+    fn toolbar_toggle_available(&self) -> bool {
+        !self.w.toolbar_locked && !self.is_card(self.w.id)
     }
 
     /// The status toolbar and the layout bar: usable under Editing only
@@ -5593,7 +5608,11 @@ impl OpenMakerApp {
                 }
             }
             Action::DismissValueLists => self.value_lists = None,
-            Action::ToggleToolbar => self.w.show_toolbar = !self.w.show_toolbar,
+            Action::ToggleToolbar => {
+                if self.toolbar_toggle_available() {
+                    self.w.show_toolbar = !self.w.show_toolbar;
+                }
+            }
             Action::ToggleFormattingBar => self.w.show_formatting = !self.w.show_formatting,
             Action::RefuseTyping(refusal) => {
                 self.error = Some(refusal.message().into());
@@ -5889,12 +5908,21 @@ impl OpenMakerApp {
     }
 
     fn request(&mut self, ctx: &egui::Context, request: Request) {
+        self.enqueue_request(ctx, request);
+    }
+
+    /// Whether the worker accepted the request into its queue.
+    fn enqueue_request(&mut self, ctx: &egui::Context, request: Request) -> bool {
         // Nothing more goes to a host whose connection is gone.
         if self.w.connection_lost.is_some() && !matches!(request, Request::Close) {
-            return;
+            return false;
         }
-        if let Err(err) = self.worker.send(ctx, self.epoch, self.w.id, request) {
-            self.fail(&err);
+        match self.worker.send(ctx, self.epoch, self.w.id, request) {
+            Ok(()) => true,
+            Err(err) => {
+                self.fail(&err);
+                false
+            }
         }
     }
 
@@ -6079,6 +6107,14 @@ impl OpenMakerApp {
         }
     }
 
+    /// A draft remains undoable until Save Layout queues its first write.
+    fn request_layout_save(&mut self, ctx: &egui::Context, request: Request) {
+        if self.enqueue_request(ctx, request) {
+            self.w.layout_workspace.clear_history();
+            self.w.layout_workspace.saving = true;
+        }
+    }
+
     /// Layouts > Save Layout: store the layout's changes with the shared
     /// operations, which plan them as the host does and have the host save
     /// them: the width (`DataProvider::set_layout_width`), moved objects
@@ -6092,7 +6128,6 @@ impl OpenMakerApp {
         if self.w.layout_workspace.saving {
             return;
         }
-        self.w.layout_workspace.clear_history();
         // A text being typed is saved with the rest, as Return would keep it.
         self.w.layout_workspace.finish_retyping();
         // The layout's width goes first; moved and resized objects next, in
@@ -6110,8 +6145,7 @@ impl OpenMakerApp {
                 );
                 return;
             };
-            self.w.layout_workspace.saving = true;
-            self.request(
+            self.request_layout_save(
                 ctx,
                 Request::SetLayoutWidth(om_data::layout_placement::LayoutWidthChange {
                     layout,
@@ -6136,8 +6170,7 @@ impl OpenMakerApp {
                     Some("The layout has not loaded yet; save it again when it has.".into());
                 return;
             };
-            self.w.layout_workspace.saving = true;
-            self.request(
+            self.request_layout_save(
                 ctx,
                 Request::SetObjectFrames(om_data::layout_objects::LayoutObjectFrames {
                     layout,
@@ -6175,8 +6208,7 @@ impl OpenMakerApp {
                     Some("The layout has not loaded yet; save it again when it has.".into());
                 return;
             };
-            self.w.layout_workspace.saving = true;
-            self.request(
+            self.request_layout_save(
                 ctx,
                 Request::DeleteObjects(om_data::layout_objects::LayoutObjectDeletion {
                     layout,
@@ -6204,8 +6236,7 @@ impl OpenMakerApp {
                 );
                 return;
             };
-            self.w.layout_workspace.saving = true;
-            self.request(
+            self.request_layout_save(
                 ctx,
                 Request::SetLayoutText(om_data::layout_placement::TextChange {
                     layout,
@@ -6262,8 +6293,7 @@ impl OpenMakerApp {
             self.error = Some("The layout has not loaded yet; save it again when it has.".into());
             return;
         };
-        self.w.layout_workspace.saving = true;
-        self.request(
+        self.request_layout_save(
             ctx,
             Request::PlaceLayoutField(om_data::layout_placement::LayoutFieldPlacement {
                 layout,
@@ -6331,8 +6361,7 @@ impl OpenMakerApp {
             );
             return;
         }
-        self.w.layout_workspace.saving = true;
-        self.request(
+        self.request_layout_save(
             ctx,
             Request::SetFieldControl(om_data::layout_objects::FieldControlChange {
                 layout,
@@ -6363,8 +6392,7 @@ impl OpenMakerApp {
             self.error = Some("The layout has not loaded yet; save it again when it has.".into());
             return;
         };
-        self.w.layout_workspace.saving = true;
-        self.request(
+        self.request_layout_save(
             ctx,
             Request::PlaceLayoutText(om_data::layout_placement::LayoutTextPlacement {
                 layout,
@@ -6405,8 +6433,7 @@ impl OpenMakerApp {
             self.error = Some("The layout has not loaded yet; save it again when it has.".into());
             return;
         };
-        self.w.layout_workspace.saving = true;
-        self.request(
+        self.request_layout_save(
             ctx,
             Request::PlaceLayoutButton(om_data::layout_placement::LayoutButtonPlacement {
                 layout,
@@ -6444,8 +6471,7 @@ impl OpenMakerApp {
             self.error = Some("The layout has not loaded yet; save it again when it has.".into());
             return;
         };
-        self.w.layout_workspace.saving = true;
-        self.request(
+        self.request_layout_save(
             ctx,
             Request::PlaceLayoutPortal(om_data::layout_placement::LayoutPortalPlacement {
                 layout,
@@ -9559,6 +9585,58 @@ mod tests {
             );
         })
         .drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn a_refused_layout_save_keeps_history_undoable_offline() {
+        use crate::layout_canvas::DraftEdit;
+
+        let ctx = egui::Context::default();
+        let mut app = OpenMakerApp::with_license_store(
+            Box::new(om_data::mock::MockProvider::new()),
+            Box::new(NoLicense),
+        );
+        app.w = window_with_records(1, &["Ada"]);
+        app.w.mode = Mode::Layout;
+        let session = app.w.session.as_mut().unwrap();
+        session.geometry = crate::session::Geometry::Loaded(om_data::LayoutGeometry {
+            revision: Some([1; 32]),
+            ..Default::default()
+        });
+        app.w.layout_workspace.stage_field(
+            session,
+            crate::layout_canvas::NewField {
+                left: 20.0,
+                top: 30.0,
+                width: 100.0,
+                height: 22.0,
+                field: None,
+                label: false,
+                control: 0,
+                value_list: None,
+                revision: Some([1; 32]),
+            },
+        );
+        for _ in 0..2 {
+            app.apply(&ctx, Action::NudgeLayoutObjects(NudgeDirection::Right));
+        }
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 22.0);
+        app.apply(&ctx, Action::SaveLayout);
+        assert_eq!(
+            app.error.as_deref(),
+            Some("Choose the field to place in the Inspector, then save the layout.")
+        );
+        assert!(!app.w.layout_workspace.saving);
+        app.apply(&ctx, Action::DismissAlert);
+        assert_eq!(app.layout_history_commands(&ctx), (true, false));
+
+        app.lose_connection(&DataError::new("Connection lost"));
+        assert_eq!(app.layout_history_commands(&ctx), (true, false));
+        app.apply(&ctx, Action::EditLayoutDraft(DraftEdit::Undo));
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 21.0);
+        assert_eq!(app.layout_history_commands(&ctx), (true, true));
+        app.apply(&ctx, Action::EditLayoutDraft(DraftEdit::Redo));
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 22.0);
     }
 
     #[test]

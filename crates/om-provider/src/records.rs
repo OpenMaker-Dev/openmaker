@@ -5,7 +5,7 @@
 use super::*;
 use om_data::rules::{
     error, Entry, RecordEnvironment, RecordPlan, Serial, WriteContext, WriteLayout, WriteMode,
-    Written,
+    WriteSequence, Written,
 };
 use om_data::{FieldChanges, RecordCreation};
 use om_hbam::{Cell, OwnedNode};
@@ -858,6 +858,12 @@ impl NativeProvider {
         use om_data::host::session::selector;
         let reads = plan.context_reads();
         let mut context = WriteContext::default();
+        if layout.is_some() && self.local.is_some() {
+            context.sequence = WriteSequence::Local;
+        }
+        if self.local.is_some() && plan.reads_auto_entry_file_variables() {
+            context.file_variables = Some(self.external.file_variables());
+        }
         if let Some(layout) = layout.filter(|_| reads.contains(&selector::LAYOUT_NUMBER)) {
             context.layout = self.layout_number(layout)?;
         }
@@ -894,6 +900,9 @@ impl NativeProvider {
         }
         let mut context = self.write_context(plan, origin.layout, origin.set)?;
         context.record_number = origin.record_number;
+        if origin.single_field_step && context.sequence == WriteSequence::Local {
+            context.sequence = WriteSequence::SingleLocalFieldStep;
+        }
         Ok(context)
     }
 
@@ -2619,6 +2628,9 @@ pub(crate) struct Origin {
     pub prepared: Option<om_data::PreparedId>,
     /// The operation that created the new record, if this is a creation.
     pub creation: RecordCreation,
+    /// The window proved a single field-setting step, with no other
+    /// staged edits to the record.
+    pub single_field_step: bool,
 }
 
 /// Whose privilege set a write's formulas read as current

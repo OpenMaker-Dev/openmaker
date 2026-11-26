@@ -715,6 +715,7 @@ impl NativeProvider {
                 record_number: operation.record_number,
                 prepared: None,
                 creation: om_data::RecordCreation::Other,
+                single_field_step: false,
             };
             provider.origin_context(&plan, origin)
         };
@@ -902,6 +903,7 @@ impl NativeProvider {
             record_number: write.record_number,
             prepared: write.prepared,
             creation: om_data::RecordCreation::Other,
+            single_field_step: false,
         };
         let context = self.origin_context(&plan, origin)?;
         let mut environment = self.rule_environment(table, &plan, context)?;

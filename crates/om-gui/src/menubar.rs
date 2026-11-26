@@ -36,6 +36,7 @@ pub(crate) struct MenuContext<'a> {
     pub home: bool,
     pub find: &'a FindState,
     pub toolbar: bool,
+    pub toolbar_toggle_available: bool,
     pub formatting: bool,
     pub inspector: bool,
     pub objects: bool,
@@ -706,7 +707,7 @@ fn view_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
         "Status Toolbar",
         Some(shortcuts::STATUS_TOOLBAR),
         open && context.toolbar,
-        open,
+        open && context.toolbar_toggle_available,
     ) {
         actions.push(Action::ToggleToolbar);
     }

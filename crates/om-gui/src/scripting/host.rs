@@ -2498,6 +2498,7 @@ impl<'a> WorkerHost<'a> {
             privilege_set: self.privilege_set_name(),
             record_number: None,
             prepared: None,
+            single_field_step: false,
         };
         let others: Vec<om_data::PendingRecord> = open
             .related
@@ -2829,6 +2830,7 @@ impl<'a> WorkerHost<'a> {
             },
             window: state.placement.as_ref().map(|p| {
                 let mut info = p.window_info(state.toolbar, state.menubar, state.zoom, &state.uuid);
+                info.toolbar_locked = state.toolbar_locked;
                 info.style = state.style.number();
                 info
             }),
@@ -3787,6 +3789,13 @@ impl CalcHost for WorkerHost<'_> {
     }
 
     fn get(&mut self, selector: u8, context: &Context) -> Result<Value, CalcError> {
+        if selector == om_data::host::session::selector::STATUS_AREA_STATE {
+            let window = &self.s.file.window.state;
+            return Ok(om_data::host::window::status_area_state(
+                window.toolbar,
+                window.toolbar_locked,
+            ));
+        }
         let context = without_begun(context);
         let context = &*context;
         if let Some((record, index, page)) = self.report_record {
@@ -5929,13 +5938,17 @@ impl Windows for WorkerHost<'_> {
         Ok(())
     }
 
-    fn show_hide(&mut self, bar: Bar, visibility: Visibility, _lock: bool) -> HostResult {
-        let flag = bar_flag(&mut self.s.file.window.state, bar).ok_or(HostError::Unsupported)?;
+    fn show_hide(&mut self, bar: Bar, visibility: Visibility, lock: bool) -> HostResult {
+        let state = &mut self.s.file.window.state;
+        let flag = bar_flag(state, bar).ok_or(HostError::Unsupported)?;
         *flag = match visibility {
             Visibility::Show => true,
             Visibility::Hide => false,
             Visibility::Toggle => !*flag,
         };
+        if matches!(bar, Bar::Toolbars { .. }) {
+            state.toolbar_locked = lock;
+        }
         self.s.file.window.touch();
         Ok(())
     }

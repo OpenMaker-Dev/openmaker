@@ -1992,6 +1992,7 @@ fn routed_write(
         record_number: write.record_number,
         prepared: write.prepared,
         creation: om_data::RecordCreation::Other,
+        single_field_step: false,
     };
     match plan {
         Some(plan) => {
