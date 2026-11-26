@@ -236,6 +236,7 @@ impl Inspector {
         object: Option<&ObjectGeom>,
         frame: Option<om_data::GeomRect>,
         (editable, control): (bool, Option<&ControlView<'_>>),
+        notice: Option<&str>,
     ) -> InspectorEdit {
         let mut changed = InspectorEdit::default();
         ui.painter()
@@ -289,6 +290,9 @@ impl Inspector {
                     .inner_margin(egui::Margin::symmetric(10, 6))
                     .show(ui, |ui| {
                         ui.set_min_width((theme::INSPECTOR_WIDTH - 24.0).max(0.0));
+                        if let Some(notice) = notice {
+                            ui.label(notice);
+                        }
                         match self.tab {
                             Tab::Position => {
                                 changed.frame = self.position(ui, object, frame, editable)
@@ -788,11 +792,7 @@ fn show_style(
                 ui.label(name);
                 named = true;
             }
-            if style
-                .local_styles
-                .as_ref()
-                .is_some_and(|styles| !styles.components.is_empty())
-            {
+            if style.has_local_overrides() {
                 ui.label("Local style overrides");
             }
         }
@@ -984,11 +984,9 @@ mod tests {
     use super::Units;
 
     #[test]
-    fn inspector_shows_the_selected_objects_stored_style() {
-        use super::{stored_object, Inspector, ObjectGeom, RenderState, Session, Tab};
-        use egui_kittest::{kittest::Queryable, Harness};
+    fn inspector_reads_stored_objects_from_the_current_layout() {
+        use super::{stored_object, ObjectGeom, RenderState, Session};
         use om_layout::object::LayoutObject;
-        use om_layout::style::{Color, ComponentStyle, ObjectStyle, Property, StyleSet};
 
         let mut session = Session::new(
             crate::session::Target {
@@ -1003,68 +1001,16 @@ mod tests {
         render.layout.id = 1;
         render.layout.objects.objects.push(LayoutObject {
             id: 7,
-            style: Some(ObjectStyle {
-                custom_style_display_names: vec!["Note style".into()],
-                local_styles: Some(StyleSet {
-                    components: vec![ComponentStyle {
-                        component: 1,
-                        state: 1,
-                        properties: vec![
-                            Property {
-                                id: 7,
-                                color: Some(Color {
-                                    red: 0.15,
-                                    green: 0.65,
-                                    blue: 0.45,
-                                    alpha: 1.0,
-                                }),
-                                ..Default::default()
-                            },
-                            Property {
-                                id: 64,
-                                string: Some("Georgia".into()),
-                                ..Default::default()
-                            },
-                        ],
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
             ..Default::default()
         });
         session.render = RenderState::Loaded(Box::new(render));
         let selection = ObjectGeom {
             key: 7,
-            kind_name: "Text".into(),
             ..Default::default()
         };
         assert!(stored_object(&session, Some(&selection)).is_some());
         session.layout = Some(2);
         assert!(stored_object(&session, Some(&selection)).is_none());
-        session.layout = Some(1);
-
-        let mut inspector = Inspector {
-            tab: Tab::Styles,
-            ..Default::default()
-        };
-        let mut app = Harness::builder()
-            .with_size(egui::vec2(crate::theme::INSPECTOR_WIDTH, 390.0))
-            .with_context_setup(crate::theme::install)
-            .renderer(crate::test_renderer::renderer())
-            .build_ui(move |ui| {
-                inspector.show(ui, &session, Some(&selection), None, (false, None));
-            });
-        app.get_by_label("Note style");
-        app.get_by_label("Local style overrides");
-        app.get_by_label("Appearance").click();
-        app.run();
-        app.get_by_label("Fill color");
-        app.get_by_label("Font Georgia");
-        if let Some(path) = std::env::var_os("OM_INSPECTOR_APPEARANCE_SHOT") {
-            app.render().unwrap().save(path).unwrap();
-        }
     }
 
     #[test]

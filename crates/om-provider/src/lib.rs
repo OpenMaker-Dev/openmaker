@@ -39,7 +39,9 @@ use om_protocol::{validate_client_license, LoginEnvironment, MachineInfo, NodeSt
 use om_session::Session;
 
 mod schema;
-pub use authoring::{Authoring, AuthoringError, DesignCatalogs, ScriptDefinitions};
+pub use authoring::{
+    Authoring, AuthoringError, DesignCatalogs, LayoutCatalogSnapshot, ScriptDefinitions,
+};
 pub use calc::local_utc_offset;
 pub use choice::ListedChoices;
 pub use schema::{schema_from_tree, schema_from_tree_with, DatabaseSchemaSnapshot};
@@ -1782,21 +1784,22 @@ impl NativeProvider {
                 let Some(catalog) = self.catalog.table(table) else {
                     return BTreeSet::new();
                 };
-                let names = match om_data::rules::RecordPlan::from_file_schema(catalog, tree, file)
-                {
-                    Ok(plan) => plan.editable_fields(),
-                    // Refused while a related file its write rules read waits
-                    // to open: offered as the plan would offer it, as for the
-                    // layout's own table; the write opens the file and plans
-                    // first (#1139).
-                    Err(_) if self.rule_files_pending(file, catalog, tree) => catalog
-                        .fields
-                        .iter()
-                        .filter(|field| om_data::rules::user_editable(field))
-                        .map(|field| field.name.clone())
-                        .collect(),
-                    Err(_) => return BTreeSet::new(),
-                };
+                let names =
+                    match om_data::rules::RecordPlan::from_desktop_file_schema(catalog, tree, file)
+                    {
+                        Ok(plan) => plan.editable_fields(),
+                        // Refused while a related file its write rules read waits
+                        // to open: offered as the plan would offer it, as for the
+                        // layout's own table; the write opens the file and plans
+                        // first (#1139).
+                        Err(_) if self.rule_files_pending(file, catalog, tree) => catalog
+                            .fields
+                            .iter()
+                            .filter(|field| om_data::rules::user_editable(field))
+                            .map(|field| field.name.clone())
+                            .collect(),
+                        Err(_) => return BTreeSet::new(),
+                    };
                 // Containers take no typing but Insert Picture and File, on a
                 // stored container as `store_table_container` takes it.
                 let container = |field: &om_hbam::catalog::Field| {
@@ -3391,6 +3394,15 @@ impl DataProvider for NativeProvider {
             let route = self.external.route(table.id).ok_or_else(|| {
                 DataError::with_code(3, "The related file holding this table is unavailable.")
             })?;
+            // The layout's related records, its portals and related fields,
+            // as on a layout of this file's table (#43): a table of this
+            // file by its own rules, another file's by its owner's
+            // (`routed_related_fields`), each written by the file that owns
+            // it (`write_record`).
+            let mut related = {
+                let tree = download_tree(&self.schema_downloads)?;
+                self.related_capabilities(&file, &layout, &tree)
+            };
             // Planned over the owner's routed plan (#187), as its write is,
             // opening nothing; deferred while a file its rules read waits
             // (`routed_edits`, #1160).
@@ -3399,6 +3411,7 @@ impl DataProvider for NativeProvider {
                 related_owner::RoutedEdits::ReadOnly => {
                     return Ok(om_data::RecordCapabilities {
                         editable_fields: Some(BTreeSet::new()),
+                        related,
                         ..Default::default()
                     });
                 }
@@ -3452,7 +3465,6 @@ impl DataProvider for NativeProvider {
                 })
                 .map(|f| f.id)
                 .collect();
-            let mut related = BTreeMap::new();
             if !repetitions.is_empty() {
                 related.insert(layout_occurrence(&layout)?, repetitions);
             }
@@ -3465,8 +3477,6 @@ impl DataProvider for NativeProvider {
                 // it does not evaluate the table's field-entry rules.
                 delete: true,
                 editable_fields: Some(editable.unwrap_or_default()),
-                // Related records of a layout of another file's table
-                // are not edited in Browse yet.
                 related,
                 refused,
                 globals: file
@@ -3488,7 +3498,7 @@ impl DataProvider for NativeProvider {
         // offer them: the write opens the file and plans before anything is
         // sent (`plan_table`), and a refusal then fails it, the window's
         // drafts kept (#1139).
-        let planned = om_data::rules::RecordPlan::from_file_schema(table, &tree, &file);
+        let planned = om_data::rules::RecordPlan::from_desktop_file_schema(table, &tree, &file);
         let deferred = planned.is_err() && self.rule_files_pending(&file, table, &tree);
         let plan: Option<BTreeSet<String>> = match &planned {
             Ok(plan) => Some(plan.editable_fields()),
@@ -4143,19 +4153,15 @@ impl DataProvider for NativeProvider {
         let table = write.table.unwrap_or(layout_table);
         self.check_asset_write(write, table)?;
         if self.external.route(table).is_some() {
-            // A related record of another file's table on a layout of this
-            // file's table: that file writes it (related_owner.rs).
-            if table != layout_table && self.external.route(layout_table).is_none() {
+            // A related record of another file's table, on a layout of this
+            // file's table or of another file's table (#43): that file
+            // writes it (related_owner.rs).
+            if table != layout_table {
                 return self.write_routed_related(write, table);
             }
-            // Only the layout's own base table: an existing record, or a new
-            // one (New Record, Duplicate Record) created by the owner.
-            if table != layout_table {
-                return Err(DataError::with_code(
-                    3,
-                    "Related-file script writes support only records of the layout's base table.",
-                ));
-            }
+            // The layout's own base table, of another file: an existing
+            // record, or a new one (New Record, Duplicate Record) created by
+            // the owner.
             // Inside the window's record session, or a script's transaction,
             // the owner holds it as one of the transaction's parts, as it
             // holds a portal row of its table (related_owner.rs): op71 under
@@ -5096,6 +5102,14 @@ impl DataProvider for NativeProvider {
         Ok(result)
     }
 
+    fn set_file_variables(&mut self, variables: &om_data::calc::eval::Variables) {
+        self.external.set_file_variables(variables);
+    }
+
+    fn local_source_variable(&self, name: &str) -> Option<&str> {
+        self.external.local_source_variable(name)
+    }
+
     fn value_list_catalog(&mut self) -> Result<om_data::value_lists::ValueListCatalog, DataError> {
         self.read_value_list_catalog()
     }
@@ -5215,8 +5229,7 @@ impl DataProvider for NativeProvider {
     fn local_peer_path(&self, file: &str) -> Option<std::path::PathBuf> {
         self.session.as_ref()?;
         let folder = self.local.as_ref()?.path().parent()?;
-        om_data::file_refs::is_plain_name(file)
-            .then(|| folder.join(om_data::file_refs::hosted_name(file)))
+        om_data::file_refs::local_database_path(file, folder)
     }
 
     fn open_peer(&mut self, file: &str) -> Result<Box<dyn DataProvider>, DataError> {

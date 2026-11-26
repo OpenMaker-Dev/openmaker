@@ -945,8 +945,10 @@ and the layout's exclusive locks:
   them (`options`, by name): `0x10` set for "Save record changes
   automatically" off, `0x20` for "Show field frames when record is
   active" on, `0x1` for "Delineate fields on current record only" on,
-  `0x10000000` for "Show current record indicator in List View" off, and
-  `0x8000` for "Enable Quick Find" off;
+  `0x10000000` for "Show current record indicator in List View" off,
+  `0x2000` for "Show alerts when field isn't modifiable or no records
+  are present" on (`show_field_alerts`), and `0x8000` for "Enable Quick
+  Find" off;
 - the Printing tab's "Use fixed page margins" in the same `f1`, `0x40`
   set for on (`fixed_page_margins`; re/layout-model.md 4.2);
 - "Include in layout menus" cleared as bit `0x08` of the entry's `f0` and
@@ -956,6 +958,18 @@ and the layout's exclusive locks:
 
 Other bits of `f1` are refused, as are a set of views with none available
 or without the default one, folders and separators, and an unusable name.
+`f1` and `f0` are read by one rule everywhere, the member's, else the
+entry's, each a big-endian integer of 1 to 8 bytes
+(`om_layout::stored_layout_word`, `om_data::layout_catalog::layout_word`):
+by the host's planner, by `layout_setup` and `get_layout` (both copies
+from one download of `[4]`), and by the desktop's dialog
+(`Layout::decode_from_tree`). FileMaker keeps both copies, but a layout
+whose words are only in its entry keeps them through a rename
+([#977](https://github.com/OpenMaker-Dev/openmaker/issues/977)). The edit
+token covers the member only, so on such a layout a concurrent change to a
+word only the entry holds, which leaves the member as it was (the member
+keeps `f0` only when it is not 0), is not seen as a conflict; FileMaker
+never stores a layout so.
 A request the layout already holds reports `already_applied`; any other at
 an old revision is a `conflict`. Pro also writes the layout's object store
 again and raises the stamp counts of the library items it shows; OpenMaker

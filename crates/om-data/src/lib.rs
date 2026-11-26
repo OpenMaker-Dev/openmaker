@@ -2009,6 +2009,14 @@ pub trait DataProvider: Send {
         Ok(Vec::new())
     }
 
+    /// The open file's script globals, for variable-backed data sources.
+    fn set_file_variables(&mut self, _variables: &calc::eval::Variables) {}
+
+    /// The current text of a local data-source path variable, if set.
+    fn local_source_variable(&self, _name: &str) -> Option<&str> {
+        None
+    }
+
     /// The open file's value lists, as File > Manage > Value Lists and the
     /// authoring service's `get_value_lists` show them ([`value_lists`]).
     /// A provider that cannot read them says so (error 3) rather than
@@ -2096,10 +2104,10 @@ pub trait DataProvider: Send {
         None
     }
 
-    /// Where `file`, a plain file name a data source or Open File gives,
-    /// is when the open file is one on this computer: beside it, in its
-    /// folder, as [`Self::open_peer`] opens it. `None` for a hosted file
-    /// (peers are on its host) or a name that is not plain.
+    /// Where a data source's local peer is, as [`Self::open_peer`] opens it.
+    /// A plain name is relative to the current file's folder. A stored path
+    /// variable can supply a platform path. `None` for a hosted file or an
+    /// unsupported path.
     fn local_peer_path(&self, _file: &str) -> Option<std::path::PathBuf> {
         None
     }

@@ -675,9 +675,10 @@ message, grace })` closes a file as FileMaker Server does for `PATCH
 open file is closed; the message, grace time and unknown files are checked
 as for a disconnect, and a file in another state fails with
 `FileError::NotAllowed` (the Admin API's 1709). The file is `CLOSING`, and
-an Open of it is refused with status 4 as for a file the server does not
-host (inf). Each connection that has the file open takes the steps for its
-client within its read poll:
+an Open of it is refused with status 4, OpenMaker's earlier choice for a
+file it does not serve (what FileMaker Server answers for a closing file
+is unmeasured, re/network-protocol.md 5.5, [#992](https://github.com/OpenMaker-Dev/openmaker/issues/992)). Each connection that has the
+file open takes the steps for its client within its read poll:
 
 1. The request to close the file (`0x0040`, its countdown 30), naming it by
    the id the client registered it with in op63; a client that never
@@ -698,12 +699,17 @@ is answered as for a file not open (100, inf), and a schedule fails as for
 a file the server does not host (802). Clients, scripts and schedules are
 given the file under its own lock, the one that finishes the close, so
 once the file is `CLOSED` nothing holds its old store: an old save can
-never land on a file opened again. A grace time of 0 sends the forced
+never land on a file opened again. An Open of a `CLOSED` file is answered
+`0x4fb5`, `kFileNotFound`, as for a name the server does not host:
+FileMaker Server answers both so, and FileMaker Pro shows Not Found for
+both (re/network-protocol.md 5.5). A grace time of 0 sends the forced
 notice at once (inf).
 
 `ServerHandle::open_file(id)` opens a closed file again: `OPENING` while it
 loads from disk, with the checks the server makes at startup (the
-administrator may have replaced it), then `NORMAL`. A file still closing
+administrator may have replaced it), then `NORMAL`. An Open of it while it
+is `OPENING` is refused with status 4, as while it is closing (unmeasured
+for FileMaker Server). A file still closing
 cannot be opened (`FileError::NotAllowed`). One that fails to load stays
 `CLOSED` with the reason, in `FileInfo::error` and in `FileError::Load`.
 

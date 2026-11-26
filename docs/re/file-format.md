@@ -254,7 +254,7 @@ below are from Contacts/en unless noted; text is XOR-0x5A decoded (3.5).
 
 | top key | holds | confidence / evidence |
 |---------|-------|------------------------|
-| 2 | `KStatus`: file metadata & options, format version (`2/3` = "12.0"), the file's locale and formats (`2/0d`, file-metadata.md 2), document preferences and file script triggers (`2/18`, file-metadata.md 3), embedded icons/images (`2/6168/.../PNGf`), page setup and print settings (`2/87`, `2/88`) | High [O] |
+| 2 | `KStatus`: file metadata & options, format version (`2/3` = "12.0"), the file's locale and formats (`2/0d`, file-metadata.md 2), document preferences and file script triggers (`2/18`, file-metadata.md 3), embedded icons/images (`2/6168/.../PNGf`), page setup and print settings (`2/87`, `2/88`, 3.8) | High [O] |
 | 3 | schema: `3/16` base tables, `3/17` table occurrences (see 3.6) | High [O] |
 | 4 | **layouts** - `LayoutDef` / `LayoutObjectStore` / `PartDef` protobuf; `4/5/N/16` = layout names ("Contacts","Contact List","Contact Details") | High [O] (KLayoutDefs) |
 | 6 | **themes & styles** - `ThemeStyles`/`ThemeMetadata` protobuf + border-image PNGs; largest catalog (~296 KB) | High [O] (KThemeDefs/KStyleDefs) |
@@ -355,18 +355,22 @@ Evidence:
   row below); no edit changed anything else in these catalogs, and every
   value below is one the starter files have;
 - [O] the key constants' numbers ([catalogs/hbkey-constants.csv](catalogs/hbkey-constants.csv)),
-  several of which share one number, so a name is [I] where several fit.
+  several of which share one number, so a name is [I] where several fit;
+- [O from bin] FileMaker Pro 26.1.1 for macOS, arm64 FMEngine and DBEngine.
+  Member accessors and stream readers and writers identify the script
+  compatibility word, font code set, menu definition and guide list. The
+  66 shipped starter files of that build have the same values and counts
+  for these paths as recorded below. No native save was made for this check.
 
-No FileMaker binary was read for this section: the meanings rest on the
-files and on what other specs record.
+The Group column gives the current OpenMaker rules.
 
 | Path (hex) | Observed [O] | What is known | Group |
 |---|---|---|---|
-| `[11, 5, S, 13]` | u32 0 on all 330 scripts, folders and separators (members without `04`) included, on the 32 scripts of the saved copies, and on the 361 of script-steps.md 1 | the constants with this number are `KCachedCountIgnoreFolders`, `KCompatibility`, `KDragSize` and `KPrefixKey` (also a query program leaf, query-program.md 2.2); which one the script catalog writes, and when it is not 0, is [U] | none |
-| `[41, 5, M, 02]` | an 8-byte leaf on all 264 custom menus, the 24 of each Contacts file (no other solution has custom menus), the same 24 values in every language: two u32s. The first differs per menu: `06` `[Format]`, `08` `[Scripts]`, `09` `[Window]`, `12` `[Font]`, `13` `[Spelling]`, `14` `[Size]`, `15` `[Style]`, `16` `[Align Text]`, `18` `[Line Spacing]`, `20` `[Recent]`, `26` `[Show Window]`, `49` `[Hosts]`, `95` `[Find/Replace]`, `9b` `[Import Records]`, `9c` `[Sharing]`, `9d` `[Manage]`, `9f` `[Go to Record]`, `a1` `[Go to Layout]`, `a8` `[Save/Send Records As]`, `ac` `[Go to Request]`, `b5` `[Text Color]`, `c7` `[Saved Finds]`, `c8` `[Send]`, `d1` `[Favorites]`. The second is `78`, but `68` for `[Go to Record]` and `50` for `[Go to Request]` | each menu is named in brackets after one of FileMaker's own menus and holds no items: its keys are `02`, `10`, the install-when calculation `25`, `d8` and the stamp. [I] the first word names the menu it is a copy of; [I] the second holds four bits of when it is shown (by mode or by platform). Where a custom menu item, and the script step it runs, are stored is not observed: no starter menu has an item (calc-encoding.md 8 places item calculations at `[41, 5, M, n, item, k]`, `n` not given) | none |
+| `[11, 5, S, 13]` | `00 00 00 00` on all 330 starter scripts, folders and separators (members without `04`) included, and on the 32 scripts of the saved copies and the 361 of script-steps.md 1 | `KCompatibility`, a big-endian u32 [O from bin: FMEngine `FMScript::GetCompatibility` at `0x4a2884` and `SetCompatibility` at `0x4a2a60`]. The getter returns 0 when the value cannot be read. See [script-steps.md](script-steps.md) 1 | none |
+| `[41, 5, M, 02]` | an 8-byte leaf on all 264 custom menus, the 24 of each Contacts file (no other solution has custom menus), the same 24 values in every language: two u32s. The first differs per menu: `06` `[Format]`, `08` `[Scripts]`, `09` `[Window]`, `12` `[Font]`, `13` `[Spelling]`, `14` `[Size]`, `15` `[Style]`, `16` `[Align Text]`, `18` `[Line Spacing]`, `20` `[Recent]`, `26` `[Show Window]`, `49` `[Hosts]`, `95` `[Find/Replace]`, `9b` `[Import Records]`, `9c` `[Sharing]`, `9d` `[Manage]`, `9f` `[Go to Record]`, `a1` `[Go to Layout]`, `a8` `[Save/Send Records As]`, `ac` `[Go to Request]`, `b5` `[Text Color]`, `c7` `[Saved Finds]`, `c8` `[Send]`, `d1` `[Favorites]`. The second is `78`, but `68` for `[Go to Record]` and `50` for `[Go to Request]` | `KType`: base menu ID followed by the menu flags, both big-endian u32 [O from bin: FMEngine `FMCustomMenu::GetMenuDef` at `0x544714`, `MenuDef::Read` at `0x541e84`, `SetBaseMenuID` at `0x543ee0` and `SetFlags` at `0x543ea4`]. The item list is separate at `07`, absent from all 264 starter menu members. See [calc-encoding.md](calc-encoding.md) 8 | none |
 | `[19, 5, F, 03]` | text on 73 of 139 fonts: `ArialMT` for the family Arial, `HelveticaNeue`, `HelveticaNeue-Bold`, `-Light` and `-Medium` for Helvetica Neue, `.SFNSText` for `.SF NS Text`, `.SFNS-Regular` for `.SF NS`; none on `arial,sans-serif`, a CSS list | the face's PostScript name, beside the family name `10`: the values are those faces' PostScript names [O]; FileMaker's XML names a font's `fontPSAttr` beside `fontFamily` and `fontCodeSet`, and themes name a font by family and code set or PostScript name (layout-model.md 7.3, 8) | Design |
-| `[19, 5, F, 02]` | `01 00` on 84 fonts (`.SF NS Text`, `.SF NS`, `arial,sans-serif`), `01 fe` on 55 (Arial and the four Helvetica Neue faces) | [I] a one-byte value as a key string (length, then the byte, as the indexes' `01 0n`); [I] the font's code set, `fontCodeSet`: the calculation constants number font scripts `Roman` 0 to `Other` 10 (calc-functions.md), and what `fe` is, is [U] | none |
-| `[4, 5, L, 16]` | `00 00` on Contacts' Contact Details layout in all 11 languages. FileMaker Pro 26 added it, as `00 00` and with `fc`, in the Layout mode saves that were looked at: Layout Setup's OK followed by Save Layout (layout-model.md 10.14), the save of a newly placed portal (10.17), and the two saved copies whose layout was edited. Whether every Layout mode save adds it, and whether its value is ever other than `00 00`, is [U] | the constants with this number are `KGuides`, `KRowSetKey` and `KStyleDefs`; a layout's own styles are `KLayoutStyleDefs` `21`, which every layout has (layout-model.md 10.1), so not this. [I] `KGuides`, the layout's guides, here none | none |
+| `[19, 5, F, 02]` | `01 00` on 84 fonts (`.SF NS Text`, `.SF NS`, `arial,sans-serif`), `01 fe` on 55 (Arial and the four Helvetica Neue faces) | `KStatus`: the font code set as a one-byte key string, `01 <codeSet>` [O from bin: DBEngine `DBFontEntry::GetCodeSet` at `0x188d088` and `SetCodeSet` at `0x188daf0`]. `CreateNewPostScriptEntry` at `0x188cc00` supplies `fe` when creating an entry from a PostScript name. See [layout-model.md](layout-model.md) 8 | none |
+| `[4, 5, L, 16]` | `00 00` on Contacts' Contact Details layout in all 11 languages. FileMaker Pro 26 added the same value, with `fc`, in the Layout mode saves that were looked at: Layout Setup's OK followed by Save Layout (layout-model.md 10.14), the save of a newly placed portal (10.17), and the two saved copies whose layout was edited | `KGuides`, the layout's guide list [O from bin: FMEngine `FMLayout::GetGuideList` at `0x2d6dd0` and `SaveLayout` at `0x2d1b1c`]. The first two bytes are the big-endian guide count, zero in these files. See [layout-model.md](layout-model.md) 10.1 | none |
 | `[17, 2, 1, 07]`, `[17, 3, 1, 07]`, `[19, 1, 07]`, `[21, 1, 07]`, `[40, 1, 07]`, `[41, 1, 07]` | in each of the 396 catalogs (six in each file) the keys are exactly the members' keys `[.., 05, *]`, every leaf is empty, and the list has no value of its own | a member list: it holds nothing the members do not. `KList` is `07`. That FileMaker rebuilds it from the members rather than reading it is [I] | Derived |
 | `[21, 1, 06]` | one leaf per value list, all 264: the key is the list's type as two bytes (`00 00` on the 143 custom lists, whose definition `02` starts with type 0; `00 01` on the 121 lists from a field, type 1; file-metadata.md 6.2), then the first two levels of the key its name has in the index's name list `01` (schema-path.md 5.6): the primary weights, `00 00`, and the secondary level where the name has one (41 lists). The name list's key goes on with `00` and, on 11 lists, a third level; neither is in this key. The value is the list's key string `01 <key>` | the name list by type, as the field catalog's `06` (schema-path.md 5.5). `KTypeList` is `06` | Derived |
 
@@ -375,12 +379,14 @@ A path in no group keeps its object from having a design revision
 menu (`02`), every font (`02`, which all of them hold) and the layouts
 with `16` have none.
 
-**Unknowns.** What `[11, 5, S, 13]` holds and when it is not 0; what the
-two words of a custom menu's `02` are; where a custom menu item and the
-script step it runs are stored, and so whether a custom menu holds step
-data (it can: an item runs a step, which can store a credential); what a
-font's `02` is, and what `fe` means; what a layout's `16` is. Each needs
-FileMaker Pro writing a known change.
+**Unknowns.** Which UI operations write the script compatibility word and
+which nonzero values they write, the menu flag bit assignments, the
+remaining font code-set values, and the guide record's orientation, flag
+and coordinate semantics. A native Perform Script item with a script
+chosen by key confirms the item list and its separate install
+calculation (calc-encoding.md 8.1). Actions with parameters, submenus,
+calculated item names and steps that carry credentials still need
+native examples.
 
 Three index keys have the same form and value as keys a spec names, and
 take their rule by that inference: `[6, 1, 20]` (`01` in the 11 Contacts
@@ -394,6 +400,157 @@ are named by the constants `KBaseThemeName` and `KBaseThemeVersion`
 
 The report (`cargo run -p om-hbam --example design_paths -- <file>...`)
 lists the keys in no group, and any new ones, by shape.
+
+### 3.8 Page setup and print settings `[2, 87]`, `[2, 88]`
+
+Evidence, all FileMaker Pro 26.1.1 for macOS with "Format For" Any
+Printer, every copy read after the file was closed
+([#876](https://github.com/OpenMaker-Dev/openmaker/issues/876), 2026-11-26):
+
+- **L:** one local copy of the English Tasks starter, which has no
+  `[2, 87]`, copied after each step: Page Setup OK'd with no change, then
+  A4, then landscape, then 50% (one change per open), then an open and
+  close, a Page Setup Cancel, and back to US Letter portrait 100%.
+- **W:** four copies of Pro 26.0.3's own blank file (File > Create New)
+  in which only `[2, 87]` was changed: written with
+  `om_hbam::writer::rebuild` and read back key by key. Each was opened,
+  read in Page Setup and saved with Save Records as PDF, then OK'd in Page
+  Setup with no change.
+- **H:** a fresh Tasks copy hosted by FileMaker Server 26.0.3, signed in
+  as Admin ([Full Access]) through a recording relay. A4, landscape, 50%
+  was accepted, then the file was closed and reopened. The hosted file
+  was copied, closed on the server, before and after.
+- **P:** eight more copies of that blank file, each with a `[2, 87]` of
+  one `Comm` chunk for one paper, portrait at 100%. Seven are laid out as
+  OpenMaker writes them (18-point margins, 40 at the bottom); the eighth
+  is A4 as Pro stores it. Each was read in Page Setup, saved as PDF, and
+  OK'd in Page Setup with no change.
+- **A:** two separate English Tasks copies, each saved after selecting
+  Any Printer, portrait, 100% and one of A3 or A5 in File > Page Setup
+  ([#960](https://github.com/OpenMaker-Dev/openmaker/issues/960)).
+- **S:** a fresh Tasks copy and two scripts of one Print Setup step each:
+  - one with the dialog and without Restore, whose sheet was OK'd at A4
+    landscape;
+  - one restoring US Legal portrait without the dialog, which was run
+    before the file closed.
+- The page setup keys of about 90 other files FileMaker Pro 26 saved,
+  kept privately by the project.
+
+Both keys hold one value, stored chunked (4.3: child `00` the u32 total,
+then 1000-byte pieces). It is the tagged chunk stream of a Print Setup
+step's `87` and `88` (script-steps.md 11.6).
+
+| Key | Holds | When FileMaker Pro writes it |
+|---|---|---|
+| `[2, 87]` | `Comm` (29 bytes), `M_PM` (the macOS page format, a property list), then two `MMod` chunks, each a byte-for-byte copy of `Comm` [O: every `[2, 87]` Pro 26 saved] | at every OK of File > Page Setup: an OK that changes nothing creates it in a file without one (L). Also at the OK of a script's Print Setup with the dialog and without Restore (S). Untouched by a Print Setup that restores its setup without the dialog, by the OK of the step options' "Specify page setup" sheet (S), by opening and closing the file, by Page Setup's Cancel, and by Save Records as PDF (L, W). Create New writes one, US Letter portrait 100%; no shipped starter file has one [O] |
+| `[2, 88]` | `Comm` (11 bytes), `M_PM` (the macOS print settings, whose job name is the file's name), one `MMod` copy of `Comm` [O] | not by Page Setup: byte-identical to the starter's in every copy of L [O]. Create New writes one, and every starter has one; whether Print's OK writes it is [U] |
+
+`[2, 85]` and `[2, 86]` are not page setup. Page Setup never changed
+them (L), and Pro adds them to a file that has neither when it saves it:
+two files OpenMaker made, after FileMaker Pro 26.0.3 edited and saved
+them, held both but neither `87` nor `88` [O]. Their constants are
+`KProfileExtended`/`KExportOrder` (`85`) and `KProfile` (`86`)
+([catalogs/hbkey-constants.csv](catalogs/hbkey-constants.csv)), and `86`
+holds the UTF-16 texts "Yes", "No", "AM" and "PM" [O]. They are [I] an
+import or export profile. Both are byte-identical in every file that has
+them.
+
+**What `Comm` holds per choice** (L and A; orientation, scale, then the sheet
+as left, top, right, bottom, then the printable size; all in points):
+
+| Page Setup | `Comm` |
+|---|---|
+| US Letter, portrait, 100% | 0, 1.0, -18 -18 594 774, 576 x 734 |
+| A4, portrait, 100% | 0, 1.0, -18 -18 577 824, 559 x 783 |
+| A4, landscape, 100% | 2, 1.0, -18 -18 577 824, 783 x 559 |
+| A4, landscape, 50% | 2, 0.5, -18 -18 577 824, 1566 x 1118 |
+| A3, portrait, 100% | 0, 1.0, -18 -18 824 1173, 806 x 1155 |
+| A5, portrait, 100% | 0, 1.0, -18 -18 402 577, 384 x 559 |
+
+The measured Any Printer sheet sizes are whole points. A4 is 595 x 842,
+A3 is 842 x 1191, and A5 is 420 x 595. Margins are 18 points, with 40 at
+the bottom of US Letter and 41 at the bottom of A4. A3 and A5 each hold
+two `MMod` copies of `Comm`. The sheet stays upright,
+and the printable size is in the page's orientation and divided by the
+scale, as in a Print Setup step (script-steps.md 11.6). Going back to US
+Letter, portrait, 100% gave the first OK's `Comm` byte for byte, but not
+its `M_PM`, which then held one more key (`PMCustomPaper`) [O].
+
+**What FileMaker Pro reads** (W). One record holds US Letter, portrait,
+100%, and the other holds US Letter, landscape, 50%. There was no alert
+in any case.
+
+| `[2, 87]` | The Page Setup sheet shows | Save Records as PDF's page | After Page Setup's OK |
+|---|---|---|---|
+| Pro's own (portrait 100%), rebuilt | portrait 100% | 612 x 792 | unchanged |
+| `Comm` landscape 50%; `M_PM` and both `MMod` portrait 100% | portrait 100% | 1584 x 1224 | Pro's own, byte for byte: portrait 100% |
+| only `Comm`, landscape 50% | landscape 50% | 1584 x 1224 | the same `Comm`, an `M_PM` made from it, two `MMod` |
+| `Comm` and both `MMod` landscape 50%; `M_PM` portrait 100% | portrait 100% | 1584 x 1224 | Pro's own, byte for byte: portrait 100% |
+
+So [O]:
+- The Page Setup sheet takes the macOS record when there is one.
+- Save Records as PDF takes `Comm`.
+- `MMod` decides nothing: the second and fourth files behaved alike.
+- A value with only `Comm` is read whole, and Pro adds its own records at
+  the next OK.
+- A `Comm` beside a macOS record that disagrees with it gives a file
+  whose sheet and output disagree. The sheet's OK then silently returns
+  the file to the macOS record's settings.
+
+[I] `MMod` records the `Comm` that the macOS record was made from.
+
+**How Pro reads each paper** (P). There was no alert, and every sheet
+showed Any Printer, portrait, 100%.
+
+| `Comm` sheet (points) | The sheet shows | PDF page | After the OK: macOS paper; `Comm` printable size |
+|---|---|---|---|
+| 612 x 792 | US Letter | 612 x 792 | US Letter; unchanged, 576 x 734 |
+| 612 x 1008 | US Legal | 612 x 1008 | US Legal; unchanged, 576 x 950 |
+| 792 x 1224 | Tabloid | 792 x 1224 | Tabloid; 756 x 1188 |
+| 595 x 842 (Pro's A4) | A4 | 595 x 842 | A4; unchanged, 559 x 783 |
+| 595.2756 x 841.8898 (A4) | A4 | 595.28 x 841.89 | a custom paper; 559.28 x 805.89 |
+| 841.8898 x 1190.5512 (A3) | A3 | 841.89 x 1190.55 | a custom paper; 805.89 x 1154.55 |
+| 419.5276 x 595.2756 (A5) | A5 | 419.53 x 595.28 | a custom paper; 383.53 x 559.28 |
+| 500 x 700 | Other | 500 x 700 | a custom paper; 464 x 664 |
+
+The OK kept every `Comm` sheet as stored, and Pro set the printable size
+from its own margins for the paper. Those are 40 points at the bottom of
+US Letter and US Legal, 41 for A4, and 18 on every side for Tabloid and
+the custom papers. A custom paper's macOS record has `PMCustomPaper` true
+and the name "MyPaper" [O].
+
+So Any Printer's sizes are whole points. A `Comm` size that is not one
+of them, such as 595.28 x 841.89, is shown under the nearest paper's
+name and printed at its own size. Pro then stores it as a custom paper
+of that size at its next OK.
+
+Save Records as PDF's page at a scale is the page in layout points: the
+sheet divided by the scale, in the page's orientation. For US Letter,
+landscape, 50% that is 1584 x 1224, with the printer's margins divided by
+the scale too (36 points, 80 on the right) and no scaling in the content
+stream [O: the three PDFs above].
+
+**A hosted file** (H). Accepting A4, landscape, 50% in Page Setup sent
+nothing to the host. After the open's requests, the connection carried
+only a `Tickle`, about a minute later, and at Close the file's op62 (type 5,
+attention `0x2000`; write-path.md 4.3). Nothing went at the OK or in the
+30 seconds after it. The hosted file, closed on the server, was
+byte-identical before and after, still with no `[2, 87]`. Reopening it in
+the same FileMaker Pro session showed US Letter, portrait, 100% [O].
+The run did not read back the accepted setup before closing the file.
+
+**Unknowns.**
+- What FileMaker Pro for Windows stores, and which record it reads. [I]
+  It reads `Comm` when its own record is missing, since no file saved on
+  macOS has one.
+- What Pro stores with "Format For" set to a printer.
+- Whether a Print Setup that restores its setup with the dialog writes
+  `[2, 87]` at its OK. Whether a restore without the dialog changes the
+  paper for the session (S did not check). When `[2, 88]` is written.
+- What `[2, 85]` and `[2, 86]` hold, beyond the inference above.
+- Whether another FileMaker Pro version or platform writes a hosted
+  file's page setup, whether the Print Setup step writes it on a hosted
+  file, and what happens with accounts that lack Full Access.
 
 ---
 
@@ -559,7 +716,7 @@ creation (schema-path.md 8.1).
 | Key | Pro's blank file | OpenMaker |
 |---|---|---|
 | page 0 | 1.2: the constants, the page size and the fence around the creation name | the same |
-| `2` | `03` "26.0" (the starters, made by older versions, hold "12.0"), `05` 1208, `0d` the locale, `18` the document preferences with options `0x8403` (default fields on, file-metadata.md 3.2) and layout 1 as "Switch to layout" (unchecked), `fe` `mInternalCreation`, the open/close history `06`/`08`/`09`, `5d`, and page setup `85`/`86`/`87`/`88` (macOS print records) | the same but for the history, `5d` and page setup, which Pro writes itself at open and close [O: Pro opened OpenMaker's files without them and kept them through its edits] |
+| `2` | `03` "26.0" (the starters, made by older versions, hold "12.0"), `05` 1208, `0d` the locale, `18` the document preferences with options `0x8403` (default fields on, file-metadata.md 3.2) and layout 1 as "Switch to layout" (unchecked), `fe` `mInternalCreation`, the open/close history `06`/`08`/`09`, `5d`, `85`/`86`, and the page setup and print settings `87`/`88` (3.8) | the same but for the history, `5d`, `85`/`86` and `87`/`88`. Pro writes the history and `5d` itself at open and close, and adds `85` and `86` when it saves [O: Pro opened OpenMaker's files without them and kept them through its edits]. It writes `87` only at a Page Setup OK (3.8) |
 | `3` | one base table `80 01` named as the file, its occurrence `d0 00 01` of the same name, no relationship catalog `fb`; the occurrences' index holds an empty `08` and the dependency entries of the five default fields | the same, made by Manage Database's own planner; the dependency entries come out identical |
 | `80 01` | five **default fields** (below), with tags `da`; **one record**, `01`, holding what the fields enter for it; the record list `0d`, the last issued record `00` = `01 01`, and PrimaryKey's value index `[80 01, 01, 01, 00]` with its counts `10` = 1 record, 1 key | the same fields and record (the values entered by OpenMaker's record rules); PrimaryKey indexed in Unicode raw, its record's key in the raw form (below) |
 | `4` | one layout named as the file: a 110-point top part and a body, a stored table view `0d`, view flags `0x0000000f10f30801` (Form, List and Table enabled, Form first, layout-model.md 4.2), theme `01 01`; its index has `20` = `04` | one body part (layout-model.md 10.6), a stored table view written by OpenMaker (layout-model.md 10.14), the same flags, theme and `20` |

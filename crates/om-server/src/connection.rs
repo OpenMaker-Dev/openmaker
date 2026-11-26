@@ -95,8 +95,18 @@ pub(crate) const PROTOCOL_VERSION: u16 = 9;
 /// connection the odd ids, and FileMaker Server's first is 3 (spec 6.5).
 const FIRST_CALL_ID: u32 = 3;
 
-/// Open (op78) status for a file that is not hosted (spec 5.5).
-const OPEN_FILE_MISSING: u16 = 4;
+/// Open (op78) status for a file name the server does not host, and for a
+/// hosted file that is closed: FileMaker's `kFileNotFound`, which FileMaker
+/// Server 26.0.3 answered for both in relay captures (network-protocol.md
+/// 5.5).
+const OPEN_FILE_MISSING: u16 = 0x4fb5;
+
+/// Open status for a hosted file that is closing or opening: 4, OpenMaker's
+/// earlier choice for a file it does not serve, kept until FileMaker
+/// Server's answer for these two is measured (spec 5.5, which records only
+/// a name not hosted and a closed file;
+/// [#992](https://github.com/OpenMaker-Dev/openmaker/issues/992)).
+const OPEN_FILE_NOT_SERVED: u16 = 4;
 
 /// Open (op78) status under Block New Users: FileMaker's error 1638, "The
 /// host is not allowing new connections" (spec 5.6.4, 6.5).
@@ -1811,9 +1821,10 @@ fn open(
     };
     // The client is registered as having the file open under the file's
     // slot lock, so that a close finishing meanwhile cannot leave it a file
-    // no longer served. A file that is closing, closed or opening is
-    // refused as one the server does not host (OpenMaker's choice; what
-    // FileMaker Server answers is unmeasured).
+    // no longer served. A file that is closed is refused as one the server
+    // does not host, as FileMaker Server refuses it (spec 5.5); one that is
+    // closing or opening with 4 (OpenMaker's choice; what FileMaker Server
+    // answers is unmeasured).
     let nonce = u32::from_be_bytes(shared.random());
     let admitted = slot.admit(|hosted| {
         if session.open.contains_key(&hosted.id) {
@@ -1842,7 +1853,11 @@ fn open(
                 request.filename,
                 status.filemaker_name()
             );
-            return Ok(OpenReply::error_result(OPEN_FILE_MISSING, None));
+            let refusal = match status {
+                FileStatus::Closed => OPEN_FILE_MISSING,
+                _ => OPEN_FILE_NOT_SERVED,
+            };
+            return Ok(OpenReply::error_result(refusal, None));
         }
     };
     info!("{peer}: opened {:?} as file {}", hosted.name, hosted.id);
