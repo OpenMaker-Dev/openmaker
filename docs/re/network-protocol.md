@@ -1111,8 +1111,9 @@ helper is `ZAuth.exe` (README; not present on Mac/Linux).
 `Push(u64 file @0xc08)`, `Push(file-path string)`, `Push(string @file+0x40)`,
 `Push(string @file+0x28)`, `Push(u16 version=8)`, `Send`. Reply pops: `u16
 status`; on success: `string serverMsg`, `u32 file[0x3ac]` (the server per-file
-nonce half used for login key derivation, section 4.3), `bool file[0xc]`, `int
-file[0xaa0]`, `u16 file[0xaa4]`, then (status 0) a byte, a string into
+nonce half used for login key derivation, section 4.3), `bool file[0xc]`
+(the file is open read only, 5.6.4), `int file[0xaa0]`, `u16 file[0xaa4]`,
+then (status 0) a byte, a string into
 `file[0x170]`, a u32 flag, and a `u64 file[0xc08]` session value. The status
 names below are from the FileMaker 26 Linux `Draco::Error::Codes` DWARF enum
 (`Support/Errors.h`); the observation column distinguishes wire captures
@@ -1540,12 +1541,12 @@ offset minus 4):
 | 1 | `0x26` | `u16` BE | `status` | `0x0000` (opened) |
 | 2 | `0x1c` (len@`0x22`) | string | `serverMsg` | SCSU len 6 = the server's name |
 | 3 | `0x18` | `u32` BE | **`file[0x3ac]` per-file login nonce** | 4 bytes, redacted |
-| 4 | `0x17` | `bool` | `file[0xc]` | 0 |
+| 4 | `0x17` | `bool` | `file[0xc]`: **the file is open read only** (below) | 0 |
 | 5 | `0x13` | `int` BE | `file[0xaa0]` | 132 |
 | 6 | `0x11` | `u16` BE | `file[0xaa4]` | 9 |
 | 7 | `0x10` | byte | (status-0 marker) | 0 |
 | 8 | `0x0c` (len) | string | `file[0x170]` | empty (len 0) |
-| 9 | `0x08` | `u32` BE | flag | `0x00a10000` |
+| 9 | `0x08` | `u32` BE | flags | `0x00a10000` (`0x00810000` in the 2026-11-25 captures, below) |
 | 10 | `0x00` | `u64` BE | `file[0xc08]` session/incarnation | 8 bytes, redacted |
 
 **The per-file nonce `file[0x3ac]` is pop #3: the big-endian `u32` immediately
@@ -1558,11 +1559,61 @@ administrator's messages name the file by it (6.5). s07 got `0x165` at two
 sign-ins while the host kept the file open, and `0x168` after the host had
 closed and opened it again.
 
+**A file hosted read only (observed, 2026-11-25).** FileMaker Pro 26.0.3
+through the capture relay against FileMaker Server 26.0.3, in two
+sessions: one on a copy of a small test file the server hosted read only,
+one on the same file writable, the control (the captures are private).
+The two first replies, 55 bytes each, differ in the nonce, the session
+value, the file id, and pop #4: **1 for the file hosted read only, 0 for
+the writable one** [O]. Both carry status 0, `file[0xaa4]` 9, marker 0,
+an empty `file[0x170]` and the flags word `0x00810000`, where the
+capture of the table above (s03 conn-000) had `0x00a10000`: the bit
+`0x00200000` differs, and these captures cannot say why, since both files
+show the same value; it does not follow the read-only state. OpenMaker
+Server sends `0x00a10000`. FileMaker Pro acts on the bool: it refuses
+each change to the file itself and sends none (write-path.md 1.6).
+
+**The second Open.** On the file hosted read only, FileMaker Pro's next
+request after that reply was a second op78, 17 ms later and before any
+op90, op63 or Login. It differed from the first in two fields: the
+header's transaction id (`transid_lo`), 2 instead of 1, and the file
+handle, which carried the first reply's session value (pop #10) instead of
+0. FileMaker Server answered it with a result byte-identical to the first:
+the same nonce, session value, file id and bool [O]. On the writable file
+FileMaker Pro sent Open once. Why it opens again is not known. The Login
+that follows derives its key from the nonce (4.3); the two replies carry
+the same one, so the captures cannot tell which reply's nonce FileMaker
+Pro keeps. FileMaker Pro 26.1.1 did the same against FileMaker Server
+26.0.3 (a relay capture of 2026-11-26): two Opens on one connection
+before its one Login, the bool 1 in both replies [O].
+
+So one case is observed: a second Open of a file whose first reply said
+read only, before any Login on it, carrying that reply's session value,
+on the same connection. Every other Open of a file the session has open
+is unmeasured on FileMaker Server: a writable file, an Open after a
+Login, a handle of 0 or of a value the server did not give, a file that
+became read only after its first reply. OpenMaker Server repeats the
+first reply as it was for the observed case alone, and answers every
+other Open of an open file as it always did: it ends what the session
+held in the file (its Login, locks and staged records) and gives a fresh
+nonce and session value. An Open that is refused is never a repeat:
+OpenMaker Server answers Block New Users (1638, below), a name it does
+not host (`0x4fb5`) and a file it does not serve now (4; 5.5) before it
+looks at what the session has open, and only a reply with status 0
+carries the read-only bool it found for the file (1638's bool is the
+captured constant).
+
+**Back channel and padding.** The three Open replies' back channels were
+`fe 01` and 2, 1 and 2 more bytes: the CPU report with its random tail
+(5.6.3b), not the read-only state. The padding byte between the result and
+the back channel's length was `0x74` in all three, not zero [O]; a reader
+aligns past it.
+
 **Refused open.** Under Block New Users (6.5) FileMaker Server pushes the
 same 40 bytes with status 1638 (`0x0666`, `kHostBlockNewUsersEnabled` in
-`Draco::Error::Codes`), the bool at `0x17` set and the ids, flag
-and nonce zero. s07 conn-001 request 6, with the server's name as
-`server`:
+`Draco::Error::Codes`), the bool at `0x17` set (a client reads no field
+after a nonzero status) and the ids, flags and nonce zero. s07 conn-001
+request 6, with the server's name as `server`:
 
 ```
 00000000 00000000 00000000 00000000    session 0, flag 0, empty file[0x170]

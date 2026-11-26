@@ -455,6 +455,28 @@ connections. Try again later.", with OK, its error 1638
 (network-protocol.md 5.6.4; `om_provider::HOST_BLOCKS_NEW_USERS`). Other
 refused opens keep OpenMaker's wording.
 
+A hosted file whose host says at Open that it holds it read only (the
+reply's read-only bool, network-protocol.md 5.6.4, which FileMaker Server
+sets for a file it hosts read only and OpenMaker Server for every file it
+holds read only) is treated as a local file that cannot be written: no
+record can be created, edited or deleted, the schema and scripts are not
+saved, and a change a command or script asks for is refused before
+anything is sent, with error 6 and OpenMaker's text "This file is
+read-only: changes to it cannot be saved." FileMaker Pro disables the same
+commands and answers a key in a field with "This action cannot be
+performed because this file is not modifiable." (write-path.md 1.6); that
+alert is not shown, and a field cannot be entered
+([#922](https://github.com/OpenMaker-Dev/openmaker/issues/922)). FileMaker
+Pro's own scripts get 6 from Set Field, New Record and Delete Record there,
+and 0 from the Commit Records after them (a relay capture of 2026-11-26,
+[#918](https://github.com/OpenMaker-Dev/openmaker/issues/918)). This
+client's scripts get 6 from New Record and Delete Record, but its Set
+Field locks the record and answers 0, and its Commit Records then answers
+6 ([#921](https://github.com/OpenMaker-Dev/openmaker/issues/921)). The
+host's word counts at Open only: a file that becomes read only later is
+refused by its host change by change ([server-storage.md](server-storage.md)
+5).
+
 ### Messages from the host
 
 A hosted file's administrator can send its sessions a message (FileMaker

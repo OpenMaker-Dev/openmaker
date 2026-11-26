@@ -556,7 +556,9 @@ The connection keeps its entry current:
 - `Connect` adds it. A `Connect` on a connection that has a session ends that
   session first, so its entry is replaced.
 - Open (op78) adds the file without an account; opening it again clears the
-  account, as the connection does.
+  account, as the connection does, except FileMaker Pro's second Open of a
+  file hosted read only, before its Login and with the first reply's
+  session value, which changes nothing (re/network-protocol.md 5.6.4).
 - An accepted Login (op80) sets the file's account and the session name. A
   refused one changes nothing.
 - Logout (op81) clears the file's account and leaves it open, as the

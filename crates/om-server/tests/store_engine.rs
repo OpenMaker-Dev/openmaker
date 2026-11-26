@@ -6,7 +6,10 @@
 //! a client's writes refused as on a file the server hosts read-only, what
 //! it cannot do yet answering "unavailable" (error 3), a file the import
 //! refuses left out, and a file the administrator opens again imported
-//! again once it changed.
+//! again once it changed. With them, how an Open of a file the session has
+//! open is answered: FileMaker Pro's second Open of a file hosted read
+//! only, before its Login, gets the first reply again, and every other one
+//! starts the file anew.
 
 #[path = "fixtures/tasks.rs"]
 mod fixture;
@@ -15,10 +18,10 @@ mod server;
 
 use std::time::{Duration, Instant};
 
-use fixture::{TempFile, FILE, NAME, TABLE};
+use fixture::{TempFile, ACCOUNT, FILE, INTERNAL_CREATION, NAME, PASSWORD, TABLE};
 use om_hbam::slot::uint_segment;
 use om_hbam::{serial, OwnedNode};
-use om_protocol::{authoring, container, schema, write, Resume};
+use om_protocol::{authoring, container, schema, write, LoginEnvironment, Resume};
 use om_scripts::{Script, ScriptStep};
 use om_server::{FileStatus, Notice};
 use om_session::Session;
@@ -87,15 +90,187 @@ fn a_file_hosted_from_the_store_reads_as_from_the_file_engine() {
 /// be compared with a read-only file's. Its field catalog comes back too.
 fn read_only_tasks(tag: &str, scripts: &[Script]) -> (TempFile, OwnedNode) {
     let mut root = fixture::tree(scripts, true);
-    let t = uint_segment(TABLE);
-    let mut catalog = root.at(&[&t, &[3]]).unwrap().clone();
-    catalog.remove(&[&[5], &uint_segment(NAME)]);
-    catalog.put(
-        &[&[1], &[0xfd], &uint_segment(NAME)],
-        OwnedNode::leaf(Vec::new(), 0x1e1u32.to_be_bytes().to_vec()),
-    );
-    root.put(&[&t, &[3]], catalog.clone());
+    let catalog = fixture::defer_undoable_work(&mut root);
     (TempFile::from_tree(tag, &root), catalog)
+}
+
+/// network-protocol.md 5.6.4: FileMaker Server answers the Open of a file
+/// it hosts read only with the reply's read-only bool set, and FileMaker
+/// Pro then refuses every change itself. Each engine sets it for a file it
+/// holds read only, whatever the cause (field work no server can do on the
+/// file engine; every file on the store engine). FileMaker Pro's own
+/// sequence on such a file goes through on both: Open, at once Open again
+/// with the first reply's session value under transaction id 2, answered
+/// with the first reply byte for byte, Login with that reply's nonce, and a
+/// read. Once the Login is accepted, an Open with that session value is no
+/// longer that pair: it ends the session's Login on the file and answers
+/// anew, as any other Open of an open file does.
+#[test]
+fn a_file_hosted_read_only_is_opened_as_filemaker_pro_opens_it() {
+    let (file, _) = read_only_tasks("store-engine-open", &[]);
+    let store = StoreDir::new("open");
+    let (by_file, _) = start_hosting(&[(FILE, &file)], |s| s);
+    let (by_store, _) = start_on_store(&[(FILE, &file)], &store.0, |s| s);
+    for port in [by_file, by_store] {
+        opened_as_filemaker_pro(port);
+    }
+}
+
+/// Open [`FILE`] on `port`, hosted read only, as FileMaker Pro opened it
+/// (spec 5.6.4), log in and read its records; then open it again after
+/// the Login.
+fn opened_as_filemaker_pro(port: u16) {
+    let mut session = server::connected(port, "opened twice");
+    let first = session.open_file("127.0.0.1", FILE).unwrap();
+    assert!(first.read_only, "{first:?}");
+    let again = session.perform(&open_again(first.session_value)).unwrap();
+    // The Login derives its key from the first reply's nonce: a server that
+    // answered the second Open with another refuses it.
+    log_in(&mut session);
+    assert_eq!(again, first.to_result(), "the second Open's reply");
+    assert!(!records_of(&mut session, TABLE).is_empty());
+    assert!(
+        matches!(
+            lock_record_1(&mut session),
+            write::LockReply::Granted { .. }
+        ),
+        "logged in"
+    );
+    let third = reopened(&mut session, first.session_value);
+    assert!(logged_out(&mut session), "the Open after the Login");
+    assert_ne!(
+        (third.file_nonce, third.session_value),
+        (first.file_nonce, first.session_value),
+        "the Open after the Login"
+    );
+    assert!(third.read_only);
+}
+
+/// An Open of a writable file the session has open, with the session value
+/// its reply gave, is not FileMaker Pro's pair: it is answered anew, before
+/// a Login as after one (what FileMaker Server does then is unmeasured;
+/// OpenMaker Server answers as it always did).
+#[test]
+fn an_open_of_an_open_writable_file_is_answered_anew() {
+    let file = TempFile::from_tree("store-engine-open-writable", &fixture::tree(&[], true));
+    let mut session = server::connected(server::start(&file), "writable");
+    let first = session.open_file("127.0.0.1", FILE).unwrap();
+    assert!(!first.read_only, "{first:?}");
+    let again = reopened(&mut session, first.session_value);
+    assert!(!again.read_only, "{again:?}");
+    assert_ne!(
+        (again.file_nonce, again.session_value),
+        (first.file_nonce, first.session_value)
+    );
+}
+
+/// After a Login, an Open of the same file with the session value its reply
+/// gave ends what the session held in the file, as an Open always did:
+/// its Login (a lock is refused with 200 until it logs in again), its
+/// record lock (another session takes it) and its staged edit (its commit
+/// stores nothing). Before the fix the Open answered the first reply again
+/// and the old Login committed the edit.
+#[test]
+fn an_open_after_a_login_ends_what_the_session_held_in_the_file() {
+    let file = TempFile::from_tree("store-engine-open-after-login", &fixture::tree(&[], true));
+    let port = server::start(&file);
+    let mut session = server::connected(port, "edits, then opens");
+    let first = session.open_file("127.0.0.1", FILE).unwrap();
+    log_in(&mut session);
+    assert!(matches!(
+        lock_record_1(&mut session),
+        write::LockReply::Granted { .. }
+    ));
+    let t = uint_segment(TABLE);
+    let staged = OwnedNode::list(
+        serial::encode(1),
+        vec![OwnedNode::leaf(
+            uint_segment(NAME),
+            om_scsu::encode_scsu("Staged"),
+        )],
+    );
+    session.upload_records(&t, vec![staged]).unwrap();
+    let again = reopened(&mut session, first.session_value);
+    let changed = OwnedNode::list(
+        serial::encode(1),
+        vec![OwnedNode::leaf(uint_segment(NAME), Vec::new())],
+    );
+    assert!(
+        session.commit_records(&t, vec![changed], 0x31).is_err(),
+        "the staged edit was committed after the Open"
+    );
+    let (mut other, _) = server::logged_in(port, "other");
+    assert!(
+        matches!(lock_record_1(&mut other), write::LockReply::Granted { .. }),
+        "the record stayed locked"
+    );
+    assert_eq!(
+        server::cell(&records_of(&mut other, TABLE), 1, NAME),
+        Some("Write tests")
+    );
+    assert!(logged_out(&mut session), "the Login outlived the Open");
+    assert_ne!(
+        (again.file_nonce, again.session_value),
+        (first.file_nonce, first.session_value)
+    );
+}
+
+/// A writable file that becomes read-only after the session opened it (the
+/// engine holds it so for deferred work) is not FileMaker Pro's pair: the
+/// first reply said writable, so the Open is answered anew and says what
+/// the file is now. A repeat is never the old nonce with a new bit.
+#[cfg(debug_assertions)]
+#[test]
+fn a_file_read_only_since_its_open_is_answered_anew() {
+    let file = TempFile::from_tree("store-engine-open-turned", &fixture::tree(&[], true));
+    let (port, handle) = server::start_with_handle(&file, om_server::ScriptLimits::DEFAULT);
+    let mut session = server::connected(port, "turned");
+    let first = session.open_file("127.0.0.1", FILE).unwrap();
+    assert!(!first.read_only, "{first:?}");
+    assert!(handle.hold_read_only(first.file_id));
+    let again = reopened(&mut session, first.session_value);
+    assert_ne!(
+        (again.file_nonce, again.session_value),
+        (first.file_nonce, first.session_value),
+        "{again:?}"
+    );
+    assert!(again.read_only, "{again:?}");
+}
+
+/// FileMaker Pro's second Open of [`FILE`]: the first reply's session value
+/// as the handle, transaction id 2 (spec 5.6.4).
+fn open_again(session_value: u64) -> Vec<u8> {
+    om_protocol::open_transaction("127.0.0.1", FILE, session_value, 2)
+}
+
+/// [`open_again`] sent, its reply parsed.
+fn reopened(session: &mut Session, session_value: u64) -> om_protocol::OpenReply {
+    let reply = session.perform(&open_again(session_value)).unwrap();
+    om_protocol::parse_open_reply(&reply).unwrap()
+}
+
+/// Log in as Admin with the session's first Open reply, as FileMaker Pro.
+fn log_in(session: &mut Session) {
+    let environment = LoginEnvironment::for_remote_file("127.0.0.1", FILE);
+    let login = session
+        .login(ACCOUNT, PASSWORD, INTERNAL_CREATION, &environment)
+        .unwrap();
+    assert!(login.is_success(), "{login:?}");
+}
+
+/// Lock record 1 for writing (op60), as an edit's first key does.
+fn lock_record_1(session: &mut Session) -> write::LockReply {
+    let (t, record) = (uint_segment(TABLE), serial::encode(1));
+    let path: [&[u8]; 3] = [&t, &[5], &record];
+    session.lock(&path, 0x31, true).unwrap()
+}
+
+/// Whether the session has no Login on the file: op60 refused with 200.
+fn logged_out(session: &mut Session) -> bool {
+    matches!(
+        lock_record_1(session),
+        write::LockReply::Refused { status: 200, .. }
+    )
 }
 
 /// One file hosted by both engines, a session logged in to each: the file
