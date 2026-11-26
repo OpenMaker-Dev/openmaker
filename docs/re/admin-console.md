@@ -705,8 +705,28 @@ Read in the console's server code (sources): `adminapi/v2/` (`index.js`,
 `controllers/`, `converters/`, `shared/`), `middlewares/adminapi.js`,
 `routes.js`, `routes/v1/databases/databases.controller.js`, the session
 store and its expiry job (`store/states/session.state.js`,
-`lib/scheduler/session-status.job.js`), and libFMSLib. No reply here was
-compared with a live server.
+`lib/scheduler/session-status.job.js`), and libFMSLib.
+
+**Live response controls.** FileMaker Server 26.0.3.309 on Ubuntu,
+2026-11-26. Database requests used one disposable database, observed
+in `NORMAL` before the validation requests. Known endpoints used an
+authenticated session except where noted. The table records the HTTP
+status and FileMaker API message code [O].
+
+| Request | HTTP | Code | Additional observation |
+|---|---:|---|---|
+| GET `/server/metadata` with no Authorization header | 400 | `1705` | No WWW-Authenticate header |
+| GET an unknown v2 path with no Authorization header | 404 | `1700` | |
+| PATCH `/server/metadata` | 405 | `1704` | |
+| GET `/fmclients/fmseSessionsBeforeQueuing` | 500 | `1808` | |
+| PATCH `/databases/{id}` with status PAUSED and an unknown `extra` member | 400 | `1706` | Database stayed NORMAL |
+| PATCH `/databases/{id}` with status null | 400 | `1708` | Database stayed NORMAL |
+| PATCH `/databases/{id}` with status CLOSED and no messageText | 200 | `0` | Database became CLOSED |
+
+See [#163](https://github.com/OpenMaker-Dev/openmaker/issues/163) and
+[#180](https://github.com/OpenMaker-Dev/openmaker/issues/180). The rest of
+this section describes the server modules and binary unless marked as a
+live observation.
 
 **The pipeline.** A request under `/fmi/admin/api/v2` passes, in order:
 swagger-tools' metadata step (the path and method looked up in the Swagger
@@ -920,13 +940,10 @@ time; the console's Close dialog offers one (section 7), sent another way.
   its default 90 s.
 - Pause's effect on requests other than creating a record, and whether
   FileMaker Pro gives up on one that waits long enough.
-- The Admin API answers of 8.1 are from bin. A live check, as the lab rules
-  allow, of the sixth session (401, `956`), a call without `Authorization`
-  (400, `1705`), an undocumented body member (400, `1706`), `null` (400,
-  `1708`), a `PATCH` to a `GET`-only path (405, `1704`), and the client list
-  with FileMaker Go and WebDirect connected would confirm them. The lockout
-  must not be tried on a shared administrator account: it refuses that
-  account for 5 minutes.
+- The Admin API's sixth-session response (401, `956` in the modules)
+  and live client types with FileMaker Go and WebDirect connected.
+  The lockout must not be tried on a shared administrator account:
+  it refuses that account for 5 minutes.
 - Whether a sign-in refused during a lockout counts as another bad attempt
   and so extends it.
 - The zone of the database server's schedule times (`lastRun`, `nextRun`),

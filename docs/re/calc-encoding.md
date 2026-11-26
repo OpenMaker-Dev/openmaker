@@ -735,7 +735,8 @@ FileMaker Pro 26.1.1 Mac arm64 FMEngine, `FMCustomMenu::LoadMenuItems`
 at `0x544284`, `SaveMenuItems` at `0x544554`,
 `CustomMenuItemList::Save` at `0x5876a8` and
 `CustomMenuItem::Write` at `0x585730`]. The step's keyed parameter data
-is separate from the item stream. The 66 starter files contain no menu
+is separate from the item stream [O from bin: DBEngine
+`DBCatalogItemList::GetDataPos` at `0x1a50220`]. The 66 starter files contain no menu
 item list. A populated native save is still needed to check the item
 references and locate their formula and step data in a file
 ([file-format.md](file-format.md) 3.7).
