@@ -19,6 +19,8 @@
 //! field values; it does not send protocol requests or write records.
 //! Refusals carry the FileMaker error a script step reports
 //! ([`DataError::code`]).
+mod global_text_self;
+pub use global_text_self::global_text_assignment;
 pub mod recalc;
 pub mod schema;
 mod typing;
@@ -37,6 +39,7 @@ use om_formula::{DecodeErrorKind, Expr, Formula, Key};
 use om_hbam::catalog::{DataType, FieldKind};
 use om_hbam::{EntryVariable, FieldOptions, KeyTree, Node, Table};
 
+use self::global_text_self::GlobalTextSelf;
 use crate::containers::{self, MemberInfo};
 use crate::meta::{ValueList, ValueSource};
 
@@ -1046,6 +1049,8 @@ struct PlannedField {
     editable: bool,
     /// A stored calculation or an auto-enter calculation.
     expression: Option<Expression>,
+    /// This local global's auto-entry reads Self.
+    global_text_self: GlobalTextSelf,
     /// Creation Date supplies the value on create. The calculation's
     /// dependencies identify updates with an unmeasured result.
     creation_date_with_calculation: bool,
@@ -2157,6 +2162,21 @@ impl RecordPlan {
             } else {
                 None
             };
+            let global_text_self = if auto_enters_global {
+                expression
+                    .as_ref()
+                    .map(|formula| {
+                        global_text_self::classify(
+                            &def,
+                            Some(&options),
+                            &formula.formula.polish,
+                            local,
+                        )
+                    })
+                    .unwrap_or_default()
+            } else {
+                GlobalTextSelf::Unused
+            };
             let validation = if options.validation_options & VALIDATE_BY_CALCULATION != 0 {
                 Some(formula_at(FIELD_VALIDATION, FormulaUse::Options)?)
             } else {
@@ -2321,6 +2341,7 @@ impl RecordPlan {
                     data_type: field.data_type,
                     editable,
                     expression,
+                    global_text_self,
                     creation_date_with_calculation,
                     constant,
                     validation,
@@ -2663,7 +2684,8 @@ impl RecordPlan {
             if !field.auto_enters_global() {
                 continue;
             }
-            let nonempty = globals.get(id, 1).is_some_and(|value| !value.is_empty());
+            let existing = globals.get(id, 1);
+            let nonempty = existing.is_some_and(|value| !value.is_empty());
             if nonempty && !allow_nonempty {
                 return Err(DataError::with_code(
                     error::UNAVAILABLE,
@@ -2681,9 +2703,25 @@ impl RecordPlan {
                 if nonempty && !field.options.calculation_replaces_existing() {
                     continue;
                 }
-                let value = self
-                    .evaluate_repetition(id, 1, expression, &row, &session, &mut remaining)
-                    .map_err(RunError::into_error)?;
+                let value = match field.global_text_self {
+                    GlobalTextSelf::Supported if allow_nonempty => self
+                        .run(
+                            id,
+                            expression,
+                            &row,
+                            &session,
+                            Some(existing.cloned().unwrap_or_else(|| Value::text(""))),
+                            Some(ValueType::Text),
+                            InRepetition::Calculation(1),
+                            &mut remaining,
+                        )
+                        .map(|(_, text)| text),
+                    GlobalTextSelf::Unused => {
+                        self.evaluate_repetition(id, 1, expression, &row, &session, &mut remaining)
+                    }
+                    _ => return Err(global_text_self::unavailable(&field.name)),
+                }
+                .map_err(RunError::into_error)?;
                 values.insert((id, 1), value);
             }
         }

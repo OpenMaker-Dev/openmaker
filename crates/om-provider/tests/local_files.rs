@@ -3310,6 +3310,104 @@ fn a_local_sorted_new_record_keeps_its_insertion_position() {
 }
 
 #[test]
+fn global_text_auto_entry_reads_current_or_assigned_self() {
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
+    use om_data::calc::Value;
+    use om_data::host::CalcNeed;
+
+    const FIELDS: [(u64, &str, u32, &str); 3] = [
+        (
+            40,
+            "Replacing",
+            0x1_0088,
+            r#"If ( IsEmpty ( Self ) ; "Initial" ; Self & "!" )"#,
+        ),
+        (
+            41,
+            "Preserving",
+            0x1_0008,
+            r#"If ( IsEmpty ( Self ) ; "Initial" ; Self & "!" )"#,
+        ),
+        (
+            42,
+            "Identity",
+            0x1_0088,
+            r#"If ( IsEmpty ( Self ) ; "Initial" ; Self )"#,
+        ),
+    ];
+    let folder = Folder::new("global-text-self");
+    let path = folder.file(FILE, PASSWORD, |root| {
+        for (field, name, options, formula) in FIELDS {
+            fixture::add_field(root, TABLE, field, name, 1, 1, 0, options, 0);
+            fixture::add_formula(
+                root,
+                &fixture::names(),
+                (TABLE, OCCURRENCE),
+                field,
+                5,
+                formula,
+            );
+        }
+    });
+    let mut provider = opened(&path);
+    let new = om_data::ScriptWrite {
+        layout: LAYOUT as u32,
+        ..Default::default()
+    };
+    let values = |provider: &mut NativeProvider| {
+        let data = provider
+            .calc_data(&[CalcNeed::Globals { table: TABLE }])
+            .unwrap();
+        FIELDS.map(|(field, ..)| match data.globals[&TABLE].get(field, 1) {
+            Some(Value::Text(text)) => text.as_str().to_owned(),
+            None => String::new(),
+            other => panic!("expected a Text global, got {other:?}"),
+        })
+    };
+    provider.begin_record_commit().unwrap();
+    assert_eq!(provider.write_record(&new).unwrap_err().code, Some(3));
+    provider.revert_transaction().unwrap();
+    assert_eq!(values(&mut provider), ["", "", ""]);
+    let create = |provider: &mut NativeProvider| {
+        provider.begin_record_commit().unwrap();
+        let id = provider
+            .write_record_with_creation(&new, om_data::RecordCreation::NewRecord)
+            .unwrap()
+            .id;
+        u64::try_from(id).unwrap()
+    };
+    let first = create(&mut provider);
+    assert_eq!(values(&mut provider), ["Initial", "Initial", "Initial"]);
+    provider
+        .write_record(&om_data::ScriptWrite {
+            record: Some(i64::try_from(first).unwrap()),
+            cells: [(NAME, Some("An unrelated edit".into()))].into(),
+            ..new.clone()
+        })
+        .unwrap();
+    assert_eq!(values(&mut provider), ["Initial", "Initial", "Initial"]);
+    provider.commit_record_session(false).unwrap();
+    for (field, ..) in FIELDS {
+        provider.set_global(TABLE, field, 1, "Manual").unwrap();
+    }
+    assert_eq!(values(&mut provider), ["Manual!", "Manual", "Manual"]);
+    let second = create(&mut provider);
+    assert_eq!(values(&mut provider), ["Manual!!", "Manual", "Manual"]);
+    provider.commit_record_session(false).unwrap();
+    for (field, ..) in FIELDS {
+        provider.set_global(TABLE, field, 1, "").unwrap();
+    }
+    assert_eq!(values(&mut provider), ["Initial", "Initial", "Initial"]);
+    provider.close();
+    let file = om_hbam::HbamFile::open(&path).unwrap();
+    for record in [first, second] {
+        for (field, ..) in FIELDS {
+            assert!(file.cell(TABLE, record, field).unwrap().is_none());
+        }
+    }
+}
+
+#[test]
 fn new_record_auto_enters_the_session_globals() {
     use fixture::{LAYOUT, NAME, OCCURRENCE};
     use om_data::calc::Value;

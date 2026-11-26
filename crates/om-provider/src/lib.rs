@@ -2095,6 +2095,36 @@ impl NativeProvider {
         Ok(schema)
     }
 
+    /// Check a script's assignment before changing the session global.
+    fn assigned_global(
+        &mut self,
+        table: u64,
+        field: u64,
+        repetition: u32,
+        text: &str,
+        local: bool,
+    ) -> Result<om_data::GlobalChanges, DataError> {
+        let schema = self.global_write_schema(table, field, repetition)?;
+        let definition = schema
+            .table(table)
+            .and_then(|table| table.fields.get(&field))
+            .ok_or_else(|| DataError::with_code(102, "The field is missing."))?;
+        let options = self
+            .catalog
+            .table(table)
+            .and_then(|table| table.field(field))
+            .and_then(om_hbam::Field::decoded_options);
+        let value = om_data::rules::global_text_assignment(
+            definition,
+            options.as_ref(),
+            &schema.locale,
+            local,
+            text,
+        )?
+        .unwrap_or_else(|| text.to_owned());
+        Ok(om_data::GlobalChanges::from([((field, repetition), value)]))
+    }
+
     /// The text a user's typing `text` into repetition `repetition` of
     /// global `field` of `table` stores, checked as FileMaker checks it
     /// (`DataProvider::set_typed_global`), or its refusal. Nothing is set.
@@ -4505,15 +4535,21 @@ impl DataProvider for NativeProvider {
         repetition: u32,
         text: &str,
     ) -> Result<(), DataError> {
-        let change = om_data::GlobalChanges::from([((field, repetition), text.to_owned())]);
         if let Some(route) = self.global_owner(table)? {
-            self.external.with_owner(route, |owner, wire| {
-                owner.global_write_schema(wire, field, repetition)?;
-                owner.keep_globals(wire, change.clone())
+            let change = self.external.with_owner(route, |owner, wire| {
+                let change = owner.assigned_global(wire, field, repetition, text, false)?;
+                owner.keep_globals(wire, change.clone())?;
+                Ok(change)
             })?;
             return self.keep_globals(table, change);
         }
-        self.global_write_schema(table, field, repetition)?;
+        let change = self.assigned_global(
+            table,
+            field,
+            repetition,
+            text,
+            self.plans_local_record_positions(),
+        )?;
         self.keep_globals(table, change)
     }
 
