@@ -124,25 +124,74 @@ pub fn provider_from_env() -> Result<Box<dyn DataProvider>, String> {
 /// viewers are X11 child windows.
 #[cfg(not(any(target_os = "ios", target_os = "android")))]
 pub fn native_options() -> eframe::NativeOptions {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title(APP_TITLE)
+        .with_app_id("openmaker")
+        // FileMaker's document window in the captures is 1060 pt wide.
+        .with_inner_size([1060.0, 760.0])
+        .with_min_inner_size([720.0, 480.0]);
+    // Without it eframe shows its own default, egui's logo.
+    viewport.icon = app_icon();
     eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(APP_TITLE)
-            .with_app_id("openmaker")
-            // FileMaker's document window in the captures is 1060 pt wide.
-            .with_inner_size([1060.0, 760.0])
-            .with_min_inner_size([720.0, 480.0]),
+        viewport,
         event_loop_builder: web_viewer::event_loop_hook(),
         ..Default::default()
     }
+}
+
+/// OpenMaker's logo as the app's icon: the favicon's tile at 412 pixels in
+/// a 512-pixel canvas, the macOS icon grid eframe's default icon also
+/// follows (docs/assets/README.md). eframe shows the root window's icon in
+/// the Dock on macOS and as its large taskbar icon on Windows; each
+/// window's is its window icon on Windows and X11. Wayland has no window
+/// icons (winit ignores them), so the shell uses the desktop entry the app
+/// id names (docs/desktop-client.md). Decoded once and shared, so a
+/// viewport builder made every frame keeps the same icon (egui compares it
+/// by pointer). `None` only when the bundled PNG does not decode, which
+/// leaves eframe's default.
+pub(crate) fn app_icon() -> Option<std::sync::Arc<egui::IconData>> {
+    static ICON: std::sync::OnceLock<Option<std::sync::Arc<egui::IconData>>> =
+        std::sync::OnceLock::new();
+    ICON.get_or_init(|| {
+        let image = image::load_from_memory_with_format(
+            include_bytes!("../assets/openmaker-icon.png"),
+            image::ImageFormat::Png,
+        )
+        .ok()?
+        .into_rgba8();
+        Some(std::sync::Arc::new(egui::IconData {
+            width: image.width(),
+            height: image.height(),
+            rgba: image.into_raw(),
+        }))
+    })
+    .clone()
 }
 
 /// Settle what web viewers need from the process environment: call it
 /// before any thread starts (`run` does). With the `web-viewer` feature on
 /// an X server without DRI3, WebKitGTK's DMA-BUF renderer is turned off,
 /// unless `WEBKIT_DISABLE_DMABUF_RENDERER` is already set; otherwise it does
-/// nothing.
+/// nothing. Only the first call looks: a later one, such as `run`'s after
+/// the `om-gui` program's own, may come once threads run.
 pub fn prepare_web_viewers() {
-    web_viewer::prepare_environment();
+    static PREPARED: std::sync::Once = std::sync::Once::new();
+    PREPARED.call_once(web_viewer::prepare_environment);
+}
+
+/// Install the logger [`run`] reads the error that ends its event loop
+/// with, passed through `wrap`, as the process's logger at `level`: for a
+/// program that reads the log too (the `om-gui` program's error reports),
+/// before `run`. `wrap` must pass every record on to the logger it is
+/// given. Whether that is now the process's logger: not when the process
+/// installed another first, and then the keypad's Enter is not told apart
+/// from Return (`keypad`).
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+pub fn install_logger<L: log::Log + 'static>(
+    wrap: impl FnOnce(Box<dyn log::Log>) -> L,
+    level: log::LevelFilter,
+) -> bool {
+    keypad::install_logger(wrap, level)
 }
 
 /// Open the OpenMaker window with `provider` and run until it is closed.
@@ -168,3 +217,15 @@ pub fn run(provider: Box<dyn DataProvider>) -> eframe::Result {
 }
 
 mod layout_menu;
+
+#[cfg(test)]
+mod icon_tests {
+    /// The bundled icon decodes: a broken file would leave eframe's
+    /// default icon without a word.
+    #[test]
+    fn the_app_icon_decodes() {
+        let icon = super::app_icon().expect("the bundled icon decodes");
+        assert_eq!((icon.width, icon.height), (512, 512));
+        assert_eq!(icon.rgba.len(), 512 * 512 * 4);
+    }
+}

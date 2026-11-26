@@ -1,14 +1,19 @@
 //! A few desktop integration checks over the existing synthetic report provider.
 use super::*;
-use crate::page_setup::{tests::A4, Settings};
+use crate::page_setup::{
+    tests::{landscape, scaled, A4},
+    Settings,
+};
 use crate::scripting::Prompt;
 
-fn setup(dialog: bool, landscape: bool) -> ScriptStep {
-    let mut bytes = A4.to_vec();
-    bytes[8] = if landscape { 2 } else { 0 };
+fn setup(dialog: bool, turned: bool) -> ScriptStep {
+    restore(dialog, &if turned { landscape(A4) } else { A4.to_vec() })
+}
+/// Print Setup [Restore] of the page format `bytes`.
+fn restore(dialog: bool, bytes: &[u8]) -> ScriptStep {
     let mut step = ScriptStep::new(42);
     step.flags = flag::RESTORE | if dialog { 0 } else { flag::NO_INTERACT };
-    step.set_data_leaf(0x87, Some(om_data::scripts::bytes_node(&[0x87], &bytes)));
+    step.set_data_leaf(0x87, Some(om_data::scripts::bytes_node(&[0x87], bytes)));
     step
 }
 fn pdf(path: &std::path::Path) -> ScriptStep {
@@ -93,8 +98,7 @@ fn page_setup_script_restore_drives_pdf_and_external_file_ownership() {
 #[test]
 fn page_setup_dialog_cancel_invalid_restore_and_current_noop_preserve_dirty_record() {
     let mut invalid = setup(false, true);
-    let mut bad = A4.to_vec();
-    bad[9..13].copy_from_slice(&0.5f32.to_be_bytes());
+    let bad = scaled(A4, 0.0);
     invalid.set_data_leaf(0x87, Some(om_data::scripts::bytes_node(&[0x87], &bad)));
     let mut noop = invalid.clone();
     noop.flags &= !flag::RESTORE;
@@ -187,9 +191,7 @@ fn a_files_stored_page_setup_is_its_paper_until_another_is_accepted() {
         ],
         Vec::new(),
     );
-    let mut landscape = A4.to_vec();
-    landscape[8] = 2;
-    c.server.lock().unwrap().page_format = Some(landscape);
+    c.server.lock().unwrap().page_format = Some(landscape(A4));
     c.server.lock().unwrap().pdf_rows = vec![1, 2, 3];
     c.run();
     assert_eq!(c.result(), "0");
@@ -203,4 +205,49 @@ fn a_files_stored_page_setup_is_its_paper_until_another_is_accepted() {
         accepted.paper.orientation,
         om_layout::paper::Orientation::Portrait
     );
+}
+
+/// Page Setup's scale draws the layout smaller on the same sheet (#112). At
+/// 50% a page holds twice as much of it each way, so the nine records take
+/// fewer pages; the media box is still the A4 sheet, and each page's content
+/// is scaled onto it.
+#[test]
+fn a_scaled_page_setup_draws_more_of_the_layout_on_each_sheet() {
+    let temporary = tempfile::tempdir().unwrap();
+    let output = std::env::var_os("OM_PDF_ARTIFACT_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| temporary.path().to_owned());
+    std::fs::create_dir_all(&output).unwrap();
+    let (full, half) = (
+        output.join("page-setup-a4-100.pdf"),
+        output.join("page-setup-a4-50.pdf"),
+    );
+    let mut c = Client::new(
+        vec![
+            setup(false, false),
+            pdf(&full),
+            restore(false, &scaled(A4, 0.5)),
+            pdf(&half),
+            exit("Get ( LastError )"),
+        ],
+        Vec::new(),
+    );
+    c.server.lock().unwrap().pdf_rows = vec![7, 2, 9, 4, 8, 1, 6, 3, 5];
+    c.run();
+    assert_eq!(c.result(), "0");
+    assert_eq!(
+        c.session.s.file.page_setup.as_ref().unwrap().paper.scale,
+        0.5
+    );
+    let text = |path: &std::path::Path| {
+        String::from_utf8_lossy(&std::fs::read(path).unwrap()).into_owned()
+    };
+    let (full, half) = (text(&full), text(&half));
+    assert!(full.contains("/Count 3"), "{full:.400}");
+    assert!(half.contains("/Count 1"), "{half:.400}");
+    assert!(
+        half.contains("/MediaBox [0 0 595.27 841.86]"),
+        "{half:.400}"
+    );
+    assert!(half.contains("stream\n0.5 0 0 0.5 0 0 cm\n"));
 }

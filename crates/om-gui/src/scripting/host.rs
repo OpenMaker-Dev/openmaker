@@ -1812,7 +1812,7 @@ impl<'a> WorkerHost<'a> {
     /// triggers fired before. A failure leaves the record open and is
     /// the user's message.
     pub(crate) fn save_record(&mut self) -> Result<(), String> {
-        self.s.failure = None;
+        forget_failure();
         let record = self
             .s
             .file
@@ -1885,7 +1885,7 @@ impl<'a> WorkerHost<'a> {
 
     /// The message of a step's failure: the provider's, else the error's.
     fn failure_message(&mut self, error: HostError) -> String {
-        match (self.s.failure.take(), error) {
+        match (take_failure(), error) {
             (Some(message), _) => message,
             (None, HostError::Error(code)) => code.to_string(),
             (None, _) => ErrorCode(3).to_string(),
@@ -3298,9 +3298,9 @@ fn without_begun(context: &Context) -> std::borrow::Cow<'_, Context> {
 }
 
 impl WorkerHost<'_> {
-    /// A provider failure as a step error, its words kept for the alert.
+    /// A provider failure as a step error, its words kept for the step's
+    /// alert, as [`data_error`] keeps them.
     fn failed(&mut self, error: DataError) -> HostError {
-        self.s.failure = Some(error.message.clone());
         data_error(error)
     }
 }
@@ -3414,9 +3414,75 @@ impl WorkerHost<'_> {
     }
 }
 
-/// A provider failure as a step error: its FileMaker code, else -1.
+/// Why the running step failed, in words, for its alert's second line
+/// (#818): the provider's ([`data_error`]) or the step's own
+/// ([`note_failure`]), whichever came last. Words belong to the step that
+/// gave them: a step starts without any (`before_step`), so words an
+/// error capture kept from one step's alert are not shown under a later
+/// step's. A thread-local, because most of the script host converts a
+/// `DataError` while it holds the window and the provider (`self.wp()`),
+/// where the session is out of reach.
+#[derive(Default)]
+struct Failure {
+    /// Steps begun on this thread.
+    step: u64,
+    /// The words, and the step that gave them.
+    words: Option<(u64, String)>,
+}
+
+thread_local! {
+    static FAILURE: std::cell::RefCell<Failure> = std::cell::RefCell::new(Failure::default());
+}
+
+/// `words` say why the running step failed.
+pub(crate) fn note_failure(words: String) {
+    FAILURE.with(|failure| {
+        let mut failure = failure.borrow_mut();
+        failure.words = Some((failure.step, words));
+    });
+}
+
+/// A step begins: no words say yet why it failed.
+fn begin_step() {
+    FAILURE.with(|failure| failure.borrow_mut().step += 1);
+}
+
+/// Why the running step failed, in words, taken.
+fn take_failure() -> Option<String> {
+    FAILURE.with(|failure| {
+        let mut failure = failure.borrow_mut();
+        let step = failure.step;
+        failure
+            .words
+            .take()
+            .filter(|(given, _)| *given == step)
+            .map(|(_, words)| words)
+    })
+}
+
+/// No words say why anything failed.
+pub(crate) fn forget_failure() {
+    FAILURE.with(|failure| failure.borrow_mut().words = None);
+}
+
+/// The last words noted, whichever step gave them.
+#[cfg(test)]
+pub(crate) fn last_failure() -> Option<String> {
+    FAILURE.with(|failure| {
+        failure
+            .borrow()
+            .words
+            .as_ref()
+            .map(|(_, words)| words.clone())
+    })
+}
+
+/// A provider failure as a step error: its FileMaker code, else -1. Its
+/// words are kept for the step's alert.
 pub(crate) fn data_error(error: DataError) -> HostError {
-    HostError::Error(ErrorCode(error.code.unwrap_or(-1)))
+    let code = ErrorCode(error.code.unwrap_or(-1));
+    note_failure(error.message);
+    HostError::Error(code)
 }
 
 impl CalcHost for WorkerHost<'_> {
@@ -4120,6 +4186,11 @@ impl ScriptHost for WorkerHost<'_> {
         lost || self.s.abort.swap(false, Ordering::SeqCst) || self.s.interrupted || self.s.halt
     }
 
+    fn before_step(&mut self) {
+        // Words belong to the step that gave them (#818).
+        begin_step();
+    }
+
     fn take_triggers(&mut self) -> Vec<Trigger> {
         // The layout may have changed: names and fields follow it.
         self.sync_layout(false);
@@ -4161,6 +4232,9 @@ impl ScriptHost for WorkerHost<'_> {
         if let Some(saving) = held.saving {
             self.related_field_saved(saving);
         }
+        // The held step runs again: words the trigger's steps or the
+        // window's selection left are not its failure's (#818).
+        begin_step();
         self.run_act_from(held.act, held.stage, Some(held.fired))
     }
 
@@ -4183,7 +4257,7 @@ impl ScriptHost for WorkerHost<'_> {
             // Go to Record past the last record is silent.
             return AlertChoice::Continue;
         }
-        let detail = self.s.failure.take().unwrap_or_default();
+        let detail = take_failure().unwrap_or_default();
         if alert.script.is_empty()
             && matches!(alert.step, 28 | 126 | 127)
             && alert.code == ErrorCode(code::NO_MATCH)
@@ -6125,13 +6199,13 @@ impl Network for WorkerHost<'_> {
                 return Err(HostError::Unsupported);
             }
         }
-        let failed = |host: &mut Self, code: ErrorCode, message: String| {
-            host.s.failure = Some(message);
+        let failed = |code: ErrorCode, message: String| {
+            note_failure(message);
             HostError::Error(code)
         };
         if mail.via == MailVia::Smtp {
             let (account, message) =
-                om_url::smtp_parts(mail).map_err(|e| failed(self, e.code(), e.to_string()))?;
+                om_url::smtp_parts(mail).map_err(|e| failed(e.code(), e.to_string()))?;
             // Esc, Cmd-. and a closing window end the step at any point of
             // the session, as for Insert from URL.
             let mut cancelled = || {
@@ -6142,11 +6216,11 @@ impl Network for WorkerHost<'_> {
                     || self.s.halt
             };
             let sent = om_url::send_smtp(&account, &message, None, &mut cancelled);
-            return sent.map_err(|e| failed(self, e.code(), e.to_string()));
+            return sent.map_err(|e| failed(e.code(), e.to_string()));
         }
         let url = om_url::mailto(&mail.to, &mail.cc, &mail.bcc, &mail.subject, &mail.message)
-            .map_err(|e| failed(self, ErrorCode::UNAVAILABLE, e.to_string()))?;
-        mail::open_mailto(&url).map_err(|message| failed(self, ErrorCode::UNAVAILABLE, message))
+            .map_err(|e| failed(ErrorCode::UNAVAILABLE, e.to_string()))?;
+        mail::open_mailto(&url).map_err(|message| failed(ErrorCode::UNAVAILABLE, message))
     }
 
     /// Insert from URL (`om_url`): into a container field as container

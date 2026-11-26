@@ -1018,7 +1018,7 @@ the others belong to the platform that saved them and are kept as stored.
 
 | tag | content |
 |---|---|
-| `Comm` in `87` (29 bytes) | u8 orientation (0 portrait, 2 landscape), f32 scale (1.0 = 100%), f32 x 4 paper rectangle in points relative to the printable origin (left, top, right, bottom: A4 = -8.5, -8.5, 586.77, 833.36), f32 x 2 printable width and height [O 7 steps against XML `PageSetup`: `Orientation`, `scale`, `size` = paper height and width in 1/100 inch] |
+| `Comm` in `87` (29 bytes) | u8 orientation (0 portrait, 2 landscape), f32 scale (1.0 = 100%), f32 x 4 paper rectangle in points relative to the printable origin (left, top, right, bottom: A4 = -8.5, -8.5, 586.77, 833.36), f32 x 2 printable width and height [O 7 steps against XML `PageSetup`: `Orientation`, `scale`, `size` = paper height and width in 1/100 inch]. The rectangle stays the upright sheet in every orientation and scale, while the printable size is in the page's own orientation and divided by the scale: US Letter on -18, -18, 594, 774 stores 576 x 734 portrait, 734 x 576 landscape, 1223.33 x 960 landscape at 60%, and 1835 x 1440 at 40% [O: the `Comm` chunks of seven Print Setup steps FileMaker Pro 26 for macOS saved, [#817](https://github.com/OpenMaker-Dev/openmaker/issues/817)] |
 | `Comm` in `88` (11 bytes) | u16 page numbering offset (0; 0x13 for "number pages from 20"), u16 from page, u16 to page (`ffff` or 9999 = all), u16 copies, u8 1 = all pages, u16 1 [O 11 steps against XML `Print/Pages All from to offset`, `Copies value`; collate not located] |
 | `PrNm` | printer name, UTF-32 text with a header [Low] |
 | `M_PM`, `M_PD`, `MMod` | macOS print records (PMPageFormat / PMPrintSettings XML property lists) [O tags] |

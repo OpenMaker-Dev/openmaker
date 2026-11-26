@@ -16,10 +16,14 @@ use crate::{BreakField, Layout, PartKind, Rect};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PageSize {
+    /// The page in layout points: the sheet divided by [`Self::scale`].
     pub width: f64,
     pub height: f64,
     /// Insets (not coordinates): top, left, bottom, right.
     pub margins: Rect,
+    /// Page Setup's scale, 1.0 = 100%: the sheet is the page times this,
+    /// and output draws the layout at this fraction of its size.
+    pub scale: f64,
 }
 
 impl Default for PageSize {
@@ -34,6 +38,7 @@ impl Default for PageSize {
                 right: 36.0,
                 ..Rect::default()
             },
+            scale: 1.0,
         }
     }
 }
@@ -41,6 +46,12 @@ impl Default for PageSize {
 impl PageSize {
     pub fn for_layout(layout: &Layout) -> Result<Self, String> {
         crate::paper::PaperSettings::initial(layout)?.for_layout(layout)
+    }
+
+    /// The sheet the page prints on, in points: what a PDF page's media
+    /// box and a printer's paper are.
+    pub fn sheet(&self) -> (f64, f64) {
+        (self.width * self.scale, self.height * self.scale)
     }
 
     pub fn printable_width(&self) -> f64 {
