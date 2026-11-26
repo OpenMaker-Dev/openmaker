@@ -10,7 +10,10 @@ import androidx.lifecycle.viewModelScope
 import dev.openmaker.go.engine.Document
 import dev.openmaker.go.engine.GoException
 import dev.openmaker.go.engine.Host
+import dev.openmaker.go.engine.HostChange
+import dev.openmaker.go.engine.hostKey
 import dev.openmaker.go.engine.Input
+import dev.openmaker.go.engine.Permit
 import dev.openmaker.go.engine.SignIn
 import dev.openmaker.go.engine.Source
 import dev.openmaker.go.engine.Viewport
@@ -30,8 +33,39 @@ enum class Tab(val title: String) {
 /** The sign-in a file asks for: the open fails back into it with [error]. */
 data class SignInRequest(val entry: Entry, val error: String? = null, val opening: Boolean = false)
 
-/** The host form of the Hosts tab. */
-data class HostForm(val address: String, val port: String, val file: String = "", val certificate: String = "")
+/**
+ * Add Host, or Edit Host for the host it [replaces]: the fields as typed,
+ * and why the last Save was refused.
+ */
+data class HostEditor(
+    val replaces: SavedHost? = null,
+    val address: String = "",
+    val port: String = Entry.DEFAULT_PORT.toString(),
+    val name: String = "",
+    val certificate: String = "",
+    /** The certificate authorities Edit Host showed when it opened. */
+    val loaded: String = "",
+    /** The fingerprint of the certificate permitted for the host edited; empty for none. */
+    val permitted: String = "",
+    val error: String? = null,
+)
+
+/**
+ * A host whose certificate could not be verified, as FileMaker Go asks
+ * about one: Always Permit, Connect (this time) or Don't Connect. [retry]
+ * does again what met it once the user permits the certificate.
+ */
+class TrustPrompt(val untrusted: GoException.Untrusted, val retry: () -> Unit)
+
+/** A host's file list, as its page shows it. */
+sealed interface Listing {
+    /** Being asked for. Each request is its own: a reply to an older one is dropped. */
+    class Pending : Listing
+
+    data class Listed(val files: List<Entry>) : Listing
+
+    data class Failed(val reason: String) : Listing
+}
 
 /**
  * The Launch Center and the open file. Held for the activity's whole life,
@@ -48,15 +82,19 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var recent by mutableStateOf(library.recent)
         private set
-    var hostForm by mutableStateOf(
-        HostForm(
-            library.lastHost,
-            library.lastPort.toString(),
-            certificate = library.certificate(library.lastHost.trim(), library.lastPort),
-        )
-    )
-    var hosted by mutableStateOf(emptyList<Entry>())
+    var hosts by mutableStateOf(library.hosts)
         private set
+    /** The host whose files the Hosts tab shows; null for the list of hosts. */
+    var hostPage by mutableStateOf<SavedHost?>(null)
+        private set
+    /** Each host's file list, by its address (as typed) and port, while the app runs. */
+    var listings by mutableStateOf(mapOf<Pair<String, Int>, Listing>())
+        private set
+    var hostEditor by mutableStateOf<HostEditor?>(null)
+    var trustPrompt by mutableStateOf<TrustPrompt?>(null)
+        private set
+    /** Certificates permitted with Connect, for as long as the app runs, by host ([hostKey]). */
+    private val connectedOnce = mutableMapOf<String, Permit>()
     var working by mutableStateOf(false)
         private set
     var message by mutableStateOf<String?>(null)
@@ -76,6 +114,7 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
         local = library.localFiles()
         favorites = library.favorites
         recent = library.recent
+        hosts = library.hosts
     }
 
     fun import(uri: Uri) = background({ library.import(uri) }) { refresh() }
@@ -104,56 +143,184 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
 
     fun removeLicense() = background({ vault.remove() }) { licenseSaved = vault.saved }
 
-    /** The certificate authority a hosted entry trusts. */
-    private fun host(entry: Entry) = Host(entry.host, entry.port.toUShort(), library.certificate(entry.host, entry.port))
+    /**
+     * A hosted entry's host, with the certificate authorities it trusts and
+     * the certificate permitted for it, or a [GoException] when its
+     * certificate authorities cannot all be used.
+     */
+    private fun host(entry: Entry) = endpoint(entry.host, entry.port)
 
     /**
-     * The host form's address or port changed. The certificate authority
-     * in the form belongs to its host and port: another endpoint's is the
-     * one saved for it (none if none was), never one typed for the last.
+     * A host as the engine connects to it: with the certificate authorities
+     * trusted for it, and the certificate permitted for it, the one
+     * permitted with Connect in this run first (a newer certificate than
+     * one saved with Always Permit); and those permitted for other hosts,
+     * for a file a script opens there.
      */
-    fun editHost(address: String = hostForm.address, port: String = hostForm.port) {
-        val form = hostForm
-        val moved =
-            address.trim() != form.address.trim() || port.trim().toIntOrNull() != form.port.trim().toIntOrNull()
-        val certificate =
-            if (!moved) form.certificate
-            else port.trim().toIntOrNull()?.let { library.certificate(address.trim(), it) }.orEmpty()
-        hostForm = form.copy(address = address, port = port, certificate = certificate)
+    private fun endpoint(address: String, port: Int): Host {
+        val key = hostKey(address, port.toUShort())
+        val elsewhere = (library.permits() + connectedOnce.values).filter { hostKey(it.address, it.port) != key }
+        return Host(
+            address,
+            port.toUShort(),
+            library.connectCertificate(address, port),
+            connectedOnce[key]?.fingerprint ?: library.permitted(address, port),
+            elsewhere,
+        )
     }
 
-    /** Browse the form's host, or with a file name go straight to its sign-in. */
-    fun browseHost() {
-        val form = hostForm
-        val address = form.address.trim()
-        val port = form.port.trim().toIntOrNull()
-        if (address.isEmpty() || port == null || port !in 1..65535) {
-            message = "Enter a host and a port from 1 to 65535."
-            return
+    /** Ask about a host whose certificate could not be verified, and do [retry] again if it is permitted. */
+    private fun askTrust(untrusted: GoException.Untrusted, retry: () -> Unit) {
+        trustPrompt = TrustPrompt(untrusted, retry)
+    }
+
+    /**
+     * Connect (this time), or with [always] Always Permit: the certificate
+     * [prompt] asked about is accepted for its host. Only the prompt shown
+     * now is answered.
+     */
+    fun permit(prompt: TrustPrompt, always: Boolean) {
+        if (trustPrompt !== prompt) return
+        trustPrompt = null
+        val untrusted = prompt.untrusted
+        val key = hostKey(untrusted.host, untrusted.port)
+        if (always) {
+            library.permit(untrusted.host, untrusted.port.toInt(), untrusted.fingerprint)
+            connectedOnce.remove(key)
+        } else {
+            connectedOnce[key] = Permit(untrusted.host, untrusted.port, untrusted.fingerprint)
         }
-        // A certificate authority belongs to the host and port it was
-        // entered for. The form shows the one saved for them, so a field
-        // the user cleared removes it.
-        val certificate = form.certificate.trim()
-        // A cleared one is removed now: a browse that fails without it
-        // must not leave the host trusted through it.
-        if (certificate.isEmpty()) library.trust(address, port, "")
-        val remember = {
-            library.lastHost = address
-            library.lastPort = port
-            library.trust(address, port, certificate)
+        prompt.retry()
+    }
+
+    /** Don't Connect. */
+    fun dontConnect(prompt: TrustPrompt) {
+        if (trustPrompt === prompt) trustPrompt = null
+    }
+
+    /** Forget the certificate permitted for the host Edit Host edits. */
+    fun forgetPermitted() {
+        val editor = hostEditor ?: return
+        val host = editor.replaces ?: return
+        library.forgetPermitted(host.address, host.port)
+        connectedOnce.remove(host.key)
+        forgetListing(host)
+        hostEditor = editor.copy(permitted = "")
+    }
+
+    /** Add Host. */
+    fun addHost() {
+        hostEditor = HostEditor()
+    }
+
+    /** Edit Host, with the certificate authority trusted for it. */
+    fun editHost(host: SavedHost) {
+        val certificate = library.certificate(host.address, host.port)
+        hostEditor =
+            HostEditor(
+                host,
+                host.address,
+                host.port.toString(),
+                host.name,
+                certificate,
+                loaded = certificate,
+                permitted = library.permitted(host.address, host.port),
+            )
+    }
+
+    /**
+     * Save the host Add Host or Edit Host describes, checked as the
+     * desktop's Add Host checks one, or say in the editor what to fix. A
+     * host whose page is shown stays shown, at its new address.
+     */
+    fun saveHost() {
+        val editor = hostEditor ?: return
+        val host =
+            try {
+                library.saveHost(
+                    HostChange(
+                        editor.replaces?.listed(),
+                        editor.loaded,
+                        editor.address,
+                        editor.port,
+                        editor.name,
+                        // As typed: the engine checks its bounds before anything else.
+                        editor.certificate,
+                    )
+                )
+            } catch (error: GoException) {
+                hostEditor = editor.copy(error = error.goMessage())
+                return
+            }
+        // Nor does a certificate permitted with Connect stay with an address or port the host left.
+        editor.replaces?.takeUnless { it.isHost(host) }?.let { connectedOnce.remove(it.key) }
+        hosts = library.hosts
+        hostEditor = null
+        // Its files are listed again: the address, port or certificate
+        // authority they were listed with may have changed.
+        editor.replaces?.let { forgetListing(it) }
+        forgetListing(host)
+        if (hostPage?.let { shown -> editor.replaces?.isHost(shown) == true || shown.isHost(host) } == true) {
+            showHost(host)
         }
-        val file = form.file.trim()
-        if (file.isNotEmpty()) {
-            remember()
-            signIn = SignInRequest(Entry(file, address, port))
-            return
+    }
+
+    fun removeHost(host: SavedHost) {
+        library.removeHost(host)
+        connectedOnce.remove(host.key)
+        hosts = library.hosts
+        forgetListing(host)
+        if (hostPage?.isHost(host) == true) hostPage = null
+    }
+
+    /** Show [host]'s files, listing them if they have not been. */
+    fun showHost(host: SavedHost) {
+        hostPage = host
+        if (listings[key(host)] == null) listHost(host)
+    }
+
+    /** Back from a host's files to the list of hosts. */
+    fun showHosts() {
+        hostPage = null
+    }
+
+    /**
+     * Ask [host] for the files it lists. The answer shows on its page; one
+     * that comes after the host was changed or removed, or asked again, is
+     * dropped.
+     */
+    fun listHost(host: SavedHost) {
+        val key = key(host)
+        // Read here, as the permits are kept on this thread; a host whose
+        // certificate authorities cannot all be used fails as a listing.
+        val endpoint = runCatching { endpoint(host.address, host.port) }
+        val asked = Listing.Pending()
+        listings = listings + (key to asked)
+        viewModelScope.launch {
+            val result =
+                withContext(Dispatchers.IO) { endpoint.mapCatching { dev.openmaker.go.engine.hostedFiles(it) } }
+            if (listings[key] !== asked) return@launch
+            (result.exceptionOrNull() as? GoException.Untrusted)?.let { askTrust(it) { listHost(host) } }
+            listings =
+                listings +
+                    (key to
+                        result.fold(
+                            { names -> Listing.Listed(names.map { Entry(it, host.address, host.port) }) },
+                            { Listing.Failed(it.goMessage()) },
+                        ))
         }
-        background({ dev.openmaker.go.engine.hostedFiles(Host(address, port.toUShort(), certificate)) }) { names ->
-            remember()
-            hosted = names.map { Entry(it, address, port) }
-            if (names.isEmpty()) message = "This host lists no files."
-        }
+    }
+
+    /** Sign in to a file [host] does not list, by its name ([name].fmp12). */
+    fun openByName(host: SavedHost, name: String) {
+        if (name.isBlank()) return
+        signIn = SignInRequest(Entry(dev.openmaker.go.engine.hostedFileName(name), host.address, host.port))
+    }
+
+    private fun key(host: SavedHost) = host.address to host.port
+
+    private fun forgetListing(host: SavedHost) {
+        listings = listings - key(host)
     }
 
     /**
@@ -183,7 +350,11 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
         }
         opening = viewModelScope.launch {
             val signal = FrameSignal()
-            val source = if (entry.local) Source.Local(library.path(entry)) else Source.Hosted(host(entry), entry.name)
+            // Read here, as the permits are kept on this thread; a host whose
+            // certificate authorities cannot all be used fails as an open.
+            val source = runCatching {
+                if (entry.local) Source.Local(library.path(entry)) else Source.Hosted(host(entry), entry.name)
+            }
             // An open can't be interrupted, and its document belongs to this
             // coroutine until the session takes it: if the view model is
             // cleared first (the activity went), even as the open's result
@@ -192,7 +363,7 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val result =
                     withContext(Dispatchers.IO + NonCancellable) {
-                        runCatching {
+                        source.mapCatching { source ->
                             // A hosted sign-in with no license typed sends
                             // the one saved in Settings.
                             val key = license.trim().ifEmpty { if (entry.local) "" else vault.load() }
@@ -222,6 +393,11 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
                             // or whose own account is refused, asks for one.
                             is GoException.Credentials -> signIn = SignInRequest(entry, error.reason.takeIf { prompted })
                             is GoException.SignInRequired -> signIn = SignInRequest(entry, error.reason.takeIf { prompted })
+                            // Asked about, and opened again with the same sign-in if permitted.
+                            is GoException.Untrusted -> {
+                                signIn = SignInRequest(entry, error.reason.takeIf { prompted })
+                                askTrust(error) { open(entry, account, password, license, viewport, prompted) }
+                            }
                             else -> {
                                 signIn = null
                                 message = error.goMessage()
@@ -278,5 +454,6 @@ fun Throwable.goMessage(): String =
         is GoException.Credentials -> reason
         is GoException.SignInRequired -> reason
         is GoException.Failed -> reason
+        is GoException.Untrusted -> reason
         else -> localizedMessage ?: "The operation failed."
     }

@@ -10,13 +10,18 @@
 //!   perform FileMaker scripts", named `wv`, its address the formula under
 //!   attribute `00 00/5`), and its calculated `data:` page (with a `#` that
 //!   automatic URL encoding must keep) opens as a child window of the app's
-//!   window, the object's size.
+//!   window, the object's size. Its inline script calls
+//!   `FileMaker.PerformScript ( "Record" ; "inline" )` as the view's first
+//!   document loads, which must run too.
 //! - OnLayoutEnter calls the page's `show` with Perform JavaScript in Web
 //!   Viewer, until the page has loaded; `show` writes its text parameters
 //!   (quotes, a return, non-ASCII) into the page and calls
 //!   `FileMaker.PerformScript ( "Record" ; <the element's text> )`, which
 //!   sets and commits the record's field. It also asks a hidden frame to
-//!   load a bridge message of its own making, which must run nothing.
+//!   load a bridge message of its own making, which must run nothing, and
+//!   embeds a frame from another loopback server (another origin), which
+//!   posts to the bridge's message handler and calls the page's
+//!   `FileMaker.PerformScript`: neither may run a script.
 //! - A real click (XTest) on the page's button calls
 //!   `FileMaker.PerformScriptWithOption`; that script loads a page from a
 //!   loopback HTTP server with Set Web Viewer, which calls back on load.
@@ -127,7 +132,7 @@ fn script(id: u64, name: &str, steps: Vec<ScriptStep>) -> Script {
     script
 }
 
-fn scripts(port: u16) -> ScriptCatalog {
+fn scripts(port: u16, frame_port: u16) -> ScriptCatalog {
     let mut go_to_other = ScriptStep::new(6);
     go_to_other.value = 2;
     go_to_other.set_member_key(StoredKey::from_id(u64::from(OTHER)));
@@ -138,7 +143,14 @@ fn scripts(port: u16) -> ScriptCatalog {
         error_capture(),
         step(141, &[(1, "0")]),
         ScriptStep::new(71),
-        perform_javascript("\"show\"", &["\"say \\\"hi\\\"\" & ¶ & \"é\"", "2"]),
+        perform_javascript(
+            "\"show\"",
+            &[
+                "\"say \\\"hi\\\"\" & ¶ & \"é\"",
+                "2",
+                &format!("\"http://127.0.0.1:{frame_port}/frame.html\""),
+            ],
+        ),
         step(72, &[(0, "Get ( LastError ) = 0 or $i > 200")]),
         step(141, &[(1, "$i + 1")]),
         pause,
@@ -184,15 +196,19 @@ fn scripts(port: u16) -> ScriptCatalog {
 /// Title; the `#msg` rule must survive automatic URL encoding.
 const PAGE: &str = "\"data:text/html,<!doctype html><html><head><title>\" & Records::Title & \
     \"</title><style>body{margin:0} #msg{color:green}</style><script>\
-    function show(text, n) { var msg = document.getElementById('msg'); \
+    function show(text, n, frame) { var msg = document.getElementById('msg'); \
     var forged = document.createElement('iframe'); forged.style.display = 'none'; \
     forged.src = 'openmaker-message:openmaker-perform-script&s=Record&p=forged&o=0'; \
     document.body.appendChild(forged); \
+    if (frame) { var other = document.createElement('iframe'); other.src = frame; \
+    other.style.cssText = 'position:absolute;left:320px;top:0;width:150px;height:80px'; \
+    document.body.appendChild(other); } \
     msg.textContent = text + '|' + n; FileMaker.PerformScript('Record', msg.textContent); } \
     function send() { FileMaker.PerformScriptWithOption('Record', 'clicked:' + \
     document.getElementById('msg').textContent, '0'); }</script></head><body>\
     <p id='msg'>waiting</p><button onclick='send()' style='position:absolute;left:0;\
-    top:100px;width:300px;height:150px'>Send</button></body></html>\"";
+    top:100px;width:300px;height:150px'>Send</button>\
+    <script>FileMaker.PerformScript('Record', 'inline');</script></body></html>\"";
 
 /// The web viewer as FileMaker stores it, decoded by `om-layout`.
 fn web_viewer_layout() -> Layout {
@@ -484,9 +500,31 @@ impl DataProvider for Provider {
     }
 }
 
-/// A loopback HTTP server: every request gets the page, which calls back on
-/// load and, too late, from a timer.
-fn serve() -> (u16, Arc<Mutex<Vec<String>>>) {
+/// What the loopback server for Set Web Viewer answers: a page that calls
+/// back on load and, too late, from a timer.
+const HTTP_PAGE: &str = "<!doctype html><html><body><p id='m'>http page</p><script>\
+    window.addEventListener('load', function () {\
+    FileMaker.PerformScript('Record', 'http:' + location.host + location.pathname);\
+    setTimeout(function () { FileMaker.PerformScript('Record', 'late'); }, 1500);\
+    });</script></body></html>";
+
+/// What the second loopback server answers, as a frame of another origin
+/// in the web viewer's page: it posts to the bridge's message handler and
+/// calls the page's `FileMaker`, then asks for `/tried`, with what each
+/// attempt did.
+const FRAME_PAGE: &str = "<!doctype html><html><body><p>other origin</p><script>\
+    var tried = [];\
+    try { window.webkit.messageHandlers.openmaker.postMessage(\
+    'openmaker-perform-script&s=Record&p=forged-frame&o=0'); tried.push('handler:posted'); }\
+    catch (e) { tried.push('handler:' + e.name); }\
+    try { parent.FileMaker.PerformScript('Record', 'forged-frame'); tried.push('parent:called'); }\
+    catch (e) { tried.push('parent:' + e.name); }\
+    new Image().src = '/tried?' + tried.join(',');\
+    </script></body></html>";
+
+/// A loopback HTTP server that answers every request with `body`, and the
+/// request lines it saw.
+fn serve(body: &'static str) -> (u16, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
     let port = listener.local_addr().unwrap().port();
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -508,11 +546,6 @@ fn serve() -> (u16, Arc<Mutex<Vec<String>>>) {
                 .unwrap_or_default()
                 .to_owned();
             seen.lock().unwrap().push(line);
-            let body = "<!doctype html><html><body><p id='m'>http page</p><script>\
-                window.addEventListener('load', function () {\
-                FileMaker.PerformScript('Record', 'http:' + location.host + location.pathname);\
-                setTimeout(function () { FileMaker.PerformScript('Record', 'late'); }, 1500);\
-                });</script></body></html>";
             let _ = write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
@@ -527,6 +560,9 @@ fn serve() -> (u16, Arc<Mutex<Vec<String>>>) {
 #[derive(Debug, PartialEq)]
 enum Phase {
     Loading,
+    /// The page's child window or view, and once the other origin's frame
+    /// has tried to post, how long any message of its gets to arrive.
+    Framed(u64, Option<Instant>),
     Clicking,
     Navigating,
     Late(Instant),
@@ -537,6 +573,7 @@ struct Driver {
     app: OpenMakerApp,
     state: Arc<Mutex<State>>,
     requests: Arc<Mutex<Vec<String>>>,
+    frame_requests: Arc<Mutex<Vec<String>>>,
     port: u16,
     native: native::Native,
     phase: Phase,
@@ -923,6 +960,11 @@ impl Driver {
                 "a message without the bridge ran a script: {history:?}"
             ));
         }
+        if history.iter().any(|v| v == "forged-frame") {
+            fail(format!(
+                "a frame of another origin ran a script: {history:?}"
+            ));
+        }
         if Instant::now() > self.deadline {
             fail(format!(
                 "timed out in {:?}; history {history:?}; error {:?}; children {:?}",
@@ -933,6 +975,11 @@ impl Driver {
         }
         match self.phase {
             Phase::Loading if given == SHOWN => {
+                if !history.iter().any(|v| v == "inline") {
+                    fail(format!(
+                        "the first document's inline call ran nothing: {history:?}"
+                    ));
+                }
                 let children = self.native.children(parent);
                 let [(child, x, y, width, height, true)] = children[..] else {
                     fail(format!("expected one shown child: {children:?}"));
@@ -948,6 +995,23 @@ impl Driver {
                     println!("web processes: {count}");
                 }
                 self.native.shot(parent, "1-page-after-perform-javascript");
+                self.phase = Phase::Framed(child, None);
+            }
+            Phase::Framed(child, None) => {
+                let requests = self.frame_requests.lock().unwrap().clone();
+                if let Some(tried) = requests.iter().find(|r| r.starts_with("GET /tried")) {
+                    println!("the other origin's frame: {tried}");
+                    if tried.contains(":posted") || tried.contains(":called") {
+                        fail(format!(
+                            "the other origin's frame reached the bridge: {tried}"
+                        ));
+                    }
+                    let until = Instant::now() + Duration::from_secs(2);
+                    self.phase = Phase::Framed(child, Some(until));
+                }
+            }
+            Phase::Framed(child, Some(until)) if Instant::now() >= until => {
+                println!("nothing the other origin's frame posted ran a script");
                 self.native.click(parent, child, 150, 175);
                 self.phase = Phase::Clicking;
             }
@@ -1023,9 +1087,10 @@ fn main() {
         eprintln!("FAIL: watchdog");
         std::process::exit(3);
     });
-    let (port, requests) = serve();
+    let (port, requests) = serve(HTTP_PAGE);
+    let (frame_port, frame_requests) = serve(FRAME_PAGE);
     let state = Arc::new(Mutex::new(State {
-        scripts: scripts(port),
+        scripts: scripts(port, frame_port),
         ..Default::default()
     }));
     let provider = Provider(Arc::clone(&state));
@@ -1052,6 +1117,7 @@ fn main() {
                 app,
                 state,
                 requests,
+                frame_requests,
                 port,
                 native,
                 phase: Phase::Loading,

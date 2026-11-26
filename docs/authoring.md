@@ -156,6 +156,7 @@ and every response is one JSON object:
 | `place_field` | as `plan_field_placement`, `expected_revision` required | `status` (`placed`, `already_applied`), the `objects` and their refs, `previous_revision`, `revision`, and `verified` from a new connection |
 | `place_text` | `layout`/`layout_name`, `text` (one line), `frame` (`left`, `top`, `width`, `height` in points), `expected_revision` (get_layout's, required) | `status` (`placed`, `already_applied`), the `layout`, the text's `object` reference, `previous_revision`, `revision`, and `verified` from a new connection. [Texts on layouts](#texts-on-layouts) |
 | `set_object_frames` | `layout`/`layout_name`, `objects` (each a `layout_object` reference and its new `frame`: `left`, `top`, `width`, `height` in points), `expected_revision` (get_layout's, required) | `status` (`moved`, `already_applied`), the `layout`, the `objects`, `previous_revision`, `revision`, and `verified` from a new connection. [Moving objects](#moving-objects) |
+| `move_objects` | `layout`/`layout_name`, `objects` (one or more `layout_object` references), `dx` and `dy` in points, `expected_revision` (get_layout's, required) | The `set_object_frames` write result, or `unchanged` with the layout and revision if the effective offset is zero. [Moving objects](#moving-objects) |
 | `arrange_objects` | `layout`/`layout_name`, `objects` (`layout_object` references: two or more, three to distribute), `arrangement` (`align_left_edges`, `align_vertical_centers`, `align_right_edges`, `align_top_edges`, `align_horizontal_centers`, `align_bottom_edges`, `distribute_horizontally`, `distribute_vertically`, `resize_to_smallest_width`, `resize_to_smallest_height`, `resize_to_smallest_width_and_height`, `resize_to_largest_width`, `resize_to_largest_height`, `resize_to_largest_width_and_height`), `expected_revision` (get_layout's, required) | `status` (`moved`, `already_applied`, `unchanged`) and the `arrangement`. A write returns `set_object_frames`'s result fields; an arrangement that changes nothing returns the `layout` and its `revision`. [Arranging objects](#arranging-objects) |
 | `delete_objects` | `layout`/`layout_name`, `objects` (`layout_object` references), `expected_revision` (get_layout's, required) | `status` (`deleted`, `already_applied`), the `layout`, the `objects`, `previous_revision`, `revision`, and `verified` from a new connection. [Deleting objects](#deleting-objects) |
 | `create_layout` | `name`, `occurrence` or `occurrence_name` (the table occurrence it shows records of), optional `layout`/`layout_name` (whose theme and width it takes), `expected_revision` (inspect's `layouts_revision`, required) | `status` (`created`, `already_applied`), the `layout` (`ref`, `id`, `name`), the `occurrence`, `previous_revision`, `revision`, and `verified` from a new connection. [New layouts](#new-layouts) |
@@ -613,6 +614,17 @@ The desktop's Layout mode moves and resizes objects the same way
 (`DataProvider::set_layout_object_frames`, the same request) at Save
 Layout ([desktop client](desktop-client.md), "Layout mode and Manage
 Layouts").
+
+`move_objects` takes horizontal and vertical offsets in points, positive
+to the right and down. The CLI takes `--dx`, `--dy` and one `--object`
+per object. The command uses the same translation as a canvas drag or
+arrow-key move: it rounds the offset to whole points, clamps it for the
+whole selection at the left and top edges, snaps origins and preserves
+object sizes. A zero effective offset leaves the layout unchanged.
+The same frame-writer restrictions apply to the entire selection.
+A relative move applies only at `expected_revision`. If the revision
+changed or a reply was lost, read the layout again to see where the
+objects are before requesting another move.
 
 ### Arranging objects
 

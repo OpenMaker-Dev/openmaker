@@ -12,8 +12,8 @@ use om_author::api::{
     ArrangeObjectsParams, ChangePartsParams, CreateFieldParams, CreateLayoutParams,
     DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, FieldControlParams, FieldType,
     FrameParams, InspectParams, LabelParams, LayoutParams, LayoutSetupParams, LayoutWidthParams,
-    ObjectFrameParams, ObjectFramesParams, PageMargins, Part, PartOptionsParams, PlaceFieldParams,
-    PlacePortalParams, PlaceTextParams, PlacementParams, TextParams,
+    MoveObjectsParams, ObjectFrameParams, ObjectFramesParams, PageMargins, Part, PartOptionsParams,
+    PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlacementParams, TextParams,
 };
 use om_author::{Command, Service};
 use om_data::DataProvider;
@@ -187,6 +187,37 @@ fn an_object_is_moved_and_resized_and_lasts_a_restart() {
     let kept = get_layout(&mut service);
     assert_eq!(object(&kept, NAME_FIELD)["frame"], shown["frame"]);
     reopened.stop();
+}
+
+#[test]
+fn relative_move_clamps_the_selection_and_refuses_to_apply_twice() {
+    let file = TempFile::from_tree("author-relative-move", &form_tree());
+    let host = host(&file, "OpenMaker Server test");
+    let mut service = Service::new(target(&host, ACCOUNT, PASSWORD));
+    let before = get_layout(&mut service);
+    let command = Command::MoveObjects(MoveObjectsParams {
+        layout: Some(TASKS_LAYOUT.into()),
+        layout_name: None,
+        objects: [NAME_FIELD, NAME_LABEL]
+            .map(|key| format!("layout_object:1.{key}@Tasks.fmp12"))
+            .to_vec(),
+        dx: -100.0,
+        dy: 1.6,
+        expected_revision: text(&before["revision"]).into(),
+    });
+    let moved = ok(service.handle(&command));
+    assert_eq!(moved["status"], "moved");
+    assert_eq!(moved["verified"]["fresh_connection"], true);
+    let after = get_layout(&mut service);
+    for key in [NAME_FIELD, NAME_LABEL] {
+        let mut expected = object(&before, key)["frame"].clone();
+        expected["left"] = json!(expected["left"].as_f64().unwrap() - 20.0);
+        expected["top"] = json!(expected["top"].as_f64().unwrap() + 2.0);
+        assert_eq!(object(&after, key)["frame"], expected);
+    }
+    let retry = error(service.handle(&command));
+    assert_eq!(retry["kind"], "conflict");
+    assert_eq!(get_layout(&mut service)["revision"], after["revision"]);
 }
 
 /// delete_objects deletes the Name field at the revision get_layout gave:

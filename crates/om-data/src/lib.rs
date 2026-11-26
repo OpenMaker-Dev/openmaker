@@ -30,8 +30,10 @@ pub mod found;
 pub mod host;
 pub mod layout_arrange;
 pub mod layout_catalog;
+pub mod layout_move;
 pub mod layout_objects;
 pub mod layout_placement;
+pub mod layout_selection;
 pub mod library_uses;
 pub mod meta;
 pub mod new_file;
@@ -46,7 +48,7 @@ mod step_names;
 pub mod summary;
 pub mod summary_field;
 pub mod value_lists;
-pub use browse::{HostBrowser, HostListing, ListingError, ListingFailure};
+pub use browse::{HostBrowser, HostListing, ListingError, ListingFailure, UntrustedHost};
 pub use schema::{
     arrange, unused_name, Arrangement, DatabaseSchema, FieldColumn, OccurrenceBox, OccurrenceShows,
     RelationshipMatch, RelationshipSide, SchemaCapabilities, SchemaChange, SchemaField,
@@ -131,6 +133,15 @@ pub struct HostMessage {
     pub server_name: String,
 }
 
+/// The operation creating a record through the desktop's write path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordCreation {
+    /// The window's ordinary New Record command or script step.
+    NewRecord,
+    /// A duplicate, related row, preview, or other write.
+    Other,
+}
+
 /// A script's write of one record (Set Field and the other field steps,
 /// committed by Commit Records or by leaving the record): the rules a
 /// script's writes follow apply, not a user's (`rules::Entry::script`;
@@ -170,14 +181,10 @@ pub struct ScriptWrite {
     /// when the caller does not know it, which refuses a write whose formula
     /// reads it.
     pub privilege_set: Option<String>,
-    /// The record's `Get ( RecordNumber )` as the window answers it for the
-    /// write's auto-entered and validation formulas
-    /// (`rules::WriteContext::record_number`), given only where FileMaker's
-    /// answer is known (#1038: a row typed into the creation row of a portal
-    /// that neither sorts nor filters is its place among the portal's
-    /// related records, after those related before the save). `None`
-    /// refuses a write whose formula evaluates it.
-    pub record_number: Option<u64>,
+    /// The position the window supplies for this write's `Get ( RecordNumber )`
+    /// with the operation that established it ([`rules::RecordNumber`]).
+    /// A stored Number calculation requires ordinary local New Record.
+    pub record_number: Option<rules::RecordNumber>,
     /// The preview of this new record its window made before writing it
     /// ([`DataProvider::preview_new_record`], #1047): the write reuses the
     /// serial numbers the preview reserved and the clock and UUID it read,
@@ -187,6 +194,9 @@ pub struct ScriptWrite {
     /// write (3); the window previews the row again. `None` for any other
     /// write.
     pub prepared: Option<PreparedId>,
+    /// This existing-record write is the result of one field-setting
+    /// script step, rather than a record's accumulated draft.
+    pub single_field_step: bool,
 }
 
 /// A record of the window's that the host does not have as the window
@@ -243,6 +253,13 @@ pub struct PendingValues {
     /// such value, and every field computed from one. Such a field reads as
     /// nothing known, never as its value in `values` or as empty.
     pub unknown: std::collections::BTreeSet<u64>,
+    /// Pending results that must fail with error 3 when the preview cannot
+    /// evaluate them. Reading a prior stored value would affect the script.
+    pub unavailable: std::collections::BTreeSet<u64>,
+    /// Script-assigned Number cells whose supported auto-entry uses the
+    /// proposed value as Self. A script reads the computed value in
+    /// `values` for these cells while the raw assignment is still pending.
+    pub proposed_self: std::collections::BTreeSet<u64>,
 }
 
 /// Record operations supported for one layout's underlying table.
@@ -418,7 +435,7 @@ pub struct LayoutGeometry {
     pub width: f64,
     /// Layout height in points: the bottom of the lowest part.
     pub height: f64,
-    /// Parts, top to bottom.
+    /// Parts in provider order, each with its own position and identity.
     pub parts: Vec<PartGeom>,
     /// Objects in stacking order, back-most first; a container comes before
     /// the objects inside it.
@@ -434,12 +451,23 @@ pub struct LayoutGeometry {
 /// One layout part: a band across the layout.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PartGeom {
+    /// The stored part targeted by a resize. Synthetic bands have no identity.
+    pub identity: Option<PartIdentity>,
     /// The part type for display, e.g. "Header" or "Body".
     pub kind_name: String,
     /// Top edge in layout coordinates (points).
     pub top: f64,
     /// Height in points.
     pub height: f64,
+}
+
+/// A stored part within the layout whose geometry was read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PartIdentity {
+    /// The part's key in the layout member.
+    pub key: u64,
+    /// The stored part type, such as Header or Body.
+    pub part_type: i32,
 }
 
 /// One layout object.
@@ -457,6 +485,12 @@ pub struct ObjectGeom {
     /// The object's key in the layout's object store (0 when it is not a
     /// stored object).
     pub key: u64,
+    /// How this object participates in the Select All command.
+    pub selection: layout_selection::Target,
+    /// The object's role in a marquee over the layout.
+    pub marquee: layout_selection::MarqueeRole,
+    /// Whether FileMaker stores this object as locked in Layout mode.
+    pub locked: bool,
     /// Whether Layout mode can move and resize it
     /// ([`layout_objects::movable`]): a top-level object without contents.
     pub movable: bool,
@@ -622,6 +656,9 @@ pub struct DataError {
     /// cannot key (#571): an import ends at such a row rather than
     /// skipping it as a row FileMaker refused.
     pub unsupported: bool,
+    /// The host's certificate could not be verified: what to ask the user
+    /// about it before connecting anyway ([`UntrustedHost`]).
+    pub untrusted: Option<Box<UntrustedHost>>,
 }
 
 /// What a commit did in one file whose records it held (#1006).
@@ -674,6 +711,7 @@ impl DataError {
             lost: false,
             commit: Vec::new(),
             unsupported: false,
+            untrusted: None,
         }
     }
 
@@ -685,6 +723,7 @@ impl DataError {
             lost: false,
             commit: Vec::new(),
             unsupported: false,
+            untrusted: None,
         }
     }
 
@@ -705,6 +744,7 @@ impl DataError {
             lost: true,
             commit: Vec::new(),
             unsupported: false,
+            untrusted: None,
         }
     }
 }
@@ -1477,6 +1517,17 @@ pub trait DataProvider: Send {
         }
     }
 
+    /// Write a record with its creation operation, for write rules that
+    /// depend on how the record was created. A provider without those
+    /// rules uses its ordinary write path.
+    fn write_record_with_creation(
+        &mut self,
+        write: &ScriptWrite,
+        _creation: RecordCreation,
+    ) -> Result<Record, DataError> {
+        self.write_record(write)
+    }
+
     /// Set Field's own checks of `text` (the value as the step gives it)
     /// entered into `cell` of `table` (a field's id, or `F * 256 + n`):
     /// the rules FileMaker checks as a value is entered (maximum
@@ -2007,6 +2058,22 @@ pub trait DataProvider: Send {
     /// The file's styled layout for Browse rendering, when available.
     fn render_layout(&mut self, _layout_id: u32) -> Result<Option<RenderLayout>, DataError> {
         Ok(None)
+    }
+
+    /// Capabilities for a layout shown by a script. Merely deciding
+    /// whether a field is editable need not open an unset variable source.
+    fn record_capabilities_for_layout(
+        &mut self,
+        layout_id: u32,
+        _scripted: bool,
+    ) -> Result<RecordCapabilities, DataError> {
+        self.record_capabilities(layout_id)
+    }
+
+    /// Layout metadata needed while a script runs. Related objects can
+    /// wait for an actual read when their variable source has no path.
+    fn render_script_layout(&mut self, layout_id: u32) -> Result<Option<RenderLayout>, DataError> {
+        self.render_layout(layout_id)
     }
 
     /// List hosted files on a server (before opening one). May be empty if the

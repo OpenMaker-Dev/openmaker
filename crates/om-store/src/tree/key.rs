@@ -14,18 +14,22 @@ const END: u8 = 0x01;
 
 /// Appends the encoding of one segment.
 pub fn push_segment(out: &mut Vec<u8>, segment: &[u8]) {
-    for &b in segment {
-        out.push(b);
-        if b == 0 {
-            out.push(ESCAPE);
-        }
+    // Room for the segment and its end at once, and runs between zero bytes
+    // copied whole: a key read per node is not grown a byte at a time.
+    out.reserve(segment.len() + 2);
+    let mut rest = segment;
+    while let Some(zero) = rest.iter().position(|&b| b == 0) {
+        out.extend_from_slice(&rest[..=zero]);
+        out.push(ESCAPE);
+        rest = &rest[zero + 1..];
     }
+    out.extend_from_slice(rest);
     out.extend_from_slice(&[0, END]);
 }
 
 /// The key of a path. The empty path, the root, has the empty key.
 pub fn encode<S: AsRef<[u8]>>(path: &[S]) -> Vec<u8> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(encoded_len(path));
     for segment in path {
         push_segment(&mut out, segment.as_ref());
     }
@@ -129,9 +133,48 @@ pub fn subtree_end(key: &[u8]) -> Option<Vec<u8>> {
     // continues it and below the next sibling, which differs earlier.
     let (&last, rest) = key.split_last()?;
     debug_assert_eq!(last, END);
-    let mut end = rest.to_vec();
+    let mut end = Vec::with_capacity(key.len());
+    end.extend_from_slice(rest);
     end.push(END + 1);
     Some(end)
+}
+
+/// The last segment of the path a whole key encodes, as the last of
+/// [`decode`]'s: `None` for the empty key or one [`decode`] refuses. One
+/// pass over the key, which checks it as [`well_formed`] does and copies
+/// the runs between zero bytes whole: a listing decodes a segment for
+/// every child.
+pub fn decode_last(key: &[u8]) -> Option<Vec<u8>> {
+    let mut segment = Vec::with_capacity(key.len());
+    let (mut i, mut boundary, mut segments) = (0, true, 0);
+    while i < key.len() {
+        let run = key[i..]
+            .iter()
+            .position(|&b| b == 0)
+            .map_or(key.len(), |at| i + at);
+        if run > i {
+            segment.extend_from_slice(&key[i..run]);
+            boundary = false;
+            i = run;
+            continue;
+        }
+        match key.get(i + 1) {
+            Some(&ESCAPE) => {
+                segment.push(0);
+                boundary = false;
+            }
+            Some(&END) => {
+                boundary = true;
+                segments += 1;
+                if i + 2 < key.len() {
+                    segment.clear();
+                }
+            }
+            _ => return None,
+        }
+        i += 2;
+    }
+    (boundary && segments > 0 && segments <= MAX_DEPTH).then_some(segment)
 }
 
 /// A key the tree holds, with its path.
@@ -215,6 +258,7 @@ mod tests {
         }
         for (path, key) in paths.iter().zip(&keys) {
             assert_eq!(&decode(key).unwrap(), path);
+            assert_eq!(decode_last(key), path.last().cloned());
             assert_eq!(encoded_len(path), key.len());
             // The subtree is the range [key, end): exactly the paths below.
             if let Some(end) = subtree_end(key) {
@@ -237,9 +281,16 @@ mod tests {
         assert!(!well_formed(b"a\x00", true));
         assert!(!well_formed(b"", true));
         assert!(decode(b"a\x00\x05").is_none());
+        assert!(decode_last(b"a\x00\x05").is_none());
+        assert!(decode_last(b"a\x00\x01\x00\x01").is_some_and(|s| s.is_empty()));
+        for bad in [&b""[..], b"\x00", b"a\x00", b"a\x00\x01b", b"a\x00\x01\x00"] {
+            assert!(decode_last(bad).is_none(), "{bad:02x?}");
+        }
         // At most 64 segments, whole or begun.
         let deepest = b"\x00\x01".repeat(MAX_DEPTH);
         assert!(well_formed(&deepest, true));
+        assert_eq!(decode_last(&deepest), Some(Vec::new()));
+        assert!(decode_last(&b"\x00\x01".repeat(MAX_DEPTH + 1)).is_none());
         assert!(!well_formed(&b"\x00\x01".repeat(MAX_DEPTH + 1), true));
         assert!(!well_formed(&deepest, false));
         assert!(well_formed(&b"\x00\x01".repeat(MAX_DEPTH - 1), false));

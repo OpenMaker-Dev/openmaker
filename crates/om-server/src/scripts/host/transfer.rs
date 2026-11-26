@@ -119,43 +119,27 @@ impl ServerHost {
 
     /// Import Records (module docs).
     pub(super) fn import_step(&mut self, call: &TransferCall<'_>) -> HostResult {
+        // On a file hosted read-only, an import this server does not
+        // implement as written (a source or option it does not import)
+        // answers 3, as on a writable file, and only one it implements
+        // answers 6, before any work: what FileMaker Server answers for the
+        // first there is unmeasured, and 6 is its measured answer for a
+        // step that would change the file (script-runtime.md 13.28). A
+        // table whose rules the server does not enforce makes no
+        // difference here: those matter only once it would write.
+        if self.shared.engine.read_only(&self.hosted).is_some() {
+            Self::import_request(call)?;
+            return Err(ErrorCode::FILE_READ_ONLY.into());
+        }
         self.require_edit()?;
         self.leave()?;
-        // A folder of files, ODBC and FileMaker sources are not imported
-        // here; FileMaker Server refuses folders too.
-        if call.source_kind == 2 {
-            return Err(HostError::Unsupported);
-        }
-        let Some(order) = call.import_order.as_deref() else {
-            return Err(ErrorCode(om_transfer::code::IMPORT_ORDER_INVALID).into());
-        };
-        let options = ImportOptions::decode(order).map_err(|_| ErrorCode::INVALID)?;
-        let profile = match call.profile.as_deref() {
-            Some(bytes) => Profile::decode(bytes).map_err(|_| ErrorCode::INVALID)?,
-            None => Profile::new(FileType::TabSeparated),
-        };
-        if matches!(
-            profile.file_type,
-            FileType::FileMaker | FileType::Folder | FileType::Odbc
-        ) {
-            return Err(HostError::Unsupported);
-        }
-        let profile_ex = call
-            .profile_ex
-            .as_deref()
-            .and_then(|b| ProfileEx::decode(b).ok());
-        let field_flags = call
-            .field_flags
-            .as_deref()
-            .and_then(|b| FieldFlags::decode(b).ok());
-        import::refuse_unsupported(&options, field_flags.as_ref())
-            .map_err(|_| HostError::Unsupported)?;
+        let request = Self::import_request(call)?;
         let mut paths = call.paths.clone();
         if paths.is_empty() {
             if let ProfileBody::XmlImport {
                 xml: XmlSource::File(name),
                 ..
-            } = &profile.body
+            } = &request.profile.body
             {
                 paths.push(name.clone());
             }
@@ -172,15 +156,14 @@ impl ServerHost {
         // A table whose rules the server cannot enforce refuses the step,
         // as other script writes to it, before any row is read (rather
         // than refusing every row, 729).
-        if let Some(table) = options.table.id().and_then(|o| self.schema.table_of(o)) {
+        if let Some(table) = request
+            .options
+            .table
+            .id()
+            .and_then(|o| self.schema.table_of(o))
+        {
             self.plan(table)?;
         }
-        let request = ImportRequest {
-            options,
-            profile,
-            profile_ex,
-            field_flags,
-        };
         let own = self.transaction.is_none();
         if own {
             self.transaction = Some(Transaction::new(TransactionOptions {
@@ -222,6 +205,46 @@ impl ServerHost {
                 }
             }
         }
+    }
+
+    /// The import `call` asks for, refused when this server does not run
+    /// it: a folder of files, ODBC and FileMaker sources (FileMaker Server
+    /// refuses folders too), an import order missing or not read, and
+    /// options it does not support. Reads nothing but the step.
+    fn import_request(call: &TransferCall<'_>) -> HostResult<ImportRequest> {
+        if call.source_kind == 2 {
+            return Err(HostError::Unsupported);
+        }
+        let Some(order) = call.import_order.as_deref() else {
+            return Err(ErrorCode(om_transfer::code::IMPORT_ORDER_INVALID).into());
+        };
+        let options = ImportOptions::decode(order).map_err(|_| ErrorCode::INVALID)?;
+        let profile = match call.profile.as_deref() {
+            Some(bytes) => Profile::decode(bytes).map_err(|_| ErrorCode::INVALID)?,
+            None => Profile::new(FileType::TabSeparated),
+        };
+        if matches!(
+            profile.file_type,
+            FileType::FileMaker | FileType::Folder | FileType::Odbc
+        ) {
+            return Err(HostError::Unsupported);
+        }
+        let profile_ex = call
+            .profile_ex
+            .as_deref()
+            .and_then(|b| ProfileEx::decode(b).ok());
+        let field_flags = call
+            .field_flags
+            .as_deref()
+            .and_then(|b| FieldFlags::decode(b).ok());
+        import::refuse_unsupported(&options, field_flags.as_ref())
+            .map_err(|_| HostError::Unsupported)?;
+        Ok(ImportRequest {
+            options,
+            profile,
+            profile_ex,
+            field_flags,
+        })
     }
 
     /// A field's type and kind as transfers see them.

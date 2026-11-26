@@ -1173,7 +1173,7 @@ pub(crate) mod tests {
         host.close();
     }
 
-    /// Set Field on a file hosted read-only is refused (3) before a
+    /// Set Field on a file hosted read-only is refused (6) before a
     /// container's data is held for the edit: the refused step leaves
     /// nothing in the session.
     #[test]
@@ -1190,7 +1190,7 @@ pub(crate) mod tests {
         let data = Value::Container(om_calc::Container::file("a.txt", b"hello".to_vec()));
         assert_eq!(
             host.set_field(field(fixture::PHOTO), data),
-            Err(HostError::Error(ErrorCode(3)))
+            Err(HostError::Error(ErrorCode::FILE_READ_ONLY))
         );
         assert_eq!(host.pending_data(), 0);
         host.close();

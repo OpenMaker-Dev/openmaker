@@ -7,7 +7,7 @@
 //! or Edit > Clear deletes it ([`DeletedObjects`]); only Save Layout stores
 //! them.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f32::consts::FRAC_PI_2;
 
 use egui::emath::{GuiRounding as _, TSTransform};
@@ -16,18 +16,24 @@ use egui::scroll_area::{DragScroll, ScrollSource};
 use egui::{
     pos2, vec2, Align2, CornerRadius, Pos2, Rect, Role, Sense, Stroke, StrokeKind, Ui, WidgetInfo,
 };
-use om_data::{GeomRect, LayoutGeometry, ObjectGeom, PartGeom};
+use om_data::{layout_move, GeomRect, LayoutGeometry, ObjectGeom, PartGeom};
 
 use crate::app::LayoutTool;
 use crate::document::{zoom, DocumentState};
 use crate::session::{Geometry, Session};
 use crate::theme;
 
+use om_data::layout_selection::{
+    self, Coverage, MarqueeFrame, MarqueeRole, SelectAll, Target as SelectionTarget,
+};
+
 mod history;
 pub(crate) use history::DraftEdit;
 
 const PART_STRIP_WIDTH: f32 = 22.0;
 const PASTEBOARD_MARGIN: f32 = 48.0;
+// Approximate the contrast of Run C's blue rectangle on the right pasteboard.
+const PASTEBOARD_ARTWORK_OPACITY: f32 = 0.55;
 
 const CANNOT_MOVE_SELECTION: &str = "This selection includes an object OpenMaker cannot move. \
     No objects were moved.";
@@ -275,28 +281,23 @@ struct Edges {
     bottom: bool,
 }
 
-#[cfg(test)]
-const MOVE: Edges = Edges {
-    left: true,
-    top: true,
-    right: true,
-    bottom: true,
-};
-
-/// A Selection tool drag in progress: the object (its key), what it does,
-/// where the pointer was pressed and the frame it started from, in layout
-/// points.
+/// A selection handle drag in progress, in layout points.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Drag {
     key: u64,
     edges: Edges,
-    resize: bool,
     from: Pos2,
     start: GeomRect,
 }
 
 #[derive(Default)]
-struct Selection(BTreeSet<usize>, Option<&'static str>);
+struct Selection(BTreeSet<usize>, Option<&'static str>, SelectionOverlay);
+
+#[derive(Default)]
+struct SelectionOverlay {
+    aggregate: bool,
+    tab_controls: BTreeMap<u64, usize>,
+}
 
 impl Selection {
     fn single(&self) -> Option<usize> {
@@ -313,8 +314,18 @@ impl Selection {
 
     fn replace(&mut self, indices: impl IntoIterator<Item = usize>) {
         self.1 = None;
+        self.2 = SelectionOverlay::default();
         self.0.clear();
         self.0.extend(indices);
+    }
+
+    fn replace_with_overlay(
+        &mut self,
+        indices: impl IntoIterator<Item = usize>,
+        overlay: SelectionOverlay,
+    ) {
+        self.replace(indices);
+        self.2 = overlay;
     }
 
     fn start_drag(&mut self, index: usize, shift: bool) {
@@ -322,6 +333,7 @@ impl Selection {
             if shift {
                 self.0.insert(index);
                 self.1 = None;
+                self.2 = SelectionOverlay::default();
             } else {
                 self.set(Some(index));
             }
@@ -330,6 +342,7 @@ impl Selection {
 
     fn click(&mut self, index: Option<usize>, shift: bool) {
         self.1 = None;
+        self.2 = SelectionOverlay::default();
         if let Some(index) = index.filter(|_| shift) {
             if !self.0.remove(&index) {
                 self.0.insert(index);
@@ -350,13 +363,14 @@ pub(crate) enum NudgeDirection {
 }
 
 impl NudgeDirection {
-    fn delta(self) -> egui::Vec2 {
-        match self {
-            Self::Left => vec2(-1.0, 0.0),
-            Self::Right => vec2(1.0, 0.0),
-            Self::Up => vec2(0.0, -1.0),
-            Self::Down => vec2(0.0, 1.0),
-        }
+    fn delta(self) -> layout_move::Delta {
+        let (dx, dy) = match self {
+            Self::Left => (-1.0, 0.0),
+            Self::Right => (1.0, 0.0),
+            Self::Up => (0.0, -1.0),
+            Self::Down => (0.0, 1.0),
+        };
+        layout_move::Delta { dx, dy }
     }
 }
 
@@ -383,6 +397,8 @@ pub(crate) struct CanvasState {
     identity: Option<(String, String, Option<u32>)>,
     geometry: Option<LayoutGeometry>,
     history: history::History,
+    front_panels: BTreeMap<u64, u64>,
+    panel_generation: u64,
     new_text_editor: Option<egui::Id>,
     selected: Selection,
     scroll_to_selected: bool,
@@ -420,11 +436,10 @@ pub(crate) struct CanvasState {
     part_resize: Option<PartResize>,
 }
 
-/// A part boundary being dragged: the part's place in the layout's parts
-/// and the height the pointer is at.
+/// The stored part whose boundary began the drag, and the current height.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PartDrag {
-    index: usize,
+    part: om_data::PartIdentity,
     height: f64,
 }
 
@@ -439,10 +454,8 @@ pub(crate) struct PartResize {
     pub revision: Option<om_data::layout_placement::Revision>,
 }
 
-/// What the part boundaries need: each part's key and type, in the order of
-/// the geometry's parts, whether they may be dragged, and the drag.
+/// Whether part boundaries may be dragged, and the active and finished drag.
 struct PartEdges<'a> {
-    keys: &'a [(u64, i32)],
     enabled: bool,
     drag: &'a mut Option<PartDrag>,
     resize: &'a mut Option<PartResize>,
@@ -770,6 +783,12 @@ impl CanvasState {
             .as_ref()
             .filter(|geometry| index < geometry.objects.len() + self.new_fields.len())
             .map(|_| index);
+        if let Some((contents, object)) = session
+            .panel_contents()
+            .zip(index.and_then(|index| self.geometry.as_ref()?.objects.get(index)))
+        {
+            contents.reveal(object.key, &mut self.front_panels);
+        }
         self.selected.click(index, shift);
         self.scroll_to_selected = !self.selected.0.is_empty();
     }
@@ -781,16 +800,29 @@ impl CanvasState {
         self.drag = None;
     }
 
-    /// Edit > Select All replaces the window's selection with the canvas's
-    /// selectable objects, including field drafts and excluding deletions.
-    pub(crate) fn select_all(&mut self, session: &Session) {
+    /// Replace the window's selection using the active tool's selection rule.
+    pub(crate) fn select_all(&mut self, session: &Session, filter: SelectAll) {
         self.synchronize(session);
         let Some(geometry) = &self.geometry else {
             return;
         };
-        self.selected.replace(
-            selectable_frames(geometry, &self.new_fields, &self.moved, &self.deleted)
-                .map(|(index, _)| index),
+        let shown = |object: &ObjectGeom| {
+            filter
+                .includes(object.selection)
+                .then(|| shown_frame(object, &self.moved, &self.deleted))
+                .flatten()
+        };
+        let fields = if filter.includes(SelectionTarget::Object(om_layout::ObjectKind::Field)) {
+            self.new_fields.as_slice()
+        } else {
+            &[]
+        };
+        self.selected.replace_with_overlay(
+            selectable_frames(geometry, fields, shown).map(|(index, _)| index),
+            SelectionOverlay {
+                aggregate: true,
+                ..Default::default()
+            },
         );
         self.scroll_to_selected = false;
     }
@@ -816,14 +848,17 @@ impl CanvasState {
             self.selected.1 = Some(CANNOT_MOVE_SELECTION);
             return false;
         };
+        let Ok(plan) = layout_move::plan(frames.iter().map(|(_, frame)| *frame), direction.delta())
+        else {
+            self.selected.1 = Some(CANNOT_MOVE_SELECTION);
+            return false;
+        };
         self.selected.1 = None;
-        let delta = selection_delta(&frames, direction.delta());
-        if delta == (0.0, 0.0) {
+        if plan.delta == layout_move::Delta::default() {
             return false;
         }
-        move_selection(
-            &frames,
-            delta,
+        stage_selection_frames(
+            frames.iter().map(|(index, _)| *index).zip(plan.frames),
             geometry,
             &mut self.new_fields,
             &mut self.moved,
@@ -843,7 +878,7 @@ impl CanvasState {
         let Geometry::Loaded(geometry) = &session.geometry else {
             return 0;
         };
-        if !self.matches(session) || self.geometry.as_ref() != Some(geometry) {
+        if !self.selection_matches(session, geometry) {
             return 0;
         }
         self.selected.0.len()
@@ -981,7 +1016,7 @@ impl CanvasState {
         let Geometry::Loaded(geometry) = &session.geometry else {
             return None;
         };
-        if !self.matches(session) || self.geometry.as_ref() != Some(geometry) {
+        if !self.selection_matches(session, geometry) {
             return None;
         }
         geometry.objects.get(self.selected.single()?)
@@ -995,13 +1030,25 @@ impl CanvasState {
         })
     }
 
+    fn selection_matches(&self, session: &Session, geometry: &LayoutGeometry) -> bool {
+        self.matches(session)
+            && self.panel_generation == session.layout_generation
+            && self.geometry.as_ref() == Some(geometry)
+    }
+
     pub(crate) fn synchronize(&mut self, session: &Session) {
         let geometry = match &session.geometry {
             Geometry::Loaded(geometry) => Some(geometry),
             Geometry::Loading | Geometry::Unavailable => None,
         };
         let moved = !self.matches(session);
-        if moved || self.geometry.as_ref() != geometry {
+        let revisited = self.panel_generation != session.layout_generation;
+        let geometry_changed = self.geometry.as_ref() != geometry;
+        if moved || revisited {
+            self.front_panels.clear();
+            self.panel_generation = session.layout_generation;
+        }
+        if moved || geometry_changed {
             self.clear_history();
             self.drag = None;
             self.field_drag = None;
@@ -1053,6 +1100,8 @@ impl CanvasState {
                     self.retyping = None;
                 }
             }
+        }
+        if moved || geometry_changed || revisited {
             self.clear_selection();
             self.scroll_to_selected = false;
         }
@@ -1073,6 +1122,7 @@ pub(crate) fn show(
 ) {
     let incoming = egui::DragAndDrop::payload::<crate::layout_objects::FieldDrag>(ui.ctx())
         .filter(|drag| drag.matches(session, fields));
+    let contents = session.panel_contents();
     ui.painter()
         .rect_filled(ui.max_rect(), CornerRadius::ZERO, theme::PASTEBOARD);
 
@@ -1099,6 +1149,8 @@ pub(crate) fn show(
             let (design, scroll) = document.design_surface(session);
             zoom::show(ui, ui.available_size() / factor, factor, |ui| {
                 let unsaved = state.unsaved();
+                let visible =
+                    |key| contents.is_none_or(|panels| panels.visible(key, &state.front_panels));
                 let dropped = draw(
                     ui,
                     geometry,
@@ -1133,13 +1185,13 @@ pub(crate) fn show(
                     },
                     &mut state.width,
                     PartEdges {
-                        keys: &part_keys(session),
-                        enabled: !unsaved,
+                        enabled: !unsaved && geometry.revision.is_some(),
                         drag: &mut state.part_drag,
                         resize: &mut state.part_resize,
                     },
                     // Frozen, the canvas still paints but takes no drag or click.
                     !frozen,
+                    &visible,
                     design.as_ref(),
                     scroll,
                 );
@@ -1187,28 +1239,17 @@ pub(crate) fn show(
                 },
                 &mut None,
                 PartEdges {
-                    keys: &[],
                     enabled: false,
                     drag: &mut None,
                     resize: &mut None,
                 },
                 false,
+                &|_| true,
                 None,
                 &mut document.scroll,
             );
         }
     }
-}
-
-/// The layout's parts' keys and types, top to bottom, as the decoded layout
-/// stores them; empty while it is not decoded.
-fn part_keys(session: &Session) -> Vec<(u64, i32)> {
-    let crate::session::RenderState::Loaded(document) = &session.render else {
-        return Vec::new();
-    };
-    let mut parts: Vec<_> = document.layout.parts.iter().collect();
-    parts.sort_by(|a, b| a.top.total_cmp(&b.top));
-    parts.iter().map(|p| (p.id, p.part_type)).collect()
 }
 
 /// The words a stored text object shows, when they are plain words
@@ -1287,6 +1328,7 @@ fn draw(
     new_width: &mut Option<NewWidth>,
     edges: PartEdges<'_>,
     selectable: bool,
+    visible: &dyn Fn(u64) -> bool,
     design: Option<&crate::document::design::Surface<'_>>,
     scroll_state: &mut crate::document::scroll::Scroll,
 ) -> Option<NewField> {
@@ -1402,15 +1444,7 @@ fn draw(
                     .unwrap_or(theme::CONTENT_BG),
             );
             if let Some(design) = design {
-                for (part, &(key, _)) in geometry.parts.iter().zip(edges.keys) {
-                    let rect = Rect::from_min_size(
-                        origin + vec2(0.0, part.top as f32),
-                        vec2(width, part.height as f32),
-                    );
-                    if rect.is_finite() && rect.is_positive() && ui.clip_rect().intersects(rect) {
-                        design.paint_part(ui, key, rect);
-                    }
-                }
+                design.paint_parts(ui, surface);
             }
             let strip = Rect::from_min_max(area.min, pos2(origin.x, area.bottom()));
             painter.rect_filled(strip, CornerRadius::ZERO, theme::BAR_BG);
@@ -1426,14 +1460,14 @@ fn draw(
             // A part's lower boundary: the Selection tool drags it to set the
             // part's height, in whole points, down to the lowest object in
             // it; the window sends it when the drag ends.
-            if selectable
-                && edges.enabled
-                && tool == LayoutTool::Selection
-                && edges.keys.len() == geometry.parts.len()
-            {
-                for (index, (part, &(key, part_type))) in
-                    geometry.parts.iter().zip(edges.keys).enumerate()
-                {
+            if selection_tool && edges.enabled {
+                // A frame can end one drag and begin another. Finish the
+                // former from its own state regardless of part draw order.
+                let previous_drag = *edges.drag;
+                for part in &geometry.parts {
+                    let Some(identity) = part.identity else {
+                        continue;
+                    };
                     let bottom = origin.y + (part.top + part.height) as f32;
                     let band = Rect::from_x_y_ranges(
                         origin.x - PART_STRIP_WIDTH..=origin.x + width,
@@ -1442,7 +1476,9 @@ fn draw(
                     if !band.is_finite() {
                         continue;
                     }
-                    let id = ui.scope_id().with(("part_edge", index));
+                    let id = ui
+                        .scope_id()
+                        .with(("part_edge", identity.key, identity.part_type));
                     let response = ui
                         .interact(band, id, Sense::drag())
                         .on_hover_cursor(egui::CursorIcon::ResizeVertical);
@@ -1462,27 +1498,39 @@ fn draw(
                     // The parts together stay within the coordinate range.
                     let others = geometry.parts.iter().map(|p| p.height).sum::<f64>() - part.height;
                     let max = (om_data::layout_placement::MAX_COORDINATE - others).max(min);
-                    if let Some(pointer) = response
-                        .interact_pointer_pos()
-                        .filter(|_| response.dragged())
-                    {
-                        let height = (f64::from(pointer.y - origin.y) - part.top)
+                    // A geometry refresh clears the gesture. Egui can keep
+                    // reporting a held drag, so only its start may bind a part.
+                    if response.drag_started() {
+                        *edges.drag = Some(PartDrag {
+                            part: identity,
+                            height: part.height,
+                        });
+                    }
+                    let active = edges.drag.as_mut().filter(|drag| drag.part == identity);
+                    if let Some((drag, pointer)) = active.zip(
+                        response
+                            .interact_pointer_pos()
+                            .filter(|_| response.dragged()),
+                    ) {
+                        drag.height = (f64::from(pointer.y - origin.y) - part.top)
                             .round()
                             .clamp(min, max);
-                        *edges.drag = Some(PartDrag { index, height });
                     }
                     if response.drag_stopped() {
-                        let dragged = edges.drag.take().filter(|d| d.index == index);
+                        if edges.drag.is_some_and(|d| d.part == identity) {
+                            *edges.drag = None;
+                        }
+                        let dragged = previous_drag.filter(|d| d.part == identity);
                         if let Some(drag) = dragged.filter(|d| d.height != part.height) {
                             *edges.resize = Some(PartResize {
-                                part: key,
-                                part_type,
+                                part: identity.key,
+                                part_type: identity.part_type,
                                 size: drag.height,
                                 revision: geometry.revision,
                             });
                         }
                     }
-                    if let Some(drag) = edges.drag.filter(|d| d.index == index) {
+                    if let Some(drag) = edges.drag.filter(|d| d.part == identity) {
                         let y = origin.y + (part.top + drag.height) as f32;
                         part_guide = Some((y, part.kind_name.as_str(), drag.height));
                     }
@@ -1667,19 +1715,19 @@ fn draw(
             }
             if let Some(active) = selection_drag.as_ref() {
                 if let Some(pointer) = pointer.map(at) {
-                    move_selection(
-                        &active.frames,
-                        selection_delta(&active.frames, pointer - active.from),
-                        geometry,
-                        new.fields,
-                        moved,
-                    );
+                    drag_selection(active, pointer, geometry, new.fields, moved);
                 }
                 if !ui.input(|i| i.pointer.any_down()) {
                     *selection_drag = None;
                 }
             }
-            let shown = |object: &ObjectGeom| shown_frame(object, moved, deleted);
+            let present = |object: &ObjectGeom| shown_frame(object, moved, deleted);
+            let shown = |object: &ObjectGeom| {
+                if !visible(object.key) {
+                    return None;
+                }
+                present(object)
+            };
             let mut marquee = None;
             if let Some(response) = &box_response {
                 let primary = egui::PointerButton::Primary;
@@ -1715,11 +1763,24 @@ fn draw(
                                     })
                                     .unwrap_or(input.modifiers.command)
                             });
-                            select_in_box(
-                                selected,
-                                rect.translate(-origin.to_vec2()),
-                                contained,
-                                selectable_frames(geometry, new.fields, moved, deleted),
+                            let bounds = rect.translate(-origin.to_vec2());
+                            let bounds = geometry_frame(bounds);
+                            let coverage = if contained {
+                                Coverage::Contains
+                            } else {
+                                Coverage::Intersects
+                            };
+                            let selected_frames = layout_selection::marquee(
+                                bounds,
+                                coverage,
+                                &marquee_frames(geometry, new.fields, present, visible),
+                            );
+                            selected.replace_with_overlay(
+                                selected_frames.indices,
+                                SelectionOverlay {
+                                    aggregate: selected_frames.aggregate,
+                                    tab_controls: selected_frames.tab_controls,
+                                },
                             );
                             *scroll_to_selected = false;
                         }
@@ -1744,14 +1805,15 @@ fn draw(
                 selected.click(index, ui.input(|i| i.modifiers.shift));
             }
 
+            let right_pasteboard =
+                Rect::from_min_max(surface.right_top(), pos2(area.right(), surface.bottom()));
+            let artwork_bounds = surface.union(right_pasteboard);
             let mut artwork = ui.new_child(
                 egui::UiBuilder::new()
                     .id_salt("design_artwork")
-                    .max_rect(surface),
+                    .max_rect(artwork_bounds),
             );
-            // Keep the current draft frame for layout and hit testing, but
-            // keep the paint inside the part strip and the width divider.
-            artwork.set_clip_rect(ui.clip_rect().intersect(surface));
+            artwork.set_clip_rect(ui.clip_rect().intersect(artwork_bounds));
             for (index, object) in geometry.objects.iter().enumerate() {
                 let Some(frame) = shown(object) else {
                     continue;
@@ -1774,7 +1836,7 @@ fn draw(
                     .map(|name| name.find("::").map_or(name, |at| &name[at..]))
                     .unwrap_or(&object.kind_name);
                 let draft_words = texts.words.objects.get(&object.key).map(String::as_str);
-                let painted = surface.intersects(rect)
+                let painted = artwork_bounds.intersects(rect)
                     && design.is_some_and(|design| {
                         design.paint_object(
                             &mut artwork,
@@ -1784,14 +1846,19 @@ fn draw(
                             draft_words,
                         )
                     });
-                if !painted || changed {
+                if !painted || changed || !artwork_bounds.contains_rect(rect) {
                     if rect.width() < 1.0 || rect.height() < 1.0 {
                         painter.line_segment([rect.min, rect.max], outline);
                     } else {
                         painter.rect_stroke(rect, CornerRadius::ZERO, outline, StrokeKind::Inside);
                     }
                 }
-                if !painted && rect.width() >= 1.0 && rect.height() >= 1.0 {
+                let tab_label_overlay = design.is_some() && (
+                    selected.2.tab_controls.contains_key(&object.key)
+                    || matches!(object.marquee, MarqueeRole::OnTab(key)
+                        if object.selection == SelectionTarget::Panel && selected.2.tab_controls.contains_key(&key))
+                );
+                if !painted && !tab_label_overlay && rect.width() >= 1.0 && rect.height() >= 1.0 {
                     let stored_words = (!texts.words.objects.contains_key(&object.key))
                         .then(|| (texts.stored)(object.key))
                         .flatten();
@@ -1875,6 +1942,15 @@ fn draw(
                     }
                 }
             }
+            if design.is_some() && right_pasteboard.is_positive() {
+                // Fade the finished artwork in one pass. Crossing objects
+                // keep one stacking position, text label and hit target.
+                painter.rect_filled(
+                    right_pasteboard,
+                    CornerRadius::ZERO,
+                    theme::PASTEBOARD.gamma_multiply(1.0 - PASTEBOARD_ARTWORK_OPACITY),
+                );
+            }
             let retyped = texts.retyping.as_ref().and_then(|r| {
                 let object = geometry.objects.iter().find(|o| o.key == r.key)?;
                 shown(object).map(|frame| object_rect(origin, &frame))
@@ -1957,22 +2033,91 @@ fn draw(
                 );
             }
 
-            if selected.0.len() > 1 {
-                for index in &selected.0 {
-                    if let Some(frame) = geometry.objects.get(*index).and_then(shown) {
-                        draw_selection(&painter, object_rect(origin, &frame));
+            let aggregate_selection = selected.2.aggregate;
+            let selection_frame = |object: &ObjectGeom| {
+                if aggregate_selection {
+                    present(object)
+                } else {
+                    shown(object)
+                }
+            };
+            if selected.0.len() > 1 || !selected.2.tab_controls.is_empty() {
+                let mut bounds = Rect::NOTHING;
+                let mut unlocked = false;
+                for &index in selected.2.tab_controls.values() {
+                    let Some((object, frame)) = geometry
+                        .objects
+                        .get(index)
+                        .and_then(|object| Some((object, shown(object)?)))
+                    else {
+                        continue;
+                    };
+                    let rect = object_rect(origin, &frame);
+                    if rect.is_finite() {
+                        draw_selection_outline(&painter, rect, object.locked);
+                        if let Some(design) = design {
+                            design.outline_tab_labels(&painter, object.key, rect);
+                        }
+                        bounds = bounds.union(rect);
+                        unlocked |= !object.locked;
                     }
+                }
+                for &index in &selected.0 {
+                    let Some(object) = geometry.objects.get(index) else {
+                        if let Some(field) = new
+                            .fields
+                            .get(index - geometry.objects.len())
+                            .filter(|_| aggregate_selection)
+                        {
+                            let rect = object_rect(origin, &geom_rect(field.frame()));
+                            if rect.is_finite() {
+                                bounds = bounds.union(rect);
+                                unlocked = true;
+                            }
+                        }
+                        continue;
+                    };
+                    let Some(frame) = selection_frame(object) else {
+                        continue;
+                    };
+                    let rect = object_rect(origin, &frame);
+                    if !rect.is_finite() {
+                        continue;
+                    }
+                    draw_selection_outline(&painter, rect, object.locked);
+                    if aggregate_selection {
+                        // Inactive children have outlines but do not extend
+                        // the handles around the objects on screen.
+                        if visible(object.key) {
+                            bounds = bounds.union(rect);
+                            unlocked |= !object.locked;
+                        }
+                    } else if !object.locked {
+                        draw_selection_handles(&painter, rect);
+                    }
+                }
+                if unlocked && bounds.is_finite() {
+                    draw_selection_handles(&painter, bounds);
                 }
             }
             if let Some((object, frame)) = selected
                 .single()
+                .filter(|_| selected.2.tab_controls.is_empty())
                 .and_then(|index| geometry.objects.get(index))
-                .and_then(|object| Some((object, shown(object)?)))
+                .and_then(|object| Some((object, selection_frame(object)?)))
             {
                 let rect = object_rect(origin, &frame);
-                draw_selection(&painter, rect);
+                draw_selection_outline(&painter, rect, object.locked);
+                if !object.locked && rect.is_finite() {
+                    draw_selection_handles(&painter, rect);
+                }
                 // A movable object's handles resize it.
-                if selection_tool && object.movable && object.key != 0 && rect.is_finite() {
+                if selection_tool
+                    && visible(object.key)
+                    && object.movable
+                    && object.key != 0
+                    && rect.is_finite()
+                {
                     for (name, position, edges) in handles(rect) {
                         let handle = ui.interact(
                             Rect::from_center_size(position, vec2(9.0, 9.0)),
@@ -1988,7 +2133,6 @@ fn draw(
                                 *drag = Some(Drag {
                                     key: object.key,
                                     edges,
-                                    resize: true,
                                     from,
                                     start: frame,
                                 });
@@ -2064,17 +2208,14 @@ fn shown_frame(
 fn selectable_frames<'a>(
     geometry: &'a LayoutGeometry,
     fields: &'a [NewField],
-    moved: &'a MovedObjects,
-    deleted: &'a DeletedObjects,
+    shown: impl Fn(&ObjectGeom) -> Option<GeomRect> + 'a,
 ) -> impl Iterator<Item = (usize, Rect)> + 'a {
     let drawn = |frame| object_rect(Pos2::ZERO, &frame);
     geometry
         .objects
         .iter()
         .enumerate()
-        .filter_map(move |(index, object)| {
-            Some((index, drawn(shown_frame(object, moved, deleted)?)))
-        })
+        .filter_map(move |(index, object)| Some((index, drawn(shown(object)?))))
         .chain(fields.iter().enumerate().map(move |(index, field)| {
             (
                 geometry.objects.len() + index,
@@ -2084,20 +2225,50 @@ fn selectable_frames<'a>(
         .filter(|(_, frame)| frame.is_finite())
 }
 
-fn select_in_box(
-    selected: &mut Selection,
-    bounds: Rect,
-    contained: bool,
-    frames: impl Iterator<Item = (usize, Rect)>,
-) {
-    selected.replace(frames.filter_map(|(index, frame)| {
-        let hit = if contained {
-            bounds.contains_rect(frame)
-        } else {
-            bounds.intersects(frame)
-        };
-        hit.then_some(index)
-    }));
+fn marquee_frames<'a>(
+    geometry: &'a LayoutGeometry,
+    fields: &[NewField],
+    present: impl Fn(&ObjectGeom) -> Option<GeomRect>,
+    visible: impl Fn(u64) -> bool,
+) -> Vec<MarqueeFrame<'a>> {
+    geometry
+        .objects
+        .iter()
+        .enumerate()
+        .filter_map(|(index, object)| {
+            Some(MarqueeFrame {
+                index,
+                object: Some(object),
+                rect: present(object)?,
+                visible: visible(object.key),
+            })
+        })
+        .chain(
+            fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| MarqueeFrame {
+                    index: geometry.objects.len() + index,
+                    object: None,
+                    rect: geom_rect(field.frame()),
+                    visible: true,
+                }),
+        )
+        .filter_map(|mut entry| {
+            let shown = object_rect(Pos2::ZERO, &entry.rect);
+            entry.rect = geometry_frame(shown);
+            shown.is_finite().then_some(entry)
+        })
+        .collect()
+}
+
+fn geometry_frame(rect: Rect) -> GeomRect {
+    GeomRect {
+        left: f64::from(rect.left()),
+        top: f64::from(rect.top()),
+        right: f64::from(rect.right()),
+        bottom: f64::from(rect.bottom()),
+    }
 }
 
 fn begin_selection_drag(
@@ -2141,23 +2312,34 @@ fn movable_frames(
     (!frames.is_empty()).then_some(frames)
 }
 
-fn selection_delta(frames: &[(usize, GeomRect)], delta: egui::Vec2) -> (f64, f64) {
-    let min_left = frames
-        .iter()
-        .map(|(_, f)| f.left.round())
-        .fold(f64::INFINITY, f64::min);
-    let min_top = frames
-        .iter()
-        .map(|(_, f)| f.top.round())
-        .fold(f64::INFINITY, f64::min);
-    let dx = f64::from(delta.x).round().max(-min_left);
-    let dy = f64::from(delta.y).round().max(-min_top);
-    (dx, dy)
+fn drag_selection(
+    active: &SelectionDrag,
+    pointer: Pos2,
+    geometry: &LayoutGeometry,
+    fields: &mut [NewField],
+    moved: &mut MovedObjects,
+) {
+    let delta = pointer - active.from;
+    let requested = layout_move::Delta {
+        dx: f64::from(delta.x),
+        dy: f64::from(delta.y),
+    };
+    if let Ok(plan) = layout_move::plan(active.frames.iter().map(|(_, frame)| *frame), requested) {
+        stage_selection_frames(
+            active
+                .frames
+                .iter()
+                .map(|(index, _)| *index)
+                .zip(plan.frames),
+            geometry,
+            fields,
+            moved,
+        );
+    }
 }
 
-fn move_selection(
-    frames: &[(usize, GeomRect)],
-    (dx, dy): (f64, f64),
+fn stage_selection_frames(
+    frames: impl Iterator<Item = (usize, GeomRect)>,
     geometry: &LayoutGeometry,
     fields: &mut [NewField],
     moved: &mut MovedObjects,
@@ -2169,19 +2351,8 @@ fn move_selection(
     } else {
         moved.revision
     };
-    for (index, start) in frames {
-        // Stored frames can start at fractional points; the object index
-        // requires whole-point origins. Keep each member's size while
-        // snapping origins, including at a clamped top/left boundary.
-        let left = (start.left + dx).round().max(0.0);
-        let top = (start.top + dy).round().max(0.0);
-        let frame = GeomRect {
-            left,
-            right: left + start.width(),
-            top,
-            bottom: top + start.height(),
-        };
-        if let Some(object) = geometry.objects.get(*index) {
+    for (index, frame) in frames {
+        if let Some(object) = geometry.objects.get(index) {
             if frame == object.rect {
                 moved.frames.remove(&object.key);
             } else {
@@ -2202,26 +2373,12 @@ fn move_selection(
     };
 }
 
-/// The frame a drag gives its object after the pointer moved by `delta`
-/// layout points: moved, its top and left at whole points (the object index
-/// holds whole points) and its size kept, or with the handle's edges moved,
-/// a moved top or left at a whole point, at least one point wide and high
-/// where it can be (a line keeps its empty side).
+/// Resize the handle's edges with a moved top or left at a whole point and
+/// at least one point of width and height (a line keeps its empty side).
 fn dragged(drag: Drag, delta: egui::Vec2) -> GeomRect {
     let (dx, dy) = (f64::from(delta.x).round(), f64::from(delta.y).round());
     let start = drag.start;
     let (width, height) = (start.width(), start.height());
-    if !drag.resize {
-        // Not past the layout's top or left.
-        let left = (start.left + dx).round().max(0.0);
-        let top = (start.top + dy).round().max(0.0);
-        return GeomRect {
-            top,
-            left,
-            bottom: top + height,
-            right: left + width,
-        };
-    }
     let mut frame = start;
     let wide = width > 0.0;
     let high = height > 0.0;
@@ -2686,16 +2843,26 @@ fn object_label(index: usize, object: &ObjectGeom) -> String {
     }
 }
 
-fn draw_selection(painter: &egui::Painter, rect: Rect) {
+fn draw_selection_outline(painter: &egui::Painter, rect: Rect, locked: bool) {
     if !rect.is_finite() {
         return;
     }
     painter.rect_stroke(
         rect,
         CornerRadius::ZERO,
-        Stroke::new(1.0, theme::SELECTED),
+        Stroke::new(
+            1.0,
+            if locked {
+                theme::SELECTED.gamma_multiply(0.5)
+            } else {
+                theme::SELECTED
+            },
+        ),
         StrokeKind::Middle,
     );
+}
+
+fn draw_selection_handles(painter: &egui::Painter, rect: Rect) {
     for position in [
         rect.left_top(),
         rect.center_top(),
@@ -2743,6 +2910,7 @@ fn fallback_geometry(session: &Session) -> LayoutGeometry {
         width: 560.0,
         height,
         parts: vec![PartGeom {
+            identity: None,
             kind_name: "Body".into(),
             top: 0.0,
             height,
@@ -2757,10 +2925,9 @@ mod tests {
 
     #[test]
     fn drags_snap_origins_and_never_invert_a_frame() {
-        let drag = |start: GeomRect, resize: bool, edges: Edges| Drag {
+        let drag = |start: GeomRect, edges: Edges| Drag {
             key: 1,
             edges,
-            resize,
             from: Pos2::ZERO,
             start,
         };
@@ -2778,17 +2945,9 @@ mod tests {
             bottom: false,
         };
         for dx in [-5.0, 5.0] {
-            let f = dragged(drag(r(0.0, 0.0, 0.5, 10.0), true, left), vec2(dx, 0.0));
+            let f = dragged(drag(r(0.0, 0.0, 0.5, 10.0), left), vec2(dx, 0.0));
             assert!(f.left >= 0.0 && f.left <= f.right, "{f:?}");
         }
-        // A text at half points moves to whole points, keeping its size.
-        assert_eq!(
-            dragged(
-                drag(r(10.5, 20.5, 60.5, 40.5), false, MOVE),
-                vec2(10.0, 10.0)
-            ),
-            r(21.0, 31.0, 71.0, 51.0)
-        );
         let mut geometry = LayoutGeometry::default();
         let mut stored = object([0.5, 10.5, 50.5, 30.5]);
         stored.key = 7;
@@ -2812,18 +2971,13 @@ mod tests {
             ],
         };
         let mut moved = MovedObjects::default();
-        for pointer in [pos2(10.0, 10.0), pos2(-20.0, -40.0)] {
-            move_selection(
-                &active.frames,
-                selection_delta(&active.frames, pointer - active.from),
-                &geometry,
-                &mut fields,
-                &mut moved,
-            );
-            let frame = moved.frames[&7];
-            assert_eq!((frame.left.fract(), frame.top.fract()), (0.0, 0.0));
-            assert_eq!((fields[0].left.fract(), fields[0].top.fract()), (0.0, 0.0));
-            assert_eq!((frame.width(), frame.height()), (50.0, 20.0));
+        for (pointer, expected, draft_origin) in [
+            (pos2(10.0, 10.0), r(11.0, 21.0, 61.0, 41.0), (20.0, 50.0)),
+            (pos2(-20.0, -40.0), r(0.0, 0.0, 50.0, 20.0), (9.0, 29.0)),
+        ] {
+            drag_selection(&active, pointer, &geometry, &mut fields, &mut moved);
+            assert_eq!(moved.frames[&7], expected);
+            assert_eq!((fields[0].left, fields[0].top), draft_origin);
         }
     }
     use crate::session::Target;
@@ -2967,7 +3121,7 @@ mod tests {
             ..Default::default()
         });
         let mut state = CanvasState::default();
-        state.select_all(&session);
+        state.select_all(&session, SelectAll::Layout);
         state.nudge_selection(&session, NudgeDirection::Left);
         assert!(state.moved().frames.is_empty());
     }
@@ -2995,7 +3149,9 @@ mod tests {
                 },
                 ObjectGeom {
                     key: 2,
-                    ..object([70.0, 25.0, 90.0, 45.0])
+                    // Stored endpoints can be reversed. Marquee uses the
+                    // frame the canvas draws, including for containment.
+                    ..object([90.0, 25.0, 70.0, 45.0])
                 },
                 ObjectGeom {
                     key: 3,
@@ -3083,6 +3239,281 @@ mod tests {
             assert_eq!(app.state().0.moved(), &moves);
         }
         capture_frame(&mut app, "selected.png");
+    }
+
+    #[test]
+    fn dragging_an_out_of_order_part_boundary_targets_the_drawn_part() {
+        use egui_kittest::kittest::Queryable;
+        use om_data::PartIdentity;
+
+        let mut session = Session::new(
+            Target {
+                host: "test".into(),
+                file: "test.fmp12".into(),
+                local: None,
+            },
+            25,
+        );
+        session.layout = Some(1);
+        let revision = [4; 32];
+        // Storage order is Body then Header. The Header ends at y=40.
+        let stored = [(3, 4, "Body", 40.0, 90.0), (9, 1, "Header", 0.0, 40.0)];
+        session.geometry = Geometry::Loaded(LayoutGeometry {
+            width: 250.0,
+            height: 130.0,
+            parts: stored
+                .iter()
+                .map(|&(key, part_type, name, top, height)| PartGeom {
+                    identity: Some(PartIdentity { key, part_type }),
+                    kind_name: name.into(),
+                    top,
+                    height,
+                })
+                .collect(),
+            revision: Some(revision),
+            ..Default::default()
+        });
+        session
+            .accept_render_layout(
+                1,
+                Ok(Some(om_data::RenderLayout {
+                    layout: om_layout::Layout {
+                        id: 1,
+                        parts: stored
+                            .iter()
+                            .map(|&(id, part_type, _, top, height)| om_layout::Part {
+                                id,
+                                part_type,
+                                top,
+                                height,
+                                ..Default::default()
+                            })
+                            .collect(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })),
+            )
+            .unwrap();
+        let mut app = egui_kittest::Harness::builder()
+            .with_size(vec2(350.0, 200.0))
+            .with_context_setup(crate::theme::install)
+            .build_ui_state(
+                |ui, (state, document, session)| {
+                    state.synchronize(session);
+                    show(
+                        ui,
+                        session,
+                        LayoutTool::Selection,
+                        &[],
+                        state,
+                        false,
+                        document,
+                    );
+                },
+                (CanvasState::default(), DocumentState::default(), session),
+            );
+        let start = app.get_by_label("Header boundary").rect().center();
+        let end = start + vec2(0.0, 15.0);
+        let body_start = app.get_by_label("Body boundary").rect().center();
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        app.event(egui::Event::PointerMoved(start));
+        app.event(press(start, true));
+        app.step();
+        app.event(egui::Event::PointerMoved(end));
+        app.step();
+        // Release the Header and grab the Body in one input frame. The
+        // Body draws first and must not replace the completed Header drag.
+        app.event(press(end, false));
+        app.event(egui::Event::PointerMoved(body_start));
+        app.event(press(body_start, true));
+        app.step();
+        assert_eq!(
+            app.state_mut().0.take_part_resize(),
+            Some(PartResize {
+                part: 9,
+                part_type: 1,
+                size: 55.0,
+                revision: Some(revision),
+            }),
+        );
+
+        let body_end = body_start + vec2(0.0, 10.0);
+        app.event(egui::Event::PointerMoved(body_end));
+        app.step();
+        app.event(press(body_end, false));
+        app.step();
+        assert_eq!(
+            app.state_mut().0.take_part_resize(),
+            Some(PartResize {
+                part: 3,
+                part_type: 4,
+                size: 100.0,
+                revision: Some(revision),
+            }),
+        );
+
+        // If the host refreshes geometry while the pointer is held, egui
+        // keeps its grab but releasing it must not submit a new resize.
+        app.event(egui::Event::PointerMoved(start));
+        app.event(press(start, true));
+        app.step();
+        app.event(egui::Event::PointerMoved(end));
+        app.step();
+        assert!(app.state().0.part_drag.is_some());
+        let Geometry::Loaded(geometry) = &mut app.state_mut().2.geometry else {
+            unreachable!();
+        };
+        geometry.parts.reverse();
+        geometry.revision = Some([5; 32]);
+        app.step();
+        let after_refresh = end + vec2(0.0, 10.0);
+        app.event(egui::Event::PointerMoved(after_refresh));
+        app.step();
+        app.event(press(after_refresh, false));
+        app.step();
+        assert_eq!(app.state_mut().0.take_part_resize(), None);
+    }
+
+    #[test]
+    fn only_the_front_panel_takes_canvas_input_until_objects_reveals_another() {
+        use egui_kittest::kittest::Queryable;
+        use om_layout::{Layout, LayoutObject, ObjectStore, TabObject};
+
+        let node = |id, object_type, parent, children| LayoutObject {
+            id,
+            object_type,
+            parent,
+            children,
+            ..Default::default()
+        };
+        let store = ObjectStore {
+            root: vec![1],
+            objects: vec![
+                LayoutObject {
+                    tab: Some(TabObject {
+                        default_panel_key: 4,
+                        current_panel_key: 2,
+                        ..Default::default()
+                    }),
+                    ..node(1, 11, None, vec![2, 4])
+                },
+                node(2, 12, Some(1), vec![3]),
+                node(3, 1, Some(2), vec![]),
+                // Notes contains a two-panel slide control. Its second
+                // slide holds the other field at the very same canvas point.
+                node(4, 12, Some(1), vec![6]),
+                node(6, 16, Some(4), vec![7, 8]),
+                node(7, 17, Some(6), vec![]),
+                node(8, 17, Some(6), vec![5]),
+                node(5, 1, Some(8), vec![]),
+            ],
+            ..Default::default()
+        };
+        let mut session = Session::new(
+            Target {
+                host: "test".into(),
+                file: "test.fmp12".into(),
+                local: None,
+            },
+            25,
+        );
+        session.layout = Some(1);
+        session.geometry = Geometry::Loaded(LayoutGeometry {
+            width: 250.0,
+            height: 140.0,
+            objects: [(3, "Summary field"), (5, "Notes field")]
+                .into_iter()
+                .map(|(key, caption)| ObjectGeom {
+                    key,
+                    field_name: Some(caption.into()),
+                    ..object([25.0, 40.0, 145.0, 68.0])
+                })
+                .collect(),
+            ..Default::default()
+        });
+        session
+            .accept_render_layout(
+                1,
+                Ok(Some(om_data::RenderLayout {
+                    layout: Layout {
+                        id: 1,
+                        objects: store,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })),
+            )
+            .unwrap();
+
+        let mut app = egui_kittest::Harness::builder()
+            .with_size(vec2(350.0, 200.0))
+            .with_context_setup(crate::theme::install)
+            .build_ui_state(
+                |ui, (state, document)| {
+                    show(
+                        ui,
+                        &session,
+                        LayoutTool::Selection,
+                        &[],
+                        state,
+                        false,
+                        document,
+                    );
+                },
+                (CanvasState::default(), DocumentState::default()),
+            );
+        let label = |index, field: &str| {
+            object_label(
+                index,
+                &ObjectGeom {
+                    field_name: Some(field.into()),
+                    ..object([0.0; 4])
+                },
+            )
+        };
+        let first = label(0, "Summary field");
+        let second = label(1, "Notes field");
+        app.get_by_label(&first).click();
+        app.run_steps(2);
+        assert_eq!(app.state().0.selected_index(), Some(0));
+        assert!(app.query_by_label(&second).is_none());
+
+        app.state_mut().0.select_object(&session, 1, false);
+        app.run_steps(2);
+        assert!(app.query_by_label(&first).is_none());
+        assert!(app.query_by_label(&second).is_some());
+        app.state_mut().0.select_all(&session, SelectAll::Layout);
+        assert_eq!(app.state().0.selected.0, BTreeSet::from([0, 1]));
+        assert_eq!(app.state().0.front_panels.get(&1), Some(&4));
+        assert!(!app.state().0.unsaved());
+
+        // Changing layouts in Browse does not run the Layout canvas between
+        // the two selections. The old panel still must not follow us back.
+        let mut state = std::mem::take(&mut app.state_mut().0);
+        drop(app);
+        let Geometry::Loaded(geometry) = &session.geometry else {
+            unreachable!()
+        };
+        let crate::session::RenderState::Loaded(render) = &session.render else {
+            unreachable!()
+        };
+        let (geometry, render) = (geometry.clone(), (**render).clone());
+        session.select_layout(2);
+        session.select_layout(1);
+        session.accept_geometry(1, Ok(Some(geometry))).unwrap();
+        session.accept_render_layout(1, Ok(Some(render))).unwrap();
+        assert!(state.selected_object(&session).is_none());
+        state.synchronize(&session);
+        assert!(state.selected_index().is_none());
+        state.select_all(&session, SelectAll::Layout);
+        assert_eq!(state.selected.0, BTreeSet::from([0, 1]));
+        assert!(state.front_panels.is_empty());
     }
 
     #[test]

@@ -19,7 +19,7 @@ use std::fmt;
 pub use crate::page::Root;
 pub use check::{check, Report};
 pub use key::Key;
-pub use read::{Children, Cursor, Item, Tree};
+pub use read::{Children, Cursor, Item, Place, Tree};
 pub use write::apply;
 
 use crate::page::{Fault, Hash, PageFault, PageNo, StoreError, MAX_KEY, MAX_VALUE};
@@ -229,8 +229,8 @@ pub(crate) mod built {
     use std::sync::Arc;
 
     use crate::page::{
-        item_inline, Builder, EntryPages, Hash, MemStore, PageKind, PageNo, PageStore, Root,
-        OVERFLOW_DATA,
+        item_inline, separator_inline, Builder, EntryPages, Hash, MemStore, PageKind, PageNo,
+        PageStore, Root, OVERFLOW_DATA,
     };
 
     /// An item as it goes into a leaf: its kind, key and value.
@@ -294,6 +294,74 @@ pub(crate) mod built {
                 hash: top.1,
             },
             overflow,
+        }
+    }
+
+    /// A page of a tree [`shaped`] writes: a leaf with its items in the
+    /// order given, or an index page over its children (all of one level)
+    /// with the separator of each child after the first.
+    pub(crate) enum Shape {
+        Leaf(Vec<Item>),
+        Index(Vec<Shape>, Vec<Vec<u8>>),
+    }
+
+    /// Writes `shape`, of any depth, as entry 1, an item or separator too
+    /// large for its page spilled to overflow pages as the writer spills
+    /// it, and commits it: [`tree`] for more than two levels and for long
+    /// separators.
+    pub(crate) fn shaped(store: &MemStore, shape: &Shape) -> Root {
+        let mut out = store.begin().unwrap();
+        let (page, hash, _) = write_shape(&mut out, shape);
+        out.commit().unwrap();
+        Root { page, hash }
+    }
+
+    fn write_shape(out: &mut impl EntryPages, shape: &Shape) -> (PageNo, Hash, u8) {
+        fn write(out: &mut impl EntryPages, builder: Builder) -> (PageNo, Hash) {
+            let number = out.allocate().unwrap();
+            let page = builder.finish(number).unwrap();
+            let written = (number, page.hash());
+            out.write(Arc::new(page)).unwrap();
+            written
+        }
+        fn spill(out: &mut impl EntryPages, rest: &[u8]) -> Vec<(PageNo, Hash)> {
+            rest.chunks(OVERFLOW_DATA)
+                .map(|chunk| {
+                    let mut page = Builder::new(PageKind::Overflow, 0, 1);
+                    page.data(chunk);
+                    write(out, page)
+                })
+                .collect()
+        }
+        match shape {
+            Shape::Leaf(items) => {
+                let mut leaf = Builder::new(PageKind::Leaf, 0, 1);
+                for (kind, key, value) in items {
+                    let stream = [key.as_slice(), value].concat();
+                    let inline = item_inline(key.len(), value.len()).unwrap_or(stream.len());
+                    let refs = spill(out, &stream[inline..]);
+                    leaf.item(*kind, key.len(), value.len(), &stream[..inline], &refs);
+                }
+                let (page, hash) = write(out, leaf);
+                (page, hash, 0)
+            }
+            Shape::Index(children, separators) => {
+                let written: Vec<_> = children.iter().map(|c| write_shape(out, c)).collect();
+                let level = written[0].2 + 1;
+                let mut index = Builder::new(PageKind::Index, level, 1);
+                for (i, (number, hash, _)) in written.iter().enumerate() {
+                    let Some(separator) = i.checked_sub(1).map(|s| &separators[s]) else {
+                        index.child(*number, hash, 1, None);
+                        continue;
+                    };
+                    let len = separator.len();
+                    let inline = separator_inline(len).unwrap_or(len);
+                    let refs = spill(out, &separator[inline..]);
+                    index.child(*number, hash, 1, Some((len, &separator[..inline], &refs)));
+                }
+                let (page, hash) = write(out, index);
+                (page, hash, level)
+            }
         }
     }
 }

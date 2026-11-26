@@ -10,6 +10,11 @@
 //!   That window is another egui viewport, whose native window eframe does
 //!   not give out (`web_viewer/viewports.rs` finds it): it gets one page per
 //!   row, each its own record's color.
+//! - First, in a process of its own (`OM_WEB_VIEWER_WINDOWS_EMBEDDED`), the
+//!   same with egui's embedded viewports, as on a backend without native
+//!   windows: the New Window is an egui window inside the app's window, and
+//!   its rows' pages are views of the app's window where that egui window
+//!   shows them. It lies over the app's own page, which hides.
 //!
 //! `xvfb-run -a -s "-screen 0 1920x1200x24" cargo test -p om-gui --features
 //! web-viewer --test web_viewer_windows_native` on Linux (the windows lie
@@ -42,6 +47,8 @@ const LAYOUT: u32 = 7;
 const ROWS: [(i64, &str, [u8; 3]); 2] = [(1, "red", [255, 0, 0]), (2, "blue", [0, 0, 255])];
 /// The web viewer's size in points (on X11 the display's scale is 1).
 const SIZE: (u16, u16) = (200, 60);
+/// Set in the process that runs the test with embedded viewports.
+const EMBEDDED: &str = "OM_WEB_VIEWER_WINDOWS_EMBEDDED";
 
 struct Provider;
 
@@ -690,6 +697,7 @@ struct Driver {
     app: OpenMakerApp,
     native: native::Native,
     deadline: Instant,
+    embedded: bool,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -712,6 +720,9 @@ impl Driver {
     }
 
     fn step(&mut self, first: u64) {
+        if self.embedded {
+            return self.step_embedded(first);
+        }
         // The List's rows in record order, and Form view's current record.
         let rows = ROWS.map(|(_, _, color)| color).to_vec();
         let current = vec![ROWS[0].2];
@@ -758,6 +769,42 @@ impl Driver {
         println!("PASS");
         std::process::exit(0);
     }
+
+    /// With embedded viewports: the List's rows' pages in the app's own
+    /// window, once the New Window covers its Form page.
+    fn step_embedded(&mut self, first: u64) {
+        let rows = ROWS.map(|(_, _, color)| color).to_vec();
+        let colors = self.page_colors(first);
+        if Instant::now() > self.deadline {
+            self.native.shot(first, "timeout-embedded");
+            self.native.describe(first);
+            fail(format!(
+                "timed out with embedded viewports: window {first:#x} pages {:?} colors \
+                 {colors:?}; error {:?}",
+                self.native.pages(first),
+                self.app.error(),
+            ));
+        }
+        let Some(colors) = colors.filter(|c| c.len() >= rows.len()) else {
+            return;
+        };
+        println!(
+            "embedded: window {first:#x}: pages {:?}, colors {colors:?}",
+            self.native.pages(first)
+        );
+        if let Some(other) = self.native.second_window(first) {
+            fail(format!("embedded viewports, but another window {other:#x}"));
+        }
+        if colors != rows {
+            fail(format!(
+                "the embedded window's rows show {colors:?}, not each its own record's page \
+                 ({rows:?})"
+            ));
+        }
+        self.native.shot(first, "3-embedded-window-list");
+        println!("PASS (embedded viewports)");
+        std::process::exit(0);
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -779,6 +826,34 @@ fn main() {
     let Some(native) = native::Native::start() else {
         return;
     };
+    let embedded = std::env::var_os(EMBEDDED).is_some();
+    if !embedded {
+        // A process runs one event loop: the embedded run has its own.
+        let exe = std::env::current_exe().unwrap_or_else(|e| fail(format!("no executable: {e}")));
+        // Its watchdog starts only once it has its display: this bounds the
+        // wait before that too.
+        let mut child = std::process::Command::new(exe)
+            .env(EMBEDDED, "1")
+            .spawn()
+            .unwrap_or_else(|e| fail(format!("the embedded run did not start: {e}")));
+        let deadline = Instant::now() + Duration::from_secs(240);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                other => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    fail(format!("the embedded run did not end: {other:?}"));
+                }
+            }
+        };
+        if !status.success() {
+            fail(format!("with embedded viewports: {status}"));
+        }
+    }
     // As `om_gui::run` does, before any other thread starts.
     om_gui::prepare_web_viewers();
     std::thread::spawn(|| {
@@ -798,6 +873,9 @@ fn main() {
         options,
         Box::new(move |cc| {
             om_gui::install_theme(&cc.egui_ctx);
+            if embedded {
+                cc.egui_ctx.set_embed_viewports(true);
+            }
             let app = OpenMakerApp::new(Box::new(Provider)).open_on_launch(Connection {
                 host: "web-viewer.test.invalid".into(),
                 port: 5003,
@@ -809,6 +887,7 @@ fn main() {
                 app,
                 native,
                 deadline: Instant::now() + Duration::from_secs(120),
+                embedded,
             }))
         }),
     );
