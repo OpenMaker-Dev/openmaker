@@ -4186,6 +4186,14 @@ impl ScriptHost for WorkerHost<'_> {
         lost || self.s.abort.swap(false, Ordering::SeqCst) || self.s.interrupted || self.s.halt
     }
 
+    fn file_variables_changed(&mut self, file: FileId, variables: &Variables) {
+        if file == self.s.file.id {
+            self.p().set_file_variables(variables);
+        } else if let Some(file) = self.files.peers.get_mut(&file) {
+            file.provider.set_file_variables(variables);
+        }
+    }
+
     fn before_step(&mut self) {
         // Words belong to the step that gave them (#818).
         begin_step();

@@ -917,7 +917,8 @@ pub struct LayoutSetupParams {
     pub include_in_layout_menus: Option<bool>,
     /// Layout Setup's General options to turn on (true) or off (false), by
     /// name: "save_record_changes", "show_field_frames",
-    /// "delineate_fields", "show_record_indicator", "enable_quick_find".
+    /// "delineate_fields", "show_record_indicator", "show_field_alerts",
+    /// "enable_quick_find".
     /// Options not named keep their state.
     #[serde(default)]
     pub options: Option<std::collections::BTreeMap<String, bool>>,

@@ -1273,7 +1273,11 @@ impl NativeProvider {
         let mut schema = self.root_schema(&tree);
         // Keep the root before hydration imports any related schema.
         // Its catalogs remain available to hydration on every growth.
-        let root = self.related_on_demand.then(|| schema.clone());
+        let can_grow = self.related_on_demand
+            || self
+                .external
+                .has_local_variable_sources(&self.catalog, &tree);
+        let root = can_grow.then(|| schema.clone());
         // The account the file is open with, kept for its scripts' opens,
         // opens a related file first reached now, on its own host only
         // (#978).

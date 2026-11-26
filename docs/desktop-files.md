@@ -72,6 +72,16 @@ source ids and path alternatives follow `script-steps.md` 11.8 and
 - Unsupported alternatives are skipped; supported alternatives are
   attempted in order, keeping the last open error if none succeeds. No
   unsupported path is reinterpreted as a same-host file.
+- The sole path of a stored local source can be a file global such as
+  `$$RelatedPath`.
+  Open File reads it when the step runs. A relative `file:` path names a
+  sibling and an absolute macOS `filemac:` path names a file on its stated
+  volume. An unset variable returns 802 and a missing file returns 100.
+  With Set Error Capture on, the script continues without a prompt.
+  For a root file's related reads, a source with just one variable path
+  waits for first use and keeps its first successful binding for the
+  session. The stored source is preserved. See file-metadata.md 1.1
+  and [#988](https://github.com/OpenMaker-Dev/openmaker/issues/988).
 
 A new native session inherits the caller's TLS identity, CA configuration,
 machine/license configuration, endpoint and account credentials. It opens
@@ -161,9 +171,9 @@ boundaries, drops the unregistered provider and does not report success.
 ## Explicit limits and acceptance
 
 A provider must supply at least one accessible layout; files without one
-remain refused. A file opened from this computer opens its peers beside it,
-by plain names in its folder, through hosts its window's files share
-(local-files.md 4, "Related files and other files"); no chooser,
+remain refused. A file opened from this computer opens local peers through
+hosts its window's files share, by plain names in its folder or by a stored
+path variable (local-files.md 4, "Related files and other files"); no chooser,
 external-authentication or cross-server opening is added. A file that
 refused the session's account and password is not sent them again, until
 the first file is opened again (#738). An Open File step of such a file
