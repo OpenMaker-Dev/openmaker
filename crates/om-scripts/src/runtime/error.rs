@@ -28,6 +28,9 @@ impl ErrorCode {
     pub const UNKNOWN_COMMAND: ErrorCode = ErrorCode(4);
     /// Command is invalid: an invalid variable name, an unusable window.
     pub const INVALID: ErrorCode = ErrorCode(5);
+    /// File is read-only: a step that would change a file hosted read
+    /// only (script-runtime.md 13.28).
+    pub const FILE_READ_ONLY: ErrorCode = ErrorCode(6);
     pub const INSUFFICIENT_PRIVILEGES: ErrorCode = ErrorCode(9);
     /// Command/operation canceled by triggered script.
     pub const TRIGGER_CANCELED: ErrorCode = ErrorCode(20);
