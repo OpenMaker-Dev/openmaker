@@ -2224,7 +2224,7 @@ impl RecordPlan {
                         && expression.uses.get(occurrence).is_some_and(|uses| {
                             uses.first && !uses.placed && uses.aggregated.is_empty()
                         });
-                    let (match_fields, grouped_keys) = related_hop(
+                    let hop = related_hop(
                         &schema,
                         &fields,
                         context,
@@ -2232,11 +2232,11 @@ impl RecordPlan {
                         first_auto_enter,
                     )
                     .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
-                    if let Some((group, key)) = grouped_keys {
+                    if let Some((group, key)) = hop.grouped_keys {
                         grouped_self_joins.insert((id, group, key));
                     }
                     if own {
-                        matches.extend(match_fields);
+                        matches.extend(hop.match_fields);
                     }
                 }
             }
@@ -6456,6 +6456,12 @@ fn parse_formula(
     })
 }
 
+struct RelatedWriteHop {
+    match_fields: Vec<u64>,
+    /// The equality and inequality keys of the measured self-join.
+    grouped_keys: Option<(u64, u64)>,
+}
+
 /// The match fields of this table through which a formula of `table`,
 /// evaluated from `context`, reads field `field` of `occurrence`, once the
 /// rules can follow it: another table's stored value of one repetition,
@@ -6472,7 +6478,7 @@ fn related_hop(
     context: u64,
     (occurrence, field): (u64, u64),
     first_auto_enter: bool,
-) -> Result<(Vec<u64>, Option<(u64, u64)>), &'static str> {
+) -> Result<RelatedWriteHop, &'static str> {
     use crate::host::FieldClass;
     use crate::meta::JoinOp;
     let to = schema
@@ -6574,7 +6580,10 @@ fn related_hop(
         }
         matches.push(predicate.left);
     }
-    Ok((matches, grouped_keys))
+    Ok(RelatedWriteHop {
+        match_fields: matches,
+        grouped_keys,
+    })
 }
 
 fn single_line_key(value: &str) -> bool {
