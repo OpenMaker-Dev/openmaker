@@ -1505,8 +1505,11 @@ record it cannot store refuses the whole commit, with that exception, its
 staged records left staged and charged as they were: a table the file
 does not have, a record another lock user holds (another connection's,
 or the session's own under another transaction id), a new record whose
-id was not issued or that a record already has, a staged record whose
-modification count is not one. FileMaker Server half-writes a record
+id was not issued or that a record already has, an entry in the edit form
+for a record the file does not hold (deleted, or never created: only an
+entry marked new creates a record; OpenMaker's choice, write-path.md 3.4,
+[#840](https://github.com/OpenMaker-Dev/openmaker/issues/840)), a staged
+record whose modification count is not one. FileMaker Server half-writes a record
 another lock user holds and answers done (write-path.md 3.4); OpenMaker
 refuses. A record the list names with nothing staged for it, and the
 deletion of one that is not there, ask for nothing. op73 for a path that
