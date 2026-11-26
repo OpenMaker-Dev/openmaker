@@ -255,6 +255,10 @@ pub struct Database {
     pub clients: usize,
     /// Whether it is encrypted at rest.
     pub encrypted: bool,
+    /// Why it is served read-only, when it is: no client's change is
+    /// stored. OpenMaker's own; FileMaker Server's console shows no such
+    /// mark that has been seen.
+    pub read_only: Option<String>,
 }
 
 /// What state a hosted file is in, with FileMaker Server's names
