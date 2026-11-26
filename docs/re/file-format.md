@@ -355,18 +355,22 @@ Evidence:
   row below); no edit changed anything else in these catalogs, and every
   value below is one the starter files have;
 - [O] the key constants' numbers ([catalogs/hbkey-constants.csv](catalogs/hbkey-constants.csv)),
-  several of which share one number, so a name is [I] where several fit.
+  several of which share one number, so a name is [I] where several fit;
+- [O from bin] FileMaker Pro 26.1.1 for macOS, arm64 FMEngine and DBEngine.
+  Member accessors and stream readers and writers identify the script
+  compatibility word, font code set, menu definition and guide list. The
+  66 shipped starter files of that build have the same values and counts
+  for these paths as recorded below. No native save was made for this check.
 
-No FileMaker binary was read for this section: the meanings rest on the
-files and on what other specs record.
+The Group column gives the current OpenMaker rules.
 
 | Path (hex) | Observed [O] | What is known | Group |
 |---|---|---|---|
-| `[11, 5, S, 13]` | u32 0 on all 330 scripts, folders and separators (members without `04`) included, on the 32 scripts of the saved copies, and on the 361 of script-steps.md 1 | the constants with this number are `KCachedCountIgnoreFolders`, `KCompatibility`, `KDragSize` and `KPrefixKey` (also a query program leaf, query-program.md 2.2); which one the script catalog writes, and when it is not 0, is [U] | none |
-| `[41, 5, M, 02]` | an 8-byte leaf on all 264 custom menus, the 24 of each Contacts file (no other solution has custom menus), the same 24 values in every language: two u32s. The first differs per menu: `06` `[Format]`, `08` `[Scripts]`, `09` `[Window]`, `12` `[Font]`, `13` `[Spelling]`, `14` `[Size]`, `15` `[Style]`, `16` `[Align Text]`, `18` `[Line Spacing]`, `20` `[Recent]`, `26` `[Show Window]`, `49` `[Hosts]`, `95` `[Find/Replace]`, `9b` `[Import Records]`, `9c` `[Sharing]`, `9d` `[Manage]`, `9f` `[Go to Record]`, `a1` `[Go to Layout]`, `a8` `[Save/Send Records As]`, `ac` `[Go to Request]`, `b5` `[Text Color]`, `c7` `[Saved Finds]`, `c8` `[Send]`, `d1` `[Favorites]`. The second is `78`, but `68` for `[Go to Record]` and `50` for `[Go to Request]` | each menu is named in brackets after one of FileMaker's own menus and holds no items: its keys are `02`, `10`, the install-when calculation `25`, `d8` and the stamp. [I] the first word names the menu it is a copy of; [I] the second holds four bits of when it is shown (by mode or by platform). Where a custom menu item, and the script step it runs, are stored is not observed: no starter menu has an item (calc-encoding.md 8 places item calculations at `[41, 5, M, n, item, k]`, `n` not given) | none |
+| `[11, 5, S, 13]` | `00 00 00 00` on all 330 starter scripts, folders and separators (members without `04`) included, and on the 32 scripts of the saved copies and the 361 of script-steps.md 1 | `KCompatibility`, a big-endian u32 [O from bin: FMEngine `FMScript::GetCompatibility` at `0x4a2884` and `SetCompatibility` at `0x4a2a60`]. The getter returns 0 when the value cannot be read. See [script-steps.md](script-steps.md) 1 | none |
+| `[41, 5, M, 02]` | an 8-byte leaf on all 264 custom menus, the 24 of each Contacts file (no other solution has custom menus), the same 24 values in every language: two u32s. The first differs per menu: `06` `[Format]`, `08` `[Scripts]`, `09` `[Window]`, `12` `[Font]`, `13` `[Spelling]`, `14` `[Size]`, `15` `[Style]`, `16` `[Align Text]`, `18` `[Line Spacing]`, `20` `[Recent]`, `26` `[Show Window]`, `49` `[Hosts]`, `95` `[Find/Replace]`, `9b` `[Import Records]`, `9c` `[Sharing]`, `9d` `[Manage]`, `9f` `[Go to Record]`, `a1` `[Go to Layout]`, `a8` `[Save/Send Records As]`, `ac` `[Go to Request]`, `b5` `[Text Color]`, `c7` `[Saved Finds]`, `c8` `[Send]`, `d1` `[Favorites]`. The second is `78`, but `68` for `[Go to Record]` and `50` for `[Go to Request]` | `KType`: base menu ID followed by the menu flags, both big-endian u32 [O from bin: FMEngine `FMCustomMenu::GetMenuDef` at `0x544714`, `MenuDef::Read` at `0x541e84`, `SetBaseMenuID` at `0x543ee0` and `SetFlags` at `0x543ea4`]. The item list is separate at `07`, absent from all 264 starter menu members. See [calc-encoding.md](calc-encoding.md) 8 | none |
 | `[19, 5, F, 03]` | text on 73 of 139 fonts: `ArialMT` for the family Arial, `HelveticaNeue`, `HelveticaNeue-Bold`, `-Light` and `-Medium` for Helvetica Neue, `.SFNSText` for `.SF NS Text`, `.SFNS-Regular` for `.SF NS`; none on `arial,sans-serif`, a CSS list | the face's PostScript name, beside the family name `10`: the values are those faces' PostScript names [O]; FileMaker's XML names a font's `fontPSAttr` beside `fontFamily` and `fontCodeSet`, and themes name a font by family and code set or PostScript name (layout-model.md 7.3, 8) | Design |
-| `[19, 5, F, 02]` | `01 00` on 84 fonts (`.SF NS Text`, `.SF NS`, `arial,sans-serif`), `01 fe` on 55 (Arial and the four Helvetica Neue faces) | [I] a one-byte value as a key string (length, then the byte, as the indexes' `01 0n`); [I] the font's code set, `fontCodeSet`: the calculation constants number font scripts `Roman` 0 to `Other` 10 (calc-functions.md), and what `fe` is, is [U] | none |
-| `[4, 5, L, 16]` | `00 00` on Contacts' Contact Details layout in all 11 languages. FileMaker Pro 26 added it, as `00 00` and with `fc`, in the Layout mode saves that were looked at: Layout Setup's OK followed by Save Layout (layout-model.md 10.14), the save of a newly placed portal (10.17), and the two saved copies whose layout was edited. Whether every Layout mode save adds it, and whether its value is ever other than `00 00`, is [U] | the constants with this number are `KGuides`, `KRowSetKey` and `KStyleDefs`; a layout's own styles are `KLayoutStyleDefs` `21`, which every layout has (layout-model.md 10.1), so not this. [I] `KGuides`, the layout's guides, here none | none |
+| `[19, 5, F, 02]` | `01 00` on 84 fonts (`.SF NS Text`, `.SF NS`, `arial,sans-serif`), `01 fe` on 55 (Arial and the four Helvetica Neue faces) | `KStatus`: the font code set as a one-byte key string, `01 <codeSet>` [O from bin: DBEngine `DBFontEntry::GetCodeSet` at `0x188d088` and `SetCodeSet` at `0x188daf0`]. `CreateNewPostScriptEntry` at `0x188cc00` supplies `fe` when creating an entry from a PostScript name. See [layout-model.md](layout-model.md) 8 | none |
+| `[4, 5, L, 16]` | `00 00` on Contacts' Contact Details layout in all 11 languages. FileMaker Pro 26 added the same value, with `fc`, in the Layout mode saves that were looked at: Layout Setup's OK followed by Save Layout (layout-model.md 10.14), the save of a newly placed portal (10.17), and the two saved copies whose layout was edited | `KGuides`, the layout's guide list [O from bin: FMEngine `FMLayout::GetGuideList` at `0x2d6dd0` and `SaveLayout` at `0x2d1b1c`]. The first two bytes are the big-endian guide count, zero in these files. See [layout-model.md](layout-model.md) 10.1 | none |
 | `[17, 2, 1, 07]`, `[17, 3, 1, 07]`, `[19, 1, 07]`, `[21, 1, 07]`, `[40, 1, 07]`, `[41, 1, 07]` | in each of the 396 catalogs (six in each file) the keys are exactly the members' keys `[.., 05, *]`, every leaf is empty, and the list has no value of its own | a member list: it holds nothing the members do not. `KList` is `07`. That FileMaker rebuilds it from the members rather than reading it is [I] | Derived |
 | `[21, 1, 06]` | one leaf per value list, all 264: the key is the list's type as two bytes (`00 00` on the 143 custom lists, whose definition `02` starts with type 0; `00 01` on the 121 lists from a field, type 1; file-metadata.md 6.2), then the first two levels of the key its name has in the index's name list `01` (schema-path.md 5.6): the primary weights, `00 00`, and the secondary level where the name has one (41 lists). The name list's key goes on with `00` and, on 11 lists, a third level; neither is in this key. The value is the list's key string `01 <key>` | the name list by type, as the field catalog's `06` (schema-path.md 5.5). `KTypeList` is `06` | Derived |
 
@@ -375,12 +379,12 @@ A path in no group keeps its object from having a design revision
 menu (`02`), every font (`02`, which all of them hold) and the layouts
 with `16` have none.
 
-**Unknowns.** What `[11, 5, S, 13]` holds and when it is not 0; what the
-two words of a custom menu's `02` are; where a custom menu item and the
-script step it runs are stored, and so whether a custom menu holds step
-data (it can: an item runs a step, which can store a credential); what a
-font's `02` is, and what `fe` means; what a layout's `16` is. Each needs
-FileMaker Pro writing a known change.
+**Unknowns.** Which UI operations write the script compatibility word and
+which nonzero values they write, the menu flag bit assignments, the
+remaining font code-set values, and the guide record's orientation, flag
+and coordinate semantics. The custom menu's item list and the separate
+parameter data still need a file with a known action as evidence for a
+decoder that can identify references and credentials.
 
 Three index keys have the same form and value as keys a spec names, and
 take their rule by that inference: `[6, 1, 20]` (`01` in the 11 Contacts
