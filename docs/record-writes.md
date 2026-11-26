@@ -791,6 +791,15 @@ and hosted use remain outside this support.
 [Open storage comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1060)
 [Secure storage comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1083)
 
+In a local file, a replacing 24-repetition Text auto-enter calculation
+can read the filename of the same occurrence's 24-repetition Container.
+With the measured formula and option word, a new empty record has no
+filename cells, and editing an existing source changes only its matching
+repetition. OpenMaker refuses direct writes into the calculated Text and
+creation with a nonempty source. The deferred-transfer refusal still
+applies to source containers awaiting a transfer.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39)
+
 In a local file, ordinary New Record applies a constant, a calculation
 that reads no fields, or a creation serial to a supported
 single-repetition global Text field. A calculation with replacement off

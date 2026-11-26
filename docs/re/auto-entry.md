@@ -222,6 +222,23 @@ The formatted stream is 20 bytes and must not be confused with that two-byte
 code. The high option bit in PrimaryKey is preserved, not treated as an
 auto-entry flag. Fields 1..7 have none of the four supported auto-entry modes.
 
+## Filenames from a repeating Container
+
+FileMaker Pro 26.1.1 on a disposable local file saved a 24-repetition Text
+field with option word `0x88` and `GetContainerAttribute ( Attachment ;
+"Filename" )`, where Attachment was a 24-repetition Container of the
+same occurrence. "Do not evaluate if all referenced fields are empty"
+was on. Creating and committing a record with Attachment empty left no
+stored Text cells. Inserting or replacing a container affected only the
+matching Text repetition. Clearing the second container removed the
+second Text cell and kept the first. A separate Text edit left both
+repetitions as they were. Each write returned 0 with no alert, and
+closed copies confirmed the stored cells.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39)
+
+Entering a value directly in the result field, preparing a new record
+with a nonempty source, other formulas and hosted writes are unmeasured.
+
 ## Lookups
 
 Option `0x400` auto-enters a looked-up value. Its definition is the
