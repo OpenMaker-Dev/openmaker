@@ -2493,8 +2493,10 @@ showing a library image, a field's label or a popover button; only a stored text
 named style and calls out local styling beyond the object's stored
 rotation. Appearance shows known
 normal-state fill, border and text colors and the base font from Browse's
-style cascade. These properties are read-only. Autosizing, names and
-tooltips are unavailable. Data Formatting summarizes the decoded number,
+style cascade. These properties are read-only. Appearance can show swatches
+for sides that draw no border, and Styles can list names the cascade skips
+([#886](https://github.com/OpenMaker-Dev/openmaker/issues/886)). Autosizing,
+names and tooltips are unavailable. Data Formatting summarizes the decoded number,
 date, time or graphic format for a stored field whose type is known to the
 window. The summary is read-only. Layouts without geometry keep the generic field
 view, which is not inspectable as document objects; they cannot be edited.
