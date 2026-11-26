@@ -5274,50 +5274,9 @@ fn paint_object_repetition(
                 ),
                 false => String::new(),
             };
-            let mut text_rect = rect;
-            let icon = match (&object.button, &object.popover_button) {
-                (Some(button), _) => Some((button.library_key, button.icon_size)),
-                (None, Some(button)) => Some((button.library_key, button.icon_size)),
-                (None, None) => None,
-            };
-            // A calculated icon (FileMaker Pro 26.1) is the SVG its formula
-            // gives on the record, in the library icon's place.
-            // Not evaluated (Find mode, or until its data is read): the
-            // library icon, if any [I: what Find mode shows is unmeasured].
-            let svg = object
-                .active_icon_formula()
-                .and_then(|_| calc_state.icon_svg.clone());
-            // A library icon shows only with its key; a calculated one
-            // always, its size the button's icon size.
-            let shown = icon.filter(|(key, _)| svg.is_some() || *key != 0);
-            if let Some((library_key, icon_size)) = shown {
-                let size = (icon_size.max(1) as f32)
-                    .min(rect.width())
-                    .min(rect.height());
-                let center = if text.is_empty() {
-                    rect.center()
-                } else {
-                    pos2(rect.left() + size / 2.0 + 6.0, rect.center().y)
-                };
-                let icon = state
-                    .layout_cache
-                    .formatted_style(layout, object, &[], 4, style_state);
-                let tint = icon
-                    .icon_color
-                    .or(icon.color)
-                    .or(style.border_color[0])
-                    .map(color);
-                let at = Rect::from_center_size(center, vec2(size, size));
-                match &svg {
-                    Some(svg) => paint_calculated_icon(ui, svg, at, tint),
-                    None => {
-                        paint_library_image(ui, &state.layout_cache, layout, library_key, at, tint)
-                    }
-                }
-                if !text.is_empty() {
-                    text_rect.min.x += size + 10.0;
-                }
-            }
+            let text_style = state
+                .layout_cache
+                .text_style(layout, object, conditions, style_state);
             let mut rich = object.rich_text.as_ref().map(std::borrow::Cow::Borrowed);
             if !conditions.is_empty() {
                 if let Some(rich) = &mut rich {
@@ -5332,16 +5291,60 @@ fn paint_object_repetition(
                     );
                 }
             }
-            let _ = paint_rich_text(
-                ui,
-                text_rect,
-                &text,
-                &state
+            let mut text_rect = rect;
+            let icon = match (&object.button, &object.popover_button) {
+                (Some(button), _) => {
+                    Some((button.library_key, button.icon_size, button.display_type))
+                }
+                (None, Some(button)) => {
+                    Some((button.library_key, button.icon_size, button.display_type))
+                }
+                (None, None) => None,
+            };
+            // A calculated icon (FileMaker Pro 26.1) is the SVG its formula
+            // gives on the record, in the library icon's place.
+            // Not evaluated (Find mode, or until its data is read): the
+            // library icon, if any [I: what Find mode shows is unmeasured].
+            let svg = object
+                .active_icon_formula()
+                .and_then(|_| calc_state.icon_svg.clone());
+            let shown = icon.filter(|(key, _, _)| svg.is_some() || *key != 0);
+            if let Some((library_key, icon_size, display_type)) = shown {
+                let size = (icon_size.max(1) as f32)
+                    .min(rect.width())
+                    .min(rect.height());
+                let (at, label) =
+                    button_icon_and_label(rect, size, display_type, !text.is_empty(), || {
+                        let [top, right, bottom, left] =
+                            text_style.padding.map(|p| p.unwrap_or(0.0) as f32);
+                        ui.fonts_mut(|fonts| {
+                            let job = rich_text::layout_job(
+                                fonts,
+                                &text,
+                                &text_style,
+                                rich.as_deref(),
+                                (rect.width() - left - right).max(0.0),
+                            );
+                            fonts.layout_job(job).size().y + top + bottom
+                        })
+                    });
+                text_rect = label;
+                let icon = state
                     .layout_cache
-                    .text_style(layout, object, conditions, style_state),
-                rich.as_deref(),
-                None,
-            );
+                    .formatted_style(layout, object, &[], 4, style_state);
+                let tint = icon
+                    .icon_color
+                    .or(icon.color)
+                    .or(style.border_color[0])
+                    .map(color);
+                match &svg {
+                    Some(svg) => paint_calculated_icon(ui, svg, at, tint),
+                    None => {
+                        paint_library_image(ui, &state.layout_cache, layout, library_key, at, tint)
+                    }
+                }
+            }
+            let _ = paint_rich_text(ui, text_rect, &text, &text_style, rich.as_deref(), None);
         }
         ObjectKind::Graphic => {
             if let Some(graphic) = &object.graphic {
@@ -8266,6 +8269,53 @@ fn paint_icon(ui: &Ui, icon: Icon, side: f32, field: Rect, color: Option<Color32
     );
 }
 
+/// The icon and label's bounds in Browse. For the vertical choices the
+/// label uses the whole width and the pair is centered together.
+fn button_icon_and_label(
+    rect: Rect,
+    size: f32,
+    display_type: i32,
+    has_label: bool,
+    label_height: impl FnOnce() -> f32,
+) -> (Rect, Rect) {
+    let mut label = rect;
+    let center = if !has_label {
+        rect.center()
+    } else {
+        match display_type {
+            2 | 3 => {
+                // Eight points between the icon and the label's line box
+                // in the measured standard-theme buttons (layout-model 5.6.1).
+                let available = (rect.height() - size).max(0.0);
+                let gap = available.min(8.0);
+                let height = label_height().clamp(0.0, available - gap);
+                let top = rect.center().y - (size + gap + height) / 2.0;
+                label.min.y = if display_type == 2 {
+                    top + size + gap
+                } else {
+                    top
+                };
+                label.max.y = label.min.y + height;
+                let icon_top = if display_type == 2 {
+                    top
+                } else {
+                    label.max.y + gap
+                };
+                pos2(rect.center().x, icon_top + size / 2.0)
+            }
+            5 => {
+                label.max.x -= size + 10.0;
+                pos2(rect.right() - size / 2.0 - 6.0, rect.center().y)
+            }
+            _ => {
+                label.min.x += size + 10.0;
+                pos2(rect.left() + size / 2.0 + 6.0, rect.center().y)
+            }
+        }
+    };
+    (Rect::from_center_size(center, vec2(size, size)), label)
+}
+
 fn paint_library_image(
     ui: &Ui,
     cache: &layout_cache::LayoutCache,
@@ -9296,6 +9346,19 @@ mod tests {
         assert_eq!(edit.buffer.value, "AB");
         assert_eq!(edit.buffer.original, "AB");
         assert_eq!(edit.version, Some(7));
+    }
+
+    #[test]
+    fn button_icon_above_or_below_leaves_the_full_width_for_the_label() {
+        let frame = Rect::from_min_size(pos2(20.0, 40.0), vec2(100.0, 90.0));
+        let (above, below_label) = button_icon_and_label(frame, 48.0, 2, true, || 18.0);
+        let (below, above_label) = button_icon_and_label(frame, 48.0, 3, true, || 18.0);
+        assert_eq!(below_label.width(), frame.width());
+        assert_eq!(above_label.width(), frame.width());
+        assert_eq!(above.center().x, frame.center().x);
+        assert_eq!(below.center().x, frame.center().x);
+        assert_eq!(below_label.top() - above.bottom(), 8.0);
+        assert_eq!(below.top() - above_label.bottom(), 8.0);
     }
 
     #[test]
