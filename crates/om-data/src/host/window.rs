@@ -53,6 +53,7 @@ pub struct WindowInfo {
     /// The status toolbar (`Get ( StatusAreaState )`), the menu bar and
     /// the text ruler.
     pub toolbar: bool,
+    pub toolbar_locked: bool,
     pub menubar: bool,
     pub text_ruler: bool,
     pub visible: bool,
@@ -77,6 +78,7 @@ impl Default for WindowInfo {
             content: Frame::default(),
             zoom: 100,
             toolbar: true,
+            toolbar_locked: false,
             menubar: true,
             text_ruler: false,
             visible: true,
@@ -85,6 +87,16 @@ impl Default for WindowInfo {
             uuid: String::new(),
         }
     }
+}
+
+/// Get ( StatusAreaState ) is available before the window has been measured.
+pub fn status_area_state(visible: bool, locked: bool) -> Value {
+    Value::number(match (visible, locked) {
+        (false, false) => 0,
+        (true, false) => 1,
+        (true, true) => 2,
+        (false, true) => 3,
+    })
 }
 
 /// A coordinate as FileMaker Pro gives it: whole points, halves away from
@@ -133,7 +145,7 @@ impl WindowInfo {
             WINDOW_STYLE => number(self.style),
             // Only FileMaker Go turns a window.
             WINDOW_ORIENTATION => number(-1),
-            STATUS_AREA_STATE => flag(self.toolbar),
+            STATUS_AREA_STATE => Some(status_area_state(self.toolbar, self.toolbar_locked)),
             MENUBAR_STATE => flag(self.menubar),
             TEXT_RULER_VISIBLE => flag(self.text_ruler),
             WINDOW_UUID => Some(Value::text(&self.uuid)),

@@ -11,9 +11,15 @@ om-hbam = { path = "../om-hbam" }
 om-protocol = { path = "../om-protocol" }
 om-rctransaction = { path = "../om-rctransaction" }
 om-scsu = { path = "../om-scsu" }
+ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 rustls-pemfile = "2"
+# A permitted certificate's raw public key (`tls`): the version rustls uses.
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false }
 webpki-roots = "1"
+
+[dev-dependencies]
+rcgen = "0.14"
 
 [lints]
 workspace = true

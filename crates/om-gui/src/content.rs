@@ -68,49 +68,82 @@ pub(crate) fn browse(
             return;
         }
     }
+    if view == ViewMode::Table {
+        table(ui, session, document, calc, actions);
+        commit_canvas_click(&background, session, document, actions);
+        return;
+    }
     let Some(page) = loaded_page(ui, session) else {
         return;
     };
-    // Table view, and the views of a layout not drawn, move Tab through
-    // the current record's cells (`DocumentState::text_edit`).
+    // The views of a layout not drawn move Tab through the current
+    // record's cells (`DocumentState::text_edit`).
     document.resolve_tab(ui, session, false);
     document.settle_completions(ui);
     match view {
-        ViewMode::Form => match &session.geometry {
+        ViewMode::List => list_view(ui, session, page, document, calc, actions),
+        // Form view; Table view went above.
+        _ => match &session.geometry {
             Geometry::Loaded(geometry) => geometry_view(ui, geometry, document),
             Geometry::Loading => padded(ui, |ui| {
                 ui.spinner();
             }),
             Geometry::Unavailable => form_view(ui, session, document, calc, actions),
         },
-        ViewMode::List => list_view(ui, session, page, document, calc, actions),
-        ViewMode::Table => {
-            // Zoomed as Form and List view are: the grid, its header and its
-            // scroll areas in the document's zoom layer.
-            let factor = document.zoom.factor();
-            // The last column fills the width the table's previous frame
-            // left: at a new zoom the table is laid out once more before it
-            // shows, or it keeps the old zoom's width until the next input.
-            let shown = ui.scope_id().with("table zoom");
-            if ui.data(|data| data.get_temp::<f32>(shown)) != Some(factor) {
-                ui.data_mut(|data| data.insert_temp(shown, factor));
-                ui.ctx().request_discard("Table view zoom changed");
-            }
-            crate::document::zoom::show(ui, ui.available_size() / factor, factor, |ui| {
-                // The canvas below the rows, in their layer (the window's
-                // canvas is under it): a click there that no cell takes
-                // commits the record.
-                let canvas = ui.interact(
-                    ui.max_rect(),
-                    ui.scope_id().with("table_canvas"),
-                    Sense::click(),
-                );
-                table_view(ui, session, page, document, calc, actions);
-                commit_canvas_click(&canvas, session, document, actions);
-            });
-        }
     }
     commit_canvas_click(&background, session, document, actions);
+}
+
+/// Browse's Table view: the found set's grid, and on a drawn layout the
+/// parts its Table View Properties include around it
+/// (`document::show_table`), zoomed as Form and List view are.
+fn table(
+    ui: &mut Ui,
+    session: &Session,
+    document: &mut crate::document::DocumentState,
+    calc: Option<&crate::calc::Evaluator<'_>>,
+    actions: &mut Vec<Action>,
+) {
+    // The grid, its header, its scroll areas and the parts in the
+    // document's zoom layer.
+    let factor = document.zoom.factor();
+    // The last column fills the width the table's previous frame
+    // left: at a new zoom the table is laid out once more before it
+    // shows, or it keeps the old zoom's width until the next input.
+    let shown = ui.scope_id().with("table zoom");
+    if ui.data(|data| data.get_temp::<f32>(shown)) != Some(factor) {
+        ui.data_mut(|data| data.insert_temp(shown, factor));
+        ui.ctx().request_discard("Table view zoom changed");
+    }
+    crate::document::zoom::show(ui, ui.available_size() / factor, factor, |ui| {
+        // The canvas below the rows, in their layer (the window's
+        // canvas is under it): a click there that no cell takes
+        // commits the record.
+        let canvas = ui.interact(
+            ui.max_rect(),
+            ui.scope_id().with("table_canvas"),
+            Sense::click(),
+        );
+        let grid = |ui: &mut Ui,
+                    document: &mut crate::document::DocumentState,
+                    actions: &mut Vec<Action>| {
+            let Some(page) = loaded_page(ui, session) else {
+                return;
+            };
+            // Table view moves Tab through the current record's cells
+            // (`DocumentState::text_edit`).
+            document.resolve_tab(ui, session, false);
+            document.settle_completions(ui);
+            table_view(ui, session, page, document, calc, actions);
+        };
+        match &session.render {
+            crate::session::RenderState::Loaded(layout) => {
+                crate::document::show_table(ui, session, layout, document, calc, actions, grid)
+            }
+            _ => grid(ui, document, actions),
+        }
+        commit_canvas_click(&canvas, session, document, actions);
+    });
 }
 
 fn commit_canvas_click(

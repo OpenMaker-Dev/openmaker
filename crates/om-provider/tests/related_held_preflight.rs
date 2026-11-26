@@ -111,6 +111,7 @@ fn write(
         privilege_set: None,
         record_number: None,
         prepared: None,
+        single_field_step: false,
     })
 }
 fn text(page: &RecordPage, id: i64, field: &str) -> Option<String> {
@@ -465,6 +466,7 @@ fn typed_script_cell_keeps_data_entry_validation_and_refuses_before_effects() {
         privilege_set: None,
         record_number: None,
         prepared: None,
+        single_field_step: false,
     });
     assert_eq!(result.unwrap_err().code, Some(3));
     assert_eq!(effects(&h), before);
