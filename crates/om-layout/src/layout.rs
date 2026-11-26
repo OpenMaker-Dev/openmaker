@@ -9,8 +9,9 @@ use crate::wire::{Fields, Merged, RawField, Result, Value};
 /// from its catalog member's copy (`[4, 5, L]`), else its catalog index
 /// entry's (`[4, 1, 7, L]`): FileMaker keeps both, and a reader that took
 /// the member's alone would drop what only the entry holds (#977). Each copy
-/// reads as a big-endian unsigned integer of 1 to 8 bytes. The one reading
-/// rule for every reader and the host's Layout Setup
+/// is its slot's own value, a big-endian unsigned integer of 1 to 8 bytes
+/// (not a split value). The one reading rule for every reader and the
+/// host's Layout Setup
 /// (`Layout::decode_from_tree`, `om_data::layout_catalog::layout_word`).
 pub fn stored_layout_word(member: Option<&[u8]>, entry: Option<&[u8]>) -> Option<u64> {
     member
