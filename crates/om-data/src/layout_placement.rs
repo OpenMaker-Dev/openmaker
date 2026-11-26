@@ -2794,6 +2794,27 @@ mod tests {
             Err(Refusal::Invalid(_))
         ));
 
+        // Whitespace holding text shows a calculation other than the one
+        // stored: `Contacts::Website //` shown before the field read.
+        let shown = om_formula::Field {
+            flags: om_formula::Field::TABLE_PRESENT,
+            occurrence: om_formula::Key(vec![3, 0xd0, 0, 3]),
+            field: om_formula::Key(vec![1, 7]),
+            repetition: 1,
+        };
+        let hidden = WebViewerPlacement {
+            formatted: om_formula::formatted::encode(&[
+                om_formula::Token::Whitespace(om_formula::Text::plain("Contacts::Website //")),
+                om_formula::Token::Field(shown.clone()),
+            ]),
+            polish: om_formula::polish::encode(&om_formula::Expr::Field(shown)),
+            ..viewer.clone()
+        };
+        assert!(matches!(
+            plan_web_viewer(&before, &hidden),
+            Err(Refusal::Invalid(_))
+        ));
+
         let unmeasured = WebViewerPlacement {
             flags: 0x800c,
             ..viewer

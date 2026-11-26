@@ -226,6 +226,16 @@ fn address(viewer: &WebViewerPlacement) -> Result<om_formula::Expr, Refusal> {
     }
     let tokens = om_formula::formatted::decode(&viewer.formatted)
         .map_err(|e| invalid(format!("text does not read ({e:?})")))?;
+    // Whitespace and comments are skipped when the text is compiled but
+    // shown as they are: one holding other text would show a calculation
+    // other than the one stored (`Contacts::Website //` before
+    // `Related::Website`).
+    if let Some(token) = tokens.iter().find(|token| !plain_trivia(token)) {
+        return Err(invalid(format!(
+            "text holds whitespace or a comment that would show as more of the \
+             calculation ({token:?})"
+        )));
+    }
     let names = om_formula::NoNames;
     let expr =
         om_formula::compile_tokens(&tokens, &om_formula::Context::new(&names)).map_err(|_| {
@@ -262,6 +272,26 @@ fn address(viewer: &WebViewerPlacement) -> Result<om_formula::Expr, Refusal> {
         ));
     }
     Ok(expr)
+}
+
+/// Whether `token` shows as what it is: not trivia, whitespace that is
+/// all white space, a block comment that does not end before its end, or a
+/// line comment whose only line break ends it.
+fn plain_trivia(token: &om_formula::Token) -> bool {
+    use om_formula::Token;
+    match token {
+        Token::Whitespace(text) => text.value.chars().all(char::is_whitespace),
+        Token::BlockComment(text) => !text.value.contains("*/"),
+        Token::LineComment(text) => {
+            let body = text
+                .value
+                .strip_suffix("\r\n")
+                .or_else(|| text.value.strip_suffix(['\r', '\n']))
+                .unwrap_or(&text.value);
+            !body.contains(['\r', '\n'])
+        }
+        _ => true,
+    }
 }
 
 /// Whether `expr` calls a custom function or a plug-in function, which

@@ -3515,6 +3515,8 @@ appended with every stored byte kept. It writes only the option
 combinations measured above (W2's, W1's and W3's flags) with a custom
 address, and refuses the others; and only an address whose formatted
 stream compiles again to its Polish stream, as Pro's four did, whose
+whitespace and comment tokens hold nothing that would show as more of the
+calculation, whose
 fields are each stored with their occurrence (`TABLE_PRESENT`, as W1's),
 and which calls no custom or plug-in function. [O, 2026-11-26] For W2's and W1's setups
 on the same starter's Contact Details (at 40/300/320/500, clear of the

@@ -612,7 +612,8 @@ with a custom web address (operation 28, planned with
   The host checks that each field the address reads is a field of one of
   the file's tables, and that the address's text compiles again to the
   calculation it stores (so the text Web Viewer Setup shows and what
-  Browse evaluates cannot differ). The address has no context of its own
+  Browse evaluates cannot differ), with whitespace and comments that hold
+  only white space and comment text. The address has no context of its own
   (`01 00`, as Pro stores it), so each field is stored with its occurrence
   (`Occurrence::Field`, as Pro stored W1's): `place_web_viewer` qualifies
   the fields it compiles, and the host refuses a field stored without its
