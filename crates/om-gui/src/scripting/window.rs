@@ -1406,7 +1406,8 @@ impl Window {
         privilege_set: Option<String>,
     ) -> Result<(), DataError> {
         let session = self.open_new_record(provider);
-        let record_number = if !cfg!(any(target_os = "ios", target_os = "android"))
+        let record_number = if session
+            && !cfg!(any(target_os = "ios", target_os = "android"))
             && provider.local_path().is_some()
         {
             self.next_unsorted_record_number(provider)
