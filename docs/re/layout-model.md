@@ -301,47 +301,58 @@ Two of these bits are Layout Setup's field delineation options:
 With `0x1` set, a field's borders and fill show on the current record only. Claris documents that they then do not show "when you print, print to PDF, or preview" [Claris: "Showing field borders and fill for the current record"]. FileMaker Pro 26.0.3 prints none of the starter lists' field underlines [O, #263, 2026-11-13]. Its Task Details PDF draws the `fill-secondary-popup` pop-ups and the `fill-container` photo field with no fill or border operations at all, only their clip paths and text [O, [#201](https://github.com/OpenMaker-Dev/openmaker/issues/201), 2026-11-13]. Fields in header, footer, summary and navigation parts never show borders and fill [Claris, same page].
 
 **Table View Properties** (Layout Setup > Views > Table > Properties)
-keep their options in the same flag word. Evidence: the third-party table
-above, FileMaker Pro 26.0.2's Save as XML read one option at a time
-[O, third party]. No option has been set in FileMaker Pro and read back
-from a saved file here [U].
+keep their options in the same flag word. The four part options are
+measured [O, FileMaker Pro 26.1.1 for macOS, [#927](https://github.com/OpenMaker-Dev/openmaker/issues/927)]:
+four separately saved copies of a one-record Contacts fixture, each with
+one option checked, changed the one bit in the table, against a copy with
+all four off, in both flag words (`[4,5,L,0xf1]` and `[4,1,7,L,0xf1]`).
+No leaf under the layout's `0d` changed. The saves also changed other
+save metadata; no save without a change was made to compare it with. The
+other
+options' bits come from the third-party table above, FileMaker Pro
+26.0.2's Save as XML read one option at a time [O, third party]; they
+have not been read back from a file FileMaker saved [U].
 
-| Bit | Option |
-|---|---|
-| `0x10000`, `0x20000` | Grid: Horizontal, Vertical |
-| `0x40000` | Include header part |
-| `0x80000` | Include footer part |
-| `0x100000` | Include column headers |
-| `0x200000`, `0x400000` | Resizable columns, Reorderable columns |
-| `0x800000` | Sort data when selecting column |
-| `0x4000000` | named `customColumnOrder` there; no option of the dialog has this name [U] |
-| `0x20000000` | Include top navigation part |
-| `0x40000000` | Include bottom navigation part |
-| `0x1_0000_0000` to `0x8_0000_0000` | macOS: System appearance, Comfortable formatting, Alternating row colors, Row numbers |
+| Bit | Option | Evidence |
+|---|---|---|
+| `0x10000`, `0x20000` | Grid: Horizontal, Vertical | third party |
+| `0x40000` | Include header part | 26.1.1 |
+| `0x80000` | Include footer part | 26.1.1 |
+| `0x100000` | Include column headers | third party |
+| `0x200000`, `0x400000` | Resizable columns, Reorderable columns | third party |
+| `0x800000` | Sort data when selecting column | third party |
+| `0x4000000` | named `customColumnOrder` there; no option of the dialog has this name [U] | third party |
+| `0x20000000` | Include top navigation part | 26.1.1 |
+| `0x40000000` | Include bottom navigation part | 26.1.1 |
+| `0x1_0000_0000` to `0x8_0000_0000` | macOS: System appearance, Comfortable formatting, Alternating row colors, Row numbers | third party |
 
-- **The four parts:** Claris's help says to "Select the parts to display:
-  top navigation, header, footer, and bottom navigation", and that "These
+- **Claris's help** says to "Select the parts to display: top
+  navigation, header, footer, and bottom navigation", and that "These
   settings matter only if you have defined the parts for the layout, and
   they're only in effect in Table View"
   ([Setting up form, list, and table views for a layout](https://help.claris.com/en/pro-help/content/form-list-table-views.html)).
   [Layout part types](https://help.claris.com/en/pro-help/content/layout-part-types.html)
-  says each of the four shows in Table view only when its option is on.
-  The System appearance options apply "only to the table, not to any of
-  the selected layout parts" [Claris, the first page].
+  says each of the four shows in Table view only when its option is on,
+  and that navigation parts are not zoomed. The System appearance
+  options apply "only to the table, not to any of the selected layout
+  parts" [Claris, the first page].
 - **The starter layouts:** their `0xf30000` is the two grids and the four
   column options on, and the four parts off [O].
-- **A large third-party CRM solution** (355 layouts) [O, 2026-11-25]:
-  `0x40000` is set on 31 layouts, `0x80000` on 12, `0x20000000` on one
-  and `0x40000000` on none. Of its 181 layouts with a header part that
-  offer Table view, 20 set the header bit, and 10 layouts set it with no
-  header part. That fits an option kept whether or not the part exists,
-  but proves no meaning.
-- **Not measured** [U]: whether FileMaker Pro 26.0.3 stores the options
-  in these bits of the `0xf1` members (10.11 measured the General
-  options' bits there), and how its Table view places the parts: the
-  footer at the window's bottom or after the last row, whether the parts
-  zoom or scroll sideways with the table, and whether Tab reaches their
-  fields.
+- **Where Pro's Table view puts the parts** [O, FileMaker Pro 26.1.1,
+  #927]:
+  - The top navigation and header parts are above the column headings, in
+    that order.
+  - The footer and bottom navigation parts stack at the window's bottom,
+    also with one record and a large gap above them; a footer alone is at
+    the window's bottom too.
+  - At 150% zoom the table, header and footer scale; the navigation parts
+    keep their 100% height.
+  - Scrolling sideways moves the columns, and the top navigation part's
+    text keeps its place in the window.
+- **Not measured** [U]: how the header, footer and bottom navigation
+  parts' objects behave when the table scrolls sideways (the measured
+  parts held no objects), whether Tab reaches the parts' fields, and the
+  pages of web viewers in them.
 
 ### 4.3 Parts
 

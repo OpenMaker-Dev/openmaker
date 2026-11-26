@@ -909,23 +909,25 @@ compared. Limits:
 **Table view's parts.** On a layout OpenMaker draws, Table view shows the
 top navigation, header, footer and bottom navigation parts that the
 layout's Table View Properties include, with their objects, around the
-grid ([#306](https://github.com/OpenMaker-Dev/openmaker/issues/306);
-the options' bits are in [layout-model.md](re/layout-model.md) 4.2). The
-top navigation and header parts sit above the column headings; the
-footer and bottom navigation parts sit below the rows, at the window's
-bottom. Their fields show the current record, and a web viewer in one of
-them shows one page that follows the current record, as in a List's
-header and footer. They zoom with the table. Limits:
-- **Unverified storage:** the bits come from a published third-party
-  reading of FileMaker Pro 26.0.2's Save as XML. That FileMaker Pro
-  stores the options in them in a saved file is unmeasured, and so is
-  where its Table view places the parts (OpenMaker places them as List
-  view does).
-- **Tab:** the parts' fields are no Tab stops, and New Record's first
-  field is the table's, so Tab goes through the table's cells as it does
-  without the parts. Whether Pro's Tab reaches the parts' fields is
-  unmeasured.
-- **Scrolling:** the parts do not scroll sideways with the columns.
+grid ([#306](https://github.com/OpenMaker-Dev/openmaker/issues/306)).
+The options' bits and FileMaker Pro 26.1.1's placement of the parts are
+measured ([layout-model.md](re/layout-model.md) 4.2,
+[#927](https://github.com/OpenMaker-Dev/openmaker/issues/927)), and
+OpenMaker places them the same way: the top navigation and header parts
+above the column headings, the footer and bottom navigation parts below
+the rows, stacked at the window's bottom however few the rows. They do
+not scroll sideways with the columns. Their fields show the current
+record, and a web viewer in one of them shows one page that follows the
+current record, as in a List's header and footer. Limits:
+- **Zoom:** the parts zoom with the table. Pro keeps the navigation
+  parts at 100% ([#981](https://github.com/OpenMaker-Dev/openmaker/issues/981)).
+- **Tab:** Tab goes through the table's cells as it does without the
+  parts; from a part's field that has the keyboard it goes to the first
+  cell (Shift-Tab: the last). New Record's first field is the table's.
+  Whether Pro's Tab reaches the parts' fields is unmeasured.
+- **Unmeasured in Pro:** the pages of web viewers in the parts, and how
+  the header's, footer's and bottom navigation part's objects behave when
+  the table scrolls sideways.
 - **Find mode:** Table view in Find mode still draws its criteria grid
   without the parts.
 
