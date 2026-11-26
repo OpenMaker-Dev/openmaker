@@ -140,35 +140,41 @@ pub fn subtree_end(key: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// The last segment of the path a whole key encodes, as the last of
-/// [`decode`]'s, without decoding the others: `None` for the empty key or
-/// one [`decode`] refuses.
+/// [`decode`]'s: `None` for the empty key or one [`decode`] refuses. One
+/// pass over the key, which checks it as [`well_formed`] does and copies
+/// the runs between zero bytes whole: a listing decodes a segment for
+/// every child.
 pub fn decode_last(key: &[u8]) -> Option<Vec<u8>> {
-    if key.is_empty() || !well_formed(key, true) {
-        return None;
-    }
-    // A whole key ends in `00 01`; the last segment starts after the
-    // `00 01` before that one, or at the start.
-    let body = &key[..key.len() - 2];
-    let (mut start, mut i) = (0, 0);
-    while i < body.len() {
-        if body[i] == 0 {
-            if body.get(i + 1) == Some(&END) {
-                start = i + 2;
-            }
-            i += 2;
-        } else {
-            i += 1;
+    let mut segment = Vec::with_capacity(key.len());
+    let (mut i, mut boundary, mut segments) = (0, true, 0);
+    while i < key.len() {
+        let run = key[i..]
+            .iter()
+            .position(|&b| b == 0)
+            .map_or(key.len(), |at| i + at);
+        if run > i {
+            segment.extend_from_slice(&key[i..run]);
+            boundary = false;
+            i = run;
+            continue;
         }
+        match key.get(i + 1) {
+            Some(&ESCAPE) => {
+                segment.push(0);
+                boundary = false;
+            }
+            Some(&END) => {
+                boundary = true;
+                segments += 1;
+                if i + 2 < key.len() {
+                    segment.clear();
+                }
+            }
+            _ => return None,
+        }
+        i += 2;
     }
-    let bytes = &body[start..];
-    let mut segment = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        segment.push(bytes[i]);
-        // `00 ff` is a zero byte of the segment.
-        i += if bytes[i] == 0 { 2 } else { 1 };
-    }
-    Some(segment)
+    (boundary && segments > 0 && segments <= MAX_DEPTH).then_some(segment)
 }
 
 /// A key the tree holds, with its path.
@@ -277,9 +283,14 @@ mod tests {
         assert!(decode(b"a\x00\x05").is_none());
         assert!(decode_last(b"a\x00\x05").is_none());
         assert!(decode_last(b"a\x00\x01\x00\x01").is_some_and(|s| s.is_empty()));
+        for bad in [&b""[..], b"\x00", b"a\x00", b"a\x00\x01b", b"a\x00\x01\x00"] {
+            assert!(decode_last(bad).is_none(), "{bad:02x?}");
+        }
         // At most 64 segments, whole or begun.
         let deepest = b"\x00\x01".repeat(MAX_DEPTH);
         assert!(well_formed(&deepest, true));
+        assert_eq!(decode_last(&deepest), Some(Vec::new()));
+        assert!(decode_last(&b"\x00\x01".repeat(MAX_DEPTH + 1)).is_none());
         assert!(!well_formed(&b"\x00\x01".repeat(MAX_DEPTH + 1), true));
         assert!(!well_formed(&deepest, false));
         assert!(well_formed(&b"\x00\x01".repeat(MAX_DEPTH - 1), false));
