@@ -1122,10 +1122,18 @@ follows it.
 | status | FileMaker name | Open observation |
 |--------|----------------|------------------|
 | `0x4fb3` | `kSpecification` | Not identified in a live Open reply; the older "cannot open" gloss had no evidence. |
-| `0x4fb5` | `kFileNotFound` | FileMaker Server answered this when the requested file name was not hosted (observed in the desktop; no relay capture). Whether a hosted but closed file answers the same is unknown. |
+| `0x4fb5` | `kFileNotFound` | Observed for a name absent from the server and for a file in the hosted database folder with Admin API status `CLOSED` ([#939](https://github.com/OpenMaker-Dev/openmaker/issues/939)). |
 | `0x507c` | `kInstallCodeConflict` | An absent or invalid license key was refused at Open without a message string in the captured reply (F26). |
 | `0x0666` | `kHostBlockNewUsersEnabled` | Block New Users refusal captured in 5.6.4. |
 | `0x0004` | `kUnknownCommand` | No observed Open reply; it is not "file missing". |
+
+In the [#939](https://github.com/OpenMaker-Dev/openmaker/issues/939) relay
+capture, FileMaker Pro 26.1.1 for macOS used File > Hosts > Network File
+Path against FileMaker Server 26.0.3.309 for Ubuntu. For each of the closed
+and absent names it sent Open first with `.fmp12` and then with the bare
+name. All four replies were GIOP OK with status `0x4fb5`. Pro sent no Login
+and displayed Not Found for both names. The experiment did not cover a
+file in the process of opening or closing, or a paused file.
 
 Record/data transactions reuse the LIFO body with the HBAM slot codec:
 `RCUploadDownload::Call` (0x1d27a1c) frames `PushPtr`/`PushLen` + a packed slot
