@@ -95,10 +95,25 @@ pub(crate) struct Work {
 }
 
 impl Work {
-    fn new(limit: Size) -> Self {
+    pub(crate) fn new(limit: Size) -> Self {
         Self {
             done: Cell::default(),
             limit,
+        }
+    }
+
+    /// What has been counted so far.
+    #[cfg(test)]
+    pub(crate) fn done(&self) -> Size {
+        self.done.get()
+    }
+
+    /// What may still be counted before the limit refuses it.
+    pub(crate) fn left(&self) -> Size {
+        let done = self.done.get();
+        Size {
+            nodes: self.limit.nodes.saturating_sub(done.nodes),
+            bytes: self.limit.bytes.saturating_sub(done.bytes),
         }
     }
 
@@ -121,6 +136,20 @@ pub struct Size {
 }
 
 impl Size {
+    /// No limit: what a reader with no work budget asks within (the upkeep's
+    /// reads, `crate::upkeep`).
+    pub const UNLIMITED: Size = Size {
+        nodes: usize::MAX,
+        bytes: usize::MAX,
+    };
+
+    /// A node and everything below it, as a program's work counts what it
+    /// reads ([`measure`]): one node each, and the bytes of each one's
+    /// segment and value.
+    pub fn of_tree(node: &OwnedNode) -> Self {
+        measure(node).0
+    }
+
     /// One node, without its children.
     pub(crate) fn of(node: &OwnedNode) -> Self {
         Self {

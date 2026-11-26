@@ -19,8 +19,8 @@ use om_hbam::{serial, OwnedNode};
 use om_protocol::authoring::{
     self, content_revision, status, Reply, Request, Revision, OP_CHANGE_PARTS, OP_CREATE_FIELD,
     OP_CREATE_LAYOUT, OP_DELETE_LAYOUT, OP_DELETE_OBJECTS, OP_DUPLICATE_LAYOUT, OP_FIELD_CONTROL,
-    OP_LAYOUT_SETUP, OP_LAYOUT_WIDTH, OP_PART_OPTIONS, OP_PLACE_FIELD, OP_REPLACE_SCRIPT_STEPS,
-    OP_SAVE, OP_SET_OBJECT_FRAMES, OP_SET_TEXT,
+    OP_LAYOUT_SETUP, OP_LAYOUT_SETUP_MARGINS, OP_LAYOUT_WIDTH, OP_PART_OPTIONS, OP_PLACE_FIELD,
+    OP_REPLACE_SCRIPT_STEPS, OP_SAVE, OP_SET_OBJECT_FRAMES, OP_SET_TEXT,
 };
 
 use crate::{
@@ -832,6 +832,16 @@ impl NativeProvider {
         self.authoring(OP_LAYOUT_SETUP, "setting up layouts")
     }
 
+    /// Whether this connection may set up layouts with their fixed page
+    /// margins on its host (operation 23), as
+    /// [`NativeProvider::script_authoring`].
+    pub fn layout_margin_setting(&mut self) -> Result<Authoring, DataError> {
+        self.authoring(
+            OP_LAYOUT_SETUP_MARGINS,
+            "setting layouts' fixed page margins",
+        )
+    }
+
     /// Set a layout's name and views as Layout Setup does if its member is
     /// still at revision `expected`. The host checks the account, the
     /// layout and its lock and saves the file before it answers.
@@ -839,7 +849,12 @@ impl NativeProvider {
         &mut self,
         setup: authoring::LayoutSetup,
     ) -> Result<authoring::Framed, AuthoringError> {
-        match self.layout_setting() {
+        // With margins, operation 23, which a host may lack.
+        let available = match setup.margins {
+            Some(_) => self.layout_margin_setting(),
+            None => self.layout_setting(),
+        };
+        match available {
             Ok(Authoring::Available { .. }) => {}
             Ok(Authoring::Denied(reason) | Authoring::Unavailable(reason)) => {
                 return Err(AuthoringError::Unavailable(reason))

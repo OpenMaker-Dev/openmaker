@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::sync::atomic::Ordering;
 
-use super::{Act, WorkerHost};
+use super::{forget_failure, Act, WorkerHost};
 use crate::{
     page_setup::Settings,
     printing,
@@ -52,7 +52,7 @@ impl WorkerHost<'_> {
         }
     }
     pub(super) fn print_records(&mut self, call: &StepCall<'_>) -> HostResult {
-        self.s.failure = None;
+        forget_failure();
         if !matches!(self.s.file.window.state.mode, Mode::Browse | Mode::Preview) {
             return Err(self.report_error(ReportError::unsupported(
                 "Print is available in Browse and Preview modes",

@@ -121,10 +121,12 @@ const MAX_WARNINGS: usize = 20;
 const PARALLEL_LOADS: usize = 4;
 /// The most relative paths of one data source tried, in their order.
 const MAX_PATHS: usize = 16;
-/// Open statuses meaning the host does not have the file: 4, "file
-/// missing" (network-protocol.md 5.5, what OpenMaker Server answers), and
-/// 0x4fb5, FileMaker's `kFileNotFound`, which FileMaker Server answered for
-/// related files it does not host (#739).
+/// Open statuses meaning the host does not have the file: 0x4fb5,
+/// FileMaker's `kFileNotFound`, which FileMaker Server answers for a file it
+/// does not host (network-protocol.md 5.5) and OpenMaker Server answers
+/// since #914 of github.com/OpenMaker-Dev/openmaker; and 4, which OpenMaker
+/// Server answers for a hosted file it is not serving (closing, closed or
+/// opening) and answered for a missing name before #914.
 const NOT_HOSTED: [u16; 2] = [4, 0x4fb5];
 
 /// Keep a bounded alert while counting problems omitted from it.

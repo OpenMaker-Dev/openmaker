@@ -1189,8 +1189,13 @@ impl Session {
     }
 
     /// The status the host answered the last [`Session::open_file`] with,
-    /// when it refused the Open (spec 5.5: 4 the file is missing, 0x4fb3
-    /// it cannot be opened, 0x507c an error with a message): `None` after
+    /// when it refused the Open (spec 5.5: 0x4fb5 `kFileNotFound` for a
+    /// name the host does not have, as FileMaker Server answers and
+    /// OpenMaker Server since #914; 4 for that from an OpenMaker Server
+    /// before it, and still for a hosted file OpenMaker Server is not
+    /// serving, closing, closed or opening; 0x0666 Block New Users; 0x507c
+    /// `kInstallCodeConflict`, a license key absent or refused; 0x4fb3
+    /// `kSpecification`, not identified in a live Open reply): `None` after
     /// an Open it accepted or one that failed before the host answered.
     pub fn refused_open(&self) -> Option<u16> {
         self.refused_open

@@ -921,6 +921,26 @@ pub struct LayoutSetupParams {
     /// Options not named keep their state.
     #[serde(default)]
     pub options: Option<std::collections::BTreeMap<String, bool>>,
+    /// Layout Setup > Printing's "Use fixed page margins": whether the
+    /// layout prints within its page margins (true) or the printer's
+    /// (false).
+    #[serde(default)]
+    pub fixed_page_margins: Option<bool>,
+    /// Layout Setup > Printing's fixed page margins, in points. The layout
+    /// keeps them whether or not it prints within them.
+    #[serde(default)]
+    pub page_margins: Option<PageMargins>,
+}
+
+/// A layout's fixed page margins, in points (72 to an inch), 0 to 14,400
+/// each.
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PageMargins {
+    pub top: f64,
+    pub bottom: f64,
+    pub left: f64,
+    pub right: f64,
 }
 
 /// A layout to delete, as FileMaker Pro's Delete Layout deletes one.

@@ -234,7 +234,14 @@ gray.
   Utilities..., Tools Marketplace, Create Add-on...
 - **Window**: New Window, Show Window >, Hide Window, Minimize Window ⌘M |
   Tile Horizontally, Tile Vertically, Cascade Windows, Bring All To Front |
-  ✓ current window title.
+  ✓ current window title. Claris documents Hide Window for hiding a
+  document window and Show Window > window name for showing one that was
+  hidden
+  ([FileMaker Pro 12 Help, "Arranging windows"](https://help.claris.com/archive/help/12/fmp/en/html/fmp_basics.3.30.html)).
+  [I] Show Window lists every open window, a hidden one's name in
+  parentheses, and choosing one also brings it to the front; not measured
+  in Pro 26, nor its order, its check mark, or whether reduced menus keep
+  it ([#878](https://github.com/OpenMaker-Dev/openmaker/issues/878)).
 - **Help**: search, FileMaker Pro Help, Keyboard Shortcuts | documentation and
   support links. Plug-in items (MBS) in the captures are not baseline chrome.
 
@@ -547,7 +554,16 @@ evidence; runtime visibility and pixel rendering are not observed.
   "Default view:" and a pop-up menu.
 - **Printing:** "Print in" n "columns", "Across first" and "Down first";
   "Use fixed page margins" with Top, Bottom, Left and Right, and "Facing
-  Pages".
+  Pages". [O, static: the strings of FileMaker Pro 26.1.1's compiled nib;
+  AppKit frames in a tab view 339 high] "Print in" `{61, 265}` 78 x 18, its
+  field `{138, 264}` 42 x 22, "columns" `{187, 266}`; "Across first"
+  `{121, 225}` and "Down first" `{279, 225}`, beside the pictures
+  `IDB_LAY_OPT_ACROSS` `{67, 210}` and `IDB_LAY_OPT_DOWN` `{225, 210}`,
+  48 x 48; "Use fixed page margins" `{61, 165}` 180 x 18; "Top:"
+  `{78, 138}` and "Bottom:" `{74, 112}`, their fields `{136, 136}` and
+  `{136, 110}`; "Left:" `{227, 138}` and "Right:" `{227, 112}`, their
+  fields `{292, 136}` and `{292, 110}`, each field 60 x 22 with a 29 x 17
+  unit label 5 points after it; "Facing Pages" `{292, 84}` 106 x 18.
 - **Script Triggers:** the event and script list, and "Script Trigger
   Properties" (Event, Script, Select…, "Enable in:" Browse, Find, Preview).
 

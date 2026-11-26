@@ -279,7 +279,7 @@ fn desktop_print_ranges_validate_complete_report_before_submission_and_stay_job_
         if from > 0 && from <= to {
             let pages = if current { 1 } else { 3 };
             assert_eq!(
-                c.session.s.failure.as_deref(),
+                crate::scripting::host::last_failure().as_deref(),
                 Some(
                     format!(
                         "The report has {pages} physical pages; choose a range within 1-{pages}"
@@ -463,46 +463,6 @@ fn no_print_no_export() -> om_data::host::security::SetAccess {
     }))
 }
 
-/// Answers every alert the script shows with Continue, and returns each
-/// alert's message and whether it offered Cancel once the script ends.
-fn collect_alerts(c: &mut Client) -> std::thread::JoinHandle<Vec<(String, bool)>> {
-    let events = std::mem::replace(&mut c.events, mpsc::channel().1);
-    let jobs = c._keep_jobs.clone();
-    std::thread::spawn(move || {
-        let mut alerts = Vec::new();
-        while let Ok(response) = events.recv_timeout(std::time::Duration::from_secs(30)) {
-            match response.reply {
-                worker::Reply::Script(ScriptEvent::Prompt {
-                    id,
-                    prompt:
-                        Prompt::Alert {
-                            message,
-                            can_cancel,
-                            ..
-                        },
-                }) => {
-                    alerts.push((message, can_cancel));
-                    jobs.send(Job {
-                        epoch: 1,
-                        window: 1,
-                        ctx: Default::default(),
-                        request: Request::Answer {
-                            prompt: id,
-                            answer: crate::scripting::Answer::Alert(
-                                om_data::runtime::AlertChoice::Continue,
-                            ),
-                        },
-                    })
-                    .unwrap();
-                }
-                worker::Reply::Script(ScriptEvent::Finished { .. }) => break,
-                _ => {}
-            }
-        }
-        alerts
-    })
-}
-
 fn without_dialog(id: u16) -> ScriptStep {
     let mut step = ScriptStep::new(id);
     step.flags = flag::NO_INTERACT;
@@ -545,7 +505,7 @@ fn steps_a_set_denies_return_filemakers_errors_and_alerts() {
     assert_eq!(c.result(), "3|3|3|3|200|0");
     assert_eq!(
         alerts.join().unwrap(),
-        [(om_data::PRIVILEGE_DENIED.to_owned(), false)]
+        [(om_data::PRIVILEGE_DENIED.to_owned(), String::new(), false)]
     );
 }
 

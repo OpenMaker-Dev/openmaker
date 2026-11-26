@@ -428,8 +428,12 @@ before the record commit writes it.
   after a reconnect.
 - **Related files.** A portal row of another file's table is previewed by
   that file's provider through the table's route, as its write goes
-  (related_owner.rs); the opened file maps its preview id to the owner's.
-  A layout of another file's table ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)) has no preview.
+  (related_owner.rs); the opened file maps its preview id to the owner's,
+  and to the layout the write goes through. So is a new record of a layout
+  of another file's table ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)):
+  its write naming the preview, outside a transaction or held in one, stores
+  what the preview drew, with no layout of the owning file's. A related
+  record of such a layout has no preview, since its write is refused.
 - **The desktop window's use.** OnObjectSave when leaving a changed field
   by clicking the layout's background or using keyboard Commit
   (an ordinary commit, #1070), previews the window's begun rows before its
@@ -1094,7 +1098,9 @@ is written by that file (`related_owner.rs`, #1000):
 - **Fields.** Ordinary stored text, number, date, time, timestamp and container
   fields are written. Container acquisitions run on the owning file's library
   under the ordinary save's transaction; reference adjustments route there too.
-  Repetitions and global fields remain refused with error 3.
+  Repetitions remain refused with error 3. A global field is no
+  record's: Set Field into one sets that file's session value ("A related
+  file's globals", below).
 - **Transactions.** Inside the window's commit transaction (or a script's
   Open Transaction), the change is held in the owning file's transaction.
   On the opened file's connection the owning file joins the opened file's
@@ -1153,12 +1159,24 @@ is written by that file (`related_owner.rs`, #1000):
     whose rules OpenMaker cannot plan still deletes
     ([#312](https://github.com/OpenMaker-Dev/openmaker/issues/312)). Which
     records the window shows after such a revert is unmeasured.
+  - **A script's Duplicate Record** of a record holding a container, on
+    such a layout, takes the copy's reference in that file's library
+    within that file's part ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)):
+    the owning file joins the transaction first (`adjust_container`), so
+    that Commit Transaction keeps the reference with the copy and Revert
+    Transaction gives it back. A copy refused before it is held gives its
+    reference back at once, counted as given back before the release is
+    sent, so that the revert does not give it back again.
   - **Still refused (3)** inside the transaction, on such a layout: the
     edits, new records and deletions the user makes there while the script
     is paused (the provider's create, update and delete calls,
     [#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)). No step
     of the transaction made them, and the window's OnWindowTransaction
-    would report them before the transaction's outcome.
+    would report them before the transaction's outcome. The Records menu's
+    New Record and Duplicate Record are the exception: they run their
+    steps, which run on top of the paused script, so the record (and a
+    duplicate's container references) is held in the transaction as a
+    script's is. Whether FileMaker holds them so is #411's question.
 - **The window's commit of a record across files** (#1006; it begins with
   `DataProvider::begin_record_commit`, a script's Open Transaction with
   `begin_transaction`). It is saved file by file, related files first and
@@ -1390,6 +1408,37 @@ preserving the typed spelling. This follows Claris's documented display
 model (script-runtime.md "Globals") as an inferred choice; native global
 readback, field-exit timing and local-file GUI parity remain unmeasured.
 Scripts retain their separate permissive assignment operation.
+
+**A related file's globals.** A global field of a table a related file
+owns is that file's session value, whichever occurrence names it
+([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)).
+- **Writes.** Set Field into one, from a layout of any table, and the
+  user's typing into one on a layout of that file's table, go to that
+  file's own provider (`global_owner`, through the table's route,
+  external.rs). It checks the field and its own account's field access
+  (201), and a user's typing by its own entry rules, as its own window
+  would (with the opened file's tables readable, as for its records'
+  entry checks). A layout of that file's table offers the typed globals
+  that file's rules and access allow, as a layout of this file's table
+  offers its own (`typed_globals`).
+- **Readers.** The value is kept in that file's provider, whose rules read
+  it (an auto-entry of a record it writes for this file), and in the
+  opened file's session values, which its calculations read through the
+  occurrence. The shared desktop values (desktop.rs) carry it to that
+  file's own window in this session. They are kept by file as external.rs
+  tells files apart (host, port and name, or path), so a file of the same
+  name on another host keeps its own. Nothing is sent to either host: a
+  new session reads the stored value.
+- **Evidence.** That FileMaker Pro keeps a related file's global as that
+  file's session value, so that its own layouts, calculations and scripts
+  read it, is inferred from Claris "Global fields" (a client's global
+  values are its own, per file) and from a hosted multi-file solution
+  whose startup script sets its data file's globals so; unmeasured in
+  OpenMaker's captures.
+- **Limit.** A value that file's own window sets afterwards is not read by
+  the rules of that file's records this file writes: that file's provider
+  here keeps the last value set through it, and its other values are the
+  stored ones ([#874](https://github.com/OpenMaker-Dev/openmaker/issues/874)).
 
 A field object showing later repetitions (2 through 255) accepts
 Browse typing for these globals and ordinary supported scalar fields, in

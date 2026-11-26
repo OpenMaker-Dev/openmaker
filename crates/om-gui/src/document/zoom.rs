@@ -57,8 +57,10 @@ pub(crate) fn show<R>(
     factor: f32,
     paint: impl FnOnce(&mut Ui) -> R,
 ) -> InnerResponse<R> {
+    // Preview multiplies the zoom (25% to 400%) by Page Setup's scale above
+    // 100% (up to 1000%, `om_layout::paper::SCALES`).
     let factor = if factor.is_finite() && factor > 0.0 {
-        factor.clamp(0.25, 4.0)
+        factor.clamp(0.25, 40.0)
     } else {
         1.0
     };

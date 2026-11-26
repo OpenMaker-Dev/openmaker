@@ -1121,6 +1121,24 @@ fn related_file_layouts_browse_and_expose_only_supported_edit_capabilities() {
         &[&[4], &[5], &uint_segment(fixture::NOTES_LAYOUT), &[2]],
         OwnedNode::leaf(Vec::new(), layout_def(REMOTE)),
     );
+    // Due repeats twice, and its second repetition's cell is the id of
+    // another field, as a malformed file can make it (#43).
+    fixture::set_field_repetitions(&mut files[1].1, TABLE, DUE, 2);
+    fixture::add_field(
+        &mut files[1].1,
+        TABLE,
+        DUE * 256 + 2,
+        "Collides",
+        1,
+        1,
+        0,
+        0,
+        0,
+    );
+    // Two of its fields share a name, as a malformed file can have it.
+    for id in [22, 23] {
+        fixture::add_field(&mut files[1].1, TABLE, id, "Twin", 1, 1, 0, 0, 0);
+    }
     let host = Host::new("writes", files);
     let mut provider = host.open(ROOT);
     provider.calc_schema().unwrap();
@@ -1129,30 +1147,15 @@ fn related_file_layouts_browse_and_expose_only_supported_edit_capabilities() {
     let capabilities = provider.record_capabilities(layout).unwrap();
     assert!(capabilities.update);
     assert!(capabilities.create && capabilities.delete);
-    assert!(
-        capabilities
-            .editable_fields
-            .as_ref()
-            .unwrap()
-            .contains("Name")
-            && capabilities
-                .editable_fields
-                .as_ref()
-                .unwrap()
-                .contains("Code")
-    );
-    assert!(
-        !capabilities
-            .editable_fields
-            .as_ref()
-            .unwrap()
-            .contains("Setting")
-            && !capabilities
-                .editable_fields
-                .as_ref()
-                .unwrap()
-                .contains("File Info")
-    );
+    // Its text global is typed as the related file's session value (#43).
+    let editable = capabilities.editable_fields.as_ref().unwrap();
+    assert!(["Name", "Code", "Setting", "Collides"]
+        .iter()
+        .all(|name| editable.contains(*name)));
+    assert!(["File Info", "Due", "Twin"]
+        .iter()
+        .all(|name| !editable.contains(*name)));
+    assert_eq!(capabilities.globals, ["Setting".to_string()].into());
     let page = provider.records(layout, 0, 1).unwrap();
     let value = |page: &om_data::RecordPage, name: &str| {
         let field = page.fields.iter().position(|f| f.name == name).unwrap();
@@ -1206,19 +1209,6 @@ fn related_file_layouts_browse_and_expose_only_supported_edit_capabilities() {
     };
     let values = om_data::FieldChanges::from([("Name".to_string(), Some("Changed".to_string()))]);
     assert!(provider.supports_record_import());
-    // Import (new or existing rows) stays refused; New Record is owned.
-    for record in [None, Some(1)] {
-        refused(
-            provider
-                .import_record(
-                    layout,
-                    record,
-                    &[(NAME, Some("Changed".into()))].into(),
-                    true,
-                )
-                .map(drop),
-        );
-    }
     provider.begin_transaction(Default::default()).unwrap();
     assert_eq!(
         provider
@@ -1481,14 +1471,9 @@ fn imported_layout_edits_commit_on_the_owner_and_return_fresh_calculations() {
         let tree = om_hbam::KeyTree::from_slots(om_hbam::SlotReader::new(&commit.list)).unwrap();
         assert_eq!(tree.root.children[0].segment.0, uint_segment(TABLE));
     }
+    // A global is no record's cell: it is set as the session's value
+    // (`set_global`, a_related_files_globals_are_its_session_values).
     let before = host.captures.with_opcode(om_protocol::Opcode::Lock).len();
-    assert_eq!(
-        provider
-            .set_global(imported, SETTING, 1, "unsupported")
-            .unwrap_err()
-            .code,
-        Some(3)
-    );
     for cells in [
         [(SETTING, Some("unsupported".into()))].into(),
         [(NAME * 256 + 2, Some("repeat".into()))].into(),
@@ -1516,6 +1501,24 @@ fn imported_layout_edits_commit_on_the_owner_and_return_fresh_calculations() {
             ..write.clone()
         })
         .unwrap();
+    // Browse offers the repeating field there, its later repetitions by the
+    // layout's occurrence (#43), and the window's commit of the user's
+    // typing into the second is the owner's to check and write.
+    let capabilities = provider.record_capabilities(layout).unwrap();
+    assert!(capabilities.editable_fields.unwrap().contains("Count"));
+    assert!(capabilities.related[&REMOTE].contains(&COUNT));
+    let second = COUNT * 256 + 2;
+    let typed = om_data::ScriptWrite {
+        cells: [(second, Some("8".into()))].into(),
+        typed: [second].into(),
+        ..write.clone()
+    };
+    // Inside a script's transaction the user's typing into it is refused, as
+    // the user's other saves on such a layout are (#411).
+    provider.begin_transaction(Default::default()).unwrap();
+    assert_eq!(provider.write_record(&typed).unwrap_err().code, Some(3));
+    provider.revert_transaction().unwrap();
+    provider.write_record(&typed).unwrap();
     let read = provider
         .calc_data(&[CalcNeed::Record {
             table: imported,
@@ -1529,7 +1532,7 @@ fn imported_layout_edits_commit_on_the_owner_and_return_fresh_calculations() {
             .map(|v| v.to_text(&cx).into_string())
             .unwrap_or_default()
     };
-    assert_eq!((count(1), count(2)), ("41".to_owned(), "7".to_owned()));
+    assert_eq!((count(1), count(2)), ("41".to_owned(), "8".to_owned()));
 }
 
 /// Deletion needs no field-entry plan. The complete owner engine must retain
@@ -1863,6 +1866,297 @@ fn imported_layout_creation_uses_the_owner_engine_and_caller_found_set() {
     assert_eq!(value(&stored.records[2], "Creator"), ACCOUNT);
     assert_eq!(value(&stored.records[4], "Doubled"), "42");
     assert_eq!(ids(&mut host.open(ROOT), 1), [1, 2, 3]);
+}
+
+/// A related file's global is that file's session value (#43): a script's
+/// Set Field into it from a layout of Root's own table, and the user's
+/// typing into it on a layout of the related file's table, set it for this
+/// session only. Root's calculations, the related file's own rules (the
+/// auto-entry of a record made there) and its desktop window read it;
+/// Root's global of the same ids keeps its own value, nothing is locked or
+/// committed, and a new session reads the stored value. That FileMaker Pro
+/// keeps it so is inferred (Claris "Global fields"), not measured.
+#[test]
+fn a_related_files_globals_are_its_session_values() {
+    use om_protocol::Opcode;
+
+    let mut files = files();
+    files[0].1.put(
+        &[&[4], &[5], &[2], &[2]],
+        OwnedNode::leaf([], layout_def(REMOTE)),
+    );
+    // Related's new record enters its Setting, also while Name is empty;
+    // its global Defaults repeats twice.
+    const DEFAULTS: u64 = 21;
+    fixture::add_field(&mut files[1].1, TABLE, 20, "Entered", 1, 1, 0, 0xa8, 0);
+    fixture::add_field(
+        &mut files[1].1,
+        TABLE,
+        DEFAULTS,
+        "Defaults",
+        1,
+        1,
+        0,
+        0x1_0000,
+        0,
+    );
+    fixture::set_field_repetitions(&mut files[1].1, TABLE, DEFAULTS, 2);
+    fixture::add_formula(
+        &mut files[1].1,
+        &fixture::names(),
+        (TABLE, OCCURRENCE),
+        20,
+        5,
+        "Setting & \"|\" & Get ( FileName )",
+    );
+    let host = Host::new("related-globals", files);
+    let mut provider = host.open(ROOT);
+    let schema = provider.calc_schema().unwrap().unwrap();
+    let imported = schema.table_of(REMOTE).unwrap().id;
+    let layout = fixture::NOTES_LAYOUT as u32;
+    let own = fixture::LAYOUT as u32;
+    let fields = provider.records(layout, 0, 1).unwrap().fields;
+    let value = |row: &om_data::Record, name: &str| {
+        row.values[fields.iter().position(|f| f.name == name).unwrap()]
+            .clone()
+            .unwrap_or_default()
+    };
+    let shown = |page: om_data::RecordPage, name: &str| {
+        let field = page.fields.iter().position(|f| f.name == name).unwrap();
+        page.records[0].values[field].clone().unwrap_or_default()
+    };
+    let effects = || {
+        [Opcode::Lock, Opcode::HostCreateRecord, Opcode::HostCommit]
+            .map(|op| host.captures.with_opcode(op).len())
+    };
+
+    // Set Field [ Remote Tasks::Setting ] from Root's own layout.
+    provider
+        .set_global(imported, SETTING, 1, "scripted")
+        .unwrap();
+    assert_eq!(
+        Window::new(&mut provider).read(&["Setting & \"|\" & Remote Tasks::Setting"]),
+        [(0, "root-global|scripted".to_string())]
+    );
+    assert_eq!(
+        shown(provider.records(layout, 0, 1).unwrap(), "Setting"),
+        "scripted"
+    );
+    assert_eq!(effects(), [0, 0, 0]);
+    // The related file's rules read it there.
+    let created = provider.create_record(layout, Default::default()).unwrap();
+    assert_eq!(value(&created, "Entered"), "scripted|Related");
+
+    // Typed in Browse on the layout of Remote Tasks: no change of its record.
+    // Its second repetition is entered by the layout's occurrence and id.
+    let capabilities = provider.record_capabilities(layout).unwrap();
+    assert!(capabilities.editable_fields.unwrap().contains("Setting"));
+    assert!([SETTING, DEFAULTS]
+        .iter()
+        .all(|field| capabilities.related[&REMOTE].contains(field)));
+    let before = effects();
+    provider
+        .set_typed_globals(imported, &[((DEFAULTS, 2), "second".into())].into())
+        .unwrap();
+    assert_eq!(
+        Window::new(&mut provider).read(&["GetRepetition ( Remote Tasks::Defaults ; 2 )"]),
+        [(0, "second".to_string())]
+    );
+    let typed = provider
+        .update_record(layout, 1, [("Setting".into(), Some("typed".into()))].into())
+        .unwrap();
+    assert_eq!((typed.id, value(&typed, "Setting")), (1, "typed".into()));
+    assert_eq!(effects(), before);
+    let created = provider.create_record(layout, Default::default()).unwrap();
+    assert_eq!(value(&created, "Entered"), "typed|Related");
+    // So does its own window; Root's global of the same ids is its own.
+    let mut window = provider.open_peer(RELATED).unwrap();
+    assert_eq!(
+        shown(window.records(own, 0, 1).unwrap(), "Setting"),
+        "typed"
+    );
+    window.close();
+    assert_eq!(
+        shown(provider.records(own, 0, 1).unwrap(), "Setting"),
+        "root-global"
+    );
+    // Never sent to the host.
+    assert_eq!(
+        shown(host.open(RELATED).records(own, 0, 1).unwrap(), "Setting"),
+        "child-global"
+    );
+}
+
+/// Import Records on a layout of another file's table imports into that
+/// table (#43): the owning file creates a new row's record, with its own
+/// auto-entry, and updates an existing one, and the window's found set takes
+/// the new record. Inside a script's transaction it is refused (3) before
+/// anything is sent. Root's table of the same ids is untouched.
+#[test]
+fn imported_layout_import_records_go_to_the_owning_file() {
+    let mut files = files();
+    files[0].1.put(
+        &[&[4], &[5], &[2], &[2]],
+        OwnedNode::leaf([], layout_def(REMOTE)),
+    );
+    let host = Host::new("layout-import", files);
+    let mut provider = host.open(ROOT);
+    let layout = fixture::NOTES_LAYOUT as u32;
+    let rows = |file: &str| -> Vec<(i64, String, String)> {
+        let mut file = host.open(file);
+        let page = file.records(fixture::LAYOUT as u32, 0, 10).unwrap();
+        let at = |name: &str| page.fields.iter().position(|f| f.name == name).unwrap();
+        page.records
+            .iter()
+            .map(|r| {
+                let text = |name| r.values[at(name)].clone().unwrap_or_default();
+                (r.id, text("Name"), text("Creator"))
+            })
+            .collect()
+    };
+    let ids = |provider: &mut NativeProvider| {
+        provider
+            .records(layout, 0, 10)
+            .unwrap()
+            .records
+            .iter()
+            .map(|r| r.id)
+            .collect::<Vec<_>>()
+    };
+    let row = |id, name: &str, creator: &str| (id, name.to_owned(), creator.to_owned());
+    let root = rows(ROOT);
+    provider
+        .change_found_set(layout, om_data::found::FoundSetChange::Records(vec![2]))
+        .unwrap();
+
+    // A new row, and an update of record 1.
+    let new = provider
+        .import_record(
+            layout,
+            None,
+            &[(NAME, Some("Imported".into()))].into(),
+            true,
+        )
+        .unwrap();
+    assert_eq!(new, 3);
+    assert_eq!(
+        provider
+            .import_record(
+                layout,
+                Some(1),
+                &[(NAME, Some("Updated".into()))].into(),
+                true
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(ids(&mut provider), [2, 3]);
+    let stored = rows(RELATED);
+    assert_eq!(stored[0].1, "Updated");
+    assert_eq!(stored[2], row(3, "Imported", ACCOUNT));
+
+    // Refused inside a script's transaction, before any request.
+    provider.begin_transaction(Default::default()).unwrap();
+    let before = host.captures.transactions().len();
+    for record in [None, Some(1)] {
+        let error = provider
+            .import_record(layout, record, &[(NAME, Some("Held".into()))].into(), true)
+            .unwrap_err();
+        assert_eq!(error.code, Some(3), "{error}");
+    }
+    assert_eq!(host.captures.transactions().len(), before);
+    provider.revert_transaction().unwrap();
+    assert_eq!(rows(RELATED).len(), 3);
+    assert_eq!(rows(ROOT), root);
+}
+
+/// Duplicate Record of a record holding a container, on a layout of another
+/// file's table inside a script's transaction (#43): the copy's reference
+/// is taken in that file's library and is the transaction's at once, the
+/// owning file joining it first, so the provider settles it. A copy refused
+/// before it is held gives the reference back once, and Revert Transaction
+/// sends nothing more. A held copy keeps it through Commit Transaction.
+#[test]
+fn a_container_copy_on_another_files_layout_is_the_script_transactions() {
+    use om_protocol::Opcode;
+    let mut root = fixture::tree(&[], true);
+    let mut child = fixture::tree(&[], true);
+    reference(&mut root, (REMOTE, "Remote Tasks"), 1, "Related");
+    root.put(
+        &[&[4], &[5], &uint_segment(fixture::NOTES_LAYOUT), &[2]],
+        OwnedNode::leaf([], layout_def(REMOTE)),
+    );
+    fixture::add_photo(&mut child);
+    let host = Host::new(
+        "layout-container-copy",
+        vec![(ROOT, root), (RELATED, child)],
+    );
+    let mut provider = host.open(ROOT);
+    let layout = fixture::NOTES_LAYOUT as u32;
+    let page = provider.records(layout, 0, 10).unwrap();
+    let photo = page.fields.iter().position(|f| f.name == "Photo").unwrap();
+    let source = page.records[0].values[photo].clone().unwrap();
+    let remote = provider
+        .calc_schema()
+        .unwrap()
+        .unwrap()
+        .table_of(REMOTE)
+        .unwrap()
+        .id;
+    let deltas = || {
+        host.captures
+            .with_opcode(Opcode::AdjustReferenceCount)
+            .into_iter()
+            .map(|(file, tx)| {
+                let adjust =
+                    om_protocol::container::parse_adjust_reference_count_request(&tx).unwrap();
+                (file, adjust.delta)
+            })
+            .collect::<Vec<_>>()
+    };
+    let owned = |provider: &NativeProvider| {
+        provider
+            .owned_container_drafts()
+            .get(&(remote, source.clone()))
+            .copied()
+            .unwrap_or(0)
+    };
+    let related = |delta: i32| (RELATED.to_owned(), delta);
+
+    // Refused before it is held: given back once, and nothing at the revert.
+    provider.begin_transaction(Default::default()).unwrap();
+    provider.adjust_container(layout, &source, 1).unwrap();
+    assert_eq!(owned(&provider), 1, "the transaction's at once");
+    provider.adjust_container(layout, &source, -1).unwrap();
+    assert_eq!(owned(&provider), 0);
+    provider.revert_transaction().unwrap();
+    assert_eq!(deltas(), [related(1), related(-1)]);
+
+    // Held, then committed: the copy keeps it.
+    provider.begin_transaction(Default::default()).unwrap();
+    provider.adjust_container(layout, &source, 1).unwrap();
+    let copy = provider
+        .write_record(&om_data::ScriptWrite {
+            layout,
+            cells: [
+                (NAME, Some("Copy".to_owned())),
+                (fixture::PHOTO, Some(source.clone())),
+            ]
+            .into(),
+            ..Default::default()
+        })
+        .unwrap();
+    provider.commit_transaction(false).unwrap();
+    assert_eq!(deltas(), [related(1), related(-1), related(1)]);
+    assert_eq!(owned(&provider), 0, "settled by the commit");
+    provider.close();
+    let mut peer = host.open(RELATED);
+    let stored = peer.records(fixture::LAYOUT as u32, 0, 10).unwrap();
+    let at = |name: &str| stored.fields.iter().position(|f| f.name == name).unwrap();
+    let row = stored.records.iter().find(|r| r.id == copy.id).unwrap();
+    assert_eq!(row.values[at("Name")].as_deref(), Some("Copy"));
+    assert_eq!(row.values[at("Photo")].as_deref(), Some(source.as_str()));
+    peer.close();
 }
 
 /// Root's Tasks::Code is validated Always by value list 5, the values of
@@ -6323,6 +6617,27 @@ fn related_writes_reach_the_file_on_the_host_its_occurrence_names() {
         (commits_to(&other, RELATED), commits_to(&host, RELATED)),
         (1, 0)
     );
+    // So is a global set through it (#43): the same-named file's has none.
+    let local = schema.table_of(LOCAL).unwrap().id;
+    provider.set_global(there, SETTING, 1, "There").unwrap();
+    let globals = provider
+        .calc_data(&[
+            CalcNeed::Globals { table: there },
+            CalcNeed::Globals { table: local },
+        ])
+        .unwrap()
+        .globals;
+    let locale = om_data::calc::Locale::en_us();
+    let cx = om_data::calc::Ctx::new(&locale, Date::from_ymd(2026, 1, 1).unwrap());
+    let setting = |table| {
+        globals[&table]
+            .get(SETTING, 1)
+            .map(|value| value.to_text(&cx).as_str().to_owned())
+    };
+    assert_eq!(
+        (setting(there), setting(local)),
+        (Some("There".to_owned()), None)
+    );
 
     // The window's save of a Root record with the other host's related
     // record, on two connections (#1006). The other host refuses the
@@ -8076,6 +8391,185 @@ fn a_previewed_portal_row_stores_the_values_its_preview_showed() {
     let typed = provider.compute_pending(&due, &[]).unwrap();
     assert_eq!(typed, None);
     assert_eq!((written(), reserved()), (before, serials));
+    provider.close();
+}
+
+/// A new record of a layout of another file's table is previewed by that
+/// file (#43), as a portal row of its table is (#1047). On Root's layout of
+/// Remote Tasks, Related's `Stamp` auto-enters `Get ( UUID )`, `Serial` a
+/// serial number on creation (next 7) and `Number` `Get ( RecordNumber )`:
+/// - With the window showing record 2 only, the preview shows the UUID, 7
+///   and the window's record number 2. It writes nothing and reserves the
+///   serial once.
+/// - The write naming it, outside a transaction, stores those values in
+///   Related without reserving again, and the window's found set takes
+///   the record. The preview is then used up.
+/// - Inside a script's transaction a second preview's held write stores
+///   its values when Commit Transaction commits.
+/// - A preview of Root's own table named there is refused (3), and so is a
+///   portal row's preview of the same table through another layout.
+#[test]
+fn a_new_record_of_another_files_layout_stores_the_values_its_preview_showed() {
+    use om_protocol::Opcode;
+    const NUMBER: u64 = 31;
+    const STAMP: u64 = 32;
+    const SERIAL: u64 = 33;
+    let mut root = fixture::tree(&[], true);
+    let mut child = fixture::tree(&[], true);
+    reference(&mut root, (REMOTE, "Remote Tasks"), 1, "Related");
+    root.put(
+        &[&[4], &[5], &uint_segment(fixture::NOTES_LAYOUT), &[2]],
+        OwnedNode::leaf([], layout_def(REMOTE)),
+    );
+    let mut names = fixture::names();
+    for (id, name) in [(NUMBER, "Number"), (STAMP, "Stamp"), (SERIAL, "Serial")] {
+        names.add_field(TABLE, id, name);
+    }
+    fixture::add_field(&mut child, TABLE, STAMP, "Stamp", 1, 1, 0, 0x8, 0);
+    fixture::add_formula(
+        &mut child,
+        &names,
+        (TABLE, OCCURRENCE),
+        STAMP,
+        5,
+        "Get ( UUID )",
+    );
+    fixture::add_field(&mut child, TABLE, NUMBER, "Number", 1, 2, 0, 0x8, 0);
+    let number = "Get ( RecordNumber )";
+    fixture::add_formula(&mut child, &names, (TABLE, OCCURRENCE), NUMBER, 5, number);
+    fixture::add_field(&mut child, TABLE, SERIAL, "Serial", 1, 2, 0, 0x2, 0);
+    fixture::set_field_serial_increment(&mut child, TABLE, SERIAL, 1);
+    child.put(
+        &[
+            &uint_segment(TABLE),
+            &[3],
+            &[5],
+            &uint_segment(SERIAL),
+            &[0x0c],
+        ],
+        om_scripts::text_node(&[], "7"),
+    );
+    let host = Host::new(
+        "previewed-layout-record",
+        vec![(ROOT, root), (RELATED, child)],
+    );
+    let written = || {
+        [
+            Opcode::HostCreateRecord,
+            Opcode::UploadListToHostTempLocation,
+            Opcode::HostCommit,
+            Opcode::TransactInfo,
+        ]
+        .map(|op| host.captures.with_opcode(op).len())
+    };
+    let reserved = || host.captures.with_opcode(Opcode::HostGetSerial).len();
+    let stored = |id: i64| {
+        let mut reader = host.open(RELATED);
+        let page = reader.records(fixture::LAYOUT as u32, 0, 100).unwrap();
+        let at = |name: &str| page.fields.iter().position(|f| f.name == name).unwrap();
+        let record = page.records.iter().find(|r| r.id == id).unwrap();
+        let values = ["Name", "Stamp", "Serial", "Number"]
+            .map(|name| record.values[at(name)].clone().unwrap_or_default());
+        reader.close();
+        values
+    };
+    let mut provider = host.open(ROOT);
+    let layout = fixture::NOTES_LAYOUT as u32;
+    let new = |name: &str, record_number| om_data::ScriptWrite {
+        layout,
+        cells: [(NAME, Some(name.to_owned()))].into(),
+        record_number: Some(record_number),
+        ..Default::default()
+    };
+    let named = |write: om_data::ScriptWrite, id| om_data::ScriptWrite {
+        prepared: Some(id),
+        ..write
+    };
+    let found = |provider: &mut NativeProvider| {
+        provider
+            .records(layout, 0, 10)
+            .unwrap()
+            .records
+            .into_iter()
+            .map(|r| r.id)
+            .collect::<Vec<_>>()
+    };
+
+    // The window shows record 2 only.
+    provider
+        .change_found_set(layout, om_data::found::FoundSetChange::Records(vec![2]))
+        .unwrap();
+    let (before, serials) = (written(), reserved());
+    let preview = provider
+        .preview_new_record(&new("Previewed", 2))
+        .unwrap()
+        .expect("the owning file previews the layout's new record");
+    let uuid = preview.values[&STAMP].clone().unwrap();
+    assert_eq!(uuid.len(), 36, "{uuid}");
+    assert_eq!(preview.values[&SERIAL].as_deref(), Some("7"));
+    assert_eq!(preview.values[&NUMBER].as_deref(), Some("2"));
+    assert!(!preview.values.contains_key(&NAME), "the write's own cell");
+    assert_eq!(written(), before, "a preview writes nothing");
+    assert_eq!(reserved(), serials + 1, "its serial is reserved once");
+
+    // Written outside a transaction with what the preview drew.
+    let made = provider
+        .write_record(&named(new("Previewed", 2), preview.id))
+        .unwrap();
+    assert_eq!(reserved(), serials + 1, "no second reservation");
+    assert_eq!(stored(made.id), ["Previewed", uuid.as_str(), "7", "2"]);
+    assert_eq!(found(&mut provider), [2, made.id]);
+    // Used up by the write.
+    let again = provider.write_record(&named(new("Again", 3), preview.id));
+    assert_eq!(again.unwrap_err().code, Some(3));
+
+    // Held in a script's transaction, stored by its commit.
+    provider.begin_transaction(Default::default()).unwrap();
+    let second = provider
+        .preview_new_record(&new("Held", 3))
+        .unwrap()
+        .unwrap();
+    let second_uuid = second.values[&STAMP].clone().unwrap();
+    assert_ne!(second_uuid, uuid);
+    assert_eq!(second.values[&SERIAL].as_deref(), Some("8"));
+    let held = provider
+        .write_record(&named(new("Held", 3), second.id))
+        .unwrap();
+    provider.commit_transaction(false).unwrap();
+    assert_eq!(reserved(), serials + 2);
+    assert_eq!(stored(held.id), ["Held", second_uuid.as_str(), "8", "3"]);
+
+    // A preview of Root's own table is of another record there.
+    let own = provider
+        .preview_new_record(&om_data::ScriptWrite {
+            layout: fixture::LAYOUT as u32,
+            ..new("Own", 3)
+        })
+        .unwrap()
+        .unwrap();
+    let before = written();
+    let refused = provider.write_record(&named(new("Own", 3), own.id));
+    assert_eq!(refused.unwrap_err().code, Some(3));
+    // So is a portal row's preview of Remote Tasks, through Root's own
+    // layout: a preview names the layout its write goes through.
+    let remote = provider
+        .calc_schema()
+        .unwrap()
+        .unwrap()
+        .table_of(REMOTE)
+        .unwrap()
+        .id;
+    let row = provider
+        .preview_new_record(&om_data::ScriptWrite {
+            layout: fixture::LAYOUT as u32,
+            table: Some(remote),
+            ..new("Row", 3)
+        })
+        .unwrap()
+        .unwrap();
+    let refused = provider.write_record(&named(new("Row", 3), row.id));
+    assert_eq!(refused.unwrap_err().code, Some(3));
+    assert_eq!(written(), before);
     provider.close();
 }
 
