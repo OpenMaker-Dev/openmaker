@@ -284,14 +284,6 @@ impl NativeProvider {
                 }
                 None => write,
             };
-            // Inside a script's transaction the owner joins it first, so
-            // that it previews with the transaction's options (Skip
-            // auto-enter), as the write it holds there is computed: a
-            // preview before the owner's first write would otherwise enter
-            // values, and reserve serial numbers, the commit then skips.
-            if self.transaction_kind() == Some(transaction::TransactionKind::Script) {
-                self.join_owner_transaction(table, route)?;
-            }
             // The window's unsaved records, by the window's file's table ids:
             // this file's overlay only this file's reads (the owner reads
             // them through `CallerSource`), the routed table's rows, by the
