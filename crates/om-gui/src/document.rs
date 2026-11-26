@@ -8896,8 +8896,10 @@ fn object_text(
         .record_at(record_index)
         .and_then(|(_, r)| u64::try_from(r.id).ok());
     let merged = |text: &str| -> String {
-        calc.and_then(|calc| calc.merge_text_in_portal(text, record, portal))
-            .unwrap_or_else(|| text.to_owned())
+        calc.and_then(|calc| {
+            calc.merge_text_in_portal(text, record, portal, object.data_format.as_ref())
+        })
+        .unwrap_or_else(|| text.to_owned())
     };
     if object.text_runs.is_empty() {
         return merged(object.text.as_deref().unwrap_or_default());
