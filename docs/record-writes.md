@@ -781,6 +781,13 @@ but for a lookup's, which would write into it: a stray `0x80`
 (auto-entry.md) leaves the table writable. A stored calculation's unknown
 bits keep it read-only.
 
+A local table with a single-repetition Container marked `0x6000` accepts
+ordinary record writes to its other fields. The container is awaiting
+transfer from external Open storage to embedded storage. OpenMaker keeps
+its definition and payload references and refuses a write to that
+container with error 3. Other storage words and hosted use remain outside
+this support. [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1060)
+
 An ordinary new record can fill an empty single-repetition global Text
 field with its constant, a calculation that reads no fields, or its
 creation serial. That value goes to the session immediately. It never
