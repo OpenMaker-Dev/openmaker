@@ -1983,9 +1983,7 @@ struct Computed {
 struct Expression {
     formula: Arc<Formula>,
     dependencies: BTreeSet<u64>,
-    /// A stored Evaluate reads the fields in its compiled expression but
-    /// only recalculates in response to its explicit trigger fields.
-    evaluate_triggers: Option<BTreeSet<u64>>,
+    stored_evaluate: Option<StoredEvaluate>,
     /// The fields of other occurrences it reads, (occurrence, field): an
     /// auto-entered or validation formula's related fields, read through
     /// one relationship from its context on its first record, or on every
@@ -2013,6 +2011,14 @@ struct Expression {
     /// clock or a UUID in one makes this formula's value change when it is
     /// evaluated again, as one of its own would.
     through_formulas: Vec<Arc<Formula>>,
+}
+
+/// A stored Evaluate reads the fields in its compiled expression, but
+/// recalculates only when a listed field or the expression source changes.
+#[derive(Clone, Debug)]
+struct StoredEvaluate {
+    triggers: BTreeSet<u64>,
+    source: Option<u64>,
 }
 
 /// How a formula reads one related occurrence.
@@ -2303,17 +2309,24 @@ impl RecordPlan {
                     .and_then(|n| n.assembled())
                     .ok_or_else(|| error("calculation code is missing."))?;
                 let polish = decode_rule_code(&code).map_err(|e| error(&e))?;
-                if matches!(usage, FormulaUse::LocalStoredText)
-                    && matches!(&polish, Expr::Evaluate { args, .. } if args.len() > 1)
+                if key == FIELD_FORMULA
+                    && kind == FieldKind::Calculation
+                    && field.data_type == DataType::Text
+                    && matches!(&polish, Expr::Evaluate { .. })
                 {
-                    return parse_literal_evaluate(polish, &context, table, &schema).map_err(
-                        |reason| {
-                            DataError::with_code(
-                                error::UNAVAILABLE,
-                                format!("Field {}: {reason}", field.name),
-                            )
-                        },
-                    );
+                    let parsed = if matches!(usage, FormulaUse::LocalStoredText)
+                        && matches!(&polish, Expr::Evaluate { args, .. } if args.len() > 1)
+                    {
+                        parse_stored_evaluate(polish, &context, table, &schema, &options)
+                    } else {
+                        Err(DYNAMIC_REFERENCES.into())
+                    };
+                    return parsed.map_err(|reason| {
+                        DataError::with_code(
+                            error::UNAVAILABLE,
+                            format!("Field {}: {reason}", field.name),
+                        )
+                    });
                 }
                 analyze_rule(polish, &context, usage).map_err(|e| error(&e))
             };
@@ -3873,7 +3886,7 @@ impl RecordPlan {
                 polish: Expr::Field(om_formula::Field::new(occurrence, id, true)),
             }),
             dependencies: BTreeSet::from([id]),
-            evaluate_triggers: None,
+            stored_evaluate: None,
             related: BTreeSet::new(),
             other_globals: BTreeSet::new(),
             whole: BTreeSet::new(),
@@ -3930,6 +3943,46 @@ impl RecordPlan {
             }
         }
         Ok(true)
+    }
+
+    fn compile_stored_evaluate_source(
+        &self,
+        field: &PlannedField,
+        expression: &Expression,
+        evaluate: &StoredEvaluate,
+        text: &str,
+    ) -> Result<Expression, RunError> {
+        let unavailable = |reason: &str| {
+            RunError::Unread(DataError::with_code(
+                error::UNAVAILABLE,
+                format!("Field {}: {reason}", field.name),
+            ))
+        };
+        let context = &expression
+            .formula
+            .context
+            .as_ref()
+            .ok_or_else(|| unavailable("a stored Evaluate requires a local context."))?
+            .0;
+        let compiled =
+            compile_stored_evaluate_text(text, self.schema.names(), context, |reference| {
+                reference.occurrence.0 == *context
+                    && reference.repetition == 1
+                    && reference.field.id().is_some_and(|id| {
+                        Some(id) != evaluate.source && expression.dependencies.contains(&id)
+                    })
+            })
+            .map_err(|reason| unavailable(&reason))?;
+        if evaluate
+            .triggers
+            .iter()
+            .any(|id| Some(*id) != evaluate.source && !compiled.dependencies.contains(id))
+        {
+            return Err(unavailable(
+                "a listed stored Evaluate trigger must be read by its expression.",
+            ));
+        }
+        Ok(compiled)
     }
 
     /// Whether field `id` of the table has global storage.
@@ -4046,7 +4099,7 @@ impl RecordPlan {
                     Expr::Get(selector::RECORD_NUMBER)
                 ) {
                 "a stored record number requires ordinary New Record in a local window with a known insertion position."
-            } else if expression.evaluate_triggers.is_some() {
+            } else if expression.stored_evaluate.is_some() {
                 "a stored Evaluate requires ordinary New Record in an unsorted local window."
             } else {
                 continue;
@@ -5233,8 +5286,9 @@ impl RecordPlan {
                 .dependencies
                 .iter()
                 .any(|id| deferred.contains(id));
-            let should_evaluate = match &expression.evaluate_triggers {
-                Some(triggers) => triggers
+            let should_evaluate = match &expression.stored_evaluate {
+                Some(evaluate) => evaluate
+                    .triggers
                     .iter()
                     .any(|id| dirty.contains(id) || deferred.contains(id)),
                 None => {
@@ -5299,18 +5353,33 @@ impl RecordPlan {
             let globals = self.session_globals(*id, expression, &session)?;
             let mut remaining = session.calculation_budget();
             let result = (|| {
+                if let Some(
+                    evaluate @ StoredEvaluate {
+                        source: Some(source),
+                        ..
+                    },
+                ) = &expression.stored_evaluate
+                {
+                    let compiled = self.compile_stored_evaluate_source(
+                        field,
+                        expression,
+                        evaluate,
+                        row.get(source).map_or("", String::as_str),
+                    )?;
+                    return self
+                        .evaluate_repetition(*id, 1, &compiled, &row, &session, &mut remaining)
+                        .map(Some);
+                }
                 if field.options.options & ALWAYS_EVALUATE == 0
-                    && expression
-                        .evaluate_triggers
-                        .as_ref()
-                        .is_some_and(|triggers| {
-                            let empty = |id| row.get(id).is_none_or(String::is_empty);
-                            triggers.iter().all(empty)
-                                && expression
-                                    .dependencies
-                                    .difference(triggers)
-                                    .any(|id| !empty(id))
-                        })
+                    && expression.stored_evaluate.as_ref().is_some_and(|evaluate| {
+                        let triggers = &evaluate.triggers;
+                        let empty = |id| row.get(id).is_none_or(String::is_empty);
+                        triggers.iter().all(empty)
+                            && expression
+                                .dependencies
+                                .difference(triggers)
+                                .any(|id| !empty(id))
+                    })
                 {
                     return Err(RunError::Unread(DataError::with_code(
                         error::UNAVAILABLE,
@@ -7322,8 +7391,8 @@ enum FormulaUse {
     /// At creation, a stored Number calculation can capture the record's
     /// position (auto-entry.md, "Get ( RecordNumber )").
     StoredNumber,
-    /// A local stored Text calculation can use a literal Evaluate with
-    /// explicit triggers (auto-entry.md, "Stored Evaluate").
+    /// A local stored Text calculation can use Evaluate with explicit
+    /// triggers (auto-entry.md, "Stored Evaluate").
     LocalStoredText,
     /// An auto-entered or validation formula can read related fields and
     /// the operation's [`CONTEXT_SELECTORS`].
@@ -7462,7 +7531,7 @@ fn analyze_rule(polish: Expr, context: &[u8], usage: FormulaUse) -> Result<Expre
             polish,
         }),
         dependencies,
-        evaluate_triggers: None,
+        stored_evaluate: None,
         related,
         other_globals: BTreeSet::new(),
         whole,
@@ -7478,13 +7547,14 @@ enum GroupedAutoEntry {
     Replace,
 }
 
-/// Compile the measured local stored Evaluate form once. Its second
-/// argument declares triggers independently of the fields in its text.
-fn parse_literal_evaluate(
+/// Plan the measured local stored Evaluate forms. The listed fields
+/// trigger recalculation independently of the reads in the evaluated text.
+fn parse_stored_evaluate(
     polish: Expr,
     context: &[u8],
     table: &Table,
     schema: &CalcSchema,
+    options: &FieldOptions,
 ) -> Result<Expression, String> {
     let Expr::Evaluate {
         args,
@@ -7493,11 +7563,11 @@ fn parse_literal_evaluate(
     else {
         return Err("unsupported stored Evaluate form.".into());
     };
-    let [Expr::Text(text), triggers @ ..] = args.as_slice() else {
-        return Err("a stored Evaluate requires literal expression text.".into());
+    let [input, listed @ ..] = args.as_slice() else {
+        return Err("a stored Evaluate requires an expression source.".into());
     };
-    if text.style.is_some() || triggers.is_empty() {
-        return Err("a stored Evaluate requires plain text and explicit trigger fields.".into());
+    if listed.is_empty() {
+        return Err("a stored Evaluate requires explicit trigger fields.".into());
     }
     let occurrence = Key(context.to_vec())
         .id()
@@ -7516,7 +7586,7 @@ fn parse_literal_evaluate(
             && options.max_repetitions == 1)
             .then_some(field.id)
     };
-    let triggers = triggers
+    let mut triggers = listed
         .iter()
         .map(|trigger| match trigger {
             Expr::Field(field) | Expr::FieldRef(field) => text_field(field),
@@ -7525,14 +7595,75 @@ fn parse_literal_evaluate(
         .collect::<Option<BTreeSet<_>>>()
         .ok_or("a stored Evaluate trigger must be a local single-repetition Text field.")?;
 
+    let Expr::Text(text) = input else {
+        let Expr::Field(reference) = input else {
+            return Err("unsupported stored Evaluate expression source.".into());
+        };
+        let source = text_field(reference)
+            .ok_or("a stored Evaluate source must be a local single-repetition Text field.")?;
+        // Every permitted data input already has its value before rules
+        // run. Runtime text cannot make this evaluation depend on another
+        // rule, or create a dependency cycle the plan could not check.
+        let given: BTreeSet<u64> = table
+            .fields
+            .iter()
+            .filter(|field| field.kind == FieldKind::Normal && field.data_type == DataType::Text)
+            .filter(|field| {
+                field.decoded_options().is_some_and(|options| {
+                    options.max_repetitions == 1
+                        && options.options & (AUTO_ENTRY_MODES | GLOBAL | UNSTORED | LOOKUP) == 0
+                })
+            })
+            .map(|field| field.id)
+            .collect();
+        if options.options != 0
+            || options.validation_options != 0
+            || !triggers.insert(source)
+            || !triggers.is_subset(&given)
+        {
+            return Err("unsupported stored Evaluate with a field source.".into());
+        }
+        let mut expression = analyze_rule(input.clone(), context, FormulaUse::RecordOnly)?;
+        expression.dependencies = given;
+        expression.stored_evaluate = Some(StoredEvaluate {
+            triggers,
+            source: Some(source),
+        });
+        return Ok(expression);
+    };
+    if text.style.is_some() {
+        return Err("a stored Evaluate requires plain expression text.".into());
+    }
     let mut names = om_formula::NameTable::default();
     names.add_occurrence(occurrence.id, &occurrence.name, table.id);
     for field in &table.fields {
         names.add_field(table.id, field.id, &field.name);
     }
-    let mut parse_context = om_formula::Context::new(&names);
-    parse_context.occurrence = Some(occurrence.id);
-    let compiled = om_formula::compile(&text.value, &parse_context)
+    let mut expression = compile_stored_evaluate_text(&text.value, &names, context, |reference| {
+        text_field(reference).is_some()
+    })?;
+    if !triggers.is_subset(&expression.dependencies) {
+        return Err("a stored Evaluate trigger must be read by its expression.".into());
+    }
+    expression.stored_evaluate = Some(StoredEvaluate {
+        triggers,
+        source: None,
+    });
+    Ok(expression)
+}
+
+fn compile_stored_evaluate_text(
+    text: &str,
+    names: &om_formula::NameTable,
+    context: &[u8],
+    allowed: impl Fn(&om_formula::Field) -> bool,
+) -> Result<Expression, String> {
+    if text.len() > MAX_CODE {
+        return Err("stored Evaluate expression is too large.".into());
+    }
+    let mut parse_context = om_formula::Context::new(names);
+    parse_context.occurrence = Key(context.to_vec()).id();
+    let compiled = om_formula::compile(text, &parse_context)
         .map_err(|_| "cannot compile a stored Evaluate expression.")?;
     let space = om_formula::Decimal::parse_literal("32").map(om_formula::Number::Decimal);
     let mut remaining = MAX_NODES;
@@ -7543,7 +7674,7 @@ fn parse_literal_evaluate(
         }
         remaining -= 1;
         match expr {
-            Expr::Field(reference) if text_field(reference).is_some() => {}
+            Expr::Field(reference) if allowed(reference) => {}
             Expr::Text(text) if text.style.is_none() => {}
             Expr::Call { op, args } if *op == om_formula::Opcode::CONCAT => nodes.extend(args),
             Expr::Call { op, args }
@@ -7553,12 +7684,7 @@ fn parse_literal_evaluate(
             _ => return Err("unsupported expression in a stored Evaluate text join.".into()),
         }
     }
-    let mut expression = analyze_rule(compiled.expr, context, FormulaUse::RecordOnly)?;
-    if !triggers.is_subset(&expression.dependencies) {
-        return Err("a stored Evaluate trigger must be read by its expression.".into());
-    }
-    expression.evaluate_triggers = Some(triggers);
-    Ok(expression)
+    analyze_rule(compiled.expr, context, FormulaUse::RecordOnly)
 }
 
 struct RelatedWriteHop {
@@ -10290,7 +10416,7 @@ mod tests {
     }
 
     #[test]
-    fn stored_literal_evaluate_recalculates_only_for_a_listed_field() {
+    fn stored_evaluate_recalculates_for_its_listed_fields_and_text_source() {
         const OCCURRENCE: u64 = 0xd0_0002;
         let table = Table {
             id: 0x8002,
@@ -10300,6 +10426,7 @@ mod tests {
                 (2, "Family", FieldKind::Normal, 0),
                 (3, "Note", FieldKind::Normal, 0),
                 (4, "Display", FieldKind::Calculation, 0x80000),
+                (5, "ExpressionText", FieldKind::Normal, 0),
             ]
             .into_iter()
             .map(|(id, name, kind, flags)| {
@@ -10405,12 +10532,68 @@ mod tests {
         assert_eq!(cleared.code, Some(error::UNAVAILABLE));
 
         assert!(RecordPlan::from_file_schema(&table, &tree, &file).is_err());
-        let dynamic_code = code_for(Expr::Field(om_formula::Field::new(OCCURRENCE, 3, false)));
+        let dynamic_code = code_for(Expr::Field(om_formula::Field::new(OCCURRENCE, 5, false)));
         let dynamic = tree_for(&dynamic_code);
-        let error = RecordPlan::from_desktop_file_schema(&table, &dynamic, &file, true)
+        let wrong_options = RecordPlan::from_desktop_file_schema(&table, &dynamic, &file, true)
             .err()
             .unwrap();
-        assert_eq!(error.code, Some(error::UNAVAILABLE));
+        assert_eq!(wrong_options.code, Some(error::UNAVAILABLE));
+        let mut table = table;
+        table.fields[3].options[8..12].copy_from_slice(&0u32.to_be_bytes());
+        let plan = RecordPlan::from_desktop_file_schema(&table, &dynamic, &file, true).unwrap();
+        let hosted = RecordPlan::from_desktop_file_schema(&table, &dynamic, &file, false)
+            .err()
+            .unwrap();
+        assert_eq!(hosted.code, Some(error::UNAVAILABLE));
+        let no_triggers = om_formula::polish::encode(&Expr::Evaluate {
+            args: vec![Expr::Field(om_formula::Field::new(OCCURRENCE, 5, false))],
+            need_field_ref: 0,
+        });
+        let no_triggers =
+            RecordPlan::from_desktop_file_schema(&table, &tree_for(&no_triggers), &file, true)
+                .err()
+                .unwrap();
+        assert_eq!(no_triggers.code, Some(error::UNAVAILABLE));
+        let prepare = |mode, row: &BTreeMap<u64, String>, id, text: &str| {
+            plan.prepare(
+                mode,
+                row,
+                &BTreeMap::from([(id, Some(text.into()))]),
+                &environment,
+            )
+        };
+        let blank = plan
+            .prepare(
+                WriteMode::Create,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &environment,
+            )
+            .unwrap();
+        assert!(decoded(&blank, 4).is_none());
+        let first_source = "Given & Char ( 32 ) & Family";
+        let with_source = prepare(WriteMode::Create, &BTreeMap::new(), 5, first_source).unwrap();
+        assert_eq!(decoded(&with_source, 4).as_deref(), Some(" "));
+
+        existing.insert(4, "Pat Lee".into());
+        existing.insert(5, first_source.into());
+        let kept = prepare(WriteMode::Update, &existing, 3, "new note").unwrap();
+        assert_eq!(kept.changed_fields, [3]);
+        let next_source = "Family & Char ( 32 ) & Given & Char ( 32 ) & Note";
+        let recomputed = prepare(WriteMode::Update, &existing, 5, next_source).unwrap();
+        assert_eq!(decoded(&recomputed, 4).as_deref(), Some("Lee Pat edited"));
+        existing.insert(5, next_source.into());
+        let recomputed = prepare(WriteMode::Update, &existing, 2, "Kim").unwrap();
+        assert_eq!(decoded(&recomputed, 4).as_deref(), Some("Kim Pat edited"));
+        let refused = prepare(
+            WriteMode::Update,
+            &existing,
+            5,
+            "Given & Family & Get ( AccountName )",
+        )
+        .err()
+        .unwrap();
+        assert_eq!(refused.code, Some(error::UNAVAILABLE));
     }
 
     #[test]

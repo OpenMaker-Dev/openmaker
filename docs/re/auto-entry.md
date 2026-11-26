@@ -712,9 +712,13 @@ New Record left it empty. Changing either listed field recomputed it at
 Set Field. A field the text also read and the list omitted did not trigger
 recalculation. The next listed change read its current value. The
 results persisted through commit and reopen. Reading the expression
-from a field was also allowed and writing the expression field itself
-triggered that variant. The literal definitions used option word
-`0x00080000` and stored their result cells. Hosted files were not compared.
+from a field was also allowed. Setting the source before the other fields
+stored a space from the expression's separator. Changing the source
+later recalculated against the current field values, including the
+unlisted input. In the closed copies, the listed dependency entries are
+`00` and the source's entry is `01`. The literal definitions used
+option word `0x00080000`; the field-source definition used `0x00000000`.
+Both stored the result. Clearing the source and hosted files were not compared.
 [Native results](https://github.com/OpenMaker-Dev/openmaker/issues/1072)
 
 ## Get ( CurrentTimeUTCMilliseconds )

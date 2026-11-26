@@ -890,8 +890,15 @@ result empty. Creation needs an unsorted local window. Clearing all listed
 fields while an unlisted input still holds a value refuses with error 3
 when the empty-input guard is on. The expression and its dependencies
 are kept in the file.
-A field-supplied expression, hosted files and other dynamic record-rule
-expressions remain outside this support.
+For a field-supplied text join, the source itself also triggers
+recalculation. OpenMaker compiles the current source when a trigger
+changes. The source, listed triggers and referenced fields must be
+ordinary single-repetition Text fields of the same row without their
+own auto-entry or lookup. When a trigger changes, the write refuses with
+error 3 if the source is missing, cannot compile to the supported join,
+or no longer reads every listed trigger field.
+Hosted files and other dynamic record-rule expressions remain outside
+this support.
 [FileMaker Pro measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1072)
 
 **An auto-entered or validation formula may read an unstored
