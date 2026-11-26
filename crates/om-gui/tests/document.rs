@@ -41,6 +41,8 @@ struct DocumentProvider {
     list: bool,
     /// The card is [`web_viewer_card`].
     web_viewer: bool,
+    /// The card is [`table_parts_card`] with these layout flags.
+    table_parts: Option<u64>,
     update_entered: Option<mpsc::Sender<()>>,
     update_gate: Option<mpsc::Receiver<()>>,
     /// Holds the page read that follows a save, like a slow server.
@@ -68,6 +70,7 @@ impl DocumentProvider {
             replacement: None,
             list: false,
             web_viewer: false,
+            table_parts: None,
             update_entered: None,
             update_gate: None,
             reload_gate: None,
@@ -450,6 +453,9 @@ impl DataProvider for DocumentProvider {
         if self.web_viewer {
             web_viewer_card(&mut document.layout);
         }
+        if let Some(flags) = self.table_parts {
+            table_parts_card(&mut document.layout, flags);
+        }
         if self.duplicate_field {
             let index = document
                 .layout
@@ -817,6 +823,61 @@ fn web_viewer_card(layout: &mut Layout) {
             data: svg.into(),
         },
     );
+}
+
+/// The card with only its title, in the header, and its name fields, and
+/// below them a footer with a note and a web viewer; `flags` are its
+/// effective layout flags, Table View Properties' among them. The header
+/// and footer are tinted so that a capture shows where they are.
+fn table_parts_card(layout: &mut Layout, flags: u64) {
+    let tint = |red: f32, green: f32, blue: f32| om_layout::ObjectStyle {
+        local_styles: Some(StyleSet {
+            components: vec![ComponentStyle {
+                component: 1,
+                state: 1,
+                properties: vec![Property {
+                    id: 7,
+                    color: Some(Color {
+                        red,
+                        green,
+                        blue,
+                        alpha: 1.0,
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    layout.def.as_mut().unwrap().flags = flags;
+    layout.parts[0].style = Some(tint(0.85, 0.91, 0.98));
+    layout.parts[1].height = 160.0;
+    layout.parts.push(Part {
+        id: 3,
+        part_type: 7,
+        top: 200.0,
+        height: 90.0,
+        style: Some(tint(0.93, 0.93, 0.88)),
+        ..Default::default()
+    });
+    layout
+        .objects
+        .objects
+        .retain(|object| matches!(object.id, 1 | 3 | 5));
+    layout
+        .objects
+        .objects
+        .push(label(60, None, "TOTALS FOOTER", 20.0, 230.0));
+    layout.objects.objects.push(LayoutObject {
+        external: Some(ExternalObject {
+            type_code: ExternalObject::WEB_VIEWER,
+            ..Default::default()
+        }),
+        ..object(61, 13, None, 400.0, 205.0, 380.0, 80.0)
+    });
+    layout.objects.root = vec![1, 3, 5, 60, 61];
 }
 
 /// Render the window to `name`.png in the `OM_SCREENSHOTS` folder and add
@@ -1863,6 +1924,74 @@ fn a_list_layout_repeats_the_body_and_fetches_as_it_scrolls() {
         "1",
         "scrolling loads pages without changing the current record"
     );
+}
+
+/// Table view draws the layout's header and footer parts around its table
+/// only as Table View Properties include each (layout-model.md 4.2, #306):
+/// the header above the column headings, the footer below the rows, at the
+/// window's bottom.
+#[test]
+fn table_view_shows_the_parts_its_properties_include() {
+    use om_layout::layout::{TABLE_FOOTER, TABLE_HEADER};
+    for (flags, header, footer) in [(TABLE_HEADER, true, false), (TABLE_FOOTER, false, true)] {
+        let mut provider = DocumentProvider::new(false);
+        provider.table_parts = Some(flags);
+        let mut app = open_provider(provider);
+        app.get_by_label("TOTALS FOOTER");
+        common::click(&mut app, "Table View");
+        common::wait_until(&mut app, "the table", |app| {
+            app.query_by_role_and_label(Role::Label, "Family").is_some()
+        });
+        let heading = app.get_by_role_and_label(Role::Label, "Given").rect();
+        let title = app.query_by_label("CLIENT CARD").map(|node| node.rect());
+        let note = app.query_by_label("TOTALS FOOTER").map(|node| node.rect());
+        assert_eq!(title.is_some(), header, "flags {flags:#x}: the header");
+        assert_eq!(note.is_some(), footer, "flags {flags:#x}: the footer");
+        if let Some(title) = title {
+            assert!(
+                title.bottom() <= heading.top(),
+                "the header is above the table"
+            );
+        }
+        if let Some(note) = note {
+            let window = app.ctx.content_rect();
+            assert!(
+                note.top() > heading.bottom() + 200.0 && note.bottom() < window.bottom(),
+                "the footer is at the window's bottom: {note:?} in {window:?}"
+            );
+        }
+    }
+}
+
+/// A manual capture of Table view's parts (#306): the layout with Table
+/// View Properties' header and footer included, then with neither.
+/// `OM_SCREENSHOTS=<folder> cargo test -p om-gui --test document
+/// table_view_parts_capture -- --ignored`
+#[test]
+#[ignore = "manual capture: requires OM_SCREENSHOTS, a folder for its PNGs"]
+fn table_view_parts_capture() {
+    use om_layout::layout::{TABLE_FOOTER, TABLE_HEADER};
+    for (flags, name, line) in [
+        (
+            TABLE_HEADER | TABLE_FOOTER,
+            "table-view-header-footer",
+            "Table view with the header and footer parts included",
+        ),
+        (
+            0,
+            "table-view-no-parts",
+            "Table view with neither part included",
+        ),
+    ] {
+        let mut provider = DocumentProvider::new(false);
+        provider.table_parts = Some(flags);
+        let mut app = open_provider(provider);
+        common::click(&mut app, "Table View");
+        common::wait_until(&mut app, "the table", |app| {
+            app.query_by_role_and_label(Role::Label, "Family").is_some()
+        });
+        shot(&mut app, name, line);
+    }
 }
 
 fn select_tab(app: &mut common::App, label: &str) {

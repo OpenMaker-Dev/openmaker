@@ -117,7 +117,13 @@ pub(crate) struct Geometry {
 
 impl Geometry {
     fn of(rect: egui::Rect, visible: egui::Rect, pixels_per_point: f32, zoom: f32) -> Self {
-        let px = |v: f32| (v * pixels_per_point).round() as i32;
+        // A file's object bounds are not bounded: within 2^24 pixels of the
+        // window, no difference below overflows (a NaN gives 0).
+        let px = |v: f32| {
+            (v * pixels_per_point)
+                .round()
+                .clamp(-16_777_216.0, 16_777_216.0) as i32
+        };
         let shown = rect.intersect(visible);
         let (left, top) = (px(shown.min.x), px(shown.min.y));
         let (width, height) = (
@@ -139,6 +145,23 @@ impl Geometry {
     fn is_empty(&self) -> bool {
         self.frame[2] <= 0 || self.frame[3] <= 0
     }
+
+    /// Whether a native view can be this large: X11 sizes and places a
+    /// window in 16 bits, so a page more than 32,767 pixels across or
+    /// down (a file's bounds can be anything) gets no view.
+    fn fits(&self) -> bool {
+        self.content[2] <= MAX_PAGE_PIXELS && self.content[3] <= MAX_PAGE_PIXELS
+    }
+}
+
+/// The largest page a native view shows, across or down, in pixels
+/// ([`Geometry::fits`]).
+const MAX_PAGE_PIXELS: i32 = i16::MAX as i32;
+
+/// Whether a web viewer at `rect` (window points) can have a native view
+/// ([`Geometry::fits`]): painting shows a note in place of one too large.
+pub(crate) fn fits(rect: egui::Rect, pixels_per_point: f32) -> bool {
+    Geometry::of(rect, rect, pixels_per_point, 1.0).fits()
 }
 
 /// What a native view is created with.
@@ -517,6 +540,10 @@ impl WebViewers {
                 frame.pixels_per_point,
                 placement.zoom,
             );
+            // Not seen: a view it had goes.
+            if !geometry.fits() {
+                continue;
+            }
             let shown = placement.rect.intersect(placement.visible);
             let covered = frame.covered.iter().any(|c| c.intersects(shown));
             let visible = !geometry.is_empty() && !covered;
