@@ -2203,9 +2203,16 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   frame. A window that was there before is never taken.
   When eframe recreates a viewport's window (some builder
   changes), or a window moves to the root viewport, its views are made
-  again in the new native window. A test checks this in eframe's real event
-  loop under Xvfb, and another, on a WebKitGTK build, renders a page in a
-  second window's List rows, each row its own record's
+  again in the new native window. Where egui embeds a window's viewport
+  instead (a backend without more native windows), the window is an egui
+  window inside the root window, drawn in the root's coordinates: its views
+  are children of the root's native window at the objects' places there,
+  clipped to the egui window's content, and they hide under whatever egui
+  paints above that window (another embedded window raised over it, menus,
+  pop-ups); the root's own views hide under the embedded window. A test
+  checks the native windows in eframe's real event loop under Xvfb, and
+  another, on a WebKitGTK build, renders a page in a second window's List
+  rows, each row its own record's, with native and with embedded viewports
   (`tests/web_viewer_windows_native.rs`).
 - [Documented] [Claris, Working with web viewers on layouts](https://help.claris.com/en/pro-help/content/web-viewers.html)
   describes pages in Form and List; in Table view only in the header,
@@ -2256,8 +2263,8 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   epoch, file, layout and object; one from a destroyed view, a closed
   window or an earlier session is dropped.
 - Not yet: a Windows (WebView2) adapter, views in
-  native Wayland windows,
-  embedded viewports (a backend without native windows), Find mode's "Display content in Find
+  native Wayland windows, pages on cards (a card's own layer counts as
+  covering them: [#1028](https://github.com/OpenMaker-Dev/openmaker/issues/1028)), Find mode's "Display content in Find
   mode", progress bar and status messages, `GetLayoutObjectAttribute`'s
   `source`/`content` of a live page, `fmp:` URLs from pages, Reset clearing
   the history, and layout objects stacked above a viewer (the native view
