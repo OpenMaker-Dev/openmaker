@@ -170,6 +170,14 @@ suffix. An unrelated edit, a later commit, reopen and the Time field's
 locale remains unmeasured.
 [Native results](https://github.com/OpenMaker-Dev/openmaker/issues/1035#issuecomment-7185794163).
 
+On FileMaker Pro 26.1.1, a local Text field with the calculated
+auto-enter `$$Marker` read the current file's variable at New Record.
+The two Text assignments produced two corresponding stored values. An
+unset variable produced empty and left out the stored cell. Set Field on
+an unrelated field, Commit and reopening kept those results. The check
+did not change the variable between New Record and Commit.
+[Native results](https://github.com/OpenMaker-Dev/openmaker/issues/1037#issuecomment-7185794811).
+
 In this file, a field calculation subtree is `<base-table>/3/5/<field>/5`.
 Child 4 contains its context, child 5 the formatted stream and child 6 the
 unformatted stream. `DBGetFunction::WriteAsPolish` (`0x16c6930`) writes
@@ -360,10 +368,26 @@ lookups; the values are then read through it:
   data-entry conversion is applied.
 - An empty related value is copied as empty (asset 2's date and time).
 
-Not measured: scripts (Set Field) and imports in FileMaker Pro, which of
-several matching records an unsorted relationship gives, container
-fields, Relookup Field Contents, and the next lower or higher value or a
-constant.
+FileMaker Pro 26.1.1, a local two-table Text lookup over an equality
+relationship with "If no exact match: Use" selected
+([native steps and results](https://github.com/OpenMaker-Dev/openmaker/issues/1020#issuecomment-7185793871)):
+
+- New Record and Commit with the key untouched and empty leave the target
+  empty. Setting the key to a missing match copies the fallback immediately.
+  A blank fallback clears the target.
+- An exact match copies the related value. If that value is empty, "Don't
+  copy contents if empty" preserves the prior value. Neither empty-match
+  setting copies the fallback.
+- Explicitly clearing an existing key copies a nonempty fallback. The
+  results survived commit and reopen, with LastError 0 and no alert.
+- Lookup definition `08` stores mode byte `03`. FileMaker writes member
+  `0b` for a nonempty fallback and omits it for a blank fallback.
+
+Unmeasured for this option: explicit clear with a blank fallback, a replacing
+`Get ( UUID )` match key, hosting, imports and other field types. More generally,
+copying the next lower or higher value, container fields, Relookup Field
+Contents, and which of several matches an unsorted relationship gives remain
+unmeasured here.
 
 ## Calculations over related fields
 

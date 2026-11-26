@@ -240,8 +240,8 @@ pub(crate) enum Unavailable {
     /// backend.
     Build,
     /// The window's viewport has no native window of its own that is known
-    /// (an embedded viewport, or one whose X11 window was not found:
-    /// `viewports.rs`).
+    /// (one whose X11 or AppKit window was not found: `viewports.rs`). An
+    /// embedded viewport has the root's.
     Window,
     /// The backend could not start (no X11 display, a Wayland session).
     Platform,
