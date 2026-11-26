@@ -2200,6 +2200,22 @@ impl RecordPlan {
             let lookup = field.lookup.as_ref().expect("a lookup");
             let matches = lookup_matches(&schema, table.id, &fields, lookup, field.data_type)
                 .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
+            // Creation skips mode-0 lookups when it generates a replacing UUID.
+            // Whether FileMaker applies a fallback in this case is unmeasured.
+            if lookup.fallback.is_some()
+                && matches.iter().any(|key| {
+                    let field = &fields[key];
+                    field.fresh_key() && field.options.calculation_replaces_existing()
+                })
+            {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: a lookup fallback with a replacing Get ( UUID ) key is unsupported.",
+                        field.name
+                    ),
+                ));
+            }
             if let Some(lookup) = fields.get_mut(&id).and_then(|f| f.lookup.as_mut()) {
                 lookup.matches = matches;
             }
@@ -8893,11 +8909,11 @@ mod tests {
                 right: 1,
             }],
         ));
-        let plan_for = |key_options: u32, variable, key_code: &[u8]| {
+        let plan_for = |key_options: u32, variable, key_code: &[u8], lookup: &[u8]| {
             let leaves: [(u64, &[u64], &[u8]); 3] = [
                 (1, &[5, 4], &[3, 0xd0, 0, 6]),
                 (1, &[5, 6], key_code),
-                (2, &[8], LOOKUP),
+                (2, &[8], lookup),
             ];
             let paths: Vec<Vec<Vec<u8>>> = leaves
                 .iter()
@@ -8919,8 +8935,15 @@ mod tests {
         };
         // A starter's PrimaryKey: Get ( UUID ), replacing, prohibiting
         // modification, indexed.
-        let plan = plan_for(0x8000_0188, 0, &[0x9b, 0x65]).unwrap();
+        let plan = plan_for(0x8000_0188, 0, &[0x9b, 0x65], LOOKUP).unwrap();
         assert!(plan.editable_fields().contains("Field2"));
+        let mut fallback = LOOKUP.to_vec();
+        fallback[0] = 3;
+        let refused_fallback = plan_for(0x8000_0188, 0, &[0x9b, 0x65], &fallback).err();
+        assert_eq!(
+            refused_fallback.and_then(|e| e.code),
+            Some(error::UNAVAILABLE)
+        );
         // Relookup Field Contents' target: not this key, whose auto-entry
         // a write of it could replace (3); not the looked-up field, which
         // no lookup matches through (3); not a field the table lacks (102).
@@ -8937,7 +8960,7 @@ mod tests {
         assert_eq!(refused("Missing").code, Some(error::FIELD_MISSING));
         // Another auto-entry on the key (the creator's account name) keeps
         // the table read-only.
-        let other = plan_for(0x8000_0101, 4, &[0x9b, 0x65]);
+        let other = plan_for(0x8000_0101, 4, &[0x9b, 0x65], LOOKUP);
         assert!(other
             .err()
             .is_some_and(|e| e.message.contains("auto-entered as Get ( UUID )")));

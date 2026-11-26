@@ -365,10 +365,11 @@ relationship with "If no exact match: Use" selected
 - Lookup definition `08` stores mode byte `03`. FileMaker writes member
   `0b` for a nonempty fallback and omits it for a blank fallback.
 
-Unmeasured for this option: explicit clear with a blank fallback, hosting,
-imports and other field types. More generally, copying the next lower or
-higher value, container fields, Relookup Field Contents, and which of
-several matches an unsorted relationship gives remain unmeasured here.
+Unmeasured for this option: explicit clear with a blank fallback, a replacing
+`Get ( UUID )` match key, hosting, imports and other field types. More generally,
+copying the next lower or higher value, container fields, Relookup Field
+Contents, and which of several matches an unsorted relationship gives remain
+unmeasured here.
 
 ## Calculations over related fields
 

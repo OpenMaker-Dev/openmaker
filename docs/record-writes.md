@@ -1743,7 +1743,8 @@ the starting occurrence, must be as FileMaker Pro writes them. It holds:
   to clear or preserve the target. FileMaker Pro's local Text case was
   measured ([results](https://github.com/OpenMaker-Dev/openmaker/issues/1020#issuecomment-7185793871)).
   Its immediate Set Field timing is still outside the commit-time
-  lookup path, and hosted fallback behavior is unmeasured;
+  lookup path, and hosted fallback behavior is unmeasured. A fallback
+  with a replacing auto-entered `Get ( UUID )` match key refuses with 3;
 - a stored text, number or date field of one repetition with no other
   auto-entry, copying a stored text, number or date value of one
   repetition (a data field or a stored calculation), a date field only
