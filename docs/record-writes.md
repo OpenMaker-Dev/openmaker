@@ -781,11 +781,13 @@ them as described below (globals as session values, later repetitions in
 their own cells). An unstored calculation's option bits are not checked
 but for a lookup's, which would write into it: a stray `0x80`
 (auto-entry.md) leaves the table writable. In a local file a stored
-Number calculation with one repetition, no validation, and option word
-`0x80000080` also follows the ordinary stored calculation rules. Its
-definition retains the replacement bit. Other unknown stored-calculation
-options keep the table read-only.
-[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204266349)
+calculation with one repetition and no validation follows the ordinary
+stored calculation rules for Number with option word `0x80000080` and
+Text with `0x80000080` or `0xc0000080`. The field definition retains
+the replacement bit and keeps its existing value index. Other unknown
+stored-calculation options keep the table read-only.
+[Number comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204266349),
+[Text comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204722695)
 
 An ordinary local Number auto-entry calculation can use `Self` as its
 only field input. It reads the proposed value at ordinary New Record in
