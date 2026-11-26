@@ -701,9 +701,9 @@ pub struct Cursor<'t, 's, S: ?Sized> {
     /// What the cursor knows of the current leaf's far edge ([`Edge`]).
     edge: Edge,
     state: State,
-    /// Whether the last seek's item was found by its leaf's own search on a
-    /// leaf whose bytes prove its keys in order ([`Cursor::land`]): then it
-    /// lies past the bound sought, which `step` checks of any other.
+    /// Whether the last seek's item was found by its leaf's own search
+    /// ([`Cursor::land`]): then it lies past the bound sought, which `step`
+    /// checks of an item reached through the next leaf.
     searched: bool,
 }
 
@@ -906,19 +906,19 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
     fn land(&mut self, leaf: Arc<Page>, n: usize) -> Result<bool> {
         let forward = self.direction == Direction::Forward;
         let count = leaf.count();
-        // Found by the leaf's own search on a leaf whose bytes prove its
-        // keys in order, the item is on the bound's far side: that search
-        // gives the first item not before the bound (`Cursor::step`).
-        let ordered = leaf.keys_ordered();
+        // Found by the leaf's own search, the item is on the bound's far
+        // side in any leaf, proven in order or not: the search ends at `n`
+        // only after it found item `n` not before the bound (forward), or
+        // item `n - 1` before it (backward), by the same comparison.
         if forward {
             self.stack.push((leaf, n));
             if n < count {
-                self.searched = ordered;
+                self.searched = true;
                 return Ok(true);
             }
         } else if n > 0 {
             self.stack.push((leaf, n - 1));
-            self.searched = ordered;
+            self.searched = true;
             return Ok(true);
         } else {
             self.stack.push((leaf, 0));
@@ -2311,6 +2311,34 @@ mod tests {
             assert_eq!(given, before, "pages of {size}");
             assert_eq!(failed, Some(failure), "pages of {size}");
         }
+    }
+
+    /// Review of #1166 (P2): the item a leaf's own search lands on was
+    /// compared with the bound by that search, so the seek does not compare
+    /// it again: on a leaf of two long keys sharing their first 4,200 bytes,
+    /// an inclusive forward seek from the first reads each key's overflow
+    /// page once in the search, and not a third time to check what it found.
+    #[test]
+    fn a_seek_does_not_compare_again_the_item_its_leaf_search_found() {
+        let store = MemStore::new(Numbering::Sequential);
+        let item = |tail: u8| (KIND_VALUE, key_of_segment(&spilling(tail)), vec![7; 10]);
+        let root = crate::tree::built::tree(&store, &[vec![item(b'a'), item(b'b')]], &[]).root;
+        let counting = Counting {
+            inner: &store,
+            reads: std::cell::Cell::new(0),
+        };
+        let tree = Tree::open(&counting, root).unwrap();
+        let first = key_of_segment(&spilling(b'a'));
+        let all = Bound::Unbounded;
+        let mut cursor = tree.range(Bound::Included(&first[..]), all, Direction::Forward);
+        counting.reads.set(0);
+        assert!(cursor.step().unwrap());
+        assert_eq!(cursor.at().map(|(_, i)| i), Some(0));
+        assert_eq!(
+            counting.reads.get(),
+            2,
+            "an overflow page for each key compared"
+        );
     }
 
     /// Review of #769, rule 3: the far edge's comparison reads nothing, so

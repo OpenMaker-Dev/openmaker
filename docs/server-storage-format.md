@@ -430,10 +430,11 @@ separators route a key, so that every read, one that seeks from pages it
 holds included, finds what a descent from the root finds. But a
 cursor's items only move on, and a read fails as *malformed* where one
 would not: the first item after a seek must lie past the bound sought
-(unless the leaf's own search found it in a leaf whose bytes prove its
-keys in order), and each item after it must follow the one before (it
-does by construction within such a leaf, and is compared within any
-other and into the next leaf). A listing, which seeks each child past
+(as one the leaf's own search found does, that search having compared
+it with the bound; one reached through the next leaf is compared), and
+each item after it must follow the one before (it does by construction
+within a leaf whose bytes prove its keys in order, and is compared
+within any other and into the next leaf). A listing, which seeks each child past
 the one before, and a walk in pages, each page sought past its last
 item, therefore end on any tree
 ([#998](https://github.com/OpenMaker-Dev/openmaker/issues/998),
