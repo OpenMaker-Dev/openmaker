@@ -304,8 +304,8 @@ fn layout_job_with_pitch(
             (_, Some(0x0010)) => normalized.chars().map(upper_char).collect(),
             (_, Some(0x0020)) => normalized.chars().map(lower_char).collect(),
             (_, Some(0x0030)) => {
-                // The measured title style keeps a hyphen or apostrophe
-                // inside its word, unlike the Proper calculation function.
+                // The whole-object title style keeps hyphens and apostrophes
+                // within words. Reusing that rule for runs is inferred.
                 let mut starts_word = true;
                 normalized
                     .chars()

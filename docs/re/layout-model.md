@@ -2080,14 +2080,18 @@ the layout's font and point size. Unknown bits and extension bytes remain raw.
 only the selected word and kept its stored spelling. The same uppercase
 run over a complete Account Name symbol changed its display from `Admin`
 to `ADMIN`. Accessibility returned the underlying case.
-With a format applied to all text in an object, Uppercase retained `ß`
+[Per-run native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1097#issuecomment-7192063512).
+
+[O, FileMaker Pro 26.1.1] With a format applied to the whole object,
+Uppercase retained `ß`
 and the `ﬂ` ligature, and changed `étude` to `ÉTUDE`. Title Case
 displayed `o'NEIL mACDONALD-sMITH 3RD aLPHA bETA` as
 `O'neil Macdonald-smith 3rd Alpha Beta`: apostrophes and hyphens kept
-their words together. Using the same character mappings and word
-boundaries inside the per-run override is inferred. The interaction
-with an object transform and other word boundaries is unmeasured.
-[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1097#issuecomment-7192063512).
+their words together.
+[Whole-object native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1097#issuecomment-7193070314).
+Using the same character mappings and word boundaries within a run is
+inferred. Precedence between object and run styles, and title-case breaks
+at quotation marks, parentheses, slashes, and periods remain unmeasured.
 
 ### 8.2 Styled merge values
 

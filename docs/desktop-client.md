@@ -629,7 +629,8 @@ authoring part tabs or object kind captions.
   and paragraph runs (layout-model.md 8.2). Explicit uppercase, lowercase, and
   title-case styles apply to their saved character runs, including resolved
   symbols.
-  An object-level uppercase style continues to apply to the whole object.
+  In OpenMaker an object-level uppercase style continues to apply to the
+  whole object. Its precedence in FileMaker is unmeasured.
 - Date fields, merge fields and date symbols in Browse can show the
   fixed named month and weekday presets in month-first English (see
   data-format.md). OpenMaker takes names from the file's locale for
