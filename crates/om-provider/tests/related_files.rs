@@ -2473,8 +2473,8 @@ fn a_root_layout_writes_another_files_related_records_in_that_file() {
 /// Root's layout of Remote Tasks (Related's Tasks), a related record of
 /// Other Tasks (a third file's Tasks) is created, edited, previewed and
 /// deleted by Other, outside a transaction and inside a script's one, which
-/// commits the layout's record in Related and the related one in Other.
-/// Root's own records are not written.
+/// commits the layout's record in Related and the related one in Other. A
+/// related record of Root's own Tasks is written by Root.
 #[test]
 fn a_layout_of_another_files_table_writes_its_related_records_in_their_files() {
     const OTHER: &str = "Other.fmp12";
@@ -2487,10 +2487,25 @@ fn a_layout_of_another_files_table_writes_its_related_records_in_their_files() {
         OwnedNode::leaf([], layout_def(REMOTE)),
     );
     fixture::add_relationship(&mut root, 9, (REMOTE, NAME), 0, (OTHER_TASKS, NAME));
+    fixture::add_relationship(&mut root, 10, (REMOTE, NAME), 0, (OCCURRENCE, NAME));
+    // Other's Stamp auto-enters `Get ( UUID )`.
+    const STAMP: u64 = 32;
+    let mut other_tree = fixture::tree(&[], true);
+    let mut names = fixture::names();
+    names.add_field(TABLE, STAMP, "Stamp");
+    fixture::add_field(&mut other_tree, TABLE, STAMP, "Stamp", 1, 1, 0, 0x8, 0);
+    fixture::add_formula(
+        &mut other_tree,
+        &names,
+        (TABLE, OCCURRENCE),
+        STAMP,
+        5,
+        "Get ( UUID )",
+    );
     let files = vec![
         (ROOT, root),
         (RELATED, fixture::tree(&[], true)),
-        (OTHER, fixture::tree(&[], true)),
+        (OTHER, other_tree),
     ];
     let host = Host::new("layout-related-writes", files);
     let mut provider = host.open(ROOT);
@@ -2552,10 +2567,12 @@ fn a_layout_of_another_files_table_writes_its_related_records_in_their_files() {
     assert!(rows_of(&host, OTHER).contains(&row("Held", "6", "12")));
 
     // A row begun in a portal of Other Tasks: previewed by Other, and
-    // written with its preview.
+    // written with its preview, whose UUID it stores.
     let begun = write(None, &[(NAME, "Begun"), (COUNT, "3")]);
     let preview = provider.preview_new_record(&begun).unwrap().unwrap();
     assert_eq!(preview.values[&fixture::DOUBLED].as_deref(), Some("6"));
+    let uuid = preview.values[&STAMP].clone().unwrap();
+    assert_eq!(uuid.len(), 36, "{uuid}");
     let stored = provider
         .write_record(&om_data::ScriptWrite {
             prepared: Some(preview.id),
@@ -2569,15 +2586,34 @@ fn a_layout_of_another_files_table_writes_its_related_records_in_their_files() {
         "6".to_owned(),
     );
     assert!(rows_of(&host, OTHER).contains(&begun_row));
+    let mut reader = host.open(OTHER);
+    let page = reader.records(fixture::LAYOUT as u32, 0, 100).unwrap();
+    let at = page.fields.iter().position(|f| f.name == "Stamp").unwrap();
+    let row = page.records.iter().find(|r| r.id == stored.id).unwrap();
+    assert_eq!(row.values[at].as_deref(), Some(uuid.as_str()));
+    reader.close();
 
     // Delete Portal Row.
     provider.delete_related_record(other, id).unwrap();
     assert!(rows_of(&host, OTHER).iter().all(|row| row.0 != id));
 
-    // Root's records, and Related's but record 1's Count, are as before.
-    assert_eq!(rows_of(&host, ROOT), root_rows);
-    assert_eq!(rows_of(&host, RELATED)[1..], peer_rows[1..]);
+    // A related record of Root's own Tasks, through Remote Tasks::Name =
+    // Tasks::Name: written by Root.
     assert_eq!(commits_to(&host, ROOT), 0);
+    provider
+        .write_record(&on_layout(related_write(
+            Some(TABLE),
+            Some(2),
+            &[(NAME, "Root row")],
+        )))
+        .unwrap();
+    assert_eq!(commits_to(&host, ROOT), 1);
+    let root_now = rows_of(&host, ROOT);
+    assert_eq!(root_now[0], root_rows[0]);
+    assert_eq!(root_now[1].1, "Root row");
+
+    // Related's records but record 1's Count are as before.
+    assert_eq!(rows_of(&host, RELATED)[1..], peer_rows[1..]);
     provider.close();
 }
 

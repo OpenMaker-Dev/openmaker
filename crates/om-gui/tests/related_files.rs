@@ -2651,7 +2651,8 @@ fn set_field_creates_and_edits_another_files_related_record() {
 /// another file's table (#43). On the layout "Notes" of Remote Tasks
 /// (Related's Tasks), the relationship from Remote Tasks::Job to Other
 /// Tasks::Job creates Other's records. The first commit creates the related
-/// record in Other with Related's key, the next edits it, and a script's
+/// record in Other with Related's key and the next edits it, each read back
+/// after its commit, and a script's
 /// transaction holding the layout's own record (Related's) and the related
 /// one commits both files.
 #[test]
@@ -2669,6 +2670,26 @@ fn set_field_from_another_files_layout_writes_a_third_files_related_record() {
         1,
         Some(&fixture::calc("\"result:\" & $a & \"|\" & $b & \"|\" & $c")),
     );
+    // `$v` set to the last step's error and Other Tasks::Name as stored.
+    let mut names = fixture::names();
+    names.add_occurrence(REMOTE, "Remote Tasks", TABLE);
+    names.add_occurrence(OTHER, "Other Tasks", TABLE);
+    let read_back = |variable: &str| {
+        let mut cx = om_formula::Context::new(&names);
+        cx.occurrence = Some(REMOTE);
+        let read =
+            om_formula::compile("Get ( LastError ) & \"/\" & Other Tasks::Name", &cx).unwrap();
+        let mut step = ScriptStep::new(141);
+        step.set_text(0, Some(variable));
+        step.set_calculation(
+            1,
+            Some(&om_scripts::Calculation::new(
+                Some(om_formula::formatted::encode(&read.tokens)),
+                om_formula::polish::encode(&read.expr),
+            )),
+        );
+        step
+    };
     let script = fixture::script(
         1,
         "Write from the peer layout",
@@ -2676,10 +2697,10 @@ fn set_field_from_another_files_layout_writes_a_third_files_related_record() {
             fixture::on(86, true),
             fixture::set_field_in(OTHER, NAME, "\"Made\""),
             ScriptStep::new(75),
-            fixture::set_variable("$a", "Get ( LastError )"),
+            read_back("$a"),
             fixture::set_field_in(OTHER, NAME, "\"Edited\""),
             ScriptStep::new(75),
-            fixture::set_variable("$b", "Get ( LastError )"),
+            read_back("$b"),
             ScriptStep::new(205),
             fixture::set_field_in(REMOTE, NAME, "\"Peer\""),
             fixture::set_field_in(OTHER, NAME, "\"Held\""),
@@ -2763,7 +2784,7 @@ fn set_field_from_another_files_layout_writes_a_third_files_related_record() {
     common::wait_until(&mut app, "peer layout loaded", |a| a.state().is_settled());
     common::open_menu(&mut app, "Scripts");
     common::click(&mut app, "Write from the peer layout");
-    common::wait_for_label(&mut app, "result:0|0|0");
+    common::wait_for_label(&mut app, "result:0/Made|0/Edited|0");
     common::click(&mut app, "OK");
     common::wait_until(&mut app, "script ended", |a| {
         !a.state().script_running() && a.state().is_settled()
