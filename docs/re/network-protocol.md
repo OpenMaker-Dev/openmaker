@@ -224,6 +224,62 @@ step), and the id = `(next LCG top byte) + LE32(connectionKey[0..3])`, retried
 until unique in `RCConnectionList`. The 16-byte key and the id both feed later
 credential obscuring (section 4).
 
+**OpenMaker Server: reads on a session's other connections**
+([#968](https://github.com/OpenMaker-Dev/openmaker/issues/968)). FileMaker
+Pro 26.1.1 was seen opening a second TLS connection while it started a file
+hosted read only, and sending Download (op90) and Download List (op92) there
+with no Connect of its own; FileMaker Server answered them. What OpenMaker
+Server does, its own choices throughout (`om-server`'s `joins`):
+
+- A connection with no session of its own has op90 and op92 answered from
+  the session they name, when the rule below holds. Everything else it
+  sends naming that session, and those two when the rule fails, is
+  answered `BAD_PARAM`, as a `Perform` naming an unknown connection always
+  is, in the same bytes whether a session has the id or not. A connection
+  with a session of its own reads for no other.
+- The rule (`joins::decide`): the connection presented in its TLS handshake
+  the same client certificate as the session's own connection, byte for
+  byte (compared by SHA-256), and so proved it holds that certificate's
+  private key (section 1; `tls::AnyClientCert` checks the handshake
+  signature); it comes from the same IP address; the session is live, has
+  the request's file open and is logged in to it. The connection id alone
+  is not enough: it is 32 random bits, which a client allowed unlimited
+  guesses can find. Whether FileMaker Pro presents the same certificate on
+  both connections, and whether that certificate is its own or one every
+  copy carries, is not measured.
+- Such a connection reads as the session would at that moment: with the
+  account of the session's latest Login, and adding what a privilege set's
+  view limits withhold to the session's own record of it. It changes
+  nothing else of the session: no Login, lock, staged record, file close
+  or Disconnect, and the session's change notifications wait for its own
+  connection's replies. A download it pages is continued on it alone and
+  is dropped when the session's Login of the file changes. While the file
+  is paused its reads wait, as the session's own do.
+- Its requests do not keep the session alive, and it is closed after 145 s
+  of silence, as a connection without a session (6.2). At most nine
+  connections join one session, since FileMaker Pro opens at most 10 to a
+  server (section 2); a tenth is refused until one of them ends. Each is
+  counted at its accept under the server's caps on connections in all and
+  from one address, and none is a client in the administrator's list.
+- The server's log gives, for each connection, its TLS version, whether the
+  handshake was full or resumed a session, and its client certificate's
+  SHA-256; each join, with the session's id and the connection that owns
+  it; each refusal with the condition that failed, at most one line
+  every 10 s, which counts the others by condition; and, when a joined
+  connection ends, how many reads of each kind it served. The client's
+  answer is the same for each condition.
+
+Limits. Only the two operations FileMaker Pro was seen sending there are
+served. If, as section 2 suggests, any of its calls can travel on any of
+its connections, a lock or a write it sends on a second connection while
+another call is out is still refused, and FileMaker Pro would reconnect as
+before ([#994](https://github.com/OpenMaker-Dev/openmaker/issues/994)). The
+connection id stays in the server's log and in the Admin API's client
+list, which matters only if the rule ever rests on the id. When a session
+ends, the administrator's disconnect included, its joined connections stay
+open, refusing its reads, until they are silent for 145 s or the client
+closes them.
+
 ## 4. The RCTransaction envelope (inside the OctetSeq)
 
 `Perform`'s OctetSeq is a `Draco::RCTransaction` buffer (class in
