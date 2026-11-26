@@ -7,8 +7,8 @@ use egui::{Color32, Rect, Ui};
 use om_layout::{Layout, ObjectKind, TextRun};
 
 use super::{
-    color, layout_cache::LayoutCache, line, paint_box, paint_library_image, paint_rich_text,
-    Session,
+    color, layout_cache::LayoutCache, line, paint_box, paint_label_icon, paint_library_image,
+    paint_rich_text, Session,
 };
 
 pub(crate) struct Surface<'a> {
@@ -97,10 +97,14 @@ impl<'a> Surface<'a> {
             kind,
             ObjectKind::Text | ObjectKind::Field | ObjectKind::Button | ObjectKind::PopoverButton
         ) {
+            let button = matches!(kind, ObjectKind::Button | ObjectKind::PopoverButton);
             let text = if kind == ObjectKind::Field {
                 Cow::Borrowed(field_caption)
             } else if !object.shows_label() {
-                return false;
+                if !button {
+                    return false;
+                }
+                Cow::Borrowed("")
             } else if let Some(words) = draft_words {
                 Cow::Borrowed(words)
             } else if object.text_runs.is_empty() {
@@ -117,12 +121,29 @@ impl<'a> Surface<'a> {
                         .collect(),
                 )
             };
-            let style = self.cache.text_style(self.layout, object, &[], 1);
+            let text_style = self.cache.text_style(self.layout, object, &[], 1);
             let rich = draft_words
                 .is_none()
                 .then_some(object.rich_text.as_ref())
                 .flatten();
-            let _ = paint_rich_text(ui, rect, &text, &style, rich, None);
+            let label = if button {
+                let (label, drawn_icon) = paint_label_icon(
+                    ui,
+                    self.cache,
+                    (self.layout, object),
+                    rect,
+                    (&text, &text_style, rich),
+                    None,
+                    (1, style.border_color[0]),
+                );
+                if text.is_empty() && !drawn_icon {
+                    return false;
+                }
+                label
+            } else {
+                rect
+            };
+            let _ = paint_rich_text(ui, label, &text, &text_style, rich, None);
         }
         true
     }

@@ -5302,59 +5302,20 @@ fn paint_object_repetition(
                     );
                 }
             }
-            let mut text_rect = rect;
-            let icon = match (&object.button, &object.popover_button) {
-                (Some(button), _) => {
-                    Some((button.library_key, button.icon_size, button.display_type))
-                }
-                (None, Some(button)) => {
-                    Some((button.library_key, button.icon_size, button.display_type))
-                }
-                (None, None) => None,
-            };
-            // A calculated icon (FileMaker Pro 26.1) is the SVG its formula
-            // gives on the record, in the library icon's place.
-            // Not evaluated (Find mode, or until its data is read): the
-            // library icon, if any [I: what Find mode shows is unmeasured].
+            // A calculated icon (FileMaker Pro 26.1) uses the library
+            // icon until its formula is evaluated in this Browse context.
             let svg = object
                 .active_icon_formula()
-                .and_then(|_| calc_state.icon_svg.clone());
-            let shown = icon.filter(|(key, _, _)| svg.is_some() || *key != 0);
-            if let Some((library_key, icon_size, display_type)) = shown {
-                let size = (icon_size.max(1) as f32)
-                    .min(rect.width())
-                    .min(rect.height());
-                let (at, label) =
-                    button_icon_and_label(rect, size, display_type, !text.is_empty(), || {
-                        let [top, right, bottom, left] =
-                            text_style.padding.map(|p| p.unwrap_or(0.0) as f32);
-                        ui.fonts_mut(|fonts| {
-                            let job = rich_text::layout_job(
-                                fonts,
-                                &text,
-                                &text_style,
-                                rich.as_deref(),
-                                (rect.width() - left - right).max(0.0),
-                            );
-                            fonts.layout_job(job).size().y + top + bottom
-                        })
-                    });
-                text_rect = label;
-                let icon = state
-                    .layout_cache
-                    .formatted_style(layout, object, &[], 4, style_state);
-                let tint = icon
-                    .icon_color
-                    .or(icon.color)
-                    .or(style.border_color[0])
-                    .map(color);
-                match &svg {
-                    Some(svg) => paint_calculated_icon(ui, svg, at, tint),
-                    None => {
-                        paint_library_image(ui, &state.layout_cache, layout, library_key, at, tint)
-                    }
-                }
-            }
+                .and(calc_state.icon_svg.as_deref());
+            let (text_rect, _) = paint_label_icon(
+                ui,
+                &state.layout_cache,
+                (layout, object),
+                rect,
+                (&text, &text_style, rich.as_deref()),
+                svg,
+                (style_state, style.border_color[0]),
+            );
             let _ = paint_rich_text(ui, text_rect, &text, &text_style, rich.as_deref(), None);
         }
         ObjectKind::Graphic => {
@@ -8280,7 +8241,51 @@ fn paint_icon(ui: &Ui, icon: Icon, side: f32, field: Rect, color: Option<Color32
     );
 }
 
-/// The icon and label's bounds in Browse. For the vertical choices the
+/// Paint a button's current icon and return the label's bounds and
+/// whether the icon was drawn. Layout mode supplies the library icon only.
+fn paint_label_icon(
+    ui: &Ui,
+    cache: &layout_cache::LayoutCache,
+    (layout, object): (&Layout, &LayoutObject),
+    rect: Rect,
+    (text, text_style, rich): (&str, &ResolvedStyle, Option<&om_layout::StyledText>),
+    svg: Option<&str>,
+    (state, border): (i32, Option<Color>),
+) -> (Rect, bool) {
+    let icon = match (&object.button, &object.popover_button) {
+        (Some(button), _) => Some((button.library_key, button.icon_size, button.display_type)),
+        (None, Some(button)) => Some((button.library_key, button.icon_size, button.display_type)),
+        (None, None) => None,
+    };
+    let Some((key, size, direction)) = icon.filter(|(key, _, _)| svg.is_some() || *key != 0) else {
+        return (rect, false);
+    };
+    let size = (size.max(1) as f32).min(rect.width()).min(rect.height());
+    let (at, label) = button_icon_and_label(rect, size, direction, !text.is_empty(), || {
+        let [top, right, bottom, left] = text_style.padding.map(|p| p.unwrap_or(0.0) as f32);
+        ui.fonts_mut(|fonts| {
+            let job = rich_text::layout_job(
+                fonts,
+                text,
+                text_style,
+                rich,
+                (rect.width() - left - right).max(0.0),
+            );
+            fonts.layout_job(job).size().y + top + bottom
+        })
+    });
+    let style = cache.formatted_style(layout, object, &[], 4, state);
+    let tint = style.icon_color.or(style.color).or(border).map(color);
+    let drawn = if let Some(svg) = svg {
+        paint_calculated_icon(ui, svg, at, tint);
+        true
+    } else {
+        paint_library_image(ui, cache, layout, key, at, tint)
+    };
+    (label, drawn)
+}
+
+/// The icon and label's bounds. For vertical choices the
 /// label uses the whole width and the pair is centered together.
 fn button_icon_and_label(
     rect: Rect,
@@ -8334,12 +8339,14 @@ fn paint_library_image(
     key: u64,
     rect: Rect,
     tint: Option<Color32>,
-) {
-    if let Some(image) = cache.library_image(layout, key, tint) {
-        egui::Image::new(image)
-            .show_loading_spinner(false)
-            .paint_at(ui, rect);
-    }
+) -> bool {
+    let Some(image) = cache.library_image(layout, key, tint) else {
+        return false;
+    };
+    egui::Image::new(image)
+        .show_loading_spinner(false)
+        .paint_at(ui, rect);
+    true
 }
 
 /// Calculated SVGs by URI, ordered by when they were last drawn. Each
