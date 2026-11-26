@@ -2245,6 +2245,21 @@ that remaining work. An unknown outcome keeps the draft for the existing
 idempotent/revision checks rather than assuming it was saved. The checked
 revision/table identity is rebased only after a known successful reply.
 
+**Undo and Redo.** Edit > Undo and Redo (Ctrl/Cmd-Z and Shift-Ctrl/Cmd-Z)
+step through this window's unsaved changes. Each drag or arrow-key nudge
+is one step. History covers moves, resizes, Arrange, deletions, layout
+width, field controls,
+text edits and staged placements and their settings. A focused text
+editor keeps its own keyboard undo and redo. On leaving the editor, the
+completed edit becomes part of the draft history. A new draft edit drops
+the redo branch. OpenMaker keeps up to 32 steps and clears history if the
+draft exceeds its snapshot budget. Applying a step clears selection.
+Save Layout, Revert Layout, a changed layout revision and leaving the
+layout or mode end the history. Part boundaries, Part Setup and Layout
+Setup are immediate writes outside the draft. FileMaker Pro's precise
+menu labels, supported operations and history across Save are unmeasured
+([#902](https://github.com/OpenMaker-Dev/openmaker/issues/902)).
+
 OpenMaker chooses bindings and label/control options in Inspector rather
 than FileMaker's Specify Field dialog. The deferred layout-save workflow
 is owner-reported (#1240); single-use and locked tools are documented in
