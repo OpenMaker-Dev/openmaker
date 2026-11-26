@@ -2187,14 +2187,19 @@ returned the four. It ran in FileMaker Pro and by Perform Script on Server
   that becomes read only while a script runs. [I] On a file hosted read
   only from the start, the record and account steps answer 6 too, as the
   three measured do, where the step is one the host supports.
-- OpenMaker Server answers 6 for the steps it supports that reach its
-  read-only check (docs/server-storage.md 5). Where it does not support
-  the step, its source or options, or a table's rules, it answers what it
-  answers on a writable file, 3: Insert File, an import from a folder of
-  files, a table whose rules it does not enforce. A file that becomes read
-  only between a script's steps gets OpenMaker's own answers there, not
-  measured: the commit's save error, 301 from New Record's id reservation,
-  6 from Set Next Serial Value.
+- OpenMaker Server, on a file hosted read only (docs/server-storage.md
+  5):
+  - It answers 6 for every step it implements that would change the
+    file, whether or not it enforces the table's rules. That matches
+    FileMaker Server's measured answer, which a table's rules do not
+    change.
+  - It answers 3 for a step it does not implement as written, as on a
+    writable file: Insert File, or an import from a source or with
+    options it does not import. That answer is OpenMaker's own; FileMaker
+    Server's for these on a read-only file is unmeasured.
+  - A file that becomes read only between a script's steps gets
+    OpenMaker's own answers, not measured: the commit's save error, 301
+    from New Record's id reservation, 6 from Set Next Serial Value.
 
 ## Unknowns
 

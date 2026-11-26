@@ -119,22 +119,16 @@ impl ServerHost {
 
     /// Import Records (module docs).
     pub(super) fn import_step(&mut self, call: &TransferCall<'_>) -> HostResult {
-        // On a file hosted read-only, an import this server would not run
-        // on a writable file either answers what it answers there (3 for a
-        // source or option it does not import, or a table whose rules it
-        // does not enforce): only one it would run answers 6, before any
-        // work (script-runtime.md 13.28; FileMaker Server's answer for the
-        // others is unmeasured, so they keep the answer they had).
+        // On a file hosted read-only, an import this server does not
+        // implement as written (a source or option it does not import)
+        // answers 3, as on a writable file, and only one it implements
+        // answers 6, before any work: what FileMaker Server answers for the
+        // first there is unmeasured, and 6 is its measured answer for a
+        // step that would change the file (script-runtime.md 13.28). A
+        // table whose rules the server does not enforce makes no
+        // difference here: those matter only once it would write.
         if self.shared.engine.read_only(&self.hosted).is_some() {
-            let request = Self::import_request(call)?;
-            if let Some(table) = request
-                .options
-                .table
-                .id()
-                .and_then(|o| self.schema.table_of(o))
-            {
-                self.plan(table)?;
-            }
+            Self::import_request(call)?;
             return Err(ErrorCode::FILE_READ_ONLY.into());
         }
         self.require_edit()?;

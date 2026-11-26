@@ -1514,22 +1514,6 @@ impl ServerHost {
         self.require_edit_access()
     }
 
-    /// On a file hosted read-only, an edit of `table` the server would not
-    /// make on a writable file either, a table whose rules it does not
-    /// enforce ([`Self::plan`]), answers what it answers there (3) before
-    /// the file's 6: 6 is the answer for an edit the server would make
-    /// (script-runtime.md 13.28; FileMaker Server's answer for the others is
-    /// unmeasured, so they keep the answer they had). Nothing on a writable
-    /// file, whose steps keep their order.
-    fn refuse_unsupported_before_read_only(&mut self, table: Option<u64>) -> HostResult {
-        if self.shared.engine.read_only(&self.hosted).is_some() {
-            if let Some(table) = table {
-                self.plan(table)?;
-            }
-        }
-        Ok(())
-    }
-
     /// 6 on a file hosted read-only ([`Self::require_edit`]).
     fn require_writable_file(&self) -> HostResult {
         match self.shared.engine.read_only(&self.hosted) {
@@ -1988,8 +1972,6 @@ impl ServerHost {
     /// privileges, also when an earlier step (a caller set to run with full
     /// access privileges) opened the record.
     fn open_current(&mut self) -> HostResult<&mut OpenRecord> {
-        let table = self.window().ok().map(|window| window.table);
-        self.refuse_unsupported_before_read_only(table)?;
         self.require_edit()?;
         let window = self.window()?;
         let (table, id) = (
@@ -2994,7 +2976,6 @@ impl ServerHost {
         // Checked before a container's data is held for the edit: a
         // refused step leaves nothing in the session (`open_current`
         // checks again).
-        self.refuse_unsupported_before_read_only(Some(table))?;
         self.require_edit()?;
         let container = def.data_type == DataType::Container;
         let stored = if container {
@@ -4923,7 +4904,6 @@ impl Records for ServerHost {
         }
         self.leave()?;
         let table = self.window()?.table;
-        self.refuse_unsupported_before_read_only(Some(table))?;
         self.require_edit()?;
         // Rules the server cannot enforce refuse the record before an id
         // is reserved.
@@ -5493,7 +5473,7 @@ impl FieldSteps for ServerHost {
             repetition: 1,
         });
         let field = field.or(focused).ok_or(ErrorCode::FIELD_MISSING)?;
-        let (table, def) = self.target(field)?;
+        let (_, def) = self.target(field)?;
         let window = self.window()?;
         if def.data_type == DataType::Container
             || Self::is_global(&def)
@@ -5532,7 +5512,6 @@ impl FieldSteps for ServerHost {
         {
             return Err(HostError::Unsupported);
         }
-        self.refuse_unsupported_before_read_only(Some(table))?;
         self.require_edit()?;
         self.leave()?;
         let current = match with {

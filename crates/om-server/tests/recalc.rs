@@ -1391,22 +1391,24 @@ fn a_server_script_opens_no_record_on_a_file_hosted_read_only() {
     assert_eq!(records_of(&mut client, TABLE).len(), 2);
 }
 
-/// On a file hosted read-only, a step the server would not make on a
-/// writable file either answers what it answers there, 3, before the
-/// file's 6 (script-runtime.md 13.28): Set Field, New Record, Replace Field
-/// Contents and Import Records into a table whose rules it does not enforce
-/// (here an auto-entered serial number on Count). Delete Record, which
-/// checks no rules, answers 6.
+/// On a file hosted read-only, a step into a table whose rules the server
+/// does not enforce (here an auto-entered serial number on Count) answers 6
+/// as on any other table: FileMaker Server's measured answer for a step
+/// that would change a read-only file, which those rules do not change,
+/// and the rules matter only once the server would write, which it never
+/// gets to here (script-runtime.md 13.28). Set Field, New Record, Replace
+/// Field Contents, a supported Import Records and Delete Record each answer
+/// 6. On a writable file the same table answers 3, as before.
 #[test]
-fn a_step_the_server_would_not_make_answers_3_on_a_file_hosted_read_only() {
+fn a_table_whose_rules_the_server_does_not_enforce_answers_6_on_a_file_hosted_read_only() {
     let (_, mut root) = tasks_tree_for_writes("recalc-unenforced-base", true);
     fixture::set_field_options(&mut root, TABLE, COUNT, 0x2);
     let read_only = TempFile::from_tree("recalc-unenforced-read-only", &root);
     let (mut client, _) = server::logged_in(server::start(&read_only), "scripter");
-    for (script, step) in [(4, "3"), (8, "3"), (10, "3"), (13, "3"), (9, "6")] {
+    for script in [4, 8, 10, 13, 9] {
         let answer = run_script(&mut client, script).unwrap();
         assert!(
-            answer.ends_with(format!("|{step}|0").as_bytes()),
+            answer.ends_with(b"|6|0"),
             "script {script}: {}",
             String::from_utf8_lossy(&answer)
         );
