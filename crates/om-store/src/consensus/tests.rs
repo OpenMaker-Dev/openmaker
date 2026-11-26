@@ -16,20 +16,28 @@
 //!
 //! **What is committed** is the simulator's own record, taken from the
 //! disks, not from any member's core: an entry of term `t` is committed
-//! once a majority of the members have held it durable while `state`
-//! recorded term `t` on each (Raft's acknowledgement in the entry's own
-//! term), and so is every entry before it. After every step it checks
-//! ([`Check`]):
+//! once a majority of the members have held the same chain through it (its
+//! hash) durable while `state` recorded term `t` on each (Raft's
+//! acknowledgement in the entry's own term), and so is every entry before
+//! it. After every step it checks ([`Check`]):
 //! - at most one leader per term;
-//! - a leader decides an entry is committed only once the disks show it;
+//! - a leader decides an entry is committed only once the disks show it,
+//!   and that it is the entry they show;
 //! - a leader is elected only with every committed entry in its log;
 //! - a leader never loses an entry of its own log while it leads;
 //! - two logs that hold an entry of the same index and term hold the same
-//!   entry, and every committed entry is the same wherever it is read;
+//!   entry, over the whole range they share;
 //! - the committed position a member records is a committed entry;
 //! - a member applies, and publishes, only committed entries, and every
-//!   member's state after the same entry has the same root hashes;
+//!   member's state after the same entry has the same root hashes, while
+//!   running and while an open replays;
 //! - a view shows only what is committed, and goes on reading the same;
+//! - what a member sends agrees with its disk: its term, a vote it grants,
+//!   an acknowledgement no further than its durable entry;
+//! - a vote goes only to a log as up to date as the voter's, as the two
+//!   disks say;
+//! - the leader of the newest term serves only with every entry committed
+//!   before its term;
 //! - every member starts from what the faults left, and every error a
 //!   member's store returns follows a fault its disk injected during that
 //!   very call: an operation the store refuses otherwise is a defect.
@@ -37,7 +45,9 @@
 //! At the end the faults stop and the network heals: every member must
 //! start, one leader must serve, and every member must hold and publish
 //! everything committed, or be one the leader reports as behind
-//! ([`Core::behind`], state transfer not built).
+//! ([`Core::behind`], state transfer not built). Then a minority goes down
+//! for good, and the rest must commit a new entry unless one of them is
+//! behind.
 //!
 //! `OM_STORE_SCALE=<n>` runs `n` times as many seeds, `OM_STORE_SEED=<s>`
 //! seed `s` alone.
@@ -114,6 +124,17 @@ enum Check {
     Refused,
     /// A member did not start, with no fault.
     Start,
+    /// A member sent what its disk does not yet record: a term `state`
+    /// does not hold, a vote it does not hold, an acknowledgement past the
+    /// durable entry.
+    DurableAnswer,
+    /// A vote was granted to a candidate whose log is not as up to date as
+    /// the voter's durable log, or ends before its committed position, as
+    /// the two disks say.
+    Grant,
+    /// The leader of the newest term served a client before its state held
+    /// every entry committed before its term.
+    Serving,
     /// The cluster did not settle once the faults stopped.
     Settle,
 }
@@ -168,6 +189,8 @@ struct Coverage {
     sent: u64,
     dropped: u64,
     repeated: u64,
+    /// Messages held back for several election timeouts.
+    stalled: u64,
     delivered: u64,
     proposed: u64,
     /// Entries committed, by the simulator's own record.
@@ -181,6 +204,10 @@ struct Coverage {
     groups_left_open_at_an_election: u64,
     passed_over_state: u64,
     behind: u64,
+    /// Ends with a minority down for good in which the rest committed a new
+    /// entry, and in which they could not because one of them is behind.
+    minority_progress: u64,
+    minority_behind: u64,
 }
 
 impl Coverage {
@@ -201,6 +228,7 @@ impl Coverage {
         self.sent += o.sent;
         self.dropped += o.dropped;
         self.repeated += o.repeated;
+        self.stalled += o.stalled;
         self.delivered += o.delivered;
         self.proposed += o.proposed;
         self.committed += o.committed;
@@ -212,6 +240,8 @@ impl Coverage {
         self.groups_left_open_at_an_election += o.groups_left_open_at_an_election;
         self.passed_over_state += o.passed_over_state;
         self.behind += o.behind;
+        self.minority_progress += o.minority_progress;
+        self.minority_behind += o.minority_behind;
     }
 }
 
@@ -228,16 +258,20 @@ struct Node {
     /// While it leads: its term and the durable entry it held when last
     /// checked, which it must still hold.
     lead_mark: Option<(u64, u64, [u8; 32])>,
+    /// The last vote request delivered to it: from whom, in which term, the
+    /// candidate's last entry.
+    asked: Option<(ServerId, u64, Pos)>,
 }
 
 /// The simulator's own record (module docs): the committed entries, entry
 /// `i` at `[i - 1]` with its term and hash; for each member and term, the
-/// last entry it held durable while `state` recorded that term; the root
-/// hashes of the state after each applied entry; the leader of each term.
+/// last entry it held durable while `state` recorded that term, with its
+/// hash, which names the whole chain through it; the root hashes of the
+/// state after each applied entry; the leader of each term.
 #[derive(Default)]
 struct Oracle {
     committed: Vec<(u64, [u8; 32])>,
-    held: Vec<BTreeMap<u64, u64>>,
+    held: Vec<BTreeMap<u64, (u64, [u8; 32])>>,
     roots: BTreeMap<u64, Vec<(TreeName, Hash)>>,
     leaders: BTreeMap<u64, ServerId>,
 }
@@ -252,17 +286,6 @@ impl Oracle {
             .checked_sub(1)
             .and_then(|i| self.committed.get(i as usize))
             .map(|e| e.1)
-    }
-
-    /// The last entry of term `term` a majority held in that term.
-    fn majority_held(&self, term: u64) -> u64 {
-        let mut held: Vec<u64> = self
-            .held
-            .iter()
-            .map(|h| h.get(&term).copied().unwrap_or(0))
-            .collect();
-        held.sort_unstable_by(|a, b| b.cmp(a));
-        held[held.len() / 2]
     }
 }
 
@@ -314,6 +337,43 @@ const STORMS: [Storm; 4] = [
     },
 ];
 
+/// The history the experiment review's P1-2 needs, brought about step by
+/// step in the schedules that draw it: a serving leader `l` and one
+/// follower `f` cut off together, the follower's acknowledgements held
+/// back; the rest elect a leader, and the split heals so that it cuts
+/// `l`'s entries; then `l`, `f` and one third member are cut off from that
+/// leader and the fifth member, until `l` leads again with that one real
+/// follower and has sent to `f`; then the held acknowledgements arrive.
+/// Each stage gives up after a while.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Return {
+    Idle,
+    /// `l` and `f` apart from the rest, `l` of term `term`.
+    Apart {
+        l: usize,
+        f: usize,
+        term: u64,
+        since: u64,
+    },
+    /// The split healed; `other` leads the rest.
+    Cut {
+        l: usize,
+        f: usize,
+        other: usize,
+        since: u64,
+    },
+    /// `l`, `f` and a third member `z` apart from the rest, so that `l`
+    /// can lead with one real follower; a `z` that leads is swapped for the
+    /// fifth member.
+    Elect {
+        l: usize,
+        f: usize,
+        z: usize,
+        after: u64,
+        since: u64,
+    },
+}
+
 struct World {
     seed: u64,
     setup: Setup,
@@ -326,6 +386,16 @@ struct World {
     timing: (u64, u64),
     /// Whether the schedule churns leaders.
     churn: bool,
+    /// Whether the network lags: one message delivered a step whatever is
+    /// due, so that deliveries fall behind their time.
+    lag: bool,
+    /// Whether the schedule makes leaders return (five members,
+    /// [`Return`]).
+    ret: bool,
+    /// Where the returning-leader history stands.
+    back: Return,
+    /// A follower's acknowledgements held back meanwhile.
+    held: Vec<Message>,
     /// Power losses right after a member answered a vote or an append,
     /// the window in which the answer must already be durable.
     after_answer: u64,
@@ -368,6 +438,9 @@ impl World {
         // One schedule in three churns leaders: short timeouts, one entry
         // an append, and new leaders often cut off (Raft's figure 8).
         let churn = rng.one_in(3);
+        // One schedule in six on a network that lags on purpose.
+        let lag = rng.one_in(6);
+        let ret = setup.members >= 5 && rng.one_in(2);
         let (batch, timing) = if churn {
             (1, (4, 1))
         } else {
@@ -382,6 +455,10 @@ impl World {
             batch: setup.batch.unwrap_or((batch, 16 << 10)),
             timing,
             churn,
+            lag,
+            ret,
+            back: Return::Idle,
+            held: Vec::new(),
             after_answer: 0,
             after_append: 0,
             rng,
@@ -416,6 +493,7 @@ impl World {
                 seen_durable: (0, [0; 32]),
                 was_leader: false,
                 lead_mark: None,
+                asked: None,
             });
         }
         Ok(w)
@@ -429,6 +507,7 @@ impl World {
             heartbeat: self.timing.1,
             batch: self.batch.0,
             batch_bytes: self.batch.1,
+            max_entry: u64::from(self.setup.store.log.max_payload),
             seed: self.seed,
             plant: self.setup.plant,
         }
@@ -491,11 +570,19 @@ impl World {
         // Work is done many times faster than the clock ticks: a message
         // and the actions it leads to take a fraction of a tick.
         let mut events: Vec<(u8, u64)> = vec![(b't', 50), (b'p', 100), (b'c', 5), (b'v', 10)];
+        // The work keeps up with the clock: weights grow with the members
+        // busy and the messages due, but on a lagging network.
+        let due_count = self.flight.iter().filter(|f| f.0 <= self.now).count() as u64;
+        let (work, deliveries) = if self.lag {
+            (400, 300)
+        } else {
+            (400 * busy.len() as u64, 300 * due_count)
+        };
         if !busy.is_empty() {
-            events.push((b'a', 400));
+            events.push((b'a', work));
         }
         if due {
-            events.push((b'd', 300));
+            events.push((b'd', deliveries));
         }
         if self.faults && self.storm.weight > 0 {
             events.push((b'f', self.storm.weight));
@@ -528,7 +615,11 @@ impl World {
             }
             b'v' => self.view(),
             _ => self.fault(),
+        }?;
+        if self.ret && self.faults {
+            self.steer();
         }
+        Ok(())
     }
 
     /// Member `i` does its next action.
@@ -566,7 +657,61 @@ impl World {
                             .map(|e| e.kind == empty)
                             .reduce(|a, b| a || b);
                     }
-                    self.send(m);
+                    self.check_answer(i, &m)?;
+                    let carries =
+                        matches!(&m.body, Body::Append { entries, .. } if !entries.is_empty());
+                    let serving = self.nodes[i].member.as_ref().unwrap().core.serving();
+                    if self.ret
+                        && self.faults
+                        && carries
+                        && serving
+                        && self.back == Return::Idle
+                        && self.rng.one_in(8)
+                    {
+                        // The leader and this follower alone; the follower's
+                        // acknowledgements held back.
+                        let f = self.who(m.to);
+                        let mut side = vec![false; self.nodes.len()];
+                        side[i] = true;
+                        side[f] = true;
+                        self.split = Some((side, u64::MAX));
+                        let term = self.nodes[i].member.as_ref().unwrap().core.term();
+                        self.back = Return::Apart {
+                            l: i,
+                            f,
+                            term,
+                            since: self.now,
+                        };
+                        self.cov.splits += 1;
+                        self.cov.faults += 1;
+                    }
+                    let success = matches!(
+                        m.body,
+                        Body::AppendReply {
+                            matched: Some(_),
+                            ..
+                        }
+                    );
+                    let storm = self.faults && self.storm.weight > 0;
+                    if success && self.churn && storm && self.rng.one_in(6) {
+                        // An acknowledgement held back for several election
+                        // timeouts, its leader cut off at once: the leader
+                        // may be deposed, cut and elected again before it
+                        // arrives.
+                        let leader = self.ids.iter().position(|x| *x == m.to).unwrap();
+                        let delay = self.timing.0 * (3 + self.rng.below(6));
+                        self.seq += 1;
+                        self.cov.sent += 1;
+                        self.cov.stalled += 1;
+                        self.cov.faults += 1;
+                        self.flight.push((self.now + delay, self.seq, m));
+                        let mut side = vec![false; self.nodes.len()];
+                        side[leader] = true;
+                        self.split = Some((side, self.now + 3 + self.rng.below(50)));
+                        self.cov.splits += 1;
+                    } else {
+                        self.send(m);
+                    }
                 }
                 if done.proposed.is_some() {
                     self.cov.proposed += 1;
@@ -596,7 +741,10 @@ impl World {
                     self.cov.power_losses += 1;
                     self.cov.faults += 1;
                     self.after_answer += 1;
-                } else if (storm || diverged && self.faults) && self.rng.one_in(isolate) {
+                } else if (storm || diverged && self.faults)
+                    && self.back == Return::Idle
+                    && self.rng.one_in(isolate)
+                {
                     // The leader alone, right after it sent entries, in place
                     // of any split before: what it sent may reach some and
                     // not others, and the last leader cut off may be back.
@@ -615,6 +763,122 @@ impl World {
         }
     }
 
+    /// Moves the returning-leader history on ([`Return`]), after each step.
+    fn steer(&mut self) {
+        let limit = 20 * self.timing.0;
+        let leading = |w: &World, i: usize| {
+            w.nodes[i]
+                .member
+                .as_ref()
+                .is_some_and(|m| m.core.role() == Role::Leader)
+        };
+        let apart = |w: &mut World, members: &[usize]| {
+            let mut side = vec![false; w.nodes.len()];
+            for &i in members {
+                side[i] = true;
+            }
+            w.split = Some((side, u64::MAX));
+            w.cov.splits += 1;
+            w.cov.faults += 1;
+        };
+        let n = self.nodes.len();
+        match self.back {
+            Return::Idle => {}
+            Return::Apart { l, f, term, since } => {
+                // The rest lead themselves: heal, so that their leader cuts
+                // `l`'s entries.
+                let other = (0..self.nodes.len()).find(|j| {
+                    *j != l
+                        && *j != f
+                        && self.nodes[*j]
+                            .member
+                            .as_ref()
+                            .is_some_and(|m| m.core.serving() && m.core.term() > term)
+                });
+                if let Some(other) = other {
+                    self.split = None;
+                    self.back = Return::Cut {
+                        l,
+                        f,
+                        other,
+                        since: self.now,
+                    };
+                } else if self.now > since + limit {
+                    self.release();
+                }
+            }
+            Return::Cut { l, f, other, since } => {
+                let theirs = self.nodes[other].member.as_ref().map(|m| m.core.term());
+                let cut = self.nodes[l].member.as_ref().is_some_and(|m| {
+                    theirs.is_some_and(|t| m.core.term() >= t && m.core.last().term >= t)
+                });
+                if cut {
+                    let after = theirs.unwrap();
+                    let z = (0..n).find(|j| ![l, f, other].contains(j)).unwrap();
+                    apart(self, &[l, f, z]);
+                    self.back = Return::Elect {
+                        l,
+                        f,
+                        z,
+                        after,
+                        since: self.now,
+                    };
+                } else if self.now > since + limit {
+                    self.release();
+                }
+            }
+            Return::Elect {
+                l,
+                f,
+                z,
+                after,
+                since,
+            } => {
+                if leading(self, z) {
+                    // Swap the third member for the fifth.
+                    let y = (0..n)
+                        .find(|j| ![l, f, z].contains(j) && !leading(self, *j))
+                        .unwrap_or(z);
+                    if y != z {
+                        apart(self, &[l, f, y]);
+                        self.back = Return::Elect {
+                            l,
+                            f,
+                            z: y,
+                            after,
+                            since,
+                        };
+                    }
+                }
+                // `l` leads again and has sent `f` its `empty` entry.
+                let led = self.nodes[l].member.as_ref().is_some_and(|m| {
+                    m.core.role() == Role::Leader
+                        && m.core.term() > after
+                        && m.core
+                            .progress
+                            .get(&self.ids[f])
+                            .is_some_and(|p| p.sent >= m.core.empty)
+                });
+                if led || self.now > since + limit {
+                    self.release();
+                }
+            }
+        }
+    }
+
+    /// The held acknowledgements go into the network, due now, and the
+    /// history is over.
+    fn release(&mut self) {
+        for m in std::mem::take(&mut self.held) {
+            self.seq += 1;
+            self.flight.push((self.now, self.seq, m));
+        }
+        if self.back != Return::Idle {
+            self.split = None;
+        }
+        self.back = Return::Idle;
+    }
+
     /// Whether member `i`'s disk lost power in a call that returned: a
     /// failure in work the store does not report, such as freeing pages
     /// after a checkpoint. The process is gone all the same.
@@ -629,6 +893,65 @@ impl World {
         node.member = None;
         node.down_until = down_until;
         Ok(true)
+    }
+
+    /// What member `i` sends agrees with what its disk records: the
+    /// message's term is the term `state` holds; a granted vote is the vote
+    /// it holds, given to a candidate as up to date as the voter's durable
+    /// log and not ending before its committed position; an acknowledgement
+    /// is at or before the durable entry.
+    fn check_answer(&self, i: usize, m: &Message) -> Outcome {
+        let store = &self.nodes[i].member.as_ref().unwrap().store;
+        let (term, vote) = store.saved_term();
+        let (durable, durable_term, _) = store.durable_entry();
+        if m.term != term {
+            return Err(self.fail(
+                Check::DurableAnswer,
+                format!(
+                    "member {i} sent a message of term {}; its state records {term}",
+                    m.term
+                ),
+            ));
+        }
+        match m.body {
+            Body::VoteReply { granted: true } => {
+                if vote != Some(m.to) {
+                    return Err(self.fail(
+                        Check::DurableAnswer,
+                        format!("member {i} granted a vote its state does not record"),
+                    ));
+                }
+                if let Some((from, asked_term, last)) = self.nodes[i].asked {
+                    let own = Pos {
+                        index: durable,
+                        term: durable_term,
+                    };
+                    let committed = store.committed_position();
+                    if from == m.to
+                        && asked_term == m.term
+                        && (!last.at_least(&own) || last.index < committed)
+                    {
+                        return Err(self.fail(
+                            Check::Grant,
+                            format!(
+                                "member {i} granted its vote to a log ending at {last:?}; its \
+                                 own ends at {own:?}, committed through {committed}"
+                            ),
+                        ));
+                    }
+                }
+            }
+            Body::AppendReply {
+                matched: Some(k), ..
+            } if k > durable => {
+                return Err(self.fail(
+                    Check::DurableAnswer,
+                    format!("member {i} acknowledged entry {k}; its durable entry is {durable}"),
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     /// Member `i`'s store returned an error in a call made when its disk
@@ -667,8 +990,41 @@ impl World {
         }
         for _ in 0..copies {
             // Never longer than an election timeout, which would leave no
-            // election able to finish.
-            let delay = self.rng.below(storm.delay.min(self.timing.0) + 1);
+            // election able to finish; but now and then, in a storm, a
+            // message held back for several, as a stalled connection
+            // delivers late: a reply of an earlier term arrives after a new
+            // election.
+            // An acknowledgement is held back more often when leaders churn:
+            // a success of an earlier term arriving after the same member
+            // leads again.
+            let success = matches!(
+                m.body,
+                Body::AppendReply {
+                    matched: Some(_),
+                    ..
+                }
+            );
+            let held = match self.back {
+                Return::Apart { l, f, .. }
+                | Return::Cut { l, f, .. }
+                | Return::Elect { l, f, .. } => {
+                    success && self.who(m.from) == f && self.who(m.to) == l
+                }
+                Return::Idle => false,
+            };
+            if held {
+                self.cov.stalled += 1;
+                self.held.push(m.clone());
+                continue;
+            }
+            let stall = if success && self.churn { 25 } else { 300 };
+            let delay = if self.faults && storm.weight > 0 && self.rng.one_in(stall) {
+                self.cov.stalled += 1;
+                self.cov.faults += 1;
+                self.timing.0 * (2 + self.rng.below(6))
+            } else {
+                self.rng.below(storm.delay.min(self.timing.0) + 1)
+            };
             self.seq += 1;
             self.flight.push((self.now + delay, self.seq, m.clone()));
         }
@@ -710,6 +1066,10 @@ impl World {
             self.flight.push((self.now, self.seq, m));
             return self.act(i);
         }
+        if let Body::Vote { last } = m.body {
+            self.nodes[i].asked = Some((m.from, m.term, last));
+        }
+        let member = self.nodes[i].member.as_mut().unwrap();
         member.receive(m);
         self.cov.delivered += 1;
         self.check(i)
@@ -786,11 +1146,21 @@ impl World {
 
     /// A client's entry at the serving leader, if one serves and is idle.
     fn propose(&mut self) -> Outcome {
+        // While a returning leader's acknowledgements are held back, the
+        // client writes only to it: its entries the others will cut grow
+        // past what the next leader commits.
+        let only = match self.back {
+            Return::Apart { l, .. } | Return::Cut { l, .. } | Return::Elect { l, .. } => Some(l),
+            Return::Idle => None,
+        };
         let Some(i) = self.up().into_iter().find(|i| {
             // A client waits for its answers: at most four entries the
             // leader has not committed.
             let m = self.nodes[*i].member.as_ref().unwrap();
-            m.core.serving() && m.idle() && m.core.last().index < m.core.committed() + 4
+            only.is_none_or(|o| o == *i)
+                && m.core.serving()
+                && m.idle()
+                && m.core.last().index < m.core.committed() + 4
         }) else {
             return Ok(());
         };
@@ -892,9 +1262,39 @@ impl World {
             };
             (file, Payload::Change(change))
         };
+        self.check_serving(i)?;
         let member = self.nodes[i].member.as_mut().unwrap();
         if member.propose(file, payload) {
             self.check(i)?;
+        }
+        Ok(())
+    }
+
+    /// The leader of the newest term that serves holds every entry
+    /// committed before its term: what its `empty` entry promises (section
+    /// 7.1). A deposed leader that has not heard yet serves too, which Raft
+    /// allows, so only the newest term's is held to it.
+    fn check_serving(&self, i: usize) -> Outcome {
+        let member = self.nodes[i].member.as_ref().unwrap();
+        let term = member.core.term();
+        if self.oracle.leaders.keys().next_back() != Some(&term) {
+            return Ok(());
+        }
+        let before = self
+            .oracle
+            .committed
+            .iter()
+            .rposition(|e| e.0 < term)
+            .map_or(0, |k| k as u64 + 1);
+        let published = member.store.published().index;
+        if published < before {
+            return Err(self.fail(
+                Check::Serving,
+                format!(
+                    "leader {i} of term {term} serves with its state at entry {published}, \
+                     before entry {before} committed in an earlier term"
+                ),
+            ));
         }
         Ok(())
     }
@@ -1023,7 +1423,7 @@ impl World {
                 self.cov.stops += 1;
                 self.cov.faults += 1;
             }
-            5..=7 if self.split.is_none() => {
+            5..=7 if self.split.is_none() && self.back == Return::Idle => {
                 let n = self.nodes.len();
                 let mut side = vec![false; n];
                 let leader = self.leading();
@@ -1044,40 +1444,83 @@ impl World {
                 self.cov.splits += 1;
                 self.cov.faults += 1;
             }
-            _ => self.split = None,
+            _ if self.back == Return::Idle => self.split = None,
+            _ => {}
         }
         Ok(())
     }
 
     /// The simulator's record learns member `i`'s durable entry and the
-    /// term its `state` records: an entry a majority held durable in its
-    /// own term is committed, and so is every entry before it (module
-    /// docs). What it reads it reads from the disk of the member that made
-    /// the majority.
+    /// term its `state` records (module docs). An entry is committed when
+    /// a majority held the same chain through it in its own term: a member
+    /// counts only if the entry it held is on member `i`'s chain, as read
+    /// from the disks, and then as far as the two share it. What it records
+    /// it reads from member `i`'s disk.
     fn observe(&mut self, i: usize) -> Outcome {
+        self.observe_as(i, false)
+    }
+
+    /// [`World::observe`]; with `again`, also when member `i` holds nothing
+    /// new.
+    fn observe_as(&mut self, i: usize, again: bool) -> Outcome {
         let Some(m) = self.nodes[i].member.as_ref() else {
             return Ok(());
         };
-        let (index, term, _) = m.store.durable_entry();
+        let (index, term, hash) = m.store.durable_entry();
         let (saved, _) = m.store.saved_term();
         if index == 0 || term != saved {
             return Ok(());
         }
-        let held = self.oracle.held[i].entry(term).or_insert(0);
-        if index <= *held {
+        let known = self.oracle.held[i].get(&term).map_or(0, |h| h.0);
+        if index > known {
+            self.oracle.held[i].insert(term, (index, hash));
+        } else if !again {
             return Ok(());
         }
-        *held = index;
-        let committed = self.oracle.majority_held(term);
+        let (index, hash) = self.oracle.held[i][&term];
+        // How far each member shares member i's chain, from what it held
+        // in this term.
+        let mut levels = vec![index];
+        for j in 0..self.nodes.len() {
+            if j == i {
+                continue;
+            }
+            let Some(&(theirs, their_hash)) = self.oracle.held[j].get(&term) else {
+                continue;
+            };
+            let shared = if theirs <= index {
+                let ours = self.quiet(i, |m| m.store.entry_hash(theirs)).unwrap();
+                (ours.ok().flatten() == Some(their_hash)).then_some(theirs)
+            } else {
+                // A longer chain: still on it, and holding member i's tip.
+                let still = self.quiet(j, |m| {
+                    (m.store.entry_hash(theirs), m.store.entry_hash(index))
+                });
+                match still {
+                    Some((Ok(Some(a)), Ok(Some(b)))) if a == their_hash && b == hash => Some(index),
+                    _ => None,
+                }
+            };
+            if let Some(level) = shared {
+                levels.push(level);
+            }
+        }
+        levels.sort_unstable_by(|a, b| b.cmp(a));
+        let majority = self.nodes.len() / 2 + 1;
+        let Some(&committed) = levels.get(majority - 1) else {
+            return Ok(());
+        };
         let max = self.oracle.max();
-        if committed <= max || index < committed {
+        if committed <= max {
             return Ok(());
         }
         if max > 0 {
             self.check_entry(i, max, Check::LogMatching, "the last committed entry")?;
         }
         let read = self
-            .quiet(i, |m| m.store.read_wire(max + 1, committed, u64::MAX))
+            .quiet(i, |m| {
+                m.store.read_wire(max + 1, committed, u64::MAX, u64::MAX)
+            })
             .unwrap()
             .map_err(|e| self.fail(Check::LogMatching, format!("member {i}'s log: {e}")))?;
         if read.len() as u64 != committed - max || read.first().map(|e| e.index) != Some(max + 1) {
@@ -1088,6 +1531,36 @@ impl World {
         }
         for e in read {
             self.oracle.committed.push((e.term, e.hash));
+        }
+        Ok(())
+    }
+
+    /// Logs `i` and `j` hold the same entry where they hold one of the same
+    /// index and term: at the highest such place, which by the chain of
+    /// hashes covers every place below it.
+    fn check_matching(&self, i: usize, j: usize) -> Outcome {
+        let ends =
+            |k: usize| self.quiet(k, |m| (m.store.durable_entry().0, m.store.log_base().index));
+        let (Some((tip_i, base_i)), Some((tip_j, base_j))) = (ends(i), ends(j)) else {
+            return Ok(());
+        };
+        let floor = base_i.max(base_j);
+        let mut at = tip_i.min(tip_j);
+        while at >= floor && at > 0 {
+            let read = |k: usize| self.quiet(k, |m| m.store.entry_at(at)).unwrap();
+            let (Ok(Some((t_i, h_i))), Ok(Some((t_j, h_j)))) = (read(i), read(j)) else {
+                return Ok(());
+            };
+            if t_i == t_j {
+                if h_i != h_j {
+                    return Err(self.fail(
+                        Check::LogMatching,
+                        format!("members {i} and {j} hold different entries {at} of term {t_i}"),
+                    ));
+                }
+                return Ok(());
+            }
+            at -= 1;
         }
         Ok(())
     }
@@ -1176,16 +1649,28 @@ impl World {
         let core = &member.core;
         let (role, term, id) = (core.role(), core.term(), core.me());
         let decided = core.committed();
-        let (d_index, d_term, d_hash) = member.store.durable_entry();
+        let (d_index, _, d_hash) = member.store.durable_entry();
         self.cov.highest_term = self.cov.highest_term.max(term);
-        if role == Role::Leader && decided > self.oracle.max() {
-            return Err(self.fail(
+        if role == Role::Leader && decided > 0 {
+            if decided > self.oracle.max() {
+                // The record from the leader's own chain, before judging.
+                self.observe_as(i, true)?;
+            }
+            if decided > self.oracle.max() {
+                return Err(self.fail(
+                    Check::EarlyCommit,
+                    format!(
+                        "leader {i} decided entry {decided} is committed; the disks show {}",
+                        self.oracle.max()
+                    ),
+                ));
+            }
+            self.check_entry(
+                i,
+                decided,
                 Check::EarlyCommit,
-                format!(
-                    "leader {i} decided entry {decided} is committed; the disks show {}",
-                    self.oracle.max()
-                ),
-            ));
+                "the committed entry it decided",
+            )?;
         }
         // At most one leader per term; a leader holds every committed
         // entry.
@@ -1253,20 +1738,8 @@ impl World {
         if (d_index, d_hash) != self.nodes[i].seen_durable {
             self.nodes[i].seen_durable = (d_index, d_hash);
             for j in self.up() {
-                if j == i {
-                    continue;
-                }
-                let theirs = self.quiet(j, |m| m.store.entry_at(d_index)).unwrap();
-                if let Ok(Some((t, h))) = theirs {
-                    if t == d_term && h != d_hash {
-                        return Err(self.fail(
-                            Check::LogMatching,
-                            format!(
-                                "members {i} and {j} hold different entries {d_index} of term \
-                                 {d_term}"
-                            ),
-                        ));
-                    }
+                if j != i {
+                    self.check_matching(i, j)?;
                 }
             }
         }
@@ -1326,12 +1799,31 @@ impl World {
             .iter()
             .map(|n| match &n.member {
                 Some(m) => format!(
-                    "{:?} term {} last {} committed {} published {}",
+                    "{:?} term {} start {} last {} committed {} published {} base {}{}",
                     m.core.role(),
                     m.core.term(),
+                    m.core.start(),
                     m.core.last().index,
                     m.core.committed(),
-                    m.core.published()
+                    m.core.published(),
+                    m.core.base().index,
+                    if m.core.role() == Role::Leader {
+                        // What the leader knows of each follower.
+                        let progress: Vec<String> = m
+                            .core
+                            .progress
+                            .values()
+                            .map(|p| {
+                                format!(
+                                    "next {} matched {} sent {} probe {:?}",
+                                    p.next, p.matched, p.sent, p.probe
+                                )
+                            })
+                            .collect();
+                        format!(", knows {progress:?}, behind {}", m.core.behind().len())
+                    } else {
+                        String::new()
+                    }
                 ),
                 None => "down".into(),
             })
@@ -1342,10 +1834,103 @@ impl World {
         ))
     }
 
+    /// After the cluster settled, a minority goes down for good, the leader
+    /// first: the rest must elect a leader that serves and commit a new
+    /// entry. Where they cannot because one of them is behind (its log ends
+    /// before another's base: state transfer, #849, is not built), the end
+    /// is counted, not failed.
+    fn settle_minority(&mut self) -> Outcome {
+        let n = self.nodes.len();
+        let mut order: Vec<usize> = (0..n).collect();
+        if let Some(l) = self.leading() {
+            order.retain(|i| *i != l);
+            order.insert(0, l);
+        }
+        for &i in order.iter().take((n - 1) / 2) {
+            self.nodes[i].member = None;
+            self.nodes[i].down_until = u64::MAX;
+        }
+        let serving = |w: &World| {
+            w.up()
+                .into_iter()
+                .find(|i| w.nodes[*i].member.as_ref().unwrap().core.serving())
+        };
+        let mut progress = false;
+        if self.run_until(600, |w| serving(w).is_some())? {
+            let leader = serving(self).unwrap();
+            let proposed = self.cov.proposed;
+            self.propose()?;
+            let member = self.nodes[leader].member.as_ref().unwrap();
+            let target = member.core.last().index;
+            if self.cov.proposed > proposed || member.waiting() > 0 {
+                progress = self.run_until(600, |w| {
+                    serving(w).is_some_and(|l| {
+                        w.nodes[l].member.as_ref().unwrap().core.committed() >= target
+                    })
+                })?;
+            }
+        }
+        if progress {
+            self.cov.minority_progress += 1;
+            return Ok(());
+        }
+        // Behind: a member whose log ends before another's base, or one a
+        // leader among them reports behind (its log can end later, with
+        // entries that do not match, and still need what is retired).
+        let reported = self.up().into_iter().any(|i| {
+            !self.nodes[i]
+                .member
+                .as_ref()
+                .unwrap()
+                .core
+                .behind()
+                .is_empty()
+        });
+        let ends: Vec<(u64, u64)> = self
+            .up()
+            .into_iter()
+            .map(|i| {
+                let store = &self.nodes[i].member.as_ref().unwrap().store;
+                (store.durable_entry().0, store.log_base().index)
+            })
+            .collect();
+        if reported
+            || ends
+                .iter()
+                .any(|(end, _)| ends.iter().any(|(_, base)| end < base))
+        {
+            self.cov.minority_behind += 1;
+            return Ok(());
+        }
+        let views: Vec<String> = self
+            .up()
+            .into_iter()
+            .map(|i| {
+                let c = &self.nodes[i].member.as_ref().unwrap().core;
+                format!(
+                    "{i}: {:?} t{} last {:?} committed {} knows {:?}",
+                    c.role(),
+                    c.term(),
+                    c.last(),
+                    c.committed(),
+                    c.progress
+                        .values()
+                        .map(|p| (p.next, p.matched, p.sent, p.probe, p.probing))
+                        .collect::<Vec<_>>()
+                )
+            })
+            .collect();
+        Err(self.fail(
+            Check::Settle,
+            format!("with a minority down for good the rest made no progress: {ends:?} {views:?}"),
+        ))
+    }
+
     /// No more faults, and the network heals.
     fn calm(&mut self) {
         self.faults = false;
         self.split = None;
+        self.release();
         for n in &self.nodes {
             n.sim.set_rates(Rates::default());
         }
@@ -1430,6 +2015,7 @@ fn is_group(name: &TreeName) -> bool {
 fn run(seed: u64, setup: Setup) -> Outcome<Coverage> {
     let mut w = World::new(seed, setup)?;
     w.run()?;
+    w.settle_minority()?;
     for (_, view) in &w.views {
         w.check_view(view)?;
     }
@@ -1502,21 +2088,41 @@ fn long_clusters_keep_the_rules_of_consensus() {
     run_all("long", seeds(SEEDS * 20), STEPS * 4);
 }
 
-const PLANTS: [Plant; 5] = [
+/// The planted defects a seed of the default run must find.
+const PLANTS: [Plant; 15] = [
     Plant::VoteUnflushed,
     Plant::CountOlderTerm,
     Plant::CommitUnchecked,
     Plant::CutAtChecked,
     Plant::PublishDurable,
+    Plant::CountStaleSuccess,
+    Plant::AppendTermUnsaved,
+    Plant::VoteNoUpToDate,
+    Plant::VoteLastIndexOnly,
+    Plant::VoteLastTermOnly,
+    Plant::VoteForgotten,
+    Plant::AckBeforeFlush,
+    Plant::AckLastEntry,
+    Plant::PublishLeaderCommitted,
+    Plant::ServeBeforeEmpty,
 ];
+
+/// Planted defects measured but not required: a success past what the
+/// leader sent comes only from a member that lies, which the trust rule
+/// leaves out; a core-level test holds the bound instead.
+const MEASURED: [Plant; 1] = [Plant::CountPastSent];
 
 /// The checks a planted defect must break, and for a refusal what the
 /// store must have refused.
 fn expected(plant: Plant) -> (&'static [Check], &'static [&'static str]) {
     match plant {
-        // A forgotten vote elects two leaders in one term, or, the term
-        // forgotten too, a leader without an entry committed meanwhile.
-        Plant::VoteUnflushed => (&[Check::OneLeader, Check::Completeness], &[]),
+        // A vote answered before its record: the answer disagrees with the
+        // disk; or, if that is missed, two leaders in one term or a leader
+        // without an entry committed meanwhile.
+        Plant::VoteUnflushed => (
+            &[Check::DurableAnswer, Check::OneLeader, Check::Completeness],
+            &[],
+        ),
         Plant::CountOlderTerm => (&[Check::EarlyCommit], &[]),
         Plant::CommitUnchecked => (&[Check::RecordedCommitted], &[]),
         // The log refuses a cut at its committed position; past it, the cut
@@ -1529,7 +2135,28 @@ fn expected(plant: Plant) -> (&'static [Check], &'static [&'static str]) {
                 "does not continue this log's chain",
             ],
         ),
-        Plant::PublishDurable => (&[Check::Published], &[]),
+        Plant::PublishDurable | Plant::PublishLeaderCommitted => (&[Check::Published], &[]),
+        // A success of an earlier term counted in this one: the leader
+        // counts a copy the follower does not hold.
+        // A success counted that the follower does not hold: an early
+        // commit, or a follower the leader never sends what it lacks.
+        Plant::CountStaleSuccess | Plant::CountPastSent => (
+            &[Check::EarlyCommit, Check::Completeness, Check::Settle],
+            &[],
+        ),
+        // Counting a follower past what it holds: an early commit, or a
+        // follower the leader never sends what it lacks.
+        Plant::AckLastEntry => (
+            &[Check::EarlyCommit, Check::Completeness, Check::Settle],
+            &[],
+        ),
+        Plant::AppendTermUnsaved | Plant::VoteForgotten | Plant::AckBeforeFlush => {
+            (&[Check::DurableAnswer], &[])
+        }
+        Plant::VoteNoUpToDate | Plant::VoteLastIndexOnly | Plant::VoteLastTermOnly => {
+            (&[Check::Grant], &[])
+        }
+        Plant::ServeBeforeEmpty => (&[Check::Serving], &[]),
     }
 }
 
@@ -1568,9 +2195,14 @@ fn planted_defects_are_found() {
 #[test]
 #[ignore = "a measurement: run in release, OM_STORE_SCALE to scale"]
 fn planted_defects_found_by_how_many_seeds() {
-    for plant in PLANTS {
+    // `OM_PLANT=<name>` measures that defect alone.
+    let only = std::env::var("OM_PLANT").ok();
+    for plant in PLANTS.into_iter().chain(MEASURED) {
+        if only.as_ref().is_some_and(|o| *o != format!("{plant:?}")) {
+            continue;
+        }
         let seeds = seeds(SEEDS);
-        let mut kinds: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+        let mut kinds: BTreeMap<String, (u64, u64, String)> = BTreeMap::new();
         for seed in &seeds {
             if let Err(e) = run(*seed, setup(*seed, STEPS, Some(plant))) {
                 let what = e.text.split_once(": ").map_or(e.text.as_str(), |(_, w)| w);
@@ -1587,13 +2219,14 @@ fn planted_defects_found_by_how_many_seeds() {
                         "NOT EXPECTED"
                     }
                 );
-                kinds.entry(kind).or_insert((0, *seed)).0 += 1;
+                kinds.entry(kind).or_insert((0, *seed, e.text.clone())).0 += 1;
             }
         }
         let found: u64 = kinds.values().map(|k| k.0).sum();
         eprintln!("{plant:?}: found by {found} of {} seeds", seeds.len());
-        for (kind, (n, first)) in kinds {
+        for (kind, (n, first, text)) in kinds {
             eprintln!("  {n} seeds, the first {first}: {kind}");
+            eprintln!("    in full: {text}");
         }
     }
 }
@@ -1612,6 +2245,7 @@ fn core_of(me: u8, terms: &[u64], term: u64) -> Core {
         heartbeat: 1,
         batch: 2,
         batch_bytes: 1 << 10,
+        max_entry: 1 << 10,
         seed: 5,
         plant: None,
     };
@@ -1629,9 +2263,9 @@ fn core_of(me: u8, terms: &[u64], term: u64) -> Core {
 }
 
 /// Makes `a` the leader of the next term with `voter`'s votes, its `empty`
-/// entry durable, and returns the appends it sends then: to whom, the
-/// request's number, `prev`, and its first and last entries.
-fn elect(a: &mut Core, voter: ServerId) -> Vec<(ServerId, u64, Pos, u64, u64)> {
+/// entry durable, and returns the appends it sends then: to whom, `prev`,
+/// and the first and last entries.
+fn elect(a: &mut Core, voter: ServerId) -> Vec<(ServerId, Pos, u64, u64)> {
     for _ in 0..100 {
         if a.role() == Role::PreCandidate {
             break;
@@ -1656,145 +2290,218 @@ fn elect(a: &mut Core, voter: ServerId) -> Vec<(ServerId, u64, Pos, u64, u64)> {
     assert_eq!(a.role(), Role::Candidate);
     a.receive(ask(a, Body::VoteReply { granted: true }));
     assert_eq!(a.role(), Role::Leader);
-    appends(&a.flushed(a.last()))
+    let out = a.flushed(a.last());
+    sends(a, &out)
 }
 
-fn appends(actions: &[Action]) -> Vec<(ServerId, u64, Pos, u64, u64)> {
-    actions
+/// The appends a message leads to, reported sent ([`sends`]).
+fn recv(a: &mut Core, m: Message) -> Vec<(ServerId, Pos, u64, u64)> {
+    let out = a.receive(m);
+    sends(a, &out)
+}
+
+/// The appends among `actions`, each reported sent whole as a member
+/// does ([`Core::sent`]): to whom, `prev`, the first and last entries.
+fn sends(a: &mut Core, actions: &[Action]) -> Vec<(ServerId, Pos, u64, u64)> {
+    let out: Vec<_> = actions
         .iter()
         .filter_map(|a| match a {
             Action::SendAppend {
                 to,
-                seq,
                 prev,
                 first,
                 last,
                 ..
-            } => Some((*to, *seq, *prev, *first, *last)),
+            } => Some((*to, *prev, *first, *last)),
             _ => None,
         })
-        .collect()
+        .collect();
+    for (to, prev, _, last) in &out {
+        a.sent(*to, prev.index, (*last).max(prev.index));
+    }
+    out
 }
 
-fn reply(from: u8, term: u64, seq: u64, matched: Option<u64>, hint: u64) -> Message {
+/// Member `from`'s answer, in `term` and its `start`, to an append of
+/// member 1 that named `prev`, in `echo_term` and start `echo_start`.
+#[allow(clippy::too_many_arguments)]
+fn reply_to(
+    from: u8,
+    term: u64,
+    start: u64,
+    echo_term: u64,
+    echo_start: u64,
+    prev: u64,
+    matched: Option<u64>,
+    hint: u64,
+) -> Message {
     Message {
         from: id(from),
         to: id(1),
         term,
-        start: 1,
-        body: Body::AppendReply { seq, matched, hint },
+        start,
+        body: Body::AppendReply {
+            echo: Echo {
+                term: echo_term,
+                start: echo_start,
+                prev,
+            },
+            matched,
+            hint,
+        },
     }
 }
 
-/// A reply counts only against the request it answers and within what
-/// that request checked; numbers a message gives never overflow; an
-/// append that is not a leader's whole request changes nothing
-/// (section 7.1, trust).
+/// Member `from`'s answer, in the leader's term, to the append it has out
+/// now.
+fn reply(from: u8, term: u64, prev: u64, matched: Option<u64>, hint: u64) -> Message {
+    reply_to(from, term, 1, term, 1, prev, matched, hint)
+}
+
+/// A reply counts only against the append it repeats and no further than
+/// the leader sent; a refusal only of the append out now; a malformed
+/// message changes nothing; a higher term is taken from any message; an
+/// append that is not whole changes nothing else (section 7.1, trust).
 #[test]
 fn a_core_takes_from_a_message_only_what_it_asked_for() {
     let mut a = core_of(1, &[1, 1, 1], 1);
     let sent = elect(&mut a, id(2));
     let term = a.term();
-    let (_, seq, prev, first, last) = sent.iter().copied().find(|s| s.0 == id(2)).unwrap();
+    let (_, prev, first, last) = sent.iter().copied().find(|s| s.0 == id(2)).unwrap();
     assert_eq!((prev.index, first, last), (3, 4, 4));
-    // An answer to no request, and a match past what was asked: passed over.
-    a.receive(reply(2, term, seq + 100, Some(4), 0));
-    a.receive(reply(2, term, seq, Some(9), 0));
-    assert_eq!(a.committed(), 0);
-    // The largest hint: no overflow, and the next try stays in the log.
-    let out = appends(&a.receive(reply(2, term, seq, None, u64::MAX)));
-    let (_, seq, prev, _, last) = out[0];
-    assert!(prev.index < 3 && last == 4, "{out:?}");
-    // An answer to that request within its range counts: the leader's own
-    // entry is committed.
-    a.receive(reply(2, term, seq, Some(4), 0));
-    assert_eq!(a.committed(), 4);
-    // A reply nobody asked for, of the largest term: passed over.
+    // A success repeating an earlier term, or another start, of the leader:
+    // passed over.
+    a.receive(reply_to(2, term, 1, term - 1, 1, 3, Some(4), 0));
+    a.receive(reply_to(2, term, 1, term, 9, 3, Some(4), 0));
+    assert_eq!((a.progress[&id(2)].matched, a.committed()), (0, 0));
+    // A refusal of an append not out now: passed over. (The first append
+    // to a follower is a probe: `next` stays until a success.)
+    assert!(a.receive(reply(2, term, 1, None, 0)).is_empty());
+    assert_eq!(a.progress[&id(2)].next, 4);
+    // A success claiming past what was sent counts only as far as was sent:
+    // the leader's entry 4 is committed, nothing past it.
+    a.receive(reply(2, term, 3, Some(9), 0));
+    assert_eq!((a.progress[&id(2)].matched, a.committed()), (4, 4));
+    // The largest hint, answering the append out now: no overflow.
+    let out = {
+        let out = a.tick();
+        sends(&mut a, &out)
+    };
+    let (_, prev, _, _) = out.iter().copied().find(|s| s.0 == id(2)).unwrap();
+    a.receive(reply(2, term, prev.index, None, MAX_INDEX));
+    assert!(a.progress[&id(2)].next <= a.last().index + 1);
+    // A term past the bound: malformed, nothing changes.
+    let past = Message {
+        term: u64::MAX,
+        ..reply(3, term, 0, None, 0)
+    };
+    assert!(a.receive(past).is_empty());
+    assert_eq!((a.term(), a.role()), (term, Role::Leader));
+    // A higher term, from a reply that answers nothing: taken and recorded.
     let stray = Message {
         from: id(3),
         to: id(1),
-        term: u64::MAX,
+        term: term + 5,
         start: 1,
         body: Body::PreVoteReply {
             round: 0,
             granted: false,
         },
     };
-    assert!(a.receive(stray).is_empty());
-    assert_eq!(a.term(), term);
-    // A follower passes over an append whose entries pass its term, or that
-    // carries more than a batch.
-    let mut f = core_of(3, &[], 0);
-    let wire = |index, term| Wire {
+    let out = a.receive(stray);
+    assert!(matches!(out[..], [Action::SaveTerm { term: t, vote: None }] if t == term + 5));
+    assert_eq!(a.role(), Role::Follower);
+    // A follower takes the term of an append that is not whole, and
+    // nothing else: entries past its term, more than a batch, one past the
+    // largest entry.
+    let wire = |index, term, len: usize| Wire {
         index,
         term,
         kind: crate::entry::Kind::Empty.code(),
         file: 0,
-        payload: Vec::new(),
+        payload: vec![0; len],
         hash: [0; 32],
     };
-    let append = |entries| Message {
-        from: id(1),
-        to: id(3),
-        term: 2,
-        start: 1,
-        body: Body::Append {
-            seq: 1,
-            prev: Pos::default(),
-            entries,
-            committed: u64::MAX,
-        },
-    };
-    assert!(f.receive(append(vec![wire(1, 3)])).is_empty());
-    assert!(f
-        .receive(append(vec![wire(1, 2), wire(2, 2), wire(3, 2)]))
-        .is_empty());
-    assert_eq!(f.term(), 0);
+    for entries in [
+        vec![wire(1, 3, 0)],
+        vec![wire(1, 2, 0), wire(2, 2, 0), wire(3, 2, 0)],
+        vec![wire(1, 2, 2 << 10)],
+    ] {
+        let mut f = core_of(3, &[], 0);
+        let append = Message {
+            from: id(1),
+            to: id(3),
+            term: 2,
+            start: 1,
+            body: Body::Append {
+                prev: Pos::default(),
+                entries,
+                committed: MAX_INDEX,
+            },
+        };
+        let out = f.receive(append);
+        assert!(
+            matches!(
+                out[..],
+                [Action::SaveTerm {
+                    term: 2,
+                    vote: None
+                }]
+            ),
+            "{out:?}"
+        );
+    }
 }
 
-/// A rejection delivered twice, the second after the follower caught up
-/// and the leader's log was retired past the rejection's hint, leaves the
-/// follower where it is; a follower is called behind only after a probe
-/// at the log's base is refused.
+/// A refusal delivered twice, the second after the follower caught up and
+/// the leader's log was retired past the refusal's hint, leaves the
+/// follower where it is; a follower is called behind only when it refuses
+/// a probe at the log's base as it is when the refusal arrives.
 #[test]
 fn a_delayed_rejection_does_not_strand_a_follower() {
     let mut a = core_of(1, &[1; 10], 1);
     let sent = elect(&mut a, id(3));
     let term = a.term();
-    let (_, s1, prev, _, _) = sent.iter().copied().find(|s| s.0 == id(2)).unwrap();
+    let (_, prev, _, _) = sent.iter().copied().find(|s| s.0 == id(2)).unwrap();
     assert_eq!(prev.index, 10);
     // B's log ends at 5: it refuses the probe, and the refusal is repeated
     // in the network.
-    let refusal = reply(2, term, s1, None, 5);
-    let (_, s2, prev, _, last) = appends(&a.receive(refusal.clone()))[0];
+    let refusal = reply(2, term, 10, None, 5);
+    let (_, prev, _, last) = recv(&mut a, refusal.clone())[0];
     assert_eq!((prev.index, last), (5, 7));
-    let (_, s3, _, _, last) = appends(&a.receive(reply(2, term, s2, Some(7), 7)))[0];
-    assert_eq!(last, 9);
-    let (_, _, prev, _, last) = appends(&a.receive(reply(2, term, s3, Some(9), 9)))[0];
+    let (_, prev, _, last) = recv(&mut a, reply(2, term, 5, Some(7), 7))[0];
+    assert_eq!((prev.index, last), (7, 9));
+    let (_, prev, _, last) = recv(&mut a, reply(2, term, 7, Some(9), 9))[0];
     assert_eq!((prev.index, last), (9, 11));
     a.compacted(Pos { index: 8, term: 1 });
-    // The repeated refusal answers a request already answered.
+    // The repeated refusal is not of the append out now.
     assert!(a.receive(refusal).is_empty());
     assert!(!a.behind().contains(&id(2)));
+    assert_eq!(a.progress[&id(2)].next, 12);
     // A refusal that truly asks for what is retired comes only from a later
     // start of B, which makes the leader forget what B held: a probe at the
     // base first, and behind only once that is refused.
-    let out = appends(&a.tick());
-    let (_, s4, prev, _, _) = out.iter().copied().find(|s| s.0 == id(2)).unwrap();
-    assert_eq!(prev.index, 11);
-    let restarted = |seq, hint| Message {
-        start: 2,
-        ..reply(2, term, seq, None, hint)
+    let later = |prev, hint| reply_to(2, term, 2, term, 1, prev, None, hint);
+    // B's first message of its new start: the leader forgets, and the
+    // refusal answers no append out now.
+    assert!(recv(&mut a, later(9, 5)).is_empty());
+    let out = {
+        let out = a.tick();
+        sends(&mut a, &out)
     };
-    // The answer to a request of B's earlier start is passed over.
-    assert!(appends(&a.receive(restarted(s4, 5))).is_empty());
-    let out = appends(&a.tick());
-    let (_, s5, prev, _, _) = out.iter().copied().find(|s| s.0 == id(2)).unwrap();
+    let (_, prev, _, _) = out.iter().copied().find(|s| s.0 == id(2)).unwrap();
     assert_eq!(prev.index, 11);
-    let (_, s6, prev, _, _) = appends(&a.receive(restarted(s5, 5)))[0];
+    let (_, prev, _, _) = recv(&mut a, later(11, 5))[0];
     assert_eq!(prev.index, 8);
     assert!(!a.behind().contains(&id(2)));
-    a.receive(restarted(s6, 5));
+    // The base moves on before B's answer to the probe at 8 arrives: that
+    // answer is of the probe out now, but not at the base as it is now, so
+    // B is probed at the new base, and is behind only once it refuses that.
+    a.compacted(Pos { index: 10, term: 1 });
+    let out = recv(&mut a, later(8, 5));
+    assert!(!a.behind().contains(&id(2)));
+    assert_eq!(out[0].1.index, 10);
+    recv(&mut a, later(10, 5));
     assert!(a.behind().contains(&id(2)));
 }
 
@@ -1814,6 +2521,7 @@ fn a_member_takes_nothing_after_a_failed_action() {
         heartbeat: 3,
         batch: 3,
         batch_bytes: 16 << 10,
+        max_entry: u64::from(STORE.log.max_payload),
         seed: 1,
         plant: None,
     };
@@ -1900,4 +2608,214 @@ fn a_follower_catches_up_through_entries_larger_than_a_batch() {
     let follower = &w.nodes[b].member.as_ref().unwrap().core;
     assert!(!leader.behind().contains(&follower.me()));
     assert_eq!(follower.published(), leader.committed());
+}
+
+/// A fixed schedule's world: no faults, and nothing moves but what the
+/// script does.
+impl World {
+    fn scripted(members: usize, plant: Option<Plant>) -> World {
+        let setup = Setup {
+            members,
+            steps: 0,
+            plant,
+            store: STORE,
+            batch: Some((8, 16 << 10)),
+        };
+        let mut w = World::new(7, setup).unwrap();
+        w.calm();
+        w
+    }
+
+    fn who(&self, id: ServerId) -> usize {
+        self.ids.iter().position(|x| *x == id).unwrap()
+    }
+
+    fn core_of(&self, i: usize) -> &Core {
+        &self.nodes[i].member.as_ref().unwrap().core
+    }
+
+    /// Member `i`'s actions, all of them; what it sends goes into the
+    /// network.
+    fn drain(&mut self, i: usize) -> Outcome {
+        while self.nodes[i].member.as_ref().is_some_and(|m| !m.idle()) {
+            self.act(i)?;
+        }
+        Ok(())
+    }
+
+    /// Delivers, oldest first, every message in the network `pick` chooses
+    /// (by message, sender and receiver), and what each leads to, until
+    /// none is left that it chooses.
+    fn pass(&mut self, pick: impl Fn(&Message, usize, usize) -> bool) -> Outcome {
+        loop {
+            let chosen = (0..self.flight.len()).find(|k| {
+                let m = &self.flight[*k].2;
+                pick(m, self.who(m.from), self.who(m.to))
+            });
+            let Some(k) = chosen else {
+                return Ok(());
+            };
+            let to = self.who(self.flight[k].2.to);
+            self.drain(to)?;
+            self.deliver(k)?;
+            self.drain(to)?;
+        }
+    }
+
+    /// Takes out of the network every message `pick` chooses.
+    fn take(&mut self, pick: impl Fn(&Message, usize, usize) -> bool) -> Vec<Message> {
+        let mut taken = Vec::new();
+        let mut k = 0;
+        while k < self.flight.len() {
+            let m = &self.flight[k].2;
+            if pick(m, self.who(m.from), self.who(m.to)) {
+                taken.push(self.flight.remove(k).2);
+            } else {
+                k += 1;
+            }
+        }
+        taken
+    }
+
+    /// Member `i` alone ticks `n` times.
+    fn tick_member(&mut self, i: usize, n: u64) -> Outcome {
+        for _ in 0..n {
+            self.nodes[i].member.as_mut().unwrap().tick();
+            self.drain(i)?;
+        }
+        Ok(())
+    }
+
+    /// Member `c` wins an election with the votes of `voters`, who first
+    /// stop hearing from any leader; whatever else the election sends is
+    /// dropped. It leads with its `empty` entry durable.
+    fn win(&mut self, c: usize, voters: &[usize]) -> Outcome {
+        let election = self.timing.0;
+        for &v in voters {
+            self.tick_member(v, election)?;
+        }
+        let ballot = |m: &Message| {
+            matches!(
+                m.body,
+                Body::PreVote { .. }
+                    | Body::Vote { .. }
+                    | Body::PreVoteReply { .. }
+                    | Body::VoteReply { .. }
+            )
+        };
+        self.take(|m, _, _| ballot(m));
+        // A round refused for a voter's higher term teaches the candidate
+        // that term: it asks again on its next timeout.
+        for _ in 0..3 {
+            for _ in 0..4 * election {
+                if self.core_of(c).role() == Role::PreCandidate {
+                    break;
+                }
+                self.tick_member(c, 1)?;
+            }
+            assert_eq!(self.core_of(c).role(), Role::PreCandidate);
+            self.pass(|m, f, t| {
+                ballot(m) && ((f == c && voters.contains(&t)) || (t == c && voters.contains(&f)))
+            })?;
+            self.take(|m, _, _| ballot(m));
+            if self.core_of(c).role() == Role::Leader {
+                break;
+            }
+        }
+        assert_eq!(self.core_of(c).role(), Role::Leader);
+        self.take(|m, _, _| ballot(m));
+        Ok(())
+    }
+
+    /// Appends and their answers between `leader` and `followers`.
+    fn exchange(&mut self, leader: usize, followers: &[usize]) -> Outcome {
+        self.pass(|m, f, t| {
+            (f == leader && followers.contains(&t) && matches!(m.body, Body::Append { .. }))
+                || (t == leader
+                    && followers.contains(&f)
+                    && matches!(m.body, Body::AppendReply { .. }))
+        })
+    }
+
+    /// A client's entry at `leader`.
+    fn write(&mut self, leader: usize, payload: Payload) -> Outcome {
+        let next = self.core_of(leader).last().index + 1;
+        let file = match payload {
+            Payload::File(_) => next,
+            _ => next - 1,
+        };
+        assert!(self.nodes[leader]
+            .member
+            .as_mut()
+            .unwrap()
+            .propose(file, payload));
+        self.drain(leader)
+    }
+}
+
+/// The schedule of the experiment review's P1-2 (five members): a leader
+/// that was deposed and cut leads again, and an acknowledgement of its
+/// earlier term, held back meanwhile, arrives. It must not be counted.
+fn returning_leader(plant: Option<Plant>) -> Outcome {
+    let (a, b, c, d, e) = (0, 1, 2, 3, 4);
+    let mut w = World::scripted(5, plant);
+    // A leads term 1; its `empty` reaches everyone.
+    w.win(a, &[b, c, d, e])?;
+    w.exchange(a, &[b, c, d, e])?;
+    // Entries 2 and 3 of term 1 reach B only, and B's acknowledgements are
+    // held back.
+    let added = FileEvent::Added {
+        name: b"f".to_vec(),
+        flags: 0,
+        page0: vec![7; 16],
+    };
+    w.write(a, Payload::File(added))?;
+    w.write(
+        a,
+        Payload::Change(Change {
+            edits: vec![Edit::leaf(vec![b"k".to_vec()], b"v".to_vec())],
+            ..Change::default()
+        }),
+    )?;
+    w.take(|m, f, t| f == a && t != b && matches!(m.body, Body::Append { .. }));
+    w.pass(|m, f, t| f == a && t == b && matches!(m.body, Body::Append { .. }))?;
+    let held = w.take(|_, f, t| f == b && t == a);
+    assert!(!held.is_empty());
+    // C leads term 2 with D and E; its `empty` at 2 reaches A, D and E: A
+    // cuts its 2 and 3, and C commits 2.
+    w.win(c, &[d, e])?;
+    w.take(|_, f, t| f == c && t == b);
+    w.exchange(c, &[a, d, e])?;
+    assert_eq!(w.core_of(a).last().index, 2);
+    // C stops. A leads term 3 with D and E; its `empty` at 3 reaches D only.
+    w.nodes[c].member = None;
+    w.nodes[c].down_until = u64::MAX;
+    w.win(a, &[d, e])?;
+    w.take(|m, f, t| f == a && t != d && matches!(m.body, Body::Append { .. }));
+    w.exchange(a, &[d])?;
+    // B's held acknowledgements of term 1 arrive.
+    for m in held {
+        w.seq += 1;
+        w.flight.push((w.now, w.seq, m));
+    }
+    w.pass(|_, f, t| f == b && t == a)?;
+    // A stops; C, back, stands with B and E and may lead: entry 3 was never
+    // committed.
+    w.nodes[a].member = None;
+    w.nodes[a].down_until = u64::MAX;
+    w.nodes[c].down_until = 0;
+    w.open(c)?;
+    w.win(c, &[b, e])?;
+    w.exchange(c, &[b, e])
+}
+
+/// A leader that leads again after it was deposed and cut never counts an
+/// acknowledgement of its earlier term; planted, it does, and the
+/// simulator finds it.
+#[test]
+fn a_returning_leader_does_not_count_an_old_acknowledgement() {
+    returning_leader(None).unwrap();
+    let planted = returning_leader(Some(Plant::CountStaleSuccess)).unwrap_err();
+    eprintln!("{planted}");
+    assert!(is_expected(Plant::CountStaleSuccess, &planted), "{planted}");
 }

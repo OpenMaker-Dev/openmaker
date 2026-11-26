@@ -40,6 +40,15 @@ const APPLY_BYTES: u64 = 4 << 20;
 #[cfg(test)]
 pub(crate) type Applied = (u64, [u8; 32], Vec<(TreeName, Hash)>);
 
+/// The hashes of the newest applied state's trees, by name.
+#[cfg(test)]
+pub(crate) fn newest_root_hashes(pages: &crate::pagefile::PageFile) -> Vec<(TreeName, Hash)> {
+    crate::page::PageStore::trees(pages)
+        .into_iter()
+        .map(|(name, root)| (name, root.hash))
+        .collect()
+}
+
 /// What the consensus core starts from: the member's `state` and the terms
 /// of the entries its log holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -244,14 +253,17 @@ impl Store {
             let mut piece = Vec::new();
             for e in self.log.read(from).map_err(WriteError::Log)? {
                 let e = e.map_err(WriteError::Log)?;
-                if e.index > through {
+                let len = e.payload.len() as u64;
+                // A piece holds one entry whatever its size, and more only
+                // within the budget.
+                if e.index > through
+                    || piece.len() >= APPLY_ENTRIES
+                    || (!piece.is_empty() && bytes + len > APPLY_BYTES)
+                {
                     break;
                 }
-                bytes += e.payload.len() as u64;
+                bytes += len;
                 piece.push(e);
-                if piece.len() >= APPLY_ENTRIES || bytes >= APPLY_BYTES {
-                    break;
-                }
             }
             if piece.is_empty() {
                 return Err(self.stop(format!("the log holds no entry {from} to apply")));
@@ -303,7 +315,7 @@ impl Store {
             };
             #[cfg(test)]
             self.applied
-                .push((e.index, e.hash, self.newest_root_hashes()));
+                .push((e.index, e.hash, newest_root_hashes(&self.pages)));
         }
         self.publish_at(last)
     }
@@ -350,15 +362,6 @@ impl Store {
             .collect()
     }
 
-    /// The hashes of the newest applied state's trees, by name.
-    #[cfg(test)]
-    fn newest_root_hashes(&self) -> Vec<(TreeName, Hash)> {
-        crate::page::PageStore::trees(&*self.pages)
-            .into_iter()
-            .map(|(name, root)| (name, root.hash))
-            .collect()
-    }
-
     /// Each entry applied since the last call, with its hash and the hashes
     /// of the state's trees right after it: what the simulator compares
     /// between members at every entry (section 12).
@@ -369,12 +372,13 @@ impl Store {
 
     /// The durable entries from `from` through at most `to`, to send to
     /// another member: the first, then as many more as keep their payloads
-    /// within `max_bytes`.
+    /// within `max_bytes`, and none whose payload is past `max_entry`.
     pub(crate) fn read_wire(
         &self,
         from: u64,
         to: u64,
         max_bytes: u64,
+        max_entry: u64,
     ) -> Result<Vec<Wire>, WriteError> {
         self.usable()?;
         let mut out = Vec::new();
@@ -387,10 +391,11 @@ impl Store {
             if e.index > to {
                 break;
             }
-            bytes += e.payload.len() as u64;
-            if !out.is_empty() && bytes > max_bytes {
+            let len = e.payload.len() as u64;
+            if len > max_entry || (!out.is_empty() && bytes + len > max_bytes) {
                 break;
             }
+            bytes += len;
             out.push(Wire {
                 index: e.index,
                 term: e.term,
@@ -413,7 +418,7 @@ impl Store {
         if index < base.index || index > self.log.durable().index {
             return Ok(None);
         }
-        let entries = self.read_wire(index, index, u64::MAX)?;
+        let entries = self.read_wire(index, index, u64::MAX, u64::MAX)?;
         Ok(entries
             .first()
             .filter(|e| e.index == index)

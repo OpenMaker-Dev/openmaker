@@ -19,10 +19,15 @@
 //!
 //! **Trust** (section 7.1, OpenMaker's rule). Members will authenticate
 //! each other. The core does not defend against a member that lies within
-//! the protocol, as Raft does not. On any message, from anyone, it never
-//! panics, never overflows, never allocates by a number the message gives,
-//! and never acts outside what it asked for: a reply counts only against
-//! the request it answers, and only within what that request checked.
+//! the protocol, as Raft does not. On any decoded message, from anyone,
+//! it never panics, never overflows, never allocates by a number the
+//! message gives, and never acts outside what it asked for. Before a
+//! message is matched to anything, two things of its envelope count: a
+//! start count of its sender higher than the last heard makes a leader
+//! forget what it held of that member, and a higher term is taken and
+//! recorded (Raft's rule). Everything else of a reply counts only against
+//! the request it answers, which the reply names by repeating it
+//! ([`Echo`]).
 //!
 //! Not built here, and where it will act:
 //! - repair (section 7.5) and the faults that lead to it: an unreadable
@@ -47,7 +52,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use crate::entry::{Payload, ServerId};
-use crate::store::{OpenError, Opened, Recovered, Store, WriteError};
+use crate::log::MAX_INDEX;
+use crate::store::{OpenError, Opened, Recovered, Store, View, WriteError};
 use crate::sys::Fs;
 
 /// Whether the simulator planted a defect (always false outside tests).
@@ -61,9 +67,14 @@ macro_rules! planted {
     }};
 }
 
-/// The most requests a leader keeps open to one follower: an older one is
-/// forgotten, and its reply passed over.
-const OPEN_REQUESTS: usize = 32;
+/// The highest term a message may carry, far enough below the integer's
+/// end that no addition the core makes on a term can overflow. A message
+/// past it, or with an index past [`MAX_INDEX`], is malformed and changes
+/// nothing; a member whose term reaches it no longer stands.
+pub const MAX_TERM: u64 = 1 << 62;
+
+/// The longest election timeout the settings may give, in ticks.
+pub const MAX_TICKS: u64 = 1 << 32;
 
 /// A cluster's settings for one member, the same on every member but
 /// `me`.
@@ -77,8 +88,8 @@ pub struct Config {
     /// it would win an election, drawn anew each time between this and
     /// twice this. A follower that heard from its leader within this many
     /// ticks refuses to say it would vote for another; a leader that has
-    /// not heard from a majority within this many ticks steps down. At
-    /// least 2, so that members can draw different timeouts.
+    /// not heard from a majority within this many ticks steps down. From 2
+    /// to [`MAX_TICKS`], so that members can draw different timeouts.
     pub election: u64,
     /// Ticks between a leader's appends to a follower that has nothing new.
     /// At least 1 and below `election`.
@@ -88,6 +99,10 @@ pub struct Config {
     /// The most payload bytes one append carries, unless it carries a
     /// single entry.
     pub batch_bytes: u64,
+    /// The largest payload of an entry: no member proposes, sends or takes
+    /// a larger one. At most the log's own limit on every member
+    /// (`log::Config::max_payload`, checked when a member opens).
+    pub max_entry: u64,
     /// Seeds the drawn election timeouts. A server takes it from the
     /// operating system's randomness, once at its start; the simulator
     /// from its seed.
@@ -99,7 +114,8 @@ pub struct Config {
 
 impl Config {
     /// Refused settings: members missing or repeated, this member not
-    /// among them, or timings that leave no room to differ.
+    /// among them, timings that leave no room to differ or that overflow,
+    /// or appends that cannot carry an entry.
     pub fn check(&self) -> Result<(), &'static str> {
         let unique: BTreeSet<&ServerId> = self.members.iter().collect();
         if self.members.is_empty() || unique.len() != self.members.len() {
@@ -108,13 +124,13 @@ impl Config {
         if !unique.contains(&self.me) {
             return Err("this member is not among the members");
         }
-        if self.election < 2 {
-            return Err("an election timeout below 2 ticks cannot differ between members");
+        if !(2..=MAX_TICKS).contains(&self.election) {
+            return Err("the election timeout must be from 2 ticks to 2^32");
         }
         if self.heartbeat == 0 || self.heartbeat >= self.election {
             return Err("the heartbeat must be at least 1 tick and below the election timeout");
         }
-        if self.batch == 0 || self.batch_bytes == 0 {
+        if self.batch == 0 || self.batch_bytes == 0 || self.max_entry == 0 {
             return Err("an append must be able to carry an entry");
         }
         Ok(())
@@ -138,6 +154,33 @@ pub enum Plant {
     CutAtChecked,
     /// A follower publishes what is durable, not what is committed.
     PublishDurable,
+    /// A leader counts a success whatever term and start of its own the
+    /// success repeats.
+    CountStaleSuccess,
+    /// A leader counts a success past what it sent the follower.
+    CountPastSent,
+    /// A follower answers an append without recording the leader's term.
+    AppendTermUnsaved,
+    /// A vote is granted without the up-to-date check (the pre-vote still
+    /// checks).
+    VoteNoUpToDate,
+    /// Vote and pre-vote compare only the last index of the logs.
+    VoteLastIndexOnly,
+    /// Vote and pre-vote compare only the last term of the logs.
+    VoteLastTermOnly,
+    /// The term is recorded with a vote but not the vote: a restart
+    /// forgets it.
+    VoteForgotten,
+    /// A follower acknowledges an append before its flush.
+    AckBeforeFlush,
+    /// A follower acknowledges its last entry, not the last the append
+    /// checked.
+    AckLastEntry,
+    /// A follower publishes as far as the leader's committed position, not
+    /// the one it records (and its store's bound goes too).
+    PublishLeaderCommitted,
+    /// A leader serves before its `empty` entry is committed and published.
+    ServeBeforeEmpty,
 }
 
 /// An entry's place: its index and term. Raft compares logs by their last.
@@ -153,6 +196,10 @@ impl Pos {
     /// it is at least as long.
     pub fn at_least(&self, other: &Pos) -> bool {
         (self.term, self.index) >= (other.term, other.index)
+    }
+
+    fn bounded(&self) -> bool {
+        self.index <= MAX_INDEX && self.term <= MAX_TERM
     }
 }
 
@@ -178,6 +225,16 @@ pub struct Message {
     pub body: Body,
 }
 
+/// What a reply repeats of the append it answers: the leader's term and
+/// start count as the append gave them, and the entry its consistency
+/// check named.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Echo {
+    pub term: u64,
+    pub start: u64,
+    pub prev: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Body {
     /// Would you vote for me in term `round`, the sender's term plus one,
@@ -197,23 +254,54 @@ pub enum Body {
     VoteReply {
         granted: bool,
     },
-    /// The leader's request `seq`: its entries after `prev`, and its
-    /// committed position.
+    /// The leader's entries after `prev`, and its committed position.
     Append {
-        seq: u64,
         prev: Pos,
         entries: Vec<Wire>,
         committed: u64,
     },
-    /// The answer to request `seq`. `matched`: the last entry that matches
-    /// the leader's log, which the sender's marker covered when it sent
-    /// this. `None` when the entry at the request's `prev` did not match:
-    /// the leader tries again after `hint`.
+    /// The answer to the append `echo` names. `matched`: the last entry
+    /// that append checked, which matches the leader's log and which the
+    /// sender's marker covered when it sent this. `None` when the entry at
+    /// `echo.prev` did not match: the leader tries again after `hint`.
     AppendReply {
-        seq: u64,
+        echo: Echo,
         matched: Option<u64>,
         hint: u64,
     },
+}
+
+impl Body {
+    /// Whether every term and index the body gives is within bounds.
+    fn bounded(&self) -> bool {
+        match self {
+            Body::PreVote { round, last } => *round <= MAX_TERM && last.bounded(),
+            Body::PreVoteReply { round, .. } => *round <= MAX_TERM,
+            Body::Vote { last } => last.bounded(),
+            Body::VoteReply { .. } => true,
+            Body::Append {
+                prev,
+                entries,
+                committed,
+            } => {
+                prev.bounded()
+                    && *committed <= MAX_INDEX
+                    && entries
+                        .iter()
+                        .all(|e| e.index <= MAX_INDEX && e.term <= MAX_TERM)
+            }
+            Body::AppendReply {
+                echo,
+                matched,
+                hint,
+            } => {
+                echo.term <= MAX_TERM
+                    && echo.prev <= MAX_INDEX
+                    && matched.is_none_or(|m| m <= MAX_INDEX)
+                    && *hint <= MAX_INDEX
+            }
+        }
+    }
 }
 
 /// What the core asks of its member, in order.
@@ -249,15 +337,14 @@ pub enum Action {
     /// report how far ([`Core::published_to`]).
     Publish(u64),
     Send(Message),
-    /// Send `to` request `seq`: durable entries from `first`, at most
-    /// through `last` and within `batch_bytes`, after `prev`, as
+    /// Send `to` the durable entries from `first`, at most through `last`
+    /// and within `batch_bytes`, none past `max_entry`, after `prev`, as
     /// [`Body::Append`] (none when `last < first`: a heartbeat); then
     /// report the last entry sent ([`Core::sent`]).
     SendAppend {
         to: ServerId,
         term: u64,
         start: u64,
-        seq: u64,
         prev: Pos,
         first: u64,
         last: u64,
@@ -275,40 +362,40 @@ pub enum Role {
     Leader,
 }
 
-/// A request a leader keeps open to a follower: the entry its consistency
-/// check names and the last entry it carries.
+/// What a leader knows of a follower, in its term and since the start of
+/// the follower it last heard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Request {
-    prev: u64,
-    last: u64,
-}
-
-/// What a leader knows of a follower.
-#[derive(Clone, Debug, PartialEq, Eq)]
 struct Progress {
     /// The next entry to send.
     next: u64,
-    /// The last entry the follower acknowledged in this term and its
-    /// latest start.
+    /// The last entry the follower acknowledged.
     matched: u64,
-    /// Answered since the leader last checked for a majority. A new
-    /// leader takes every follower as heard for its first interval.
-    heard: bool,
-    /// The requests sent and not answered, by number.
-    open: BTreeMap<u64, Request>,
-    /// The highest request answered with a match: a rejection of an
-    /// earlier one is passed over.
-    answered: u64,
+    /// The last entry any append sent to it checked: a success counts no
+    /// further.
+    sent: u64,
+    /// The entry the last append sent to it named: a refusal counts only
+    /// when it answers that one.
+    probe: Option<u64>,
+    /// Whether it is being probed: after a refusal, or before the leader
+    /// heard a success from it, one append at a time without moving `next`
+    /// on, each heartbeat repeating it, so that the append out now is
+    /// always the one naming `next - 1`. A success ends it, and appends
+    /// follow one another again.
+    probing: bool,
+    /// The leader's tick when the follower last answered: a new leader
+    /// takes every follower as heard when it begins.
+    heard_at: u64,
 }
 
 impl Progress {
-    fn new(next: u64) -> Progress {
+    fn new(next: u64, now: u64) -> Progress {
         Progress {
             next,
             matched: 0,
-            heard: true,
-            open: BTreeMap::new(),
-            answered: 0,
+            sent: 0,
+            probe: None,
+            probing: true,
+            heard_at: now,
         }
     }
 }
@@ -317,8 +404,13 @@ impl Progress {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Pending {
     leader: ServerId,
+    /// The leader's committed position the append gave.
+    given: u64,
+    /// Whether the answer went before the flush (a planted defect).
+    answered: bool,
+    /// The follower's term when it took the append.
     term: u64,
-    seq: u64,
+    echo: Echo,
     /// The last entry checked against the leader's log.
     checked: u64,
 }
@@ -342,15 +434,14 @@ pub struct Core {
     elapsed: u64,
     timeout: u64,
     beat: u64,
-    since_check: u64,
+    /// The leader's ticks since it began to lead.
+    ticks: u64,
     grants: BTreeSet<ServerId>,
     progress: BTreeMap<ServerId, Progress>,
     /// The highest start count heard from each member.
     starts: BTreeMap<ServerId, u64>,
     /// The leader's `empty` entry of its term.
     empty: u64,
-    /// The number of the last request sent.
-    seq: u64,
     pending: Option<Pending>,
     behind: BTreeSet<ServerId>,
     rng: u64,
@@ -388,12 +479,11 @@ impl Core {
             elapsed: 0,
             timeout,
             beat: 0,
-            since_check: 0,
+            ticks: 0,
             grants: BTreeSet::new(),
             progress: BTreeMap::new(),
             starts: BTreeMap::new(),
             empty: 0,
-            seq: 0,
             pending: None,
             behind: BTreeSet::new(),
             rng,
@@ -465,12 +555,16 @@ impl Core {
     /// Whether this member leads and may answer clients: its `empty`
     /// entry committed and published (section 7.1).
     pub fn serving(&self) -> bool {
+        if planted!(self, ServeBeforeEmpty) {
+            return self.role == Role::Leader;
+        }
         self.role == Role::Leader && self.committed >= self.empty && self.published >= self.empty
     }
 
     /// The followers the leader's log no longer reaches back for: a probe
-    /// at its base was refused. They need a state transfer, which is not
-    /// built, and stay behind.
+    /// at its base was refused, or what they need is an entry past the
+    /// settings' largest. They need a state transfer, which is not built,
+    /// and stay behind.
     pub fn behind(&self) -> &BTreeSet<ServerId> {
         &self.behind
     }
@@ -482,6 +576,20 @@ impl Core {
         }
         let k = index.checked_sub(self.base.index)?.checked_sub(1)?;
         self.terms.get(usize::try_from(k).ok()?).copied()
+    }
+
+    /// Raft's up-to-date rule against this member's durable log, and never
+    /// a log that ends before its committed position.
+    fn up_to_date(&self, last: &Pos) -> bool {
+        let durable = self.durable();
+        let ok = if planted!(self, VoteLastIndexOnly) {
+            last.index >= durable.index
+        } else if planted!(self, VoteLastTermOnly) {
+            last.term >= durable.term
+        } else {
+            last.at_least(&durable)
+        };
+        ok && last.index >= self.committed
     }
 
     fn majority(&self) -> usize {
@@ -538,20 +646,21 @@ impl Core {
     pub fn tick(&mut self) -> Vec<Action> {
         let mut out = Vec::new();
         if self.role == Role::Leader {
-            self.beat += 1;
-            self.since_check += 1;
-            if self.since_check >= self.cfg.election {
-                // A leader that cannot reach a majority steps down.
-                self.since_check = 0;
-                let heard = self.progress.values().filter(|p| p.heard).count() + 1;
-                for p in self.progress.values_mut() {
-                    p.heard = false;
-                }
-                if heard < self.majority() {
-                    self.follow(None);
-                    self.elapsed = 0;
-                    return out;
-                }
+            self.beat = self.beat.saturating_add(1);
+            self.ticks = self.ticks.saturating_add(1);
+            // A leader that has not heard from a majority within an
+            // election timeout steps down.
+            let (now, election) = (self.ticks, self.cfg.election);
+            let heard = self
+                .progress
+                .values()
+                .filter(|p| now - p.heard_at < election)
+                .count()
+                + 1;
+            if heard < self.majority() {
+                self.follow(None);
+                self.elapsed = 0;
+                return out;
             }
             if self.beat >= self.cfg.heartbeat {
                 self.beat = 0;
@@ -572,14 +681,12 @@ impl Core {
 
     /// Asks the others whether they would vote for it (section 7.1), its
     /// term unchanged. It does not stand when its log ends before its
-    /// committed position.
+    /// committed position, or at the highest term.
     fn pre_vote(&mut self, out: &mut Vec<Action>) {
-        let Some(round) = self.term.checked_add(1) else {
-            return;
-        };
-        if self.durable < self.committed {
+        if self.durable < self.committed || self.term >= MAX_TERM {
             return;
         }
+        let round = self.term + 1;
         self.role = Role::PreCandidate;
         self.leader = None;
         self.grants = BTreeSet::from([self.cfg.me]);
@@ -596,10 +703,10 @@ impl Core {
     /// Stands for election in the next term, its vote for itself recorded
     /// first.
     fn stand(&mut self, out: &mut Vec<Action>) {
-        let Some(term) = self.term.checked_add(1) else {
+        if self.term >= MAX_TERM {
             return;
-        };
-        self.term = term;
+        }
+        self.term += 1;
         self.vote = Some(self.cfg.me);
         self.role = Role::Candidate;
         self.leader = None;
@@ -620,12 +727,12 @@ impl Core {
         self.role = Role::Leader;
         self.leader = Some(self.cfg.me);
         self.beat = 0;
-        self.since_check = 0;
+        self.ticks = 0;
         let next = self.last().index + 1;
         self.progress = self
             .others()
             .into_iter()
-            .map(|m| (m, Progress::new(next)))
+            .map(|m| (m, Progress::new(next, 0)))
             .collect();
         self.behind.clear();
         self.terms.push(self.term);
@@ -674,16 +781,23 @@ impl Core {
             }
         }
         if let Some(p) = self.pending.take() {
-            if p.term == self.term && self.leader == Some(p.leader) {
+            if p.term == self.term && self.leader == Some(p.leader) && !p.answered {
+                let matched = if planted!(self, AckLastEntry) {
+                    self.last().index
+                } else {
+                    p.checked
+                };
                 let body = Body::AppendReply {
-                    seq: p.seq,
-                    matched: Some(p.checked.min(self.durable)),
+                    echo: p.echo,
+                    matched: Some(matched.min(self.durable)),
                     hint: self.last().index,
                 };
                 self.send(&mut out, p.leader, body);
             }
             let through = if planted!(self, PublishDurable) {
                 self.durable
+            } else if planted!(self, PublishLeaderCommitted) {
+                p.given.min(self.durable)
             } else {
                 self.committed
             };
@@ -697,21 +811,28 @@ impl Core {
         self.published = self.published.max(published);
     }
 
-    /// Request `seq` to `to` went with the entries through `last`: as many
-    /// as fit in an append's bytes.
-    pub fn sent(&mut self, to: ServerId, seq: u64, last: u64) {
+    /// The append to `to` that named `prev` went with the entries through
+    /// `last`: as many as fit in an append's bytes. When `last` is `prev`
+    /// although it was to carry entries, the next one is too large to
+    /// send ([`Config::max_entry`]), and the follower is behind.
+    pub fn sent(&mut self, to: ServerId, prev: u64, last: u64) {
         let Some(p) = self.progress.get_mut(&to) else {
             return;
         };
-        let Some(r) = p.open.get_mut(&seq) else {
+        if p.probe != Some(prev) || last < prev {
             return;
-        };
-        if last < r.last && last >= r.prev {
-            r.last = last;
-            let latest = p.open.keys().next_back() == Some(&seq);
-            if latest && p.next > last + 1 {
-                p.next = last + 1;
-            }
+        }
+        p.sent = p.sent.max(last);
+        if p.next > last + 1 {
+            p.next = last + 1;
+        }
+    }
+
+    /// The next entry `to` needs is past the settings' largest: it can be
+    /// had only by a state transfer.
+    pub fn oversized(&mut self, to: ServerId) {
+        if self.progress.contains_key(&to) {
+            self.behind.insert(to);
         }
     }
 
@@ -742,10 +863,7 @@ impl Core {
         let Some(p) = self.progress.get(&to) else {
             return;
         };
-        let mut next = p.next;
-        if next <= base.index {
-            next = base.index + 1;
-        }
+        let next = p.next.max(base.index + 1);
         let behind = self.behind.contains(&to);
         if behind && !heartbeat {
             return;
@@ -762,28 +880,18 @@ impl Core {
         if last < next && !heartbeat {
             return;
         }
-        self.seq += 1;
-        let seq = self.seq;
         let p = self.progress.get_mut(&to).expect("looked up above");
         p.next = next;
-        p.open.insert(
-            seq,
-            Request {
-                prev: prev_index,
-                last: last.max(prev_index),
-            },
-        );
-        while p.open.len() > OPEN_REQUESTS {
-            p.open.pop_first();
-        }
-        if last >= next {
+        p.probe = Some(prev_index);
+        // A probe checks its `prev`; entries count once they are sent.
+        p.sent = p.sent.max(prev_index);
+        if last >= next && !p.probing {
             p.next = last + 1;
         }
         out.push(Action::SendAppend {
             to,
             term,
             start,
-            seq,
             prev: Pos {
                 index: prev_index,
                 term: prev_term,
@@ -815,23 +923,38 @@ impl Core {
         if m.to != self.cfg.me || m.from == self.cfg.me || !self.members().contains(&m.from) {
             return out;
         }
+        // A term or an index past its bound: malformed, nothing changes.
+        if m.term > MAX_TERM || !m.body.bounded() {
+            return out;
+        }
         // Every member passes over a message of an earlier start of its
-        // sender; a later start makes the leader forget what it had
-        // recorded that member to hold (section 7.1).
+        // sender. A later one makes the leader forget what it held of that
+        // member, whatever else the message is; the first count heard is
+        // not a rise, nothing having been held before (section 7.1).
         let seen = self.starts.entry(m.from).or_insert(0);
         if m.start < *seen {
             return out;
         }
         if m.start > *seen {
-            // The first count heard from a member is not a rise: nothing
-            // was recorded of it before.
             let rose = *seen > 0;
             *seen = m.start;
             let next = self.last().index + 1;
+            let now = self.ticks;
             if let Some(p) = self.progress.get_mut(&m.from).filter(|_| rose) {
-                let heard = p.heard;
-                *p = Progress::new(next);
-                p.heard = heard;
+                let heard_at = p.heard_at;
+                *p = Progress::new(next, now);
+                p.heard_at = heard_at;
+            }
+        }
+        // Raft's rule, for every message: a higher term is taken and
+        // recorded before anything else. A vote request's is recorded with
+        // the vote, in one write, before the answer.
+        if m.term > self.term {
+            self.see_term(m.term);
+            let unsaved =
+                planted!(self, AppendTermUnsaved) && matches!(m.body, Body::Append { .. });
+            if !matches!(m.body, Body::Vote { .. }) && !unsaved {
+                self.persist(&mut out);
             }
         }
         match m.body {
@@ -841,21 +964,13 @@ impl Core {
                 // rules of a vote.
                 let hears = self.role == Role::Leader
                     || (self.leader.is_some() && self.elapsed < self.cfg.election);
-                let granted = round > self.term
-                    && !hears
-                    && last.at_least(&self.durable())
-                    && last.index >= self.committed;
+                let granted = round > self.term && !hears && self.up_to_date(&last);
                 self.send(&mut out, m.from, Body::PreVoteReply { round, granted });
             }
             Body::PreVoteReply { round, granted } => {
                 // Only an answer to the round it asks.
-                if self.role != Role::PreCandidate || self.term.checked_add(1) != Some(round) {
-                    return out;
-                }
-                if m.term > self.term {
-                    self.see_term(m.term);
-                    self.persist(&mut out);
-                } else if granted {
+                let asked = self.role == Role::PreCandidate && self.term + 1 == round;
+                if asked && granted {
                     self.grants.insert(m.from);
                     if self.grants.len() >= self.majority() {
                         self.stand(&mut out);
@@ -863,33 +978,33 @@ impl Core {
                 }
             }
             Body::Vote { last } => {
-                self.see_term(m.term);
+                let checked = planted!(self, VoteNoUpToDate) || self.up_to_date(&last);
                 let granted = m.term == self.term
                     && matches!(self.role, Role::Follower | Role::PreCandidate)
                     && self.vote.is_none_or(|v| v == m.from)
-                    && last.at_least(&self.durable())
-                    && last.index >= self.committed;
+                    && checked;
                 if granted {
                     self.vote = Some(m.from);
                     self.elapsed = 0;
                     self.follow(None);
                 }
                 // The term and vote recorded before the answer; planted,
-                // they stay in memory until something else records them.
-                if !planted!(self, VoteUnflushed) {
+                // they stay in memory until something else records them, or
+                // the vote is left out of the record.
+                if planted!(self, VoteForgotten) && self.saved != (self.term, self.vote) {
+                    self.saved = (self.term, self.vote);
+                    out.push(Action::SaveTerm {
+                        term: self.term,
+                        vote: None,
+                    });
+                } else if !planted!(self, VoteUnflushed) {
                     self.persist(&mut out);
                 }
                 self.send(&mut out, m.from, Body::VoteReply { granted });
             }
             Body::VoteReply { granted } => {
                 // Only an answer to the election it stands in.
-                if self.role != Role::Candidate || m.term < self.term {
-                    return out;
-                }
-                if m.term > self.term {
-                    self.see_term(m.term);
-                    self.persist(&mut out);
-                } else if granted {
+                if self.role == Role::Candidate && m.term == self.term && granted {
                     self.grants.insert(m.from);
                     if self.grants.len() >= self.majority() {
                         self.lead(&mut out);
@@ -897,75 +1012,84 @@ impl Core {
                 }
             }
             Body::Append {
-                seq,
                 prev,
                 entries,
                 committed,
-            } => self.on_append(&mut out, m.from, m.term, seq, prev, entries, committed),
-            Body::AppendReply { seq, matched, hint } => {
-                self.on_reply(&mut out, m.from, m.term, seq, matched, hint);
+            } => {
+                let echo = Echo {
+                    term: m.term,
+                    start: m.start,
+                    prev: prev.index,
+                };
+                self.on_append(&mut out, m.from, echo, prev, entries, committed);
             }
+            Body::AppendReply {
+                echo,
+                matched,
+                hint,
+            } => self.on_reply(&mut out, m.from, echo, matched, hint),
         }
         out
     }
 
-    /// A leader takes a follower's answer to request `seq`, which it must
-    /// have sent and not seen answered.
+    /// A leader takes a follower's answer to the append it repeats: one of
+    /// its own in this term and this start, a success no further than it
+    /// sent and holds, a refusal only of the append it has out now.
     fn on_reply(
         &mut self,
         out: &mut Vec<Action>,
         from: ServerId,
-        term: u64,
-        seq: u64,
+        echo: Echo,
         matched: Option<u64>,
         hint: u64,
     ) {
-        if self.role != Role::Leader || term < self.term {
+        if self.role != Role::Leader {
             return;
         }
-        let Some(r) = self
-            .progress
-            .get(&from)
-            .and_then(|p| p.open.get(&seq))
-            .copied()
-        else {
-            return;
-        };
-        // A match only within what the request checked; anything else
-        // leaves the request open for its real answer.
-        if matched.is_some_and(|k| k < r.prev || k > r.last) {
-            return;
-        }
-        if let Some(p) = self.progress.get_mut(&from) {
-            p.open.remove(&seq);
-        }
-        if term > self.term {
-            self.see_term(term);
-            self.persist(out);
+        let ours = echo.term == self.term && echo.start == self.start;
+        if !ours && !(matched.is_some() && planted!(self, CountStaleSuccess)) {
             return;
         }
         let base = self.base.index;
-        let p = self.progress.get_mut(&from).expect("it holds the request");
-        p.heard = true;
+        let durable = self.durable;
+        let now = self.ticks;
+        let past_sent = planted!(self, CountPastSent);
+        let Some(p) = self.progress.get_mut(&from) else {
+            return;
+        };
         match matched {
             Some(k) => {
+                if k < echo.prev {
+                    return;
+                }
+                let bound = if past_sent {
+                    durable
+                } else {
+                    p.sent.min(durable)
+                };
+                let k = k.min(bound);
+                p.heard_at = now;
+                p.probing = false;
                 p.matched = p.matched.max(k);
                 p.next = p.next.max(k + 1);
-                p.answered = p.answered.max(seq);
                 self.behind.remove(&from);
                 self.advance(out);
             }
             None => {
-                if seq < p.answered {
-                    // A later request matched: this answer is old news.
+                if p.probe != Some(echo.prev) {
+                    // Not the append out now: the next heartbeat asks again.
                     return;
                 }
-                // Before the entry the request named, never before what
-                // the follower acknowledged.
-                let before = hint.min(r.prev.saturating_sub(1));
+                p.heard_at = now;
+                p.probe = None;
+                p.probing = true;
+                // Before the entry the append named, never before what the
+                // follower acknowledged.
+                let before = hint.min(echo.prev.saturating_sub(1));
                 p.next = before.max(p.matched) + 1;
-                if r.prev <= base && hint < base {
-                    // A probe at the base refused: what it needs is gone.
+                if echo.prev == base && hint < base {
+                    // A probe at the base, as it is now, refused: what it
+                    // needs is gone.
                     self.behind.insert(from);
                 }
             }
@@ -974,24 +1098,27 @@ impl Core {
     }
 
     /// A follower takes the leader's entries (section 7.1).
-    #[allow(clippy::too_many_arguments)]
     fn on_append(
         &mut self,
         out: &mut Vec<Action>,
         from: ServerId,
-        term: u64,
-        seq: u64,
+        echo: Echo,
         prev: Pos,
         entries: Vec<Wire>,
         committed: u64,
     ) {
-        // The request is checked whole before anything changes: no more
-        // entries or bytes than an append carries, each following `prev`
-        // one by one, terms that never go down and never pass the
-        // leader's.
+        let term = echo.term;
+        // The append is checked whole before anything but the term
+        // changes: no more entries or bytes than an append carries, none
+        // past the largest, each following `prev` one by one, terms that
+        // never go down and never pass the leader's.
         let count = entries.len() as u64;
         let bytes: u64 = entries.iter().map(|e| e.payload.len() as u64).sum();
-        let bounded = count <= self.cfg.batch && (count <= 1 || bytes <= self.cfg.batch_bytes);
+        let bounded = count <= self.cfg.batch
+            && (count <= 1 || bytes <= self.cfg.batch_bytes)
+            && entries
+                .iter()
+                .all(|e| e.payload.len() as u64 <= self.cfg.max_entry);
         let follows = entries
             .iter()
             .enumerate()
@@ -1006,28 +1133,29 @@ impl Core {
         if term < self.term {
             let hint = self.last().index;
             let body = Body::AppendReply {
-                seq,
+                echo,
                 matched: None,
                 hint,
             };
             self.send(out, from, body);
             return;
         }
-        if term == self.term && self.role == Role::Leader {
+        if self.role == Role::Leader {
             // Two leaders in one term: the simulator's check reports it.
             return;
         }
-        self.see_term(term);
         if self.role != Role::Follower || self.leader != Some(from) {
             self.follow(Some(from));
         }
         self.elapsed = 0;
-        // Its term recorded before it answers.
-        self.persist(out);
+        // Its term recorded before it answers, however it came by it.
+        if !planted!(self, AppendTermUnsaved) {
+            self.persist(out);
+        }
         let last = self.last();
         if prev.index > last.index {
             let body = Body::AppendReply {
-                seq,
+                echo,
                 matched: None,
                 hint: last.index,
             };
@@ -1048,7 +1176,7 @@ impl Core {
                     .max(self.base.index)
                     .min(prev.index.saturating_sub(1));
                 let body = Body::AppendReply {
-                    seq,
+                    echo,
                     matched: None,
                     hint,
                 };
@@ -1107,11 +1235,22 @@ impl Core {
         };
         let record = committed.min(bound);
         self.committed = self.committed.max(record);
+        let answered = planted!(self, AckBeforeFlush);
+        if answered {
+            let body = Body::AppendReply {
+                echo,
+                matched: Some(checked),
+                hint: self.last().index,
+            };
+            self.send(out, from, body);
+        }
         out.push(Action::Flush { committed: record });
         self.pending = Some(Pending {
             leader: from,
+            given: committed,
+            answered,
             term: self.term,
-            seq,
+            echo,
             checked,
         });
     }
@@ -1125,7 +1264,8 @@ fn mix(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// A timeout drawn between `base` and twice it.
+/// A timeout drawn between `base` and twice it (`base` at most
+/// [`MAX_TICKS`]).
 fn draw(rng: &mut u64, base: u64) -> u64 {
     *rng = mix(*rng);
     base + *rng % base.max(1)
@@ -1151,8 +1291,8 @@ pub enum MemberError {
     Open(OpenError),
     /// The store opened but could not say what the core starts from.
     Store(WriteError),
-    /// The settings are refused ([`Config::check`]), or are another
-    /// member's.
+    /// The settings are refused ([`Config::check`]), are another member's,
+    /// or allow an entry larger than the store's log takes.
     Config(&'static str),
 }
 
@@ -1186,6 +1326,11 @@ impl Member {
         cfg: Config,
     ) -> Result<(Member, Opened), MemberError> {
         cfg.check().map_err(MemberError::Config)?;
+        if cfg.max_entry > u64::from(config.log.max_payload) {
+            return Err(MemberError::Config(
+                "the largest entry is past what the store's log takes",
+            ));
+        }
         let (store, opened) = Store::open_member(fs, config).map_err(MemberError::Open)?;
         if store.server() != cfg.me {
             return Err(MemberError::Config("the store is another member's"));
@@ -1203,9 +1348,14 @@ impl Member {
         ))
     }
 
-    /// The member's store, to read: views, positions.
-    pub fn store(&self) -> &Store {
-        &self.store
+    /// A view of the published state (section 6.6).
+    pub fn view(&self) -> Result<View, WriteError> {
+        self.store.view()
+    }
+
+    /// The entry the published state is of.
+    pub fn published(&self) -> crate::apply::Position {
+        self.store.published()
     }
 
     /// The member's core, to read: role, term, positions.
@@ -1253,12 +1403,17 @@ impl Member {
         true
     }
 
-    /// A client's entry, taken when idle, not stopped and serving. Not
-    /// offered outside the crate (module docs).
+    /// A client's entry, taken when idle, not stopped, serving and no
+    /// larger than the settings' largest entry. Not offered outside the
+    /// crate (module docs).
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn propose(&mut self, file: u64, payload: Payload) -> bool {
         if !self.ready() {
             return false;
+        }
+        match payload.encode() {
+            Ok(bytes) if bytes.len() as u64 <= self.core.cfg.max_entry => {}
+            _ => return false,
         }
         match self.core.propose(file, payload) {
             Some(actions) => {
@@ -1347,7 +1502,9 @@ impl Member {
             }
             Action::Publish(through) => {
                 // Planted, the store's own bound goes too.
-                let published = if planted!(self.core, PublishDurable) {
+                let lifted = planted!(self.core, PublishDurable)
+                    || planted!(self.core, PublishLeaderCommitted);
+                let published = if lifted {
                     self.store.publish_within(through, u64::MAX)?
                 } else {
                     self.store.publish(through)?
@@ -1361,7 +1518,6 @@ impl Member {
                 to,
                 term,
                 start,
-                seq,
                 prev,
                 first,
                 last,
@@ -1371,21 +1527,27 @@ impl Member {
                     // A checkpoint queued before it retired what it was to
                     // carry: nothing goes, and the follower is probed at
                     // the base next time.
-                    self.core.sent(to, seq, prev.index);
+                    self.core.sent(to, prev.index, prev.index);
                     return Ok(done);
                 }
-                let entries = self
-                    .store
-                    .read_wire(first, last, self.core.cfg.batch_bytes)?;
+                let max_entry = self.core.cfg.max_entry;
+                let entries =
+                    self.store
+                        .read_wire(first, last, self.core.cfg.batch_bytes, max_entry)?;
+                if entries.is_empty() && first <= last {
+                    // An entry written under a larger setting: it cannot be
+                    // sent, and the follower needs a state transfer.
+                    self.core.oversized(to);
+                    return Ok(done);
+                }
                 let sent = entries.last().map_or(prev.index, |e| e.index);
-                self.core.sent(to, seq, sent);
+                self.core.sent(to, prev.index, sent);
                 done.sent = Some(Message {
                     from: self.core.me(),
                     to,
                     term,
                     start,
                     body: Body::Append {
-                        seq,
                         prev,
                         entries,
                         committed,

@@ -1588,6 +1588,10 @@ impl Store {
         let mut replayed = 0u64;
         let mut replay_checkpoints = 0u64;
         let mut last = start;
+        // What the replay applied, for the simulator's comparison of every
+        // member's state at every entry (consensus tests).
+        #[cfg(test)]
+        let mut replay_applied = Vec::new();
         if through > start.index {
             for e in log.read(start.index + 1).map_err(OpenError::Log)? {
                 let e = e.map_err(|e| match e {
@@ -1638,6 +1642,8 @@ impl Store {
                     hash: Hash(e.hash),
                 };
                 replayed += 1;
+                #[cfg(test)]
+                replay_applied.push((e.index, e.hash, member::newest_root_hashes(&pages)));
             }
         }
         if last.index != through || (through == durable.index && last.hash.0 != durable.hash) {
@@ -1680,7 +1686,7 @@ impl Store {
             groups: 0,
             member,
             #[cfg(test)]
-            applied: Vec::new(),
+            applied: replay_applied,
         };
         if member {
             // A member writes no entry of its own: its leader appends (section
