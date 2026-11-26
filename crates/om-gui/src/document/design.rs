@@ -3,7 +3,7 @@
 
 use std::borrow::Cow;
 
-use egui::{pos2, vec2, Color32, CornerRadius, Rect, Stroke, StrokeKind, Ui};
+use egui::{pos2, vec2, Align2, Color32, CornerRadius, Rect, Stroke, StrokeKind, Ui};
 use om_layout::{Layout, ObjectKind, TextRun};
 
 use super::{
@@ -43,6 +43,62 @@ impl<'a> Surface<'a> {
             }
             let style = self.cache.part_style(self.layout, part, 1, 1);
             paint_box(ui, rect, &style, ObjectKind::Rectangle);
+        }
+    }
+
+    /// Paint and outline the stored labels without activating a panel or
+    /// adding a hit target.
+    pub(crate) fn outline_tab_labels(&self, painter: &egui::Painter, key: u64, rect: Rect) {
+        let Some(control) = self.cache.object(self.layout, key) else {
+            return;
+        };
+        let Some(tab) = &control.tab else {
+            return;
+        };
+        let control_style = self.cache.text_style(self.layout, control, &[], 1);
+        for &key in &control.children {
+            let Some(panel) = self.cache.object(self.layout, key) else {
+                continue;
+            };
+            let Some(position) = panel
+                .tab_panel
+                .as_ref()
+                .filter(|_| panel.kind() == ObjectKind::TabPanel)
+            else {
+                continue;
+            };
+            let Some(label) = panel.text.as_deref().filter(|text| !text.is_empty()) else {
+                continue;
+            };
+            let header = Rect::from_min_size(
+                pos2(rect.left() + position.tab_left_edge as f32, rect.top()),
+                vec2(position.tab_width as f32, tab.tab_height as f32),
+            );
+            if header.is_positive() {
+                let style = self.cache.text_style(self.layout, panel, &[], 1);
+                let mut font = crate::theme::small();
+                if let Some(size) = style
+                    .font_size
+                    .or(control_style.font_size)
+                    .filter(|size| size.is_finite())
+                {
+                    font.size = size.clamp(1.0, 256.0) as f32;
+                }
+                let color = style
+                    .color
+                    .or(control_style.color)
+                    .map(color)
+                    .unwrap_or(crate::theme::TEXT);
+                let painter = painter.with_clip_rect(header.intersect(painter.clip_rect()));
+                let label =
+                    painter.text(header.center(), Align2::CENTER_CENTER, label, font, color);
+                painter.rect_stroke(
+                    label.expand(1.0),
+                    CornerRadius::ZERO,
+                    Stroke::new(1.0, crate::theme::TEXT),
+                    StrokeKind::Middle,
+                );
+            }
         }
     }
 

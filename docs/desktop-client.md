@@ -2259,8 +2259,12 @@ stored tab order.
   selected and refuse frame edits and deletion. A box starting on blank
   layout space replaces the selection
   with the objects it crosses. Hold Cmd on macOS or Ctrl elsewhere to
-  select only objects entirely inside. The box still uses the visible flat
-  object list. Select All treats slide panels like tab panels and a portal
+  select only objects entirely inside. Crossing a group member selects
+  its group. Surrounding a whole tab control selects its panels and their
+  objects without switching the front panel. Handles span the outer
+  control and label outlines use the saved tab geometry. The modified marquee uses
+  the documented containment rule. That variant has not been tested in
+  FileMaker. Select All treats slide panels like tab panels and a portal
   as one object, both unverified against FileMaker. Other tool-specific
   Select All actions, Select Same and popover-scoped boxes remain unavailable.
   Draft text, buttons and portals keep their existing editors. Dragging any

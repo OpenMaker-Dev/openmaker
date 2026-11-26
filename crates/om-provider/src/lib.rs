@@ -5865,7 +5865,7 @@ impl DataProvider for NativeProvider {
                 *id,
                 &layout.objects,
                 &bindings,
-                om_data::layout_selection::Scope::Layout,
+                om_data::layout_selection::Scope::default(),
                 (0.0, 0.0),
                 &mut seen,
                 &mut objects,
@@ -5878,7 +5878,7 @@ impl DataProvider for NativeProvider {
                     object.id,
                     &layout.objects,
                     &bindings,
-                    om_data::layout_selection::Scope::Layout,
+                    om_data::layout_selection::Scope::default(),
                     (0.0, 0.0),
                     &mut seen,
                     &mut objects,
@@ -6633,7 +6633,7 @@ fn flatten_object(
         return;
     };
     let kind = object.kind();
-    let (selection, child_scope) = scope.visit(kind);
+    let (selection, marquee, child_scope) = scope.visit(id, kind);
     let mut child_offset = offset;
     if let Some(rect) = &object.bounds {
         child_offset = (offset.0 + rect.left, offset.1 + rect.top);
@@ -6648,6 +6648,7 @@ fn flatten_object(
             field_name: bindings.get(&id).cloned(),
             key: id,
             selection,
+            marquee,
             locked: object.is_locked(),
             movable: om_data::layout_objects::movable(store, id).is_ok(),
             deletable: om_data::layout_objects::deletable(store, id).is_ok(),
@@ -6748,35 +6749,38 @@ mod tests {
     use om_hbam::slot::{encode_chunk, minimal_code};
 
     #[test]
-    fn select_all_geometry_preserves_groups_locked_objects_and_both_panels() {
-        use om_data::layout_selection::{Scope, SelectAll};
+    fn selection_geometry_preserves_groups_locked_objects_and_both_panels() {
+        use om_data::layout_selection::{marquee, Coverage, MarqueeFrame, Scope, SelectAll};
         use om_layout::{LayoutObject, ObjectKind, ObjectStore, Rect};
 
-        let object = |id, object_type, flags, children| LayoutObject {
-            id,
-            object_type,
-            flags,
-            children,
-            bounds: Some(Rect {
-                right: 22.0,
-                bottom: 12.0,
+        let object =
+            |id, object_type, flags, children, [left, top, right, bottom]: [f64; 4]| LayoutObject {
+                id,
+                object_type,
+                flags,
+                children,
+                bounds: Some(Rect {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        };
+            };
         let store = ObjectStore {
             root: vec![1, 2, 3, 6],
             objects: vec![
-                object(1, 5, 0, vec![]),
-                object(2, 5, 2, vec![]),
-                object(3, 8, 0, vec![4, 5]),
-                object(4, 5, 0, vec![]),
-                object(5, 5, 0, vec![]),
-                object(6, 11, 0, vec![7, 9]),
-                object(7, 12, 0, vec![8]),
-                object(8, 5, 0, vec![]),
-                object(9, 12, 0, vec![10]),
-                object(10, 5, 0, vec![]),
+                object(1, 5, 0, vec![], [100.0, 100.0, 160.0, 140.0]),
+                object(2, 5, 2, vec![], [100.0, 215.0, 160.0, 255.0]),
+                object(3, 8, 0, vec![4, 5], [225.0, 105.0, 405.0, 145.0]),
+                object(4, 5, 0, vec![], [0.0, 0.0, 60.0, 40.0]),
+                object(5, 5, 0, vec![], [120.0, 0.0, 180.0, 40.0]),
+                object(6, 11, 0, vec![7, 9], [485.0, 205.0, 765.0, 425.0]),
+                object(7, 12, 0, vec![8], [0.0, 0.0, 280.0, 220.0]),
+                object(8, 5, 0, vec![], [45.0, 65.0, 105.0, 105.0]),
+                object(9, 12, 0, vec![10], [0.0, 0.0, 280.0, 220.0]),
+                object(10, 5, 0, vec![], [175.0, 120.0, 235.0, 160.0]),
             ],
             ..Default::default()
         };
@@ -6787,7 +6791,7 @@ mod tests {
                 *id,
                 &store,
                 &BTreeMap::new(),
-                Scope::Layout,
+                Scope::default(),
                 (0.0, 0.0),
                 &mut seen,
                 &mut geometry,
@@ -6807,6 +6811,48 @@ mod tests {
         );
         let locked = &geometry[1];
         assert!(locked.locked && !locked.movable && !locked.deletable);
+        let frames: Vec<_> = geometry
+            .iter()
+            .enumerate()
+            .map(|(index, object)| MarqueeFrame {
+                index,
+                object: Some(object),
+                rect: object.rect,
+                visible: !matches!(object.key, 9 | 10),
+            })
+            .collect();
+        let select_box = |[left, top, right, bottom]: [f64; 4], coverage| {
+            let selected = marquee(
+                GeomRect {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                },
+                coverage,
+                &frames,
+            );
+            let keys = selected
+                .indices
+                .into_iter()
+                .map(|i| geometry[i].key)
+                .collect::<Vec<_>>();
+            let controls = selected.tab_controls.into_keys().collect::<Vec<_>>();
+            (keys, selected.aggregate, controls)
+        };
+        let group = [70.0, 80.0, 245.0, 160.0];
+        assert_eq!(
+            select_box(group, Coverage::Intersects),
+            (vec![1, 3], true, vec![])
+        );
+        assert_eq!(
+            select_box(group, Coverage::Contains),
+            (vec![1], false, vec![])
+        );
+        assert_eq!(
+            select_box([460.0, 184.0, 790.0, 444.0], Coverage::Intersects),
+            (vec![7, 8, 9, 10], true, vec![6])
+        );
     }
 
     fn leaf(key: &[u8], value: &[u8]) -> Vec<u8> {
