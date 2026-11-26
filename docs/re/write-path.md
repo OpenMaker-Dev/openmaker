@@ -510,11 +510,18 @@ nothing uploaded (below).
 
 An entry, other than a deletion, naming a record with nothing uploaded for
 it (op14, 3.3) asks FileMaker Server for nothing that was measured.
-OpenMaker Server refuses it, and the whole commit, as the ordering above
-(0, 1.1) shows FileMaker Pro uploading every record it commits new or
-changed ([#839](https://github.com/OpenMaker-Dev/openmaker/issues/839);
-OpenMaker's choice, which a FileMaker Pro commit of a record it did not
-upload would show wrong).
+FileMaker Pro uploads each record it commits new or changed before the
+op70 (0, 1.1), and in a capture against FileMaker Server 26.0.3 each of
+its five op70 was the request directly after an op14
+([#829, request by request](https://github.com/OpenMaker-Dev/openmaker/issues/829#issuecomment-7183624871)).
+Not captured: what it sends when it has locked a record and leaves it
+without a change (Open Record/Request then Commit Records, a character
+typed and deleted, Revert Record), or a portal row. OpenMaker Server
+refuses such an entry, and the whole commit
+([#839](https://github.com/OpenMaker-Dev/openmaker/issues/839); OpenMaker's
+choice, which FileMaker Pro sending an op70 that names a record, other
+than for its deletion, with no op14 since the last commit would show
+wrong).
 
 Reply: the empty page (23 bytes) as for op14. Errors are not reported in
 the reply: FileMaker Server answered the same 23 bytes when it could not apply

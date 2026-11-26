@@ -1608,24 +1608,40 @@ with nothing staged for it, other than for its deletion
 ([#839](https://github.com/OpenMaker-Dev/openmaker/issues/839)).
 FileMaker Server half-writes a record another lock user holds and answers
 done (write-path.md 3.4); OpenMaker refuses. The deletion of a record that
-is not there asks for nothing. Refusing a commit of a record with nothing
-staged rests on this evidence: FileMaker Pro uploads every record it
-commits new or changed, with op14 before the op70 (write-path.md 0 and 1.1,
-captures cap:914-948 and the edit sequence), and the server's log of the
-first FileMaker Pro run against OpenMaker Server (on
-[#673](https://github.com/OpenMaker-Dev/openmaker/issues/673)) has no
-`commit of record ... that was never uploaded`. FileMaker Pro committing a
-record it did not upload would show it wrong. A capture of FileMaker Pro
-26.0.3 against FileMaker Server 26.0.3 then showed an op14 before every
-op70, over a field edit, New Record, Duplicate Record, Delete Record,
-Replace Field Contents, Import Records and a script's Set Field and Commit,
-and no op70 at all for a record entered and left unchanged
-([#829](https://github.com/OpenMaker-Dev/openmaker/issues/829#issuecomment-7177276993));
-a portal row was not covered. It makes a commit whose
+is not there asks for nothing.
+
+Refusing a commit of a record with nothing staged makes a commit whose
 save failed, which took its staged records, fail again when it is sent
-again, where it answered done with nothing stored. op73 for a path that
-is not one table fails too; op73 refused for the session still answers
-its empty reply
+again, where it answered done with nothing stored. The server cannot tell
+such an entry from one for a record never uploaded, and what FileMaker
+Server answers to either is unmeasured. The refusal is OpenMaker's choice,
+resting on this evidence:
+
+- FileMaker Pro uploads each record it commits new or changed, op14 before
+  the op70 (write-path.md 0 and 1.1, captures cap:914-948 and the edit
+  sequence).
+- In a capture of FileMaker Pro 26.0.3 against FileMaker Server 26.0.3,
+  the session sent five op70, each the request directly after an op14,
+  over a field edit, New Record, Replace Field Contents over the found
+  set, Import Records, and a script's Set Field and Commit Records
+  ([#829, request by request](https://github.com/OpenMaker-Dev/openmaker/issues/829#issuecomment-7183624871)).
+- The log of the first FileMaker Pro run against OpenMaker Server (on
+  [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673)) has no
+  `commit of record ... that was never uploaded`, the line OpenMaker
+  Server then logged for an op70 entry with nothing staged.
+
+None of them shows what FileMaker Pro sends when it has locked a record
+and leaves it without a change (the Open Record/Request script step and
+then Commit Records; a character typed and deleted, then the record left;
+Revert Record), the deletion of a stored record (that a deletion is an
+op70 alone, write-path.md 7, rests on the RE probe's own op70, live:s2,
+and its vectors, not on a capture of FileMaker Pro; the capture above
+deleted only a duplicate never committed, with op65), or a portal row.
+FileMaker Pro sending an op70 that names a record, other than for its
+deletion, with no op14 since the last commit would show the refusal wrong.
+
+op73 for a path that is not one table fails too; op73 refused for the
+session still answers its empty reply
 ([#801](https://github.com/OpenMaker-Dev/openmaker/issues/801)).
 
 A continuation whose cursor the connection does not hold (never issued,

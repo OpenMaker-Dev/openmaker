@@ -1044,19 +1044,22 @@ fn refused_action(
 /// nothing and passes. An entry other than a deletion with nothing staged
 /// for it is refused (#839 of github.com/OpenMaker-Dev/openmaker), so that a
 /// commit whose save failed, which took its staged records, fails again
-/// when it is sent again rather than answer done with nothing stored:
-/// FileMaker Pro uploads every record it commits new or changed, with op14
-/// before the op70 (write-path.md 0 and 1.1, captured; again in a capture
-/// against FileMaker Server, #829 of github.com/OpenMaker-Dev/openmaker),
-/// and the server's log of its first run against OpenMaker had no commit of
-/// a record never uploaded; a FileMaker Pro commit of a record it did not
-/// upload would show this wrong (docs/server-storage.md 5). Only an entry
-/// marked new (`01`) creates a record, and only one whose id was issued and
-/// is free; an entry in the edit form for a record the file does not hold
-/// is refused, whatever its id (#840 of github.com/OpenMaker-Dev/openmaker:
-/// OpenMaker's choice until FileMaker Server is measured, write-path.md
-/// 3.4). It never brings back a record another session deleted, nor plants
-/// a record under an id an honest client's later new record would get.
+/// when it is sent again rather than answer done with nothing stored. The
+/// server cannot tell such an entry from one for a record never uploaded.
+/// OpenMaker's choice, resting on the captures in which FileMaker Pro sends
+/// op14 before every op70 that names a record new or changed (write-path.md
+/// 0 and 1.1; request by request against FileMaker Server, #829 of
+/// github.com/OpenMaker-Dev/openmaker); what it sends for a record it
+/// locked and left unchanged is not captured. FileMaker Pro sending an op70
+/// that names a record, other than for its deletion, with no op14 since
+/// the last commit would show it wrong (docs/server-storage.md 5). Only an
+/// entry marked new (`01`) creates a record, and only one whose id was
+/// issued and is free; an entry in the edit form for a record the file does
+/// not hold is refused, whatever its id (#840 of
+/// github.com/OpenMaker-Dev/openmaker: OpenMaker's choice until FileMaker
+/// Server is measured, write-path.md 3.4). It never brings back a record
+/// another session deleted, nor plants a record under an id an honest
+/// client's later new record would get.
 fn unstorable(
     user: LockUser,
     locks: &mut Locks<'_>,
@@ -1083,9 +1086,17 @@ fn unstorable(
                 continue;
             }
             let Some(record) = staged.get(&path) else {
+                // What the server knows is that nothing is staged now, not
+                // whether the client ever uploaded the record.
                 return Some(match id {
-                    Some(id) => format!("record {id} was never uploaded: nothing is staged for it"),
-                    None => format!("{path:02x?} was never uploaded: nothing is staged for it"),
+                    Some(id) => format!(
+                        "nothing is staged for record {id}: never uploaded, or its upload was \
+                         taken by an earlier commit"
+                    ),
+                    None => format!(
+                        "nothing is staged for {path:02x?}: never uploaded, or its upload was \
+                         taken by an earlier commit"
+                    ),
                 });
             };
             let Some(id) = id else {
@@ -1168,7 +1179,7 @@ fn commit_list(
                     continue;
                 }
                 let Some(mut record) = staged.remove(&path) else {
-                    warn!("{file:?}: commit of record {id} that was never uploaded");
+                    warn!("{file:?}: commit of record {id} skipped: nothing is staged for it");
                     continue;
                 };
                 if !modcount::counted(&record) {
