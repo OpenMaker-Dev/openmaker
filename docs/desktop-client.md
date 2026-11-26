@@ -2509,10 +2509,13 @@ normal-state fill, border and text colors and the base font from Browse's
 style cascade. These properties are read-only. Appearance can show swatches
 for sides that draw no border, and Styles can list names the cascade skips
 ([#886](https://github.com/OpenMaker-Dev/openmaker/issues/886)). Autosizing,
-names and tooltips are unavailable. Data Formatting summarizes the decoded number,
-date, time or graphic format for a stored field whose type is known to the
-window. The summary is read-only. Layouts without geometry keep the generic field
-view, which is not inspectable as document objects; they cannot be edited.
+names and tooltips are unavailable. Data Formatting shows OpenMaker's
+read-only summary of the decoded number, date, time or graphic format for
+a stored field whose type is known to the window. Its wording has not been
+compared with FileMaker Pro's Inspector
+([#891](https://github.com/OpenMaker-Dev/openmaker/issues/891)). Layouts
+without geometry keep the generic field view, which is not inspectable as
+document objects; they cannot be edited.
 The revision is the one the window read when it opened the file or after
 its last placement: a layout another client changed since is refused at
 Save Layout, not shown changed before.
