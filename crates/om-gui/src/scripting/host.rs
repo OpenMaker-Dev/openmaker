@@ -1812,7 +1812,7 @@ impl<'a> WorkerHost<'a> {
     /// triggers fired before. A failure leaves the record open and is
     /// the user's message.
     pub(crate) fn save_record(&mut self) -> Result<(), String> {
-        self.forget_failures();
+        forget_failure();
         let record = self
             .s
             .file
@@ -1883,23 +1883,9 @@ impl<'a> WorkerHost<'a> {
         reverted
     }
 
-    /// The words of a failure, its own (`failure`) or its provider's,
-    /// dropped.
-    fn forget_failures(&mut self) {
-        self.s.failure = None;
-        take_provider_failure();
-    }
-
-    /// The words of the step's failure, taken: its own, else its
-    /// provider's.
-    fn take_failure(&mut self) -> Option<String> {
-        let provider = take_provider_failure();
-        self.s.failure.take().or(provider)
-    }
-
     /// The message of a step's failure: the provider's, else the error's.
     fn failure_message(&mut self, error: HostError) -> String {
-        match (self.take_failure(), error) {
+        match (take_failure(), error) {
             (Some(message), _) => message,
             (None, HostError::Error(code)) => code.to_string(),
             (None, _) => ErrorCode(3).to_string(),
@@ -3428,27 +3414,75 @@ impl WorkerHost<'_> {
     }
 }
 
+/// Why the running step failed, in words, for its alert's second line
+/// (#818): the provider's ([`data_error`]) or the step's own
+/// ([`note_failure`]), whichever came last. Words belong to the step that
+/// gave them: a step starts without any (`before_step`), so words an
+/// error capture kept from one step's alert are not shown under a later
+/// step's. A thread-local, because most of the script host converts a
+/// `DataError` while it holds the window and the provider (`self.wp()`),
+/// where the session is out of reach.
+#[derive(Default)]
+struct Failure {
+    /// Steps begun on this thread.
+    step: u64,
+    /// The words, and the step that gave them.
+    words: Option<(u64, String)>,
+}
+
 thread_local! {
-    /// The words of the provider failure [`data_error`] last made a step
-    /// error, for that step's alert (#818). Most of the script host
-    /// converts a `DataError` with `map_err(data_error)` while it holds
-    /// the window and the provider, where the session's `failure` is out
-    /// of reach. Each step starts without it (`before_step`).
-    static PROVIDER_FAILURE: std::cell::RefCell<Option<String>> =
-        const { std::cell::RefCell::new(None) };
+    static FAILURE: std::cell::RefCell<Failure> = std::cell::RefCell::new(Failure::default());
+}
+
+/// `words` say why the running step failed.
+pub(crate) fn note_failure(words: String) {
+    FAILURE.with(|failure| {
+        let mut failure = failure.borrow_mut();
+        failure.words = Some((failure.step, words));
+    });
+}
+
+/// A step begins: no words say yet why it failed.
+fn begin_step() {
+    FAILURE.with(|failure| failure.borrow_mut().step += 1);
+}
+
+/// Why the running step failed, in words, taken.
+fn take_failure() -> Option<String> {
+    FAILURE.with(|failure| {
+        let mut failure = failure.borrow_mut();
+        let step = failure.step;
+        failure
+            .words
+            .take()
+            .filter(|(given, _)| *given == step)
+            .map(|(_, words)| words)
+    })
+}
+
+/// No words say why anything failed.
+pub(crate) fn forget_failure() {
+    FAILURE.with(|failure| failure.borrow_mut().words = None);
+}
+
+/// The last words noted, whichever step gave them.
+#[cfg(test)]
+pub(crate) fn last_failure() -> Option<String> {
+    FAILURE.with(|failure| {
+        failure
+            .borrow()
+            .words
+            .as_ref()
+            .map(|(_, words)| words.clone())
+    })
 }
 
 /// A provider failure as a step error: its FileMaker code, else -1. Its
 /// words are kept for the step's alert.
 pub(crate) fn data_error(error: DataError) -> HostError {
     let code = ErrorCode(error.code.unwrap_or(-1));
-    PROVIDER_FAILURE.with(|failure| *failure.borrow_mut() = Some(error.message));
+    note_failure(error.message);
     HostError::Error(code)
-}
-
-/// The words of the provider failure that made the step's error, taken.
-pub(crate) fn take_provider_failure() -> Option<String> {
-    PROVIDER_FAILURE.with(|failure| failure.borrow_mut().take())
 }
 
 impl CalcHost for WorkerHost<'_> {
@@ -4153,11 +4187,8 @@ impl ScriptHost for WorkerHost<'_> {
     }
 
     fn before_step(&mut self) {
-        // A provider's words belong to the step it failed (#818): one an
-        // error capture kept from an earlier step's alert is not shown
-        // under a later one. `failure`, which a few steps set with words
-        // of their own, keeps the life it had.
-        take_provider_failure();
+        // Words belong to the step that gave them (#818).
+        begin_step();
     }
 
     fn take_triggers(&mut self) -> Vec<Trigger> {
@@ -4223,7 +4254,7 @@ impl ScriptHost for WorkerHost<'_> {
             // Go to Record past the last record is silent.
             return AlertChoice::Continue;
         }
-        let detail = self.take_failure().unwrap_or_default();
+        let detail = take_failure().unwrap_or_default();
         if alert.script.is_empty()
             && matches!(alert.step, 28 | 126 | 127)
             && alert.code == ErrorCode(code::NO_MATCH)
@@ -6165,13 +6196,13 @@ impl Network for WorkerHost<'_> {
                 return Err(HostError::Unsupported);
             }
         }
-        let failed = |host: &mut Self, code: ErrorCode, message: String| {
-            host.s.failure = Some(message);
+        let failed = |code: ErrorCode, message: String| {
+            note_failure(message);
             HostError::Error(code)
         };
         if mail.via == MailVia::Smtp {
             let (account, message) =
-                om_url::smtp_parts(mail).map_err(|e| failed(self, e.code(), e.to_string()))?;
+                om_url::smtp_parts(mail).map_err(|e| failed(e.code(), e.to_string()))?;
             // Esc, Cmd-. and a closing window end the step at any point of
             // the session, as for Insert from URL.
             let mut cancelled = || {
@@ -6182,7 +6213,7 @@ impl Network for WorkerHost<'_> {
                     || self.s.halt
             };
             let sent = om_url::send_smtp(&account, &message, None, &mut cancelled);
-            return sent.map_err(|e| failed(self, e.code(), e.to_string()));
+            return sent.map_err(|e| failed(e.code(), e.to_string()));
         }
         let url = om_url::mailto(&mail.to, &mail.cc, &mail.bcc, &mail.subject, &mail.message)
             .map_err(|e| failed(self, ErrorCode::UNAVAILABLE, e.to_string()))?;

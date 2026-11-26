@@ -279,7 +279,7 @@ fn desktop_print_ranges_validate_complete_report_before_submission_and_stay_job_
         if from > 0 && from <= to {
             let pages = if current { 1 } else { 3 };
             assert_eq!(
-                c.session.s.failure.as_deref(),
+                crate::scripting::host::last_failure().as_deref(),
                 Some(
                     format!(
                         "The report has {pages} physical pages; choose a range within 1-{pages}"

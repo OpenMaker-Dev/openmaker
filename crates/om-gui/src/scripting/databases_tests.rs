@@ -2641,10 +2641,18 @@ fn desktop_related_current_layout_keeps_the_caller_when_the_file_shows_a_window(
 
 /// A step's alert gives the provider's reason for its error on its second
 /// line, as Print Setup's does (#818): here Go to Related Record into a
-/// file whose found set cannot be read. A reason an error capture kept
-/// from an earlier step is not shown under a later step's alert.
+/// file whose found set cannot be read. Words an error capture kept from
+/// an earlier step, the provider's or the step's own, are not shown under
+/// a later step's alert, nor do they take the place of its own.
 #[test]
 fn a_steps_alert_gives_its_providers_reason_and_no_earlier_one() {
+    // Print Setup [Restore] of a scale OpenMaker refuses: 3, with words of
+    // its own.
+    let mut setup = ScriptStep::new(42);
+    setup.flags = flag::RESTORE | flag::NO_INTERACT;
+    let mut format = crate::page_setup::tests::A4.to_vec();
+    format[9..13].copy_from_slice(&0.5f32.to_be_bytes());
+    setup.set_data_leaf(0x87, Some(om_data::scripts::bytes_node(&[0x87], &format)));
     let mut navigate = ScriptStep::new(74);
     navigate.value = 1;
     navigate.flags |= flag::RESTORE | flag::MENU_SELECTION | flag::OPTION;
@@ -2664,7 +2672,8 @@ fn a_steps_alert_gives_its_providers_reason_and_no_earlier_one() {
         vec![
             open("Peer", false),
             root,
-            // Captured: no alert.
+            // Captured: no alerts.
+            setup,
             navigate.clone(),
             // Set Error Capture [ Off ].
             ScriptStep::new(86),
