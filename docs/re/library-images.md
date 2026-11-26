@@ -20,6 +20,19 @@ The numeric root and SVG path are verified against the real local file rather
 than inferred from a symbol name. Other container-library arrangements remain
 outside this decoder.
 
+[O] In a synthetic FileMaker Pro 26.1.1 file, button `libraryKey` values
+1, 2 and 125-127 matched their one-byte library member segments. Keys
+128, 129 and 130 used `80 00`, `80 01` and `80 02`, respectively. FileMaker
+drew the embedded and built-in SVG icons. Each stream used the four-byte
+QuadChar `SVG ` beneath its member.
+[Native measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1017#issuecomment-7185360952).
+
+[I] The matches support treating `libraryKey` as the logical library id
+throughout the `HBSerialKey` range ([query-program.md](query-program.md)
+2.6). OpenMaker encodes the id before looking up the member. For example,
+the synthetic decoder test uses id 200 and the two-byte segment `80 48`.
+FileMaker's mapping beyond the measured ids remains unverified.
+
 `Layout.library_images` is keyed by the referenced `library_key`. It contains
 only nonzero keys referenced by that layout's decoded button or graphic objects.
 Each `LibraryImage` retains the original encoded bytes and a format with MIME
