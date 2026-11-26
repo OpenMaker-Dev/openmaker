@@ -345,12 +345,15 @@ fn a_clients_writes_are_refused_as_on_a_file_hosted_read_only() {
 
 /// docs/server-storage.md 11: on a file hosted read-only, on either
 /// engine alike, a server script opens no record for editing and creates
-/// none: Set Field and New Record fail with 3, "Command is unavailable",
-/// where the script sees it, and a script that sets a field and ends with
-/// the record open reports 3 too, never 0 with its edit dropped at the
-/// session's end. Set Next Serial Value fails with 3 before anything is
-/// written. A global, the session's own value, is set and read in the
-/// next step. Nothing changes.
+/// none: Set Field and New Record fail with 6, "File is read-only", where
+/// the script sees it, and a script that sets a field and ends with the
+/// record open reports 6 too, never 0 with its edit dropped at the
+/// session's end. Set Next Serial Value fails with 6 before anything is
+/// written. FileMaker Server's own script (script-runtime.md 13.28): Set
+/// Field, Commit Records, New Record and Delete Record answer 6, 0, 6 and
+/// 6, and the run's error is 0, as each error was kept in a variable. A
+/// global, the session's own value, is set and read in the next step.
+/// Nothing changes.
 #[test]
 fn server_scripts_that_would_write_fail_alike_on_both_engines() {
     let edit = fixture::script(
@@ -407,9 +410,27 @@ fn server_scripts_that_would_write_fail_alike_on_both_engines() {
             fixture::exit_with("Get ( LastError ) & \"|\" & Tasks::Setting"),
         ],
     );
+    let error = |name: &str| fixture::set_variable(name, "Get ( LastError )");
+    let four = fixture::script(
+        9,
+        "Four steps",
+        vec![
+            fixture::on(86, true),
+            fixture::go_to_record(1),
+            fixture::set_field(fixture::COUNT, "99"),
+            error("$set"),
+            ScriptStep::new(75),
+            error("$commit"),
+            ScriptStep::new(7),
+            error("$new"),
+            ScriptStep::new(9),
+            error("$delete"),
+            fixture::exit_with("$set & \"|\" & $commit & \"|\" & $new & \"|\" & $delete"),
+        ],
+    );
     let (file, _) = read_only_tasks(
         "store-engine-scripts",
-        &[edit, add, left_open, serial, global],
+        &[edit, add, left_open, serial, global, four],
     );
     let mut both = Both::host("scripts", file);
     let [by_file, by_store] = [0, 1].map(|i| {
@@ -430,8 +451,17 @@ fn server_scripts_that_would_write_fail_alike_on_both_engines() {
             (reply.error, reply.result)
         });
         assert_eq!(by_store, by_file, "script {script}");
-        assert_eq!(by_store.0, 3, "script {script}: {by_store:?}");
+        assert_eq!(by_store.0, 6, "script {script}: {by_store:?}");
     }
+    let [by_file, by_store] = [0, 1].map(|i| {
+        let reply = both.sessions[i]
+            .0
+            .perform_script_on_server(9, "", true)
+            .unwrap();
+        (reply.error, reply.result)
+    });
+    assert_eq!(by_store, by_file, "the four steps");
+    assert_eq!(by_store, (0, "6|0|6|6".to_owned()));
     both.unchanged();
 }
 

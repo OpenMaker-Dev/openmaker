@@ -3157,6 +3157,103 @@ fn starter_fields_read_as_the_fields_tab_lists_them() {
 }
 
 #[test]
+fn local_new_record_keeps_utc_clock_samples_through_commit() {
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
+    use om_data::ScriptWrite;
+    use om_hbam::OwnedNode;
+
+    const CUSTOM: u64 = 40;
+    const DIRECT: u64 = 41;
+    let folder = Folder::new("utc-milliseconds-auto-entry");
+    let path = folder.file("Clocks.fmp12", PASSWORD, |root| {
+        let mut names = fixture::names();
+        names.add_custom_function(1, "UtcSample", 0);
+        root.put(
+            &[&[16], &[5], &[1], &[16]],
+            om_scripts::text_node(&[], "UtcSample"),
+        );
+        let body = om_formula::polish::encode(&om_formula::Expr::Get(
+            om_data::host::session::selector::CURRENT_TIME_UTC_MILLISECONDS,
+        ));
+        root.put(
+            &[&[16], &[5], &[1], &[35], &[6]],
+            OwnedNode::leaf(Vec::new(), body),
+        );
+        for (id, name, kind, formula) in [
+            (CUSTOM, "ViaFunction", 1, "UtcSample"),
+            (DIRECT, "Direct", 2, "Get ( CurrentTimeUTCMilliseconds )"),
+        ] {
+            fixture::add_field(root, TABLE, id, name, 1, kind, 0, 0x88, 0);
+            fixture::add_formula(root, &names, (TABLE, OCCURRENCE), id, 5, formula);
+        }
+    });
+    let mut provider = opened(&path);
+    let request = ScriptWrite {
+        layout: LAYOUT as u32,
+        ..Default::default()
+    };
+    let preview = provider.preview_new_record(&request).unwrap().unwrap();
+    let observed: Vec<_> = [CUSTOM, DIRECT]
+        .into_iter()
+        .map(|field| {
+            let value = preview.values[&field].clone().unwrap();
+            assert!(value.parse::<i64>().is_ok());
+            (field, value)
+        })
+        .collect();
+    // The next evaluation must not sample the current clock again.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let row = provider
+        .write_record(&ScriptWrite {
+            prepared: Some(preview.id),
+            cells: [(NAME, Some("Unrelated edit".into()))].into(),
+            ..request.clone()
+        })
+        .unwrap();
+
+    let fields = provider.records(request.layout, 0, 0).unwrap().fields;
+    let tracked = [(CUSTOM, "ViaFunction"), (DIRECT, "Direct")]
+        .map(|(id, name)| (id, fields.iter().position(|f| f.name == name).unwrap()));
+    provider.begin_record_commit().unwrap();
+    let held = provider.write_record(&request).unwrap();
+    let held_samples = tracked.map(|(id, index)| {
+        let value = held.values[index].clone().unwrap();
+        assert!(value.parse::<i64>().is_ok());
+        (id, value)
+    });
+    for name in ["First edit", "Second edit"] {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let edited = provider
+            .write_record(&ScriptWrite {
+                record: Some(held.id),
+                cells: [(NAME, Some(name.into()))].into(),
+                ..request.clone()
+            })
+            .unwrap();
+        for ((_, index), (_, value)) in tracked.iter().zip(&held_samples) {
+            assert_eq!(edited.values[*index].as_deref(), Some(value.as_str()));
+        }
+    }
+    provider.commit_record_session(false).unwrap();
+    provider.close();
+
+    let file = om_hbam::HbamFile::open(&path).unwrap();
+    let records = file.records(TABLE).unwrap();
+    for (record, samples) in [(row, observed.as_slice()), (held, held_samples.as_slice())] {
+        let stored = records
+            .iter()
+            .find(|stored| stored.id == record.id as u64)
+            .unwrap();
+        for (field, value) in samples {
+            assert_eq!(
+                stored.text(*field).transpose().unwrap().as_deref(),
+                Some(value.as_str())
+            );
+        }
+    }
+}
+
+#[test]
 fn unsupported_stored_record_position_does_not_reserve_a_serial() {
     use fixture::{LAYOUT, NAME, OCCURRENCE};
     use om_data::rules::{error, RecordNumber};
@@ -3346,6 +3443,104 @@ fn a_local_sorted_new_record_keeps_its_insertion_position() {
     let reordered = provider.records(layout, 0, 4).unwrap();
     assert_eq!(reordered.records[0].id, created.id);
     assert_eq!(text(&reordered, created.id, "Position"), Some("2"));
+}
+
+#[test]
+fn global_text_auto_entry_reads_current_or_assigned_self() {
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
+    use om_data::calc::Value;
+    use om_data::host::CalcNeed;
+
+    const FIELDS: [(u64, &str, u32, &str); 3] = [
+        (
+            40,
+            "Replacing",
+            0x1_0088,
+            r#"If ( IsEmpty ( Self ) ; "Initial" ; Self & "!" )"#,
+        ),
+        (
+            41,
+            "Preserving",
+            0x1_0008,
+            r#"If ( IsEmpty ( Self ) ; "Initial" ; Self & "!" )"#,
+        ),
+        (
+            42,
+            "Identity",
+            0x1_0088,
+            r#"If ( IsEmpty ( Self ) ; "Initial" ; Self )"#,
+        ),
+    ];
+    let folder = Folder::new("global-text-self");
+    let path = folder.file(FILE, PASSWORD, |root| {
+        for (field, name, options, formula) in FIELDS {
+            fixture::add_field(root, TABLE, field, name, 1, 1, 0, options, 0);
+            fixture::add_formula(
+                root,
+                &fixture::names(),
+                (TABLE, OCCURRENCE),
+                field,
+                5,
+                formula,
+            );
+        }
+    });
+    let mut provider = opened(&path);
+    let new = om_data::ScriptWrite {
+        layout: LAYOUT as u32,
+        ..Default::default()
+    };
+    let values = |provider: &mut NativeProvider| {
+        let data = provider
+            .calc_data(&[CalcNeed::Globals { table: TABLE }])
+            .unwrap();
+        FIELDS.map(|(field, ..)| match data.globals[&TABLE].get(field, 1) {
+            Some(Value::Text(text)) => text.as_str().to_owned(),
+            None => String::new(),
+            other => panic!("expected a Text global, got {other:?}"),
+        })
+    };
+    provider.begin_record_commit().unwrap();
+    assert_eq!(provider.write_record(&new).unwrap_err().code, Some(3));
+    provider.revert_transaction().unwrap();
+    assert_eq!(values(&mut provider), ["", "", ""]);
+    let create = |provider: &mut NativeProvider| {
+        provider.begin_record_commit().unwrap();
+        let id = provider
+            .write_record_with_creation(&new, om_data::RecordCreation::NewRecord)
+            .unwrap()
+            .id;
+        u64::try_from(id).unwrap()
+    };
+    let first = create(&mut provider);
+    assert_eq!(values(&mut provider), ["Initial", "Initial", "Initial"]);
+    provider
+        .write_record(&om_data::ScriptWrite {
+            record: Some(i64::try_from(first).unwrap()),
+            cells: [(NAME, Some("An unrelated edit".into()))].into(),
+            ..new.clone()
+        })
+        .unwrap();
+    assert_eq!(values(&mut provider), ["Initial", "Initial", "Initial"]);
+    provider.commit_record_session(false).unwrap();
+    for (field, ..) in FIELDS {
+        provider.set_global(TABLE, field, 1, "Manual").unwrap();
+    }
+    assert_eq!(values(&mut provider), ["Manual!", "Manual", "Manual"]);
+    let second = create(&mut provider);
+    assert_eq!(values(&mut provider), ["Manual!!", "Manual", "Manual"]);
+    provider.commit_record_session(false).unwrap();
+    for (field, ..) in FIELDS {
+        provider.set_global(TABLE, field, 1, "").unwrap();
+    }
+    assert_eq!(values(&mut provider), ["Initial", "Initial", "Initial"]);
+    provider.close();
+    let file = om_hbam::HbamFile::open(&path).unwrap();
+    for record in [first, second] {
+        for (field, ..) in FIELDS {
+            assert!(file.cell(TABLE, record, field).unwrap().is_none());
+        }
+    }
 }
 
 #[test]
@@ -3600,6 +3795,62 @@ fn option_formulas_read_the_sessions_global_value() {
     check(&mut provider, "y").unwrap();
     assert_eq!(stamp(&mut provider).2.as_deref(), Some("y"));
     provider.close();
+}
+
+#[test]
+fn a_held_new_record_keeps_its_other_table_global_from_creation() {
+    use fixture::{LAYOUT, NAME, NOTES, OCCURRENCE};
+
+    const MARKER: u64 = 40;
+    const STAMP: u64 = 41;
+    const SETTINGS: u64 = 0xd0_0048;
+    let folder = Folder::new("held-other-global");
+    let path = folder.file("Requests.fmp12", PASSWORD, |root| {
+        let mut names = fixture::names();
+        names.add_occurrence(SETTINGS, "Settings", NOTES);
+        names.add_field(NOTES, MARKER, "Marker");
+        fixture::add_occurrence(root, SETTINGS, "Settings", NOTES);
+        fixture::add_field(root, NOTES, MARKER, "Marker", 1, 1, 0, 0x10000, 0);
+        fixture::add_field(root, TABLE, STAMP, "Stamp", 1, 1, 0, 0x8, 0);
+        fixture::add_formula(
+            root,
+            &names,
+            (TABLE, OCCURRENCE),
+            STAMP,
+            5,
+            "Settings::Marker",
+        );
+    });
+    let mut provider = opened(&path);
+    let layout = LAYOUT as u32;
+    let fields = provider.records(layout, 0, 0).unwrap().fields;
+    let stamp = fields.iter().position(|f| f.name == "Stamp").unwrap();
+    provider.set_global(NOTES, MARKER, 1, "alpha").unwrap();
+    provider.begin_record_commit().unwrap();
+    let created = provider
+        .write_record(&om_data::ScriptWrite {
+            layout,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(created.values[stamp].as_deref(), Some("alpha"));
+
+    provider.set_global(NOTES, MARKER, 1, "beta").unwrap();
+    let edited = provider
+        .write_record(&om_data::ScriptWrite {
+            layout,
+            record: Some(created.id),
+            cells: [(NAME, Some("Note".into()))].into(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(edited.values[stamp].as_deref(), Some("alpha"));
+    provider.commit_record_session(false).unwrap();
+    provider.close();
+
+    let mut reopened = opened(&path);
+    let saved = reopened.record_by_id(layout, created.id).unwrap();
+    assert_eq!(text(&saved, created.id, "Stamp"), Some("alpha"));
 }
 
 /// A row imported inside a transaction and then edited there is computed
