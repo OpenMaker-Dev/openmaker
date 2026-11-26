@@ -2689,6 +2689,10 @@ mod tests {
             )
         };
         let before = layout();
+        // The file's names for W1's field: Contacts::Website.
+        let mut names = om_formula::NameTable::default();
+        names.add_occurrence(0xd0_0002, "Contacts", 0x81);
+        names.add_field(0x81, 7, "Website");
         let (formatted, polish) = compile("\"https://example.com\"");
         let pro = unhex("1313322e2e2a296075753f223b372a363f7439353700");
         assert_eq!((&formatted, &polish), (&pro, &pro));
@@ -2698,7 +2702,7 @@ mod tests {
             formatted,
             polish,
         };
-        let planned = plan_web_viewer(&before, &viewer).unwrap();
+        let planned = plan_web_viewer(&before, &viewer, &names).unwrap();
         let key = planned.viewer;
         let member = &planned.member;
         let record = member.at(&[&[ATTRIBUTES], &serial::encode(key)]).unwrap();
@@ -2752,7 +2756,7 @@ mod tests {
             ),
             ..viewer.clone()
         };
-        let planned = plan_web_viewer(&before, &reads).unwrap();
+        let planned = plan_web_viewer(&before, &reads, &names).unwrap();
         assert_eq!(
             planned
                 .member
@@ -2772,7 +2776,7 @@ mod tests {
             ..reads.clone()
         };
         assert!(matches!(
-            plan_web_viewer(&before, &mismatched),
+            plan_web_viewer(&before, &mismatched, &names),
             Err(Refusal::Invalid(_))
         ));
 
@@ -2790,7 +2794,7 @@ mod tests {
             ..viewer.clone()
         };
         assert!(matches!(
-            plan_web_viewer(&before, &unqualified),
+            plan_web_viewer(&before, &unqualified, &names),
             Err(Refusal::Invalid(_))
         ));
 
@@ -2811,7 +2815,7 @@ mod tests {
             ..viewer.clone()
         };
         assert!(matches!(
-            plan_web_viewer(&before, &hidden),
+            plan_web_viewer(&before, &hidden, &names),
             Err(Refusal::Invalid(_))
         ));
 
@@ -2848,7 +2852,7 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    plan_web_viewer(&before, &placement),
+                    plan_web_viewer(&before, &placement, &names),
                     Err(Refusal::Invalid(_))
                 ),
                 "{case}"
@@ -2857,14 +2861,36 @@ mod tests {
         let mut commented = w1.clone();
         commented.insert(2, om_formula::Token::BlockComment(text(" a /* b */ c ")));
         commented.insert(2, om_formula::Token::LineComment(text(" note\r")));
-        assert!(plan_web_viewer(&before, &with(commented, reads.polish.clone())).is_ok());
+        assert!(plan_web_viewer(&before, &with(commented, reads.polish.clone()), &names).is_ok());
+
+        // Names that would show as `Contacts:::Website`, which reads as
+        // Contacts' `:Website`, are refused.
+        let mut colons = om_formula::NameTable::default();
+        colons.add_occurrence(0xd0_0004, "Contacts:", 0x82);
+        colons.add_field(0x82, 7, "Website");
+        colons.add_occurrence(0xd0_0005, "Contacts", 0x83);
+        colons.add_field(0x83, 8, ":Website");
+        let edged = om_formula::Field {
+            flags: om_formula::Field::TABLE_PRESENT,
+            occurrence: om_formula::Key(vec![3, 0xd0, 0, 4]),
+            field: om_formula::Key(vec![1, 7]),
+            repetition: 1,
+        };
+        let ambiguous = with(
+            vec![om_formula::Token::Field(edged.clone())],
+            om_formula::polish::encode(&om_formula::Expr::Field(edged)),
+        );
+        assert!(matches!(
+            plan_web_viewer(&before, &ambiguous, &colons),
+            Err(Refusal::Unsupported(_))
+        ));
 
         let unmeasured = WebViewerPlacement {
             flags: 0x800c,
             ..viewer
         };
         assert!(matches!(
-            plan_web_viewer(&before, &unmeasured),
+            plan_web_viewer(&before, &unmeasured, &names),
             Err(Refusal::Unsupported(_))
         ));
         assert_eq!(WebViewerSetup::DEFAULT.flags(), Some(0x800d));

@@ -1527,16 +1527,18 @@ impl NativeProvider {
                 ));
             }
         } else {
-            layout_placement::plan_web_viewer(&member, &place.viewer).map_err(|refusal| {
-                match refusal {
+            // The file's names show the address as Web Viewer Setup does.
+            let schema = self.calc_schema_cached()?;
+            layout_placement::plan_web_viewer(&member, &place.viewer, schema.names()).map_err(
+                |refusal| match refusal {
                     Refusal::Invalid(reason) => {
                         DataError::with_code(i32::from(status::INVALID), reason)
                     }
                     Refusal::Unsupported(reason) => {
                         DataError::with_code(i32::from(status::UNSUPPORTED), reason)
                     }
-                }
-            })?;
+                },
+            )?;
         }
         let frame = &place.viewer.frame;
         let placed = self

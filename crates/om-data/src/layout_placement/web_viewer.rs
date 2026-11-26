@@ -214,7 +214,10 @@ pub fn compile_address(
 /// cannot disagree. Fields are keys in the formatted stream; an address
 /// that needs the file's names for more (a custom or plug-in function) is
 /// refused.
-fn address(viewer: &WebViewerPlacement) -> Result<om_formula::Expr, Refusal> {
+fn address(
+    viewer: &WebViewerPlacement,
+    names: &dyn om_formula::Names,
+) -> Result<om_formula::Expr, Refusal> {
     let invalid = |why: String| Refusal::Invalid(format!("The web address {why}."));
     if viewer.polish.is_empty() || viewer.formatted.is_empty() {
         return Err(invalid("is empty, or has no text".into()));
@@ -226,14 +229,36 @@ fn address(viewer: &WebViewerPlacement) -> Result<om_formula::Expr, Refusal> {
     }
     let tokens = om_formula::formatted::decode(&viewer.formatted)
         .map_err(|e| invalid(format!("text does not read ({e:?})")))?;
-    // The text Web Viewer Setup shows is the formatted stream printed. It
-    // must read back, compiled as text, as exactly the stored tokens and
-    // the stored calculation: then what is shown is what Browse evaluates,
-    // whatever the tokens hold (comments, whitespace, variables named like
-    // fields). Fields are named by their keys here, as the file's names are
-    // not needed for that check.
-    let names = KeyNames::of(&tokens);
-    let ctx = om_formula::Context::new(&names);
+    // The text Web Viewer Setup shows is the formatted stream printed with
+    // the file's names. It must read back, compiled as text with those
+    // names, as exactly the stored tokens and the stored calculation: then
+    // what is shown is what Browse evaluates, whatever the tokens hold
+    // (comments, whitespace, variables named like fields).
+    for token in &tokens {
+        if let om_formula::Token::Field(field) = token {
+            let occurrence = field.occurrence.id();
+            let shown = (
+                occurrence.and_then(|o| names.occurrence_name(o)),
+                occurrence
+                    .zip(field.field.id())
+                    .and_then(|(o, f)| names.field_name(o, f)),
+            );
+            let (Some(occurrence), Some(field)) = shown else {
+                return Err(invalid("names a field this file does not have".into()));
+            };
+            // `Occurrence:` and `:Field` would show as `Occurrence:::Field`,
+            // which reads as another binding; such names are refused rather
+            // than shown in a way FileMaker's display is not known to match.
+            if occurrence.ends_with(':') || field.starts_with(':') {
+                return Err(Refusal::Unsupported(format!(
+                    "The web address reads a field whose occurrence or field name begins or \
+                     ends with a colon ({occurrence}::{field}); its text would not read back \
+                     as that field."
+                )));
+            }
+        }
+    }
+    let ctx = om_formula::Context::new(names);
     let text = om_formula::print(&tokens, &ctx);
     let compiled = om_formula::compile(&text, &ctx).map_err(|_| {
         invalid("text does not read back as a calculation, so it cannot be shown as stored".into())
@@ -266,58 +291,6 @@ fn address(viewer: &WebViewerPlacement) -> Result<om_formula::Expr, Refusal> {
         ));
     }
     Ok(expr)
-}
-
-/// Names for the fields an address's tokens hold, made from their keys
-/// (`o<occurrence>::f<field>`), for printing the tokens and reading the text
-/// back: names of the file are not needed to check that the two agree.
-struct KeyNames {
-    occurrences: std::collections::BTreeMap<u64, String>,
-    fields: std::collections::BTreeMap<(u64, u64), String>,
-}
-
-impl KeyNames {
-    fn of(tokens: &[om_formula::Token]) -> Self {
-        let mut names = Self {
-            occurrences: Default::default(),
-            fields: Default::default(),
-        };
-        for token in tokens {
-            if let om_formula::Token::Field(field) = token {
-                if let (Some(occurrence), Some(id)) = (field.occurrence.id(), field.field.id()) {
-                    names
-                        .occurrences
-                        .insert(occurrence, format!("o{occurrence}"));
-                    names.fields.insert((occurrence, id), format!("f{id}"));
-                }
-            }
-        }
-        names
-    }
-}
-
-impl om_formula::Names for KeyNames {
-    fn occurrence_name(&self, occurrence: u64) -> Option<&str> {
-        self.occurrences.get(&occurrence).map(String::as_str)
-    }
-
-    fn find_occurrence(&self, name: &str) -> Option<u64> {
-        self.occurrences
-            .iter()
-            .find(|(_, n)| n.as_str() == name)
-            .map(|(id, _)| *id)
-    }
-
-    fn field_name(&self, occurrence: u64, field: u64) -> Option<&str> {
-        self.fields.get(&(occurrence, field)).map(String::as_str)
-    }
-
-    fn find_field(&self, occurrence: u64, name: &str) -> Option<u64> {
-        self.fields
-            .iter()
-            .find(|((o, _), n)| *o == occurrence && n.as_str() == name)
-            .map(|((_, id), _)| *id)
-    }
 }
 
 /// Whether `expr` calls a custom function or a plug-in function, which
@@ -371,10 +344,13 @@ fn referenced_fields(expr: &om_formula::Expr) -> Result<Vec<FieldKeys>, Refusal>
     Ok(out)
 }
 
-/// Plan `viewer` into `member`, a layout member `[4, 5, L]` as stored.
+/// Plan `viewer` into `member`, a layout member `[4, 5, L]` as stored, with
+/// `names` the file's names for the fields its address reads (at least),
+/// as Web Viewer Setup shows them.
 pub fn plan_web_viewer(
     member: &OwnedNode,
     viewer: &WebViewerPlacement,
+    names: &dyn om_formula::Names,
 ) -> Result<PlannedWebViewer, Refusal> {
     let unsupported = |why: String| Refusal::Unsupported(why);
     let def = placeable(member)?;
@@ -386,7 +362,7 @@ pub fn plan_web_viewer(
             viewer.flags
         )));
     }
-    let expr = address(viewer)?;
+    let expr = address(viewer, names)?;
     let fields = referenced_fields(&expr)?;
     let frame = &viewer.frame;
     let OnBody {

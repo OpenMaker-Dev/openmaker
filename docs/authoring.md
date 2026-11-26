@@ -610,10 +610,15 @@ with a custom web address (operation 28, planned with
   reference of value `0d` for each field the address reads, the last key
   issued, and the layout's stamp. Every stored object and key is kept.
   The host checks that each field the address reads is a field of one of
-  the file's tables, and that the address's text, printed as Web Viewer
-  Setup shows it and compiled again, gives back exactly the stored tokens
-  and calculation, so what Setup shows and what Browse evaluates cannot
-  differ (an address that does not read back is refused). The address has no context of its own
+  the file's tables, and that the address's text, printed with the file's
+  names as Web Viewer Setup shows it and compiled again with them, gives
+  back exactly the stored tokens and calculation, so what Setup shows and
+  what Browse evaluates cannot differ. An address that does not read back
+  is refused; so are fields whose occurrence name ends, or whose field
+  name begins, with a colon, which would show as `Occurrence:::Field`. Some
+  valid addresses are refused too, where OpenMaker's printer does not give
+  the same tokens back: names written as `${...}` and numbers whose
+  precision changes when printed. The address has no context of its own
   (`01 00`, as Pro stores it), so each field is stored with its occurrence
   (`Occurrence::Field`, as Pro stored W1's): `place_web_viewer` qualifies
   the fields it compiles, and the host refuses a field stored without its

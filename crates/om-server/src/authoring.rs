@@ -2440,30 +2440,38 @@ fn place_web_viewer(ed: &mut Editor<'_, '_, '_>, request: &PlaceWebViewer) -> Re
             "The web address is not a calculation this host reads.".to_owned(),
         );
     };
+    // And their names, as Web Viewer Setup shows them, for the planner's
+    // check that the address's text reads back as what it stores.
+    let mut names = om_data::formula::NameTable::default();
     {
         let derived = ed.tx.derived();
         let catalog = derived.catalog();
         for field in expr.field_references() {
-            let known =
-                field
-                    .occurrence
-                    .id()
-                    .zip(field.field.id())
-                    .is_some_and(|(occurrence, field)| {
-                        catalog
-                            .table_occurrences
-                            .iter()
-                            .find(|o| o.id == occurrence)
-                            .and_then(|o| o.base_table())
-                            .and_then(|table| catalog.table(table))
-                            .is_some_and(|table| table.field(field).is_some())
-                    });
-            if !known {
+            let found = field.occurrence.id().zip(field.field.id()).and_then(
+                |(occurrence_id, field_id)| {
+                    let occurrence = catalog
+                        .table_occurrences
+                        .iter()
+                        .find(|o| o.id == occurrence_id)?;
+                    let table = catalog.table(occurrence.base_table()?)?;
+                    let field = table.field(field_id)?;
+                    Some((
+                        occurrence_id,
+                        &occurrence.name,
+                        table.id,
+                        field_id,
+                        &field.name,
+                    ))
+                },
+            );
+            let Some((occurrence_id, occurrence, table, field_id, field)) = found else {
                 return refused(
                     status::FIELD_MISSING,
                     "The web address reads a field this file's tables do not have.".to_owned(),
                 );
-            }
+            };
+            names.add_occurrence(occurrence_id, occurrence, table);
+            names.add_field(table, field_id, field);
         }
     }
     let key = uint_segment(id);
@@ -2500,7 +2508,7 @@ fn place_web_viewer(ed: &mut Editor<'_, '_, '_>, request: &PlaceWebViewer) -> Re
             current: Some(current_revision),
         };
     }
-    let planned = match layout_placement::plan_web_viewer(&current, &viewer) {
+    let planned = match layout_placement::plan_web_viewer(&current, &viewer, &names) {
         Ok(planned) => planned,
         Err(refusal) => {
             let code = match refusal {

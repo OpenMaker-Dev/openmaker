@@ -2507,7 +2507,7 @@ impl Service {
                 return Err(self.layout_conflict(&layout, &expected));
             }
         } else {
-            layout_placement::plan_web_viewer(&layout.member, &viewer)
+            layout_placement::plan_web_viewer(&layout.member, &viewer, schema.names())
                 .map_err(placement_refusal)?;
         }
         Self::require_grant(&mut layout.opened, &catalog::PLACE_WEB_VIEWER)?;
