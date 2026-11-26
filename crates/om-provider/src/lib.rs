@@ -5101,6 +5101,14 @@ impl DataProvider for NativeProvider {
         Ok(result)
     }
 
+    fn set_file_variables(&mut self, variables: &om_data::calc::eval::Variables) {
+        self.external.set_file_variables(variables);
+    }
+
+    fn local_source_variable(&self, name: &str) -> Option<&str> {
+        self.external.local_source_variable(name)
+    }
+
     fn value_list_catalog(&mut self) -> Result<om_data::value_lists::ValueListCatalog, DataError> {
         self.read_value_list_catalog()
     }
@@ -5220,8 +5228,7 @@ impl DataProvider for NativeProvider {
     fn local_peer_path(&self, file: &str) -> Option<std::path::PathBuf> {
         self.session.as_ref()?;
         let folder = self.local.as_ref()?.path().parent()?;
-        om_data::file_refs::is_plain_name(file)
-            .then(|| folder.join(om_data::file_refs::hosted_name(file)))
+        om_data::file_refs::local_database_path(file, folder)
     }
 
     fn open_peer(&mut self, file: &str) -> Result<Box<dyn DataProvider>, DataError> {
