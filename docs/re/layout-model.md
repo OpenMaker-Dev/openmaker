@@ -2057,6 +2057,24 @@ A set face-mask bit can explicitly turn a face off. A run that changes only
 bold must inherit the default italic setting; a color-only run must inherit
 the layout's font and point size. Unknown bits and extension bytes remain raw.
 
+### 8.2 Styled merge values
+
+[O, FileMaker Pro 26.1.1, local synthetic file] Browse preserves the
+stored formatting of literal text on either side of an inserted layout
+symbol or merge field. A uniformly styled reference passes its style to
+the replacement. Where the opening delimiters, reference name and
+closing delimiters each had a different color, the entire replacement
+used the opening delimiter's color. Treating other attributes within a
+mixed reference the same way is inferred from this test. In the saved
+split examples, the opening delimiter and name shared a run. The closing
+delimiter kept its separate color through reopening. An empty field
+removed just the replacement, and the suffix kept its styling and line.
+A long field retained its style. Both lines of a two-line field used
+the replacement's style, and the suffix kept its own style on the second
+line. Different paragraph spacing and merge-variable styling were not
+measured.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1030)
+
 ## 9. Rendering stack
 
 ### 9.1 View system

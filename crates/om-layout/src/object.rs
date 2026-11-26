@@ -894,12 +894,25 @@ impl LayoutObject {
         self.merge_source.as_deref().or(self.text.as_deref())
     }
 
+    /// Byte ranges of the original control tokens in stored layout text.
+    /// The resolved names in `text_runs` can have different byte lengths.
+    pub fn stored_merge_field_ranges(&self) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+        crate::merge_field_ranges(self.merge_text().unwrap_or_default())
+    }
+
     /// Resolve already identified merge references using exact schema names.
     pub fn resolve_merge_fields(&mut self, names: &[String]) {
         let Some(text) = self.merge_text().map(str::to_owned) else {
             return;
         };
         self.text_runs = crate::split_merge_text(&text, names);
+        if self
+            .text_runs
+            .iter()
+            .any(|run| matches!(run, TextRun::MergeField(_)))
+        {
+            self.merge_source = Some(text);
+        }
         self.text = Some(
             self.text_runs
                 .iter()
