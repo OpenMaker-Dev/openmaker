@@ -235,6 +235,25 @@ pub(crate) fn network_path_text(host: &str, port: u16, file: &str) -> String {
     format!("fmnet:/{authority}/{file}")
 }
 
+/// A host's address and port as Add Host takes them, or what to fix: the
+/// address trimmed, without the brackets a path writes around an IPv6
+/// address (they are the path's, not the address's). OpenMaker Go's Add
+/// Host checks a host by this too.
+pub fn host_address(address: &str, port_text: &str) -> Result<(String, u16), String> {
+    let address = address.trim();
+    let address = address
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(address);
+    if address.is_empty() {
+        return Err("Enter a host name or address.".into());
+    }
+    if let Some(reason) = bad_address(address) {
+        return Err(reason.into());
+    }
+    Ok((address.to_owned(), port(port_text)?))
+}
+
 /// Why `host`, as typed, is no host's address. An account belongs in
 /// Account Name: a saved host keeps no account.
 fn bad_address(host: &str) -> Option<&'static str> {
@@ -458,22 +477,10 @@ impl HostDialog {
 
     /// The host the fields describe, or why they do not.
     fn host(&self) -> Result<SavedHost, String> {
-        // An IPv6 address as a path writes it, in brackets: the brackets
-        // are the path's, not the address's.
-        let address = self.address.trim();
-        let address = address
-            .strip_prefix('[')
-            .and_then(|inner| inner.strip_suffix(']'))
-            .unwrap_or(address);
-        if address.is_empty() {
-            return Err("Enter a host name or address.".into());
-        }
-        if let Some(reason) = bad_address(address) {
-            return Err(reason.into());
-        }
+        let (address, port) = host_address(&self.address, &self.port)?;
         Ok(SavedHost {
-            address: address.to_owned(),
-            port: port(&self.port)?,
+            address,
+            port,
             name: self.name.trim().to_owned(),
         })
     }
