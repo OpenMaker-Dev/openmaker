@@ -10,7 +10,8 @@
 //! that child window, so the window clips it to the document's visible part.
 //! Views are incognito (no cookies or storage written to disk) and have no
 //! developer tools; they open no other windows, download nothing, and go
-//! only to http, https, data, blob, file and about URLs.
+//! only to http, https, data, blob, file and about URLs. The bridge's
+//! messages are bounded on this thread, as they arrive ([`MessageBudget`]).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -32,7 +33,8 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
 use super::{
-    allowed, Backend, Event, Geometry, NativeParent, Navigation, Unavailable, ViewSpec, BRIDGE,
+    allowed, Backend, Event, Geometry, MessageBudget, NativeParent, Navigation, Unavailable,
+    ViewSpec, BRIDGE,
 };
 
 enum Command {
@@ -67,6 +69,8 @@ enum Command {
 pub(crate) struct GtkBackend {
     commands: Sender<Command>,
     events: Receiver<Event>,
+    /// Bridge messages the GTK thread sent and the app has not polled.
+    budget: MessageBudget,
 }
 
 /// WebKitGTK's DMA-BUF renderer shows blank pages on X servers without
@@ -137,12 +141,18 @@ impl GtkBackend {
         let (event_tx, events) = channel();
         let (ready_tx, ready_rx) = channel();
         let ctx = ctx.clone();
+        let budget = MessageBudget::default();
+        let taken = budget.clone();
         std::thread::Builder::new()
             .name("openmaker-web-viewers".into())
-            .spawn(move || run(ctx, command_rx, event_tx, ready_tx))
+            .spawn(move || run(ctx, command_rx, event_tx, taken, ready_tx))
             .map_err(|_| Unavailable::Platform)?;
         match ready_rx.recv_timeout(START_TIMEOUT) {
-            Ok(true) => Ok(GtkBackend { commands, events }),
+            Ok(true) => Ok(GtkBackend {
+                commands,
+                events,
+                budget,
+            }),
             _ => Err(Unavailable::Platform),
         }
     }
@@ -188,7 +198,13 @@ impl Backend for GtkBackend {
     }
 
     fn poll(&mut self) -> Vec<Event> {
-        self.events.try_iter().collect()
+        let events: Vec<Event> = self.events.try_iter().collect();
+        for event in &events {
+            if let Event::Message { body, .. } = event {
+                self.budget.release(body);
+            }
+        }
+        events
     }
 }
 
@@ -196,6 +212,7 @@ impl Backend for GtkBackend {
 struct State {
     commands: Receiver<Command>,
     events: Events,
+    budget: MessageBudget,
     display: gdkx11::X11Display,
     x11: Rc<RustConnection>,
     views: HashMap<u64, Hosted>,
@@ -255,6 +272,7 @@ fn run(
     ctx: egui::Context,
     commands: Receiver<Command>,
     sender: Sender<Event>,
+    budget: MessageBudget,
     ready: Sender<bool>,
 ) {
     // The views are children of X11 windows: GDK must use X11 too, also in
@@ -274,6 +292,7 @@ fn run(
         *state.borrow_mut() = Some(State {
             commands,
             events: Events { sender, ctx },
+            budget,
             display,
             x11: Rc::new(x11),
             views: HashMap::new(),
@@ -554,11 +573,19 @@ impl State {
             let manager = page
                 .user_content_manager()
                 .ok_or_else(|| "the page has no content manager".to_owned())?;
+            // WebKit has already copied the message into this process; one
+            // that is not text, too long, malformed or beyond the budget
+            // goes no further.
+            let budget = self.budget.clone();
             manager.connect_script_message_received(Some(HANDLER), move |_, message| {
-                if let Some(value) = message.js_value() {
+                let Some(value) = message.js_value().filter(|v| v.is_string()) else {
+                    return;
+                };
+                let body = value.to_str();
+                if budget.admit(&body) {
                     messages.send(Event::Message {
                         view,
-                        body: value.to_str().into(),
+                        body: body.into(),
                     });
                 }
             });

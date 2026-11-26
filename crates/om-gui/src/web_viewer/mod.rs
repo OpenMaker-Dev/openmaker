@@ -44,6 +44,60 @@ const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// The most bytes of one `FileMaker.PerformScript` message a page may send.
 const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 
+/// The most bridge message bytes that may wait for the app at once, each
+/// message counted as at least [`MESSAGE_COST`], and the most messages.
+const MESSAGE_BUDGET: usize = 2 * MAX_MESSAGE;
+const MESSAGE_COST: usize = 1024;
+const MESSAGE_ENTRIES: usize = 256;
+
+/// The bridge messages a backend has taken from its pages and the app has
+/// not polled yet, within [`MESSAGE_BUDGET`] and [`MESSAGE_ENTRIES`]. The
+/// thread that hears the pages admits a message, the app's thread releases
+/// it when it polls; neither waits for the other. Clones share the count.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(
+    not(all(feature = "web-viewer", any(target_os = "linux", target_os = "macos"))),
+    allow(dead_code, reason = "only a native backend takes messages")
+)]
+pub(crate) struct MessageBudget {
+    bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    entries: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg_attr(
+    not(all(feature = "web-viewer", any(target_os = "linux", target_os = "macos"))),
+    allow(dead_code, reason = "only a native backend takes messages")
+)]
+impl MessageBudget {
+    /// Whether to keep a message a page posted, counting it if so: it must
+    /// be no longer than [`MAX_MESSAGE`], fit in what is left, and be well
+    /// formed. Room is taken before the message is read, so a page that
+    /// floods a full budget costs no parsing.
+    pub fn admit(&self, body: &str) -> bool {
+        use std::sync::atomic::Ordering;
+        if body.len() > MAX_MESSAGE {
+            return false;
+        }
+        let cost = body.len().max(MESSAGE_COST);
+        let bytes = self.bytes.fetch_add(cost, Ordering::SeqCst) + cost;
+        let entries = self.entries.fetch_add(1, Ordering::SeqCst) + 1;
+        if bytes <= MESSAGE_BUDGET && entries <= MESSAGE_ENTRIES && parse_message(body).is_some() {
+            return true;
+        }
+        self.release(body);
+        false
+    }
+
+    /// A message [`MessageBudget::admit`] kept no longer waits: the app
+    /// polled it, or it could not be sent.
+    pub fn release(&self, body: &str) {
+        use std::sync::atomic::Ordering;
+        self.bytes
+            .fetch_sub(body.len().max(MESSAGE_COST), Ordering::SeqCst);
+        self.entries.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// A web viewer Browse painted this frame, in the window's points.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Placement {
@@ -945,8 +999,9 @@ pub(crate) const MESSAGE_URL: &str = "openmaker-message:";
 /// The `FileMaker` object a page gets when its web viewer allows
 /// JavaScript to perform FileMaker scripts. Its functions post the script
 /// name, parameter and option (each `encodeURIComponent`d, `&`-separated)
-/// to the view's `openmaker` message handler; nothing comes back to the
-/// page. macOS has a bridge of its own (`appkit.rs`).
+/// to the view's `openmaker` message handler, which drops a message the
+/// [`MessageBudget`] does not admit; nothing comes back to the page. macOS
+/// has a bridge of its own (`appkit.rs`).
 #[cfg_attr(
     not(all(feature = "web-viewer", target_os = "linux")),
     allow(dead_code, reason = "only the WebKitGTK backend injects it")

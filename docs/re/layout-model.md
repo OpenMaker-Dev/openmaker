@@ -2125,7 +2125,12 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   WebKitGTK's DMA-BUF renderer at startup (it draws blank pages there) unless
   `WEBKIT_DISABLE_DMABUF_RENDERER` is set; the page bridge uses its own
   `openmaker` script message handler (wry's IPC drops messages from `data:`
-  pages, whose URL it cannot parse).
+  pages, whose URL it cannot parse). On both platforms the bridge's
+  messages are bounded where they arrive, on the thread that hears the page
+  and without waiting for the app: only well-formed ones are kept, and one
+  longer than 16 MiB, or one that would put more than 256 messages or
+  32 MiB (each counted as at least 1 KiB) in wait for the app, is dropped
+  [I, OpenMaker's bounds; FileMaker's are unmeasured].
 - On macOS (`web_viewer/appkit.rs`) AppKit's views live on the main thread,
   where the app's frames run: commands apply as they come, and a page is
   made at the end of the frame, with wry, as a child of the root window,
@@ -2140,11 +2145,9 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   from the OS's random source (without it the bridge stays off), and the
   last document's stops working as the next one commits, with what it
   posted that the app has not taken yet: another site's frame in the page
-  cannot post, nor can a page that learned an earlier document's token. Only
-  well-formed messages are kept; one longer than 16 MiB, or one that would
-  put more than 256 messages or 32 MiB (each counted as at least 1 KiB) in
-  wait for the app, is dropped. A page whose Content
-  Security Policy forbids frames (`frame-src 'none'`) cannot post at all.
+  cannot post, nor can a page that learned an earlier document's token. A
+  page whose Content Security Policy forbids frames (`frame-src 'none'`)
+  cannot post at all.
   For the same reason the history and loading state that Set Web Viewer's
   Back and Forward need are read through key-value coding. wry reports a
   load only when it commits and when it finishes, so each frame also looks

@@ -630,6 +630,32 @@ fn messages_and_calls_encode_text_safely() {
 }
 
 #[test]
+fn bridge_messages_wait_for_the_app_within_a_bound() {
+    let budget = MessageBudget::default();
+    let prefix = "openmaker-perform-script&s=a&p=";
+    let small = format!("{prefix}x");
+    // Too long or malformed: dropped, with nothing left counted.
+    assert!(!budget.admit(&format!("{prefix}{}", "x".repeat(MAX_MESSAGE))));
+    assert!(!budget.admit("openmaker-perform-script&x=1"));
+    // So many messages wait, and one the app polls makes room for one more.
+    for _ in 0..MESSAGE_ENTRIES {
+        assert!(budget.admit(&small));
+    }
+    assert!(!budget.admit(&small));
+    budget.release(&small);
+    assert!(budget.admit(&small));
+    for _ in 0..MESSAGE_ENTRIES {
+        budget.release(&small);
+    }
+    // So many bytes: two of the longest messages fill the budget.
+    let longest = format!("{prefix}{}", "x".repeat(MAX_MESSAGE - prefix.len()));
+    assert!(budget.admit(&longest) && budget.admit(&longest));
+    assert!(!budget.admit(&small));
+    budget.release(&longest);
+    assert!(budget.admit(&small));
+}
+
+#[test]
 fn navigation_blocks_javascript_and_ignores_old_page_completions() {
     let ctx = egui::Context::default();
     let (mut viewers, recorded) = viewers();
