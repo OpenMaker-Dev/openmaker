@@ -19,7 +19,9 @@
 //! field values; it does not send protocol requests or write records.
 //! Refusals carry the FileMaker error a script step reports
 //! ([`DataError::code`]).
+mod global_text_input;
 mod global_text_self;
+pub use global_text_input::global_text_input_changes;
 pub use global_text_self::global_text_assignment;
 pub mod recalc;
 pub mod schema;
@@ -39,7 +41,7 @@ use om_formula::{DecodeErrorKind, Expr, Formula, Key, Opcode};
 use om_hbam::catalog::{DataType, Field, FieldKind};
 use om_hbam::{EntryVariable, FieldOptions, KeyTree, Node, Table};
 
-use self::global_text_self::GlobalTextSelf;
+use self::{global_text_input::GlobalTextInput, global_text_self::GlobalTextSelf};
 use crate::containers::{self, MemberInfo};
 use crate::meta::{ValueList, ValueSource};
 
@@ -1140,6 +1142,8 @@ struct PlannedField {
     auto_enter_self: AutoEntrySelf,
     /// This local global's auto-entry reads Self.
     global_text_self: GlobalTextSelf,
+    /// This local global's auto-entry reads an independent plain global.
+    global_text_input: Option<GlobalTextInput>,
     /// Creation Date supplies the value on create. The calculation's
     /// dependencies identify updates with an unmeasured result.
     creation_date_with_calculation: bool,
@@ -2351,6 +2355,7 @@ impl RecordPlan {
                 }
                 analyze_rule(polish, &context, usage).map_err(|e| error(&e))
             };
+            let mut global_text_input = None;
             let computed = (kind == FieldKind::Calculation && !unstored) || auto_calculation;
             let expression = if computed {
                 if field.data_type == DataType::Container
@@ -2392,9 +2397,16 @@ impl RecordPlan {
                 if auto_enters_global
                     && (!formula.dependencies.is_empty() || !formula.related.is_empty())
                 {
-                    return Err(error(
-                        "auto-entry into a global that reads fields is unsupported.",
-                    ));
+                    global_text_input = local
+                        .then(|| {
+                            global_text_input::classify(table, &schema, field, &formula.formula)
+                        })
+                        .flatten();
+                    if global_text_input.is_none() {
+                        return Err(error(
+                            "auto-entry into a global that reads fields is unsupported.",
+                        ));
+                    }
                 }
                 Some(formula)
             } else {
@@ -2609,6 +2621,7 @@ impl RecordPlan {
                 expression,
                 auto_enter_self,
                 global_text_self,
+                global_text_input,
                 creation_date_with_calculation,
                 constant,
                 validation,
@@ -3029,7 +3042,21 @@ impl RecordPlan {
                     ),
                 ));
             }
-            if let Some(serial) = field.serial {
+            if let Some(input) = field.global_text_input {
+                if !allow_nonempty {
+                    return Err(DataError::with_code(
+                        error::UNAVAILABLE,
+                        format!(
+                            "Field {}: global Text auto-entry from another global requires local New Record.",
+                            field.name
+                        ),
+                    ));
+                }
+                values.insert(
+                    (id, 1),
+                    input.result_from_session(globals.get(input.source, 1))?,
+                );
+            } else if let Some(serial) = field.serial {
                 serials.push(serial);
             } else if let Some(value) = &field.constant {
                 values.insert((id, 1), value.clone());
@@ -4073,6 +4100,21 @@ impl RecordPlan {
             context.record_number,
             Some(RecordNumber::LocalSortedNewRecord { .. })
         );
+        if !entry.skip_auto_enter && !unsorted {
+            if let Some(field) = self
+                .fields
+                .values()
+                .find(|field| field.global_text_input.is_some())
+            {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: global Text auto-entry from another global requires unsorted local New Record.",
+                        field.name
+                    ),
+                ));
+            }
+        }
         let first_related = context.record_number == Some(RecordNumber::LocalFirstRelated)
             && context.sequence == WriteSequence::Local;
         if first_related {
