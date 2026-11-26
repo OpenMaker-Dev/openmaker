@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use om_data::found::{code, FindRequest, FoundSet, FoundSetChange, SortField};
+use om_data::rules::RecordNumber;
 use om_data::runtime::Mode;
 use om_data::{DataError, DataProvider, Field, FieldChanges, Record, ScriptWrite};
 
@@ -153,9 +154,9 @@ pub(crate) struct Uncommitted {
     /// The new record's place in the found set when it was made, which
     /// its auto-entered `Get ( RecordNumber )` was given: its later
     /// writes before its commit give it again, as the value is entered
-    /// when the record is made (Duplicate Record, #526). `None` when it
-    /// is not known (New Record, #298).
-    pub record_number: Option<u64>,
+    /// when the record is made (Duplicate Record, #526, and ordinary
+    /// local New Record, #1011). `None` when the position is unknown.
+    pub record_number: Option<RecordNumber>,
 }
 
 impl Uncommitted {
@@ -215,7 +216,7 @@ pub(crate) struct NewRecord {
     saved: bool,
     /// Its place in the found set when it was made, if known
     /// ([`Uncommitted::record_number`]).
-    record_number: Option<u64>,
+    record_number: Option<RecordNumber>,
 }
 
 /// What [`Window::commit`] writes with, as its caller gave it.
@@ -980,7 +981,10 @@ impl Window {
                 typed: draft.typed.clone(),
                 skip_validation,
                 privilege_set: privilege_set.clone(),
-                record_number: record_numbers.get(&index).copied(),
+                record_number: record_numbers
+                    .get(&index)
+                    .copied()
+                    .map(RecordNumber::Window),
                 // Its preview's values went into the record it holds.
                 prepared: draft
                     .prepared
@@ -1402,9 +1406,35 @@ impl Window {
         privilege_set: Option<String>,
     ) -> Result<(), DataError> {
         let session = self.open_new_record(provider);
-        let made =
-            self.make_new_record(provider, session, (values, cells), (privilege_set, None))?;
+        let record_number = if session
+            && !cfg!(any(target_os = "ios", target_os = "android"))
+            && provider.local_path().is_some()
+        {
+            self.next_unsorted_record_number(provider)
+                .map(RecordNumber::LocalNewRecord)
+        } else {
+            None
+        };
+        let made = self.make_new_record(
+            provider,
+            session,
+            (values, cells),
+            (privilege_set, record_number),
+        )?;
         self.adopt_new_record(provider, made)
+    }
+
+    /// An unsorted window appends a new record to its current found set.
+    /// Its position is unknown when the provider cannot read that set or
+    /// keeps it sorted.
+    pub(super) fn next_unsorted_record_number(
+        &self,
+        provider: &mut dyn DataProvider,
+    ) -> Option<u64> {
+        let layout = self.state.layout?;
+        let (_, found) = provider.records_with_summary(layout, 0, 0, &[]).ok()?;
+        let found = found.filter(|found| !found.sorted)?;
+        found.found.checked_add(1)
     }
 
     /// Open the record session a new record is held in, as FileMaker Pro
@@ -1435,7 +1465,7 @@ impl Window {
         provider: &mut dyn DataProvider,
         session: bool,
         (values, cells): (FieldChanges, Cells),
-        (privilege_set, record_number): (Option<String>, Option<u64>),
+        (privilege_set, record_number): (Option<String>, Option<RecordNumber>),
     ) -> Result<NewRecord, DataError> {
         let revert = |provider: &mut dyn DataProvider, session: bool| {
             if session {

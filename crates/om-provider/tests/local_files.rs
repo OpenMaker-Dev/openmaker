@@ -2932,6 +2932,92 @@ fn starter_fields_read_as_the_fields_tab_lists_them() {
 }
 
 #[test]
+fn unsupported_stored_record_position_does_not_reserve_a_serial() {
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
+    use om_data::rules::{error, RecordNumber};
+    use om_hbam::slot::uint_segment;
+
+    const SERIAL: u64 = 40;
+    const POSITION: u64 = 41;
+    let folder = Folder::new("stored-position-preflight");
+    let path = folder.file("Events.fmp12", PASSWORD, |root| {
+        fixture::add_field(root, TABLE, SERIAL, "Serial", 1, 1, 0, 0x2, 0);
+        fixture::set_field_serial_increment(root, TABLE, SERIAL, 1);
+        root.put(
+            &[
+                &uint_segment(TABLE),
+                &[3],
+                &[5],
+                &uint_segment(SERIAL),
+                &[0x0c],
+            ],
+            om_scripts::text_node(&[], "1"),
+        );
+        fixture::add_field(root, TABLE, POSITION, "Position", 2, 2, 0, 0x80000, 0);
+        fixture::add_formula(
+            root,
+            &fixture::names(),
+            (TABLE, OCCURRENCE),
+            POSITION,
+            5,
+            "Get ( RecordNumber )",
+        );
+    });
+    let mut provider = opened(&path);
+    let write = om_data::ScriptWrite {
+        layout: LAYOUT as u32,
+        record_number: Some(RecordNumber::Window(3)),
+        ..Default::default()
+    };
+    let preview_error = provider.preview_new_record(&write).err().unwrap();
+    assert_eq!(preview_error.code, Some(error::UNAVAILABLE));
+    let create_error = provider.write_record(&write).unwrap_err();
+    assert_eq!(create_error.code, Some(error::UNAVAILABLE));
+    let cells = [(NAME, Some("Imported".into()))].into();
+    let import_error = provider
+        .import_record(LAYOUT as u32, None, &cells, true)
+        .unwrap_err();
+    assert_eq!(import_error.code, Some(error::UNAVAILABLE));
+    provider.begin_record_commit().unwrap();
+    let import_error = provider
+        .import_record(LAYOUT as u32, None, &cells, true)
+        .unwrap_err();
+    assert_eq!(import_error.code, Some(error::UNAVAILABLE));
+    let create_error = provider.write_record(&write).err().unwrap();
+    assert_eq!(create_error.code, Some(error::UNAVAILABLE));
+    provider.revert_transaction().unwrap();
+    provider.close();
+
+    let file = om_hbam::HbamFile::open(&path).unwrap();
+    let tree = file.key_tree().unwrap();
+    let next = tree
+        .at(&[TABLE, 3, 5, SERIAL, 0x0c])
+        .unwrap()
+        .text()
+        .unwrap()
+        .unwrap();
+    assert_eq!(next, "1");
+    drop(tree);
+    drop(file);
+
+    let mut provider = opened(&path);
+    provider.begin_record_commit().unwrap();
+    let made = provider
+        .write_record(&om_data::ScriptWrite {
+            record_number: Some(RecordNumber::LocalNewRecord(3)),
+            ..write
+        })
+        .unwrap();
+    provider.commit_record_session(false).unwrap();
+    provider.close();
+
+    let mut reopened = opened(&path);
+    let saved = reopened.record_by_id(LAYOUT as u32, made.id).unwrap();
+    assert_eq!(text(&saved, made.id, "Position"), Some("3"));
+    assert_eq!(text(&saved, made.id, "Serial"), Some("1"));
+}
+
+#[test]
 fn local_new_record_auto_enters_a_file_variable_at_creation() {
     use fixture::{LAYOUT, NAME, OCCURRENCE};
     use om_data::calc::{eval::Variables, Value};
