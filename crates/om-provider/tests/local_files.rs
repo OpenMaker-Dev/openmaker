@@ -238,17 +238,79 @@ fn grouped_self_join_reads_other_records_after_setting_the_group() {
             };
             group = key.as_str().to_owned();
         }
-        provider.begin_record_commit().unwrap();
+        let page = provider.record_by_id(LAYOUT as u32, record).unwrap();
+        assert_eq!(
+            provider
+                .prepare_record_edit(&om_data::RecordEditRequest {
+                    baseline: om_data::ContainerEditBaseline {
+                        layout: LAYOUT as u32,
+                        record,
+                        version: page.versions.get(&record).copied(),
+                    },
+                    cells: [GROUP].into(),
+                    fields: Default::default(),
+                })
+                .unwrap(),
+            om_data::EditPreparation::Prepared
+        );
         provider
             .write_record(&ScriptWrite {
                 record: Some(record),
                 cells: [(GROUP, Some(group.clone()))].into(),
+                single_field_step: true,
                 ..draft.clone()
             })
             .unwrap();
         provider.commit_transaction(false).unwrap();
         ids.push(record);
     }
+    provider.begin_record_commit().unwrap();
+    let candidate = provider.write_record(&draft).unwrap().id;
+    provider
+        .write_record(&ScriptWrite {
+            record: Some(candidate),
+            cells: [
+                (DATE, Some("1/15/2030".into())),
+                (TIME, Some("8:00:20 AM".into())),
+            ]
+            .into(),
+            ..draft.clone()
+        })
+        .unwrap();
+    provider.commit_transaction(false).unwrap();
+    for edits in [
+        vec![
+            (GROUP, Some(group.clone())),
+            (TIME, Some("8:00:50 AM".into())),
+        ],
+        vec![(GROUP, Some(group.clone())), (GROUP, None)],
+        vec![(GROUP, Some(format!("{group}\rAnother")))],
+        vec![(KEY, Some("First\rSecond".into()))],
+    ] {
+        provider.begin_record_commit().unwrap();
+        let refused = edits
+            .into_iter()
+            .try_for_each(|(field, value)| {
+                provider
+                    .write_record(&ScriptWrite {
+                        record: Some(candidate),
+                        cells: [(field, value)].into(),
+                        single_field_step: true,
+                        ..draft.clone()
+                    })
+                    .map(|_| ())
+            })
+            .and_then(|()| provider.commit_transaction(false))
+            .unwrap_err();
+        assert_eq!(refused.code, Some(3), "{refused:?}");
+        if provider.transaction_open() {
+            provider.revert_transaction().unwrap();
+        }
+        let values = read(&mut provider, candidate);
+        assert!(values.get(GROUP, 1).is_none());
+        assert!(values.get(ELAPSED, 1).is_none());
+    }
+
     provider.close();
     let mut provider = opened(&path);
     for (record, seconds) in ids.into_iter().zip([None, Some(10), Some(30)]) {

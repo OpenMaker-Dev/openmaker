@@ -1990,6 +1990,7 @@ fn routed_write(
         set: CurrentSet::Account,
         record_number: write.record_number,
         prepared: write.prepared,
+        single_field_step: false,
     };
     match plan {
         Some(plan) => {

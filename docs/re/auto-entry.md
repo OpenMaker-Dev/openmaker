@@ -553,8 +553,8 @@ Still unmeasured:
 - sorted joins and other non-equality and multi-predicate joins,
   stored calculations and validation, and portal rows created in one
   commit (the transaction case is a script's);
-- the stored witness for an auto-entry configured to keep the value
-  it first enters;
+- other stored outcomes for auto-entry that keeps its first value,
+  including additional writes between the group assignment and commit;
 - whether FileMaker Pro reads the same in a local file for these cases (the
   one-older-match case above agrees). Applying the reading to keys the
   record auto-enters itself is inference.

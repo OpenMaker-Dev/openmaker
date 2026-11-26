@@ -187,6 +187,9 @@ pub struct ScriptWrite {
     /// write (3); the window previews the row again. `None` for any other
     /// write.
     pub prepared: Option<PreparedId>,
+    /// This existing-record write is the result of one field-setting
+    /// script step, rather than a record's accumulated draft.
+    pub single_field_step: bool,
 }
 
 /// A record of the window's that the host does not have as the window

@@ -4,7 +4,8 @@
 
 use super::*;
 use om_data::rules::{
-    error, Entry, RecordEnvironment, RecordPlan, WriteContext, WriteLayout, WriteMode, Written,
+    error, Entry, RecordEnvironment, RecordPlan, WriteContext, WriteLayout, WriteMode,
+    WriteSequence, Written,
 };
 use om_data::FieldChanges;
 use om_hbam::{Cell, OwnedNode};
@@ -821,6 +822,9 @@ impl NativeProvider {
         use om_data::host::session::selector;
         let reads = plan.context_reads();
         let mut context = WriteContext::default();
+        if layout.is_some() && self.local.is_some() {
+            context.sequence = WriteSequence::Local;
+        }
         if let Some(layout) = layout.filter(|_| reads.contains(&selector::LAYOUT_NUMBER)) {
             context.layout = self.layout_number(layout)?;
         }
@@ -857,6 +861,9 @@ impl NativeProvider {
         }
         let mut context = self.write_context(plan, origin.layout, origin.set)?;
         context.record_number = origin.record_number;
+        if origin.single_field_step && context.sequence == WriteSequence::Local {
+            context.sequence = WriteSequence::SingleLocalFieldStep;
+        }
         Ok(context)
     }
 
@@ -2532,6 +2539,9 @@ pub(crate) struct Origin {
     /// (`ScriptWrite::prepared`, preview.rs): its context, serial numbers,
     /// clock and UUID are the write's.
     pub prepared: Option<om_data::PreparedId>,
+    /// The window proved a single field-setting step, with no other
+    /// staged edits to the record.
+    pub single_field_step: bool,
 }
 
 /// Whose privilege set a write's formulas read as current

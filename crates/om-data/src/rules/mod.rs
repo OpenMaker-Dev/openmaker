@@ -362,12 +362,26 @@ pub enum WriteLayout {
     Number(u64),
 }
 
+/// How much the writer can establish about the order of local edits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WriteSequence {
+    /// A host, routed write, or other writer without a measured sequence.
+    #[default]
+    Unmeasured,
+    /// A write through a layout of the opened local file.
+    Local,
+    /// A single field-setting step on an otherwise unchanged local row.
+    SingleLocalFieldStep,
+}
+
 /// What the operation making a write knows that its formulas may read
 /// ([`CONTEXT_SELECTORS`]). A value left out refuses a write whose
 /// evaluated formula reads it; it is never answered empty in its place.
 /// The operation supplies only what [`RecordPlan::context_reads`] names.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WriteContext {
+    /// Evidence for auto-entry whose result depends on entry order.
+    pub sequence: WriteSequence,
     /// `Get ( LayoutNumber )`.
     pub layout: WriteLayout,
     /// `Get ( CurrentPrivilegeSetName )`: the session's current set, the
@@ -966,6 +980,8 @@ pub struct RecordPlan {
     table: u64,
     fields: BTreeMap<u64, PlannedField>,
     evaluation_order: Vec<u64>,
+    /// (auto-entered result, equality key, inequality key) for #297.
+    grouped_self_joins: BTreeSet<(u64, u64, u64)>,
     /// The file's calculation schema with this table's current fields.
     schema: Arc<CalcSchema>,
 }
@@ -2154,6 +2170,7 @@ impl RecordPlan {
             .filter(|(_, f)| f.formulas().any(|e| !e.related.is_empty()))
             .map(|(id, _)| *id)
             .collect();
+        let mut grouped_self_joins = BTreeSet::new();
         for id in reading {
             let field = &fields[&id];
             // Only the auto-entered formula's own reads evaluate it again;
@@ -2172,7 +2189,7 @@ impl RecordPlan {
                         && expression.uses.get(occurrence).is_some_and(|uses| {
                             uses.first && !uses.placed && uses.aggregated.is_empty()
                         });
-                    let hop = related_hop(
+                    let (match_fields, grouped_keys) = related_hop(
                         &schema,
                         &fields,
                         context,
@@ -2180,8 +2197,11 @@ impl RecordPlan {
                         first_auto_enter,
                     )
                     .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
+                    if let Some((group, key)) = grouped_keys {
+                        grouped_self_joins.insert((id, group, key));
+                    }
                     if own {
-                        matches.extend(hop);
+                        matches.extend(match_fields);
                     }
                 }
             }
@@ -2395,6 +2415,7 @@ impl RecordPlan {
             table: table.id,
             fields,
             evaluation_order,
+            grouped_self_joins,
             schema: Arc::new(schema),
         })
     }
@@ -4131,6 +4152,52 @@ impl RecordPlan {
         volatile
     }
 
+    /// Preserve the measured stored result when evaluation is deferred to
+    /// commit. A group set and then cleared is still an assignment, even
+    /// if it would appear unchanged in the final row.
+    fn check_grouped_self_join_write(
+        &self,
+        mode: WriteMode,
+        stored: &BTreeMap<u64, String>,
+        changes: &BTreeMap<u64, Option<String>>,
+        row: &BTreeMap<u64, String>,
+        environment: &RecordEnvironment,
+    ) -> Result<(), DataError> {
+        for &(result, group, key) in &self.grouped_self_joins {
+            let single_line = [stored, row].into_iter().all(|values| {
+                [group, key]
+                    .into_iter()
+                    .all(|id| values.get(&id).is_none_or(|value| single_line_key(value)))
+            });
+            let stored_group_empty = stored.get(&group).is_none_or(String::is_empty);
+            let group_assigned = changes.contains_key(&group);
+            let keeps_result = stored.get(&result).is_some_and(|value| !value.is_empty())
+                && !changes.contains_key(&result);
+            let safe_without_assignment = !group_assigned
+                && !changes.contains_key(&key)
+                && (stored_group_empty || keeps_result);
+            let measured_assignment = mode == WriteMode::Update
+                && environment.context.sequence == WriteSequence::SingleLocalFieldStep
+                && stored_group_empty
+                && group_assigned
+                && changes.len() == 1
+                && row.get(&group).is_some_and(|value| !value.is_empty());
+            if environment.context.sequence == WriteSequence::Unmeasured
+                || !single_line
+                || !(safe_without_assignment || measured_assignment)
+            {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: this grouped self-join needs a single local group-key assignment with single-line keys. No values were changed.",
+                        self.fields[&result].name
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// [`Self::compute_values`]'s whole computation: the record's cells as
     /// the write leaves them, those it changed, and those a preview
     /// (`preview`) left out.
@@ -4148,6 +4215,9 @@ impl RecordPlan {
         let mut evaluated = BTreeSet::new();
         let mut probed = BTreeSet::new();
         let (mut row, mut dirty) = self.written(existing, changes, entry)?;
+        if !entry.skip_auto_enter {
+            self.check_grouped_self_join_write(mode, existing, changes, &row, environment)?;
+        }
         // A write that changes nothing changes nothing, unless it sets a
         // lookup's match field: FileMaker performs the lookup then, also on
         // the value the field had (auto-entry.md, Lookups, battery s41).
@@ -4589,6 +4659,17 @@ impl RecordPlan {
         }
         let path = self.schema.path(context, occurrence);
         let hop = path.as_ref().and_then(|path| path.first());
+        let unequal = hop.is_some_and(grouped_unequal_self_join);
+        if unequal
+            && hop.is_some_and(|hop| {
+                hop.predicates.iter().any(|predicate| {
+                    row.get(&predicate.left)
+                        .is_some_and(|value| !single_line_key(value))
+                })
+            })
+        {
+            return Ok(false);
+        }
         // An empty match value relates nothing (file-metadata.md 4.3, rule
         // 2 [O]): with a match field on the record's side
         // empty, as the write computes it, the related set is empty, the
@@ -4612,7 +4693,6 @@ impl RecordPlan {
         // pending deletes. s47 read committed membership, so a new row
         // with held peers cannot use these reads, even in the fallbacks
         // that are independent of the written row's own membership.
-        let unequal = hop.is_some_and(grouped_unequal_self_join);
         if unequal || matches!(session.written, Written::New(_)) {
             let others = session.others_held.contains(&self.table)
                 || session
@@ -5439,6 +5519,7 @@ impl Expression {
             table,
             fields: BTreeMap::new(),
             evaluation_order: Vec::new(),
+            grouped_self_joins: BTreeSet::new(),
             schema: Arc::new(schema),
         };
         let first = InRepetition::Calculation(1);
@@ -6303,7 +6384,7 @@ fn related_hop(
     context: u64,
     (occurrence, field): (u64, u64),
     first_auto_enter: bool,
-) -> Result<Vec<u64>, &'static str> {
+) -> Result<(Vec<u64>, Option<(u64, u64)>), &'static str> {
     use crate::host::FieldClass;
     use crate::meta::JoinOp;
     let to = schema
@@ -6353,6 +6434,26 @@ fn related_hop(
              or by a summary or a value list of field values) are unsupported.",
         );
     }
+    let grouped_keys = if grouped_unequal {
+        let group = hop
+            .predicates
+            .iter()
+            .find(|p| p.op == JoinOp::Equal)
+            .expect("grouped join has an equality key")
+            .left;
+        let key = hop
+            .predicates
+            .iter()
+            .find(|p| p.op == JoinOp::NotEqual)
+            .expect("grouped join has an inequality key")
+            .left;
+        if !fields.get(&group).is_some_and(PlannedField::given) {
+            return Err("the group field of an unequal self-join must be written explicitly.");
+        }
+        Some((group, key))
+    } else {
+        None
+    };
     let mut matches = Vec::new();
     for predicate in &hop.predicates {
         // Auto-entered and stored calculation keys participate in the
@@ -6385,7 +6486,15 @@ fn related_hop(
         }
         matches.push(predicate.left);
     }
-    Ok(matches)
+    Ok((matches, grouped_keys))
+}
+
+fn single_line_key(value: &str) -> bool {
+    value
+        .split(['\r', '\n'])
+        .filter(|line| !line.is_empty())
+        .nth(1)
+        .is_none()
 }
 
 /// Unsorted, same-field predicates on a group key and a distinct row key.
@@ -7453,6 +7562,7 @@ mod tests {
             // A row typed after two related rows of an unsorted portal
             // (#1038).
             record_number: Some(3),
+            sequence: WriteSequence::Unmeasured,
         };
         let created = write(known.clone(), WriteMode::Create).unwrap();
         assert_eq!(
