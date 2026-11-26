@@ -6979,6 +6979,11 @@ impl OpenMakerApp {
                 Err(PollError::Stopped) => {
                     if !self.worker_stopped {
                         self.worker_stopped = true;
+                        // No answer will come for what waits on one.
+                        self.part_setup = None;
+                        for id in self.window_ids() {
+                            self.with_window(id, |app| app.w.layout_workspace.abandon_parts());
+                        }
                         self.fail(&worker::stopped_error());
                     }
                     break;
@@ -7013,12 +7018,22 @@ impl OpenMakerApp {
             .filter(|d| d.file_id == file)
             .map(|d| d.id)
             .collect();
+        // Part Setup waits on an answer that will not come.
+        if self
+            .part_setup
+            .as_ref()
+            .is_some_and(|dialog| ids.contains(&dialog.window))
+        {
+            self.part_setup = None;
+        }
         for id in ids {
             self.with_window(id, |app| {
                 if app.w.file_id != file {
                     return;
                 }
                 app.w.connection_lost = Some(err.message.clone());
+                // Nor does a held parts change get its answer or read.
+                app.w.layout_workspace.abandon_parts();
                 let doc = &mut app.w;
                 let restored = doc
                     .session
@@ -7419,7 +7434,10 @@ impl OpenMakerApp {
                 let Some(session) = self.w.session.as_mut() else {
                     return;
                 };
-                if let Err(err) = session.accept_geometry(layout_id, result) {
+                let read = session.accept_geometry(layout_id, result);
+                // The read a parts change's answer asked for has come.
+                self.w.layout_workspace.layout_read(layout_id);
+                if let Err(err) = read {
                     self.fail(&err);
                 }
             }
@@ -8035,7 +8053,8 @@ mod tests {
     /// A parts change the host refuses without writing (no code, or a
     /// code other than 306) leaves the layout at the revision the window
     /// shows, so the canvas hold ends with the answer instead of waiting
-    /// for a new revision that never comes (#1048's review).
+    /// for a new revision that never comes (#1048's review); a change that
+    /// may have changed it waits for the read its answer asks for.
     #[test]
     fn a_parts_change_refused_without_writing_ends_the_canvas_hold() {
         use om_data::layout_placement::{PartChange, PartsChange, CONFLICT};
@@ -8059,6 +8078,11 @@ mod tests {
             let revision = result.as_ref().ok().map(|()| [2; 32]);
             workspace.parts_answered(&sent, layout_may_have_changed(&result), revision);
             assert_eq!(workspace.saving, holds, "{result:?}");
+            // The read the answer asks for ends the hold, at whatever
+            // revision: a 306 whose read could not reach the host's new
+            // catalog shows the old one (#1048's second review).
+            workspace.layout_read(1);
+            assert!(!workspace.saving, "{result:?}");
         }
     }
 

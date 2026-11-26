@@ -1616,6 +1616,29 @@ impl LayoutWorkspace {
         }
     }
 
+    /// The window read layout `layout` again: an answered hold on it ends,
+    /// whatever revision the read gave. A refusal (306) whose read could
+    /// not reach the host's new catalog still shows the old revision, which
+    /// [`Self::release_parts`] would wait on for good.
+    pub(crate) fn layout_read(&mut self, layout: u32) {
+        if self
+            .parts_hold
+            .as_ref()
+            .is_some_and(|hold| hold.answered && hold.sent.at().0 == layout)
+        {
+            self.parts_hold = None;
+            self.saving = false;
+        }
+    }
+
+    /// No answer or read will come for a held change (the connection or
+    /// the worker is gone): the hold ends.
+    pub(crate) fn abandon_parts(&mut self) {
+        if self.parts_hold.take().is_some() {
+            self.saving = false;
+        }
+    }
+
     /// Ends an answered hold once the window no longer shows the layout as
     /// it was when the change was sent: read again at another revision, not
     /// readable, or another layout.
