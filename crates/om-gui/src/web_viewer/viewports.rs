@@ -124,6 +124,11 @@ impl ViewportWindows {
     /// At the start of window `id`'s viewport code: its native window, or
     /// why it has none. `title` is the title its viewport was shown with.
     pub fn parent(&mut self, id: u32, title: &str) -> Result<NativeParent, Unavailable> {
+        // Painted pages need no window of their own.
+        #[cfg(all(feature = "web-viewer", target_os = "linux"))]
+        if super::composited() {
+            return Ok(NativeParent::Composited);
+        }
         #[cfg(target_os = "linux")]
         {
             if !self.read(true) {
