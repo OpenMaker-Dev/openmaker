@@ -2116,18 +2116,19 @@ fn design_dims_pasteboard_artwork_and_places_fills_on_their_own_band() {
             _ => None,
         })
         .collect();
-    let (fill, clip) = rectangles
+    let (fill_index, (fill, clip)) = rectangles
         .iter()
-        .find(|(rect, _)| rect.fill == Color32::from_rgb(64, 128, 191))
+        .enumerate()
+        .find(|(_, (rect, _))| rect.fill == Color32::from_rgb(64, 128, 191))
         .expect("the crossing rectangle still has its authored fill");
-    let divider = clip.right();
-    assert!(divider < fill.rect.right());
-    assert!(rectangles.iter().any(|(rect, clip)| {
-        rect.rect == fill.rect
-            && rect.fill == fill.fill.gamma_multiply(0.55)
-            && clip.left() == divider
-            && clip.right() >= rect.rect.right()
-    }));
+    assert!(clip.right() >= fill.rect.right());
+    let (fade, _) = rectangles[fill_index + 1..]
+        .iter()
+        .find(|(rect, _)| rect.fill == Color32::from_gray(0xe5).gamma_multiply(0.45))
+        .expect("the right pasteboard is dimmed above the artwork");
+    let divider = fill.rect.left() + 65.0;
+    assert_eq!(fade.rect.left(), divider);
+    assert!(fade.rect.right() >= fill.rect.right());
     let pasteboard_click = egui::pos2((divider + fill.rect.right()) / 2.0, fill.rect.center().y);
     let header = rectangles
         .iter()
