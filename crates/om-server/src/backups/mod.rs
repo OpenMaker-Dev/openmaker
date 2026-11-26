@@ -76,7 +76,11 @@
 //! is deleted. After a run that completed, it deletes the schedule's
 //! oldest backups past its keep count among those that are not preserved
 //! ([`BackupTask::keep`]): only folders of that schedule's name with a
-//! `backup.config`, in the target folder. A folder is removed through the
+//! `backup.config`, in the target folder; but not one that is the newest
+//! backup of the schedule holding a hosted file (open or closed, at its
+//! place in the layout) that no newer backup that stays holds, so that a
+//! run which left a closed file out never retires the last backup of it
+//! (OpenMaker's choice). A folder is removed through the
 //! handle it was checked on, its contents first and then its name, which
 //! fails unless the name still holds an empty folder. One run copies at a
 //! time across the server (FileMaker's Parallel Backup off); a run due
@@ -719,23 +723,76 @@ impl Backups {
 
     /// Delete the oldest backups of `schedule` in `target` past `keep`,
     /// among those that are not preserved, never `made`, nor one that
-    /// hosted data lies in.
-    fn retain(&self, target: &Target, protected: &Protected, schedule: &str, keep: u8, made: &str) {
+    /// hosted data lies in, nor one that is the newest backup of the
+    /// schedule holding a hosted file (at one of `places`) that no newer
+    /// backup that stays holds: a run that left a closed file out must not
+    /// retire the last backup of it. That only keeps what the keep count
+    /// would delete, never deletes more.
+    fn retain(
+        &self,
+        target: &Target,
+        protected: &Protected,
+        schedule: &str,
+        keep: u8,
+        made: &str,
+        places: &[Place],
+    ) {
         if let Some(reason) = protected.removal_refused() {
             error!("Schedule {schedule:?}: no old backup is deleted: {reason}");
             return;
         }
         let _manage = self.manage();
-        let mut kept: Vec<Found> = found_in(&target.folder)
+        let mut ours: Vec<Found> = found_in(&target.folder)
             .into_iter()
-            .filter(|found| found.schedule == schedule && !found.config.preserved())
+            .filter(|found| found.schedule == schedule)
             .collect();
-        kept.sort_by_key(|found| (found.started, found.config.time()));
-        let excess = kept.len().saturating_sub(usize::from(keep));
-        for found in kept
+        ours.sort_by_key(|found| (found.started, found.config.time()));
+        // What the keep count deletes, as before: the oldest past it among
+        // those not preserved, never the one just made.
+        let unpreserved = ours
+            .iter()
+            .filter(|found| !found.config.preserved())
+            .count();
+        let mut excess = unpreserved.saturating_sub(usize::from(keep));
+        let mut doomed: Vec<bool> = ours
+            .iter()
+            .map(|found| {
+                let take = excess > 0 && !found.config.preserved();
+                if take {
+                    excess -= 1;
+                }
+                take && found.name != made
+            })
+            .collect();
+        // Newest first, what the backups that stay hold so far; a doomed
+        // one that holds a hosted file none of them does stays too.
+        let mut covered = vec![false; places.len()];
+        for (found, doomed) in ours.iter().zip(doomed.iter_mut()).rev() {
+            let held: Vec<usize> = (0..places.len())
+                .filter(|&place| !covered[place] && holds(&found.folder, &places[place]))
+                .collect();
+            if *doomed && !held.is_empty() {
+                *doomed = false;
+                let names: Vec<&str> = held
+                    .iter()
+                    .map(|&place| places[place].name.as_str())
+                    .collect();
+                info!(
+                    "Schedule {schedule:?}: the old backup {} is kept: it is the newest that \
+                     holds {names:?}",
+                    target.path.join(&found.name).display()
+                );
+            }
+            if !*doomed {
+                for place in held {
+                    covered[place] = true;
+                }
+            }
+        }
+        for found in ours
             .into_iter()
-            .take(excess)
-            .filter(|found| found.name != made)
+            .zip(doomed)
+            .filter_map(|(found, doomed)| doomed.then_some(found))
         {
             let path = target.path.join(&found.name);
             if protected.lies_in(&found.folder).unwrap_or(true) {
@@ -1102,6 +1159,64 @@ pub(crate) fn chosen(shared: &Shared, files: &BackupFiles) -> Vec<Arc<Hosted>> {
     }
 }
 
+/// Where a hosted file's copy lies in a backup, as a run lays it out
+/// (`write_backup`): the folders below `Databases/` (its folder's place
+/// below the database root) and its file name. The same names find a
+/// previous backup's copy to link to (`link_previous`).
+struct Place {
+    /// The file's hosted name, for the log.
+    name: String,
+    folders: Vec<OsString>,
+    file: OsString,
+}
+
+/// The places of the files the server hosts now, open or not: each slot's
+/// file, a closed one and one whose opening again failed included. A file
+/// that failed to open at startup has no slot, and no place in the layout
+/// (the database root follows the slots); nor has one whose path does not
+/// resolve now.
+fn hosted_places(shared: &Shared) -> Vec<Place> {
+    let root = database_root(shared);
+    shared
+        .hosting
+        .slots()
+        .iter()
+        .filter_map(|slot| {
+            let real = real_folder(&slot.path).ok()?;
+            let folders = real
+                .strip_prefix(&root)
+                .unwrap_or(Path::new(""))
+                .components()
+                .filter_map(|part| match part {
+                    Component::Normal(name) => Some(name.to_os_string()),
+                    _ => None,
+                })
+                .collect();
+            Some(Place {
+                name: slot.name.clone(),
+                folders,
+                file: slot.path.file_name()?.to_os_string(),
+            })
+        })
+        .collect()
+}
+
+/// Whether backup `backup` holds a file at `place`, looked up without
+/// following links; not when the lookup fails: a backup retention would
+/// delete that cannot be read is deleted as before, and one that stays
+/// and cannot be read holds nothing for the rule, so an older one may stay
+/// instead. Either way retention deletes no more than its keep count says.
+fn holds(backup: &Folder, place: &Place) -> bool {
+    let found = (|| {
+        let mut folder = backup.open(OsStr::new(DATABASES))?;
+        for part in &place.folders {
+            folder = folder.open(part)?;
+        }
+        folder.kind(&place.file)
+    })();
+    matches!(found, Ok(Some(Kind::File)))
+}
+
 /// The folder that holds the file at `path`, links resolved.
 fn real_folder(path: &Path) -> io::Result<PathBuf> {
     let path = std::fs::canonicalize(path)?;
@@ -1225,7 +1340,14 @@ pub(crate) fn run(
     };
     match write_backup(shared, backups, &ticket, &target, &protected, &files) {
         Ok(folder) => {
-            backups.retain(&target, &protected, &name, task.keep, &folder);
+            backups.retain(
+                &target,
+                &protected,
+                &name,
+                task.keep,
+                &folder,
+                &hosted_places(shared),
+            );
             info!("Schedule {name:?} completed.");
             Outcome {
                 copied: true,
