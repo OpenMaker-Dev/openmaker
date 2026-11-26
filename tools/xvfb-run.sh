@@ -11,20 +11,31 @@
 # stops when the other job ends (a test then fails with XOpenDisplayFailed).
 #
 # Here each try starts Xvfb on a number, and Xvfb's lock file decides: the
-# loser exits and the next number is tried. Xvfb signals USR1 to this shell
-# once it accepts connections. Not -displayfd: with it Xvfb ignores lock
-# files, and takes over a display that only has one, as XWayland's :0 under
-# Hyprland.
+# loser exits and the next number is tried. Each run starts at a number of
+# its own (from its process id), so runs started together seldom try the
+# same one. Xvfb signals USR1 to this shell once it accepts connections.
+# Not -displayfd: with it Xvfb ignores lock files, and takes over a display
+# that only has one, as XWayland's :0 under Hyprland.
 #
-# The default screen is 1600x1000x24; -s replaces it, as xvfb-run's does.
-# WAYLAND_DISPLAY is unset so that GTK and winit use the display, not a
-# Wayland desktop the command was started from.
-set -eu
+# The default screen is 1600x1000x24; -s replaces it, as xvfb-run's does,
+# but cannot name the display, nor change its lock or authorization. GTK
+# and winit are kept off a Wayland desktop the command was started from:
+# WAYLAND_DISPLAY and WAYLAND_SOCKET are unset, and GDK_BACKEND is x11 (GTK
+# would otherwise try the wayland-0 socket).
+set -euf
 
 screen='-screen 0 1600x1000x24'
 if [ "${1-}" = -s ]; then
     screen=${2:?"-s needs Xvfb's arguments"}
     shift 2
+    for argument in $screen; do
+        case $argument in
+        :* | -displayfd | -nolock | -auth)
+            echo "$0: -s cannot set $argument: the script chooses the display" >&2
+            exit 2
+            ;;
+        esac
+    done
 fi
 if [ $# -eq 0 ]; then
     echo "usage: $0 [-s \"<Xvfb arguments>\"] <command> [arguments...]" >&2
@@ -48,15 +59,18 @@ trap 'ready=1' USR1
 
 cookie=$(mcookie)
 : >"$dir/auth"
-# From :200, clear of desktops' displays and of xvfb-run's (from :99).
-number=200
+# Among :200 to :299, clear of desktops' displays and of xvfb-run's (from
+# :99).
+number=$((200 + $$ % 100))
+tries=0
 while :; do
-    if [ "$number" -ge 300 ]; then
+    if [ "$tries" -ge 100 ]; then
         echo "$0: no free X display from :200 to :299" >&2
         exit 1
     fi
+    tries=$((tries + 1))
     if [ -e "/tmp/.X$number-lock" ] || [ -e "/tmp/.X11-unix/X$number" ]; then
-        number=$((number + 1))
+        number=$((200 + (number - 199) % 100))
         continue
     fi
     xauth -q -f "$dir/auth" add ":$number" . "$cookie"
@@ -80,20 +94,21 @@ while :; do
     if [ -n "$ready" ]; then
         break
     fi
-    # Another server holds the number, or Xvfb failed.
+    # Another server holds the number or its lock (every lock file message
+    # is such a race), or Xvfb failed.
     wait "$pid" 2>/dev/null || :
     pid=
-    if ! grep -Eq 'already (active|running)' "$dir/log"; then
+    if ! grep -Eq 'already (active|running)|lock file' "$dir/log"; then
         echo "$0: Xvfb :$number did not start:" >&2
         tail -n 5 "$dir/log" >&2
         exit 1
     fi
-    number=$((number + 1))
+    number=$((200 + (number - 199) % 100))
 done
 
-unset WAYLAND_DISPLAY
-DISPLAY=:$number XAUTHORITY=$dir/auth
-export DISPLAY XAUTHORITY
+unset WAYLAND_DISPLAY WAYLAND_SOCKET
+DISPLAY=:$number XAUTHORITY=$dir/auth GDK_BACKEND=x11
+export DISPLAY XAUTHORITY GDK_BACKEND
 status=0
 "$@" || status=$?
 exit "$status"

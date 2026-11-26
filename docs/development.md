@@ -666,10 +666,12 @@ display number before it starts Xvfb, so jobs started together can pick the
 same number. Debian's `xvfb-run` then tries another number. Arch's runs the
 command on the other job's display, and the display goes away when that job
 ends: a test that opens it then fails with `XOpenDisplayFailed`. The script
-also unsets `WAYLAND_DISPLAY`, so windows stay on the Xvfb display rather
-than opening on a Wayland desktop. It does not use Xvfb's `-displayfd`,
-because in that mode Xvfb ignores lock files and can take over a desktop's
-display, such as XWayland's `:0` under Hyprland.
+also keeps GTK and winit windows on the Xvfb display rather than on a
+Wayland desktop: it unsets `WAYLAND_DISPLAY` and `WAYLAND_SOCKET` and sets
+`GDK_BACKEND=x11`. It does not use Xvfb's `-displayfd`, because in that
+mode Xvfb ignores lock files and can take over a desktop's display, such as
+XWayland's `:0` under Hyprland; its `-s` takes Xvfb's screen arguments but
+not a display, `-displayfd`, `-nolock` or `-auth`.
 
 ### Toolchain and dependencies
 
