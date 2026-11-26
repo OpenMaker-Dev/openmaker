@@ -419,6 +419,9 @@ Printer, every copy read after the file was closed
   OpenMaker writes them (18-point margins, 40 at the bottom); the eighth
   is A4 as Pro stores it. Each was read in Page Setup, saved as PDF, and
   OK'd in Page Setup with no change.
+- **A:** two separate English Tasks copies, each saved after selecting
+  Any Printer, portrait, 100% and one of A3 or A5 in File > Page Setup
+  ([#960](https://github.com/OpenMaker-Dev/openmaker/issues/960)).
 - **S:** a fresh Tasks copy and two scripts of one Print Setup step each:
   - one with the dialog and without Restore, whose sheet was OK'd at A4
     landscape;
@@ -446,7 +449,7 @@ holds the UTF-16 texts "Yes", "No", "AM" and "PM" [O]. They are [I] an
 import or export profile. Both are byte-identical in every file that has
 them.
 
-**What `Comm` holds per choice** (L; orientation, scale, then the sheet
+**What `Comm` holds per choice** (L and A; orientation, scale, then the sheet
 as left, top, right, bottom, then the printable size; all in points):
 
 | Page Setup | `Comm` |
@@ -455,10 +458,13 @@ as left, top, right, bottom, then the printable size; all in points):
 | A4, portrait, 100% | 0, 1.0, -18 -18 577 824, 559 x 783 |
 | A4, landscape, 100% | 2, 1.0, -18 -18 577 824, 783 x 559 |
 | A4, landscape, 50% | 2, 0.5, -18 -18 577 824, 1566 x 1118 |
+| A3, portrait, 100% | 0, 1.0, -18 -18 824 1173, 806 x 1155 |
+| A5, portrait, 100% | 0, 1.0, -18 -18 402 577, 384 x 559 |
 
-Every value is a whole number of points. "Any Printer"'s A4 sheet is 595 x
-842, not 595.28 x 841.89, and its margins are 18 points, with 40 at the
-bottom of US Letter and 41 at the bottom of A4. The sheet stays upright,
+The measured Any Printer sheet sizes are whole points. A4 is 595 x 842,
+A3 is 842 x 1191, and A5 is 420 x 595. Margins are 18 points, with 40 at
+the bottom of US Letter and 41 at the bottom of A4. A3 and A5 each hold
+two `MMod` copies of `Comm`. The sheet stays upright,
 and the printable size is in the page's orientation and divided by the
 scale, as in a Print Setup step (script-steps.md 11.6). Going back to US
 Letter, portrait, 100% gave the first OK's `Comm` byte for byte, but not
@@ -534,8 +540,7 @@ nothing either is [I].
 - What FileMaker Pro for Windows stores, and which record it reads. [I]
   It reads `Comm` when its own record is missing, since no file saved on
   macOS has one.
-- What Pro stores with "Format For" set to a printer, and Any Printer's
-  A3 and A5 sizes.
+- What Pro stores with "Format For" set to a printer.
 - Whether a Print Setup that restores its setup with the dialog writes
   `[2, 87]` at its OK. Whether a restore without the dialog changes the
   paper for the session (S did not check). When `[2, 88]` is written.
