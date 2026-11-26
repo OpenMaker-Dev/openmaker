@@ -37,6 +37,7 @@ pub(crate) mod portals;
 mod rich_text;
 mod scaled_text;
 pub(crate) mod scroll;
+mod slide;
 pub(crate) mod value_dialogs;
 pub(crate) mod zoom;
 
@@ -5341,6 +5342,20 @@ fn paint_object_repetition(
                     object,
                     &panels,
                     rect,
+                    selected,
+                );
+            } else if !finding && object.shows_slide_dots() {
+                let selected = state
+                    .panels
+                    .get_mut(&(layout.id, object.id))
+                    .expect("selected panel");
+                slide::navigation(
+                    ui,
+                    layout,
+                    object,
+                    &panels,
+                    rect,
+                    ui.scope_id().with((record_index, portal)),
                     selected,
                 );
             }
