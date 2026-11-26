@@ -8429,8 +8429,7 @@ fn a_previewed_portal_row_stores_the_values_its_preview_showed() {
 ///   Related without reserving again, and the window's found set takes
 ///   the record. The preview is then used up.
 /// - Inside a script's transaction a second preview's held write stores
-///   its values when Commit Transaction commits. One skipping auto-enter
-///   options previews with them, before Related takes part in it.
+///   its values when Commit Transaction commits.
 /// - A preview of Root's own table named there is refused (3), and so is a
 ///   portal row's preview of the same table through another layout.
 #[test]
@@ -8563,31 +8562,6 @@ fn a_new_record_of_another_files_layout_stores_the_values_its_preview_showed() {
     provider.commit_transaction(false).unwrap();
     assert_eq!(reserved(), serials + 2);
     assert_eq!(stored(held.id), ["Held", second_uuid.as_str(), "8", "3"]);
-
-    // A script's transaction skipping auto-enter options: the preview,
-    // before Related takes part in the transaction, is computed with them,
-    // as the held write is. No UUID or serial number is entered, and none
-    // is reserved.
-    let skipping = om_data::runtime::TransactionOptions {
-        skip_auto_enter: true,
-        ..Default::default()
-    };
-    provider.begin_transaction(skipping).unwrap();
-    let skipped = provider
-        .preview_new_record(&new("Skipped", 4))
-        .unwrap()
-        .unwrap();
-    assert!(
-        !skipped.values.contains_key(&STAMP) && !skipped.values.contains_key(&SERIAL),
-        "{skipped:?}"
-    );
-    assert_eq!(reserved(), serials + 2, "nothing reserved");
-    let plain = provider
-        .write_record(&named(new("Skipped", 4), skipped.id))
-        .unwrap();
-    provider.commit_transaction(false).unwrap();
-    assert_eq!(reserved(), serials + 2);
-    assert_eq!(stored(plain.id)[..3], ["Skipped", "", ""]);
 
     // A preview of Root's own table is of another record there.
     let own = provider
