@@ -4159,9 +4159,21 @@ impl OpenMakerApp {
                     ui.add_space(14.0);
                     let ok = widgets::dialog_button(ui, "OK", true, true);
                     // Alerts are modal: only OK, Return or Escape dismiss
-                    // them, never a click outside.
+                    // them, never a click outside. Only a new press: the
+                    // repeats of a key held since an earlier alert do not
+                    // dismiss the next one too (#859).
                     let key = ui.input(|input| {
-                        input.key_pressed(Key::Enter) || input.key_pressed(Key::Escape)
+                        input.events.iter().any(|event| {
+                            matches!(
+                                event,
+                                egui::Event::Key {
+                                    key: Key::Enter | Key::Escape,
+                                    pressed: true,
+                                    repeat: false,
+                                    ..
+                                }
+                            )
+                        })
                     });
                     if ok.clicked() || key {
                         actions.push(dismiss.clone());
@@ -8834,6 +8846,12 @@ mod tests {
         };
         frame(&mut app, key(Key::Escape, false, Modifiers::NONE));
         assert_eq!(app.error, None);
+        // The held key's repeats neither dismiss the next alert nor stop
+        // the script.
+        app.error = alert();
+        frame(&mut app, key(Key::Escape, true, Modifiers::NONE));
+        assert!(app.error.is_some(), "the next alert stays");
+        app.error = None;
         frame(&mut app, key(Key::Escape, true, Modifiers::NONE));
         assert!(!app.worker.abort_asked(), "the held key's repeat");
         // egui reads a press of a key it holds down as a repeat: the key
