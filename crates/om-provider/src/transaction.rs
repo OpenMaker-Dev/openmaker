@@ -1038,19 +1038,23 @@ impl NativeProvider {
                     record_number: context.record_number.or(previewed.context.record_number),
                     ..previewed.context.clone()
                 },
-                // A record made in the transaction keeps the place it was
-                // made at, which its auto-entered Get ( RecordNumber ) was
-                // given, through later writes that give none: a window's
-                // commit or navigation forgets it, the record is still
-                // the transaction's to create (#526).
-                None => WriteContext {
-                    record_number: context.record_number.or_else(|| {
-                        before
-                            .filter(|h| matches!(h.change, Change::New(_)))
-                            .and_then(|h| h.context.record_number)
-                    }),
-                    ..context
-                },
+                // Keep what the new record knew at creation as it takes
+                // later field edits in this record session.
+                None => {
+                    let created = before.filter(|held| matches!(held.change, Change::New(_)));
+                    WriteContext {
+                        record_number: context
+                            .record_number
+                            .or_else(|| created.and_then(|held| held.context.record_number)),
+                        other_globals: created
+                            .and_then(|held| held.context.other_globals.clone())
+                            .or(context.other_globals),
+                        creation_utc_clock: created
+                            .and_then(|held| held.context.creation_utc_clock.clone())
+                            .or(context.creation_utc_clock),
+                        ..context
+                    }
+                }
             };
             let mut context = context;
             // Entry preparation can hold a lock with no cells yet. Any
