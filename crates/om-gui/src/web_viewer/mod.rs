@@ -1023,18 +1023,27 @@ pub(crate) fn allowed(url: &str) -> bool {
 )]
 pub(crate) const MESSAGE_URL: &str = "openmaker-message:";
 
-/// The `FileMaker` object a page gets when its web viewer allows
-/// JavaScript to perform FileMaker scripts. Its functions post the script
-/// name, parameter and option (each `encodeURIComponent`d, `&`-separated)
-/// to the view's `openmaker` message handler, which drops a message the
-/// [`MessageBudget`] does not admit; nothing comes back to the page. macOS
-/// has a bridge of its own (`appkit.rs`).
+/// The `FileMaker` object a page gets in its main frame when its web
+/// viewer allows JavaScript to perform FileMaker scripts, on Linux. Its
+/// functions put the script name, parameter and option (each
+/// `encodeURIComponent`d, `&`-separated) in an event on an element that
+/// only it and [`BRIDGE_POSTER`] hold; nothing comes back to the page.
+/// macOS has a bridge of its own (`appkit.rs`).
 #[cfg_attr(
     not(all(feature = "web-viewer", target_os = "linux")),
     allow(dead_code, reason = "only the WebKitGTK backend injects it")
 )]
 pub(crate) const BRIDGE: &str = r#"(function () {
+  // The element shared with the poster: whichever of the two runs first
+  // (both run as the document starts, before the page's own scripts)
+  // leaves it for the other, which takes it out of the document.
+  var root = document.documentElement, link = root && root.lastChild;
+  if (!root) { return; }
+  if (link && link.localName === "openmaker-bridge") { link.remove(); }
+  else { link = document.createElement("openmaker-bridge"); root.appendChild(link); }
   if (window.FileMaker) { return; }
+  // Taken now, so that a page replacing them later does not cut it off.
+  var send = EventTarget.prototype.dispatchEvent.bind(link), Message = CustomEvent;
   function text(value, fallback) {
     return value === undefined || value === null ? fallback : String(value);
   }
@@ -1042,7 +1051,7 @@ pub(crate) const BRIDGE: &str = r#"(function () {
     var body = "openmaker-perform-script&s=" + encodeURIComponent(text(script, "")) +
       "&p=" + encodeURIComponent(text(parameter, "")) +
       "&o=" + encodeURIComponent(text(option, "0"));
-    window.webkit.messageHandlers.openmaker.postMessage(body);
+    send(new Message("openmaker-post", { detail: body }));
   }
   var fileMaker = Object.freeze({
     PerformScript: function (script, parameter) { post(script, parameter, "0"); },
@@ -1052,6 +1061,27 @@ pub(crate) const BRIDGE: &str = r#"(function () {
   });
   Object.defineProperty(window, "FileMaker", {
     value: fileMaker, writable: false, configurable: false, enumerable: true
+  });
+})();"#;
+
+/// The other half of the Linux bridge, in the page's main frame too, but in
+/// a script world of OpenMaker's own, the only world that has the view's
+/// `openmaker` message handler: no script of the page, or of another
+/// site's frame in it, runs there. It posts what [`BRIDGE`]'s element
+/// hears, taking the element as [`BRIDGE`] does.
+#[cfg_attr(
+    not(all(feature = "web-viewer", target_os = "linux")),
+    allow(dead_code, reason = "only the WebKitGTK backend injects it")
+)]
+pub(crate) const BRIDGE_POSTER: &str = r#"(function () {
+  var root = document.documentElement, link = root && root.lastChild;
+  if (!root) { return; }
+  if (link && link.localName === "openmaker-bridge") { link.remove(); }
+  else { link = document.createElement("openmaker-bridge"); root.appendChild(link); }
+  link.addEventListener("openmaker-post", function (event) {
+    if (typeof event.detail === "string") {
+      window.webkit.messageHandlers.openmaker.postMessage(event.detail);
+    }
   });
 })();"#;
 

@@ -10,8 +10,17 @@
 //! that child window, so the window clips it to the document's visible part.
 //! Views are incognito (no cookies or storage written to disk) and have no
 //! developer tools; they open no other windows, download nothing, and go
-//! only to http, https, data, blob, file and about URLs. The bridge's
-//! messages are bounded on this thread, as they arrive ([`MessageBudget`]).
+//! only to http, https, data, blob, file and about URLs.
+//!
+//! The page bridge has two halves, both injected into the page's main
+//! frame only: the `FileMaker` object in the page's own script world
+//! ([`BRIDGE`]), and in a script world of OpenMaker's own ([`WORLD`]) the
+//! poster ([`BRIDGE_POSTER`]), which posts what `FileMaker` hands it to the
+//! view's message handler. The handler is registered in that world only,
+//! where no script of the page or of its frames runs, so another site's
+//! frame in the page cannot post to it (WebKitGTK does not say which frame
+//! posted a message). Messages are bounded on this thread, as they arrive
+//! ([`MessageBudget`]).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -22,7 +31,10 @@ use std::time::Duration;
 use gtk::glib;
 use gtk::prelude::*;
 use javascriptcore::{ContextExt as _, ValueExt as _};
-use webkit2gtk::{UserContentManagerExt as _, WebViewExt as _};
+use webkit2gtk::{
+    UserContentInjectedFrames, UserContentManagerExt as _, UserScript, UserScriptInjectionTime,
+    WebViewExt as _,
+};
 use wry::dpi::{PhysicalPosition, PhysicalSize};
 use wry::{WebView, WebViewBuilder, WebViewBuilderExtUnix, WebViewExtUnix};
 use x11rb::connection::Connection;
@@ -34,7 +46,7 @@ use x11rb::wrapper::ConnectionExt as _;
 
 use super::{
     allowed, Backend, Event, Geometry, MessageBudget, NativeParent, Navigation, Unavailable,
-    ViewSpec, BRIDGE, MAX_MESSAGE,
+    ViewSpec, BRIDGE, BRIDGE_POSTER, MAX_MESSAGE,
 };
 
 enum Command {
@@ -130,6 +142,8 @@ fn x11_libraries() -> bool {
 
 /// The bridge's message handler (`window.webkit.messageHandlers.openmaker`).
 const HANDLER: &str = "openmaker";
+/// The script world the handler and the bridge's poster are in.
+const WORLD: &str = "openmaker-bridge";
 
 /// How long the app waits, once, for GTK to start.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -530,8 +544,9 @@ impl State {
         let [cx, cy, cw, ch] = spec.geometry.content;
         let loads = self.events.clone();
         let messages = self.events.clone();
+        // The page loads once the bridge is in place (below): its first
+        // document gets both halves.
         let mut builder = WebViewBuilder::new()
-            .with_url(spec.url)
             .with_incognito(true)
             .with_devtools(false)
             .with_bounds(wry::Rect {
@@ -573,6 +588,14 @@ impl State {
             let manager = page
                 .user_content_manager()
                 .ok_or_else(|| "the page has no content manager".to_owned())?;
+            manager.add_script(&UserScript::for_world(
+                BRIDGE_POSTER,
+                UserContentInjectedFrames::TopFrame,
+                UserScriptInjectionTime::Start,
+                WORLD,
+                &[],
+                &[],
+            ));
             // WebKit has already copied the message into this process; only
             // text the bridge could have posted, within the budget, goes
             // further.
@@ -585,10 +608,11 @@ impl State {
                     messages.send(Event::Message { view, body });
                 }
             });
-            if !manager.register_script_message_handler(HANDLER) {
+            if !manager.register_script_message_handler_in_world(HANDLER, WORLD) {
                 return Err("the page's message handler could not be registered".into());
             }
         }
+        webview.load_url(&spec.url).map_err(|e| e.to_string())?;
         // "Allow interaction with web viewer content" off: the page takes
         // no pointer or keyboard input.
         page.set_sensitive(spec.interactive);
