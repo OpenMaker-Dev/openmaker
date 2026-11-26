@@ -175,7 +175,8 @@ fn regenerable_mac_page_format(plist: &[u8]) -> bool {
 /// Whether `text` holds its plist's keys and strings as they read: no
 /// entity or character reference (`&`), no CDATA section or comment, no
 /// declaration but the plist's own `<!DOCTYPE` without an internal subset,
-/// and every `<key>` and `</key>` tag written so. Then a key's text is the
+/// no processing instruction but the leading `<?xml` declaration, and
+/// every `<key>` and `</key>` tag written so. Then a key's text is the
 /// key, and nothing outside markup looks like a `<key>` tag.
 fn plain_plist(text: &str) -> bool {
     let mut declarations = text.match_indices("<!");
@@ -194,6 +195,8 @@ fn plain_plist(text: &str) -> bool {
     };
     doctype
         && declarations.next().is_none()
+        && text.starts_with("<?xml")
+        && text.matches("<?").count() == 1
         && !text.contains('&')
         && tags_closed("<key")
         && tags_closed("</key")
@@ -1969,8 +1972,8 @@ mod tests {
             ),
             (chunk(b"Comm", &comm)[..20].to_vec(), false),
             // A key or value spelt otherwise than as plain text is not read
-            // as the key it may be: a character reference, CDATA, a tag
-            // with a space.
+            // as the key it may be: a character reference, CDATA, a
+            // processing instruction, a tag with a space.
             (
                 format(&plist(
                     "com.apple.print.PageFormat.Formatting&#80;rinter",
@@ -1980,6 +1983,13 @@ mod tests {
             ),
             (
                 format(&plist(&format!("<![CDATA[{custom}]]>"), "<true/>")),
+                false,
+            ),
+            (
+                format(&plist(
+                    "com.apple.print.PageFormat.Formatting<?x?>Printer",
+                    "<string>Office Laser</string>",
+                )),
                 false,
             ),
             (
