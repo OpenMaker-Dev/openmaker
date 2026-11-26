@@ -5057,6 +5057,8 @@ dependencies = [
  "om-protocol",
  "om-rctransaction",
  "om-scsu",
+ "rcgen 0.14.10",
+ "ring",
  "rustls",
  "rustls-pemfile",
  "webpki-roots 1.0.11",

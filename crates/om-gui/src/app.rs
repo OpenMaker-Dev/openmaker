@@ -989,9 +989,10 @@ pub struct OpenMakerApp {
     value_list_edit: Option<(u32, crate::document::value_dialogs::EditDialog)>,
     part_setup: Option<PartSetup>,
     error: Option<String>,
-    /// The error code and message of the last failure `fail` reported, for
-    /// OpenMaker Go to tell a refused account from other failures.
-    failure: Option<(Option<i32>, String)>,
+    /// The last failure `fail` reported, for OpenMaker Go to tell a refused
+    /// account, or a host whose certificate could not be verified, from
+    /// other failures.
+    failure: Option<DataError>,
     /// The host administrators' messages still to show, the first shown
     /// now ([`Self::host_message`]; #156), and when it was first shown
     /// (`InputState::time`).
@@ -6626,7 +6627,7 @@ impl OpenMakerApp {
             return;
         }
         self.error = Some(err.message.clone());
-        self.failure = Some((err.code, err.message.clone()));
+        self.failure = Some(err.clone());
         self.status = ConnectStatus::Idle;
         self.opening = None;
     }

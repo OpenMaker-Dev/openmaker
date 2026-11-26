@@ -535,6 +535,9 @@ pub(crate) struct ExternalFiles {
     /// Where the opened file's additional certificate authority is trusted
     /// ([`crate::NativeProvider::with_ca_scope`]).
     ca_scope: Option<(String, u16)>,
+    /// The certificates the user permitted, each for its host and port
+    /// ([`crate::NativeProvider::with_permitted_certificate`]).
+    permits: Vec<crate::Permit>,
     files: Vec<RelatedFile>,
     /// What went wrong opening each file that could not be, by
     /// [`Target::key`]: it is not tried again until the file is reopened.
@@ -820,6 +823,12 @@ impl ExternalFiles {
     /// against the opened file's additional certificate authority.
     pub fn set_ca_scope(&mut self, scope: Option<(String, u16)>) {
         self.ca_scope = scope;
+    }
+
+    /// A related file on a host with a certificate the user permitted
+    /// accepts it there, and only there.
+    pub(crate) fn set_permits(&mut self, permits: Vec<crate::Permit>) {
+        self.permits = permits;
     }
 
     /// Whether related files open only when something reads them.
@@ -1179,8 +1188,9 @@ impl ExternalFiles {
             return Err(error);
         }
         let config = crate::scoped_config(config, self.ca_scope.as_ref(), &auth.host, auth.port);
+        let permitted = crate::permitted_for(&self.permits, &auth.host, auth.port);
         let loaded = load(
-            &config,
+            (&config, &permitted),
             &auth,
             self.local.as_ref(),
             self.keepalive,
@@ -1772,6 +1782,7 @@ impl ExternalFiles {
             // are in the batch.
             let keepalive = self.keepalive;
             let ca_scope = self.ca_scope.as_ref();
+            let permits = &self.permits;
             let local = self.local.as_ref();
             let refusals = &self.refusals;
             // On demand, a file's open reads the field catalogs of the tables
@@ -1784,8 +1795,9 @@ impl ExternalFiles {
                 let auth = account_of(account, auth.as_ref(), &other_hosts)
                     .ok_or_else(|| DataError::new("there is no account for its host"))?;
                 let config = crate::scoped_config(config, ca_scope, &auth.host, auth.port);
+                let permitted = crate::permitted_for(permits, &auth.host, auth.port);
                 load(
-                    &config,
+                    (&config, &permitted),
                     auth,
                     local,
                     keepalive,
@@ -2471,10 +2483,12 @@ fn catalogs_from_list(
 
 /// Open related file `target` on the opened file's host (on this
 /// computer: through its host in the family, `local`) and read what its
-/// calculations need. Once a Close waits in `cancel` it stops before the
-/// next step that waits for the host, the Login above all.
+/// calculations need, with `connecting`'s configuration and the
+/// certificates permitted for that host. Once a Close waits in `cancel` it
+/// stops before the next step that waits for the host, the Login above
+/// all.
 fn load(
-    config: &NativeConfig,
+    connecting: (&NativeConfig, &[[u8; 32]]),
     auth: &Auth,
     local: Option<&LocalFiles>,
     keepalive: Option<Duration>,
@@ -2483,6 +2497,7 @@ fn load(
     request: (&Target, Option<&BTreeSet<u64>>),
 ) -> Result<RelatedFile, DataError> {
     let (target, eager) = request;
+    let (config, permitted) = connecting;
     let go_on = || {
         if cancel.pending() {
             Err(closing())
@@ -2518,8 +2533,11 @@ fn load(
             hosted_name(&target.name),
         ),
     };
+    // A file on this computer is on the family's own host, whose
+    // certificate it was given.
+    let permitted = if lease.is_some() { &[][..] } else { permitted };
     let connect = || {
-        Session::connect_verified(
+        Session::connect_trusting(
             &host,
             port,
             &config.client_cert_pem,
@@ -2527,6 +2545,7 @@ fn load(
             &config.callback_host,
             &machine,
             &ca_pem,
+            permitted,
         )
         // The operating system's own words for it are left out of the alert.
         .map_err(|_| unreachable())

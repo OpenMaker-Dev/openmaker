@@ -46,7 +46,7 @@ mod step_names;
 pub mod summary;
 pub mod summary_field;
 pub mod value_lists;
-pub use browse::{HostBrowser, HostListing, ListingError, ListingFailure};
+pub use browse::{HostBrowser, HostListing, ListingError, ListingFailure, UntrustedHost};
 pub use schema::{
     arrange, unused_name, Arrangement, DatabaseSchema, FieldColumn, OccurrenceBox, OccurrenceShows,
     RelationshipMatch, RelationshipSide, SchemaCapabilities, SchemaChange, SchemaField,
@@ -622,6 +622,9 @@ pub struct DataError {
     /// cannot key (#571): an import ends at such a row rather than
     /// skipping it as a row FileMaker refused.
     pub unsupported: bool,
+    /// The host's certificate could not be verified: what to ask the user
+    /// about it before connecting anyway ([`UntrustedHost`]).
+    pub untrusted: Option<Box<UntrustedHost>>,
 }
 
 /// What a commit did in one file whose records it held (#1006).
@@ -674,6 +677,7 @@ impl DataError {
             lost: false,
             commit: Vec::new(),
             unsupported: false,
+            untrusted: None,
         }
     }
 
@@ -685,6 +689,7 @@ impl DataError {
             lost: false,
             commit: Vec::new(),
             unsupported: false,
+            untrusted: None,
         }
     }
 
@@ -705,6 +710,7 @@ impl DataError {
             lost: true,
             commit: Vec::new(),
             unsupported: false,
+            untrusted: None,
         }
     }
 }

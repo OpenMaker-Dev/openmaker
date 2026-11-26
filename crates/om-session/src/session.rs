@@ -255,6 +255,8 @@ struct Link {
     /// connection, which the other files that were on this one reopen on
     /// ([`Session::successor`]).
     successor: Mutex<Option<Successor>>,
+    /// How the host's certificate was accepted ([`Session::server_trust`]).
+    trust: Option<crate::ServerTrust>,
 }
 
 /// The connection a lost one's file reconnected on (#1011's files after a
@@ -786,14 +788,48 @@ impl Session {
         info: &MachineInfo,
         additional_ca_pem: &[u8],
     ) -> Result<Self, SessionError> {
-        let transport = Transport::connect_verified(
+        Self::connect_trusting(
+            host,
+            port,
+            client_cert_pem,
+            client_key_pem,
+            callback_host,
+            info,
+            additional_ca_pem,
+            &[],
+        )
+    }
+
+    /// [`Self::connect_verified`], also accepting a certificate the user
+    /// permitted for this host and port by its SHA-256 fingerprint
+    /// ([`Transport::connect_trusting`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn connect_trusting(
+        host: &str,
+        port: u16,
+        client_cert_pem: &[u8],
+        client_key_pem: &[u8],
+        callback_host: &str,
+        info: &MachineInfo,
+        additional_ca_pem: &[u8],
+        permitted: &[[u8; 32]],
+    ) -> Result<Self, SessionError> {
+        let transport = Transport::connect_trusting(
             host,
             port,
             client_cert_pem,
             client_key_pem,
             additional_ca_pem,
+            permitted,
         )?;
         Self::handshake(transport, callback_host, info)
+    }
+
+    /// How this connection's server certificate was accepted: verified, or
+    /// permitted by the user; `None` on the lab transport
+    /// ([`Self::connect`]).
+    pub fn server_trust(&self) -> Option<crate::ServerTrust> {
+        self.link.trust
     }
 
     fn handshake(
@@ -802,6 +838,7 @@ impl Session {
         info: &MachineInfo,
     ) -> Result<Self, SessionError> {
         let now = Instant::now();
+        let trust = transport.trust();
         let mut wire = Wire {
             transport: Some(transport),
             connection_id: 0,
@@ -853,6 +890,7 @@ impl Session {
                 wake: Condvar::new(),
                 keepalive: Mutex::new(None),
                 successor: Mutex::new(None),
+                trust,
             }),
             connection_id: identity.connection_id,
             identity,
