@@ -396,8 +396,6 @@ pub(crate) struct Shared {
     pub in_run: bool,
     /// Exit Application, Close File or Close Window on the last window.
     pub halt: bool,
-    /// Why the last host step failed, in words, for the alert.
-    pub failure: Option<String>,
     /// The last print or export step the set's options were checked for
     /// was refused for them: its alert is FileMaker's, not the error's
     /// (`WorkerHost::error_alert`). Each such step sets it, so an elevated
@@ -486,7 +484,6 @@ impl Shared {
             interrupted: false,
             in_run: false,
             halt: false,
-            failure: None,
             options_refused: false,
             clipboard: None,
             plugin: Default::default(),
@@ -812,7 +809,7 @@ impl ScriptSession {
         s.firing.clear();
         s.interrupted = false;
         s.halt = false;
-        s.failure = None;
+        super::host::forget_failure();
         s.abort.store(false, Ordering::SeqCst);
         let message = if reverted {
             STOPPED.to_owned()
