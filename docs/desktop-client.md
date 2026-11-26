@@ -2618,13 +2618,20 @@ front tab panel even with nothing selected. Only the front tab or
 slide's contents draw and take canvas input. The canvas starts with the
 stored current tab, the stored default tab, or the first panel, in that
 order. The Objects list still includes inactive panels and their contents.
-Selecting one of those
-rows reveals its containing panels in this window. This is
-OpenMaker's editor navigation and makes no layout changes. Tab and slide
-navigation directly on the design surface and handoff of the last Browse
-panel are unavailable. The tab appearance was compared with FileMaker Pro's
-Apex Blue theme on a synthetic layout. Other themes are unverified. The
-canvas reads the stored label without evaluating label calculations.
+Selecting one of those rows reveals its containing panels in this window.
+This editor navigation makes no layout changes. Tab and slide navigation
+directly on the design surface and handoff of the last Browse panel are
+unavailable. The canvas reads the stored label without evaluating label
+calculations.
+
+Layout mode joins an opaque active tab to its panel when the panel has a
+body below the tabs. Browse keeps the active tab's authored bottom rule
+when present and uses fallback dimensions when stored tab geometry is
+missing. Browse tab appearance has yet to be compared with FileMaker Pro.
+In the synthetic Apex Blue Layout mode comparison, OpenMaker drew the
+label about 5 pt higher than FileMaker Pro 26.1.1
+([#1165](https://github.com/OpenMaker-Dev/openmaker/issues/1165)). Other
+themes are unverified.
 
 Manage Layouts opens from File > Manage > Layouts, Layouts > Manage Layouts
 and the Layout mode Manage button. Search, row selection, double-click,
