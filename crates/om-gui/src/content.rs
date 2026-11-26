@@ -1271,6 +1271,18 @@ impl LayoutWorkspace {
         self.canvas.selection_count(session)
     }
 
+    pub(crate) fn select_all(&mut self, session: &Session) {
+        self.canvas.select_all(session);
+    }
+
+    pub(crate) fn nudge_selection(
+        &mut self,
+        session: &Session,
+        direction: crate::layout_canvas::NudgeDirection,
+    ) {
+        self.canvas.nudge_selection(session, direction);
+    }
+
     /// How many selected objects Arrange's Align, Distribute and Resize To
     /// apply to (`CanvasState::arrangeable_count`).
     pub(crate) fn arrangeable_count(&self, session: &Session) -> usize {
@@ -1781,6 +1793,7 @@ pub(crate) fn layout(
                 selected.as_ref(),
                 shown,
                 (editable, view.as_ref()),
+                state.canvas.selection_notice(),
             );
             if let (Some(object), Some(frame)) = (&selected, edit.frame) {
                 state

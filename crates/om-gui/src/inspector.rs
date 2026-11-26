@@ -236,6 +236,7 @@ impl Inspector {
         object: Option<&ObjectGeom>,
         frame: Option<om_data::GeomRect>,
         (editable, control): (bool, Option<&ControlView<'_>>),
+        notice: Option<&str>,
     ) -> InspectorEdit {
         let mut changed = InspectorEdit::default();
         ui.painter()
@@ -289,6 +290,9 @@ impl Inspector {
                     .inner_margin(egui::Margin::symmetric(10, 6))
                     .show(ui, |ui| {
                         ui.set_min_width((theme::INSPECTOR_WIDTH - 24.0).max(0.0));
+                        if let Some(notice) = notice {
+                            ui.label(notice);
+                        }
                         match self.tab {
                             Tab::Position => {
                                 changed.frame = self.position(ui, object, frame, editable)

@@ -2167,24 +2167,32 @@ stored tab order.
   definitions and the existing tools for other objects.
 - **Selection.** Plain click selects one saved object or field draft;
   Shift-click adds/removes it from the selection, on the canvas or in
-  Objects. Blank canvas clicks clear selection. Dragging any selected
-  movable member moves the whole selection, including a mix of saved
+  Objects. Blank canvas clicks clear selection. With the Selection tool,
+  Edit > Select All (Cmd/Ctrl+A) selects every shown canvas object and
+  field draft. A box starting on blank layout space replaces the selection
+  with the objects it crosses. Hold Cmd on macOS or Ctrl elsewhere to
+  select only objects entirely inside. Both use the canvas's existing
+  flat object list, including nested entries it already shows. Draft
+  text, buttons and portals keep their existing editors. Tool-specific
+  selection and popover-scoped boxes are not implemented. Dragging any
+  selected movable member moves the whole selection, including a mix of saved
   objects and unsaved field drafts. Origins snap to whole points, keeping
   each object's size and the spacing between whole-point members; fractional
   stored origins are rounded before saving. A Shift-drag of an unselected
   member adds it rather than replacing the selection (OpenMaker's choice;
   native Shift-drag axis constraints are not measured). If any member
-  cannot move, the selection stays put and Inspector states why. Delete
-  and Edit > Clear validate the whole selection before staging deletions;
+  cannot move, the selection stays put and Inspector states why.
+  Unmodified arrow keys nudge the selection by one layout point, through
+  the same whole-point frame and draft checks as a drag. A focused text
+  editor keeps its keys. Delete and Edit > Clear validate the whole
+  selection before staging deletions;
   an unsupported member refuses the whole action, without deleting peers.
   These changes stay unsaved until Save; Revert/Discard clears additions,
   moves and deletions. Selection belongs to the exact shown layout revision.
   Multiple-object Inspector frame/binding/control edits and handle resizing
   are not supported: Inspector shows the selected count and asks for a
-  single selection. It never edits an arbitrary member. Box selection,
-  groups, Select All and other bulk-formatting operations are not added by
-  this slice. Native mixed locked-object and bulk Inspector behavior has
-  not been measured.
+  single selection. It never edits an arbitrary member. Native mixed
+  locked-object and bulk Inspector behavior has not been measured.
 - **Drawing and choosing.** Each drag on the canvas adds an independent
   field draft, in whole points, as a dashed box over the layout. The
   ordinary Field tool returns to Selection after the drag; double-clicking
