@@ -485,6 +485,42 @@ tar -xzf openmaker-<version>-ubuntu24.04-amd64.tar.gz -C ~/.local --strip-compon
 xargs -a ~/.local/share/doc/openmaker/apt-packages sudo apt install
 ```
 
+### App bundle for macOS
+
+`tools/package-macos.sh` builds release `om-gui` (with web viewers) and its
+PDF worker for this Mac's architecture and puts them in an app bundle,
+`OpenMaker.app`, in `target/package/` (or the folder it is given). It needs
+stable Rust and the Xcode command line tools; the rest ships with macOS. It
+builds where cargo's environment and configuration say, and replaces the
+previous bundle only once the new one is complete.
+
+```sh
+tools/package-macos.sh              # or: tools/package-macos.sh <output folder>
+open target/package/OpenMaker.app
+```
+
+Run from the bundle, the Dock, Command-Tab and Finder name the app
+OpenMaker and show its icon; run from the build (`cargo run`), the Dock and
+Command-Tab name it `om-gui`
+([#821](https://github.com/OpenMaker-Dev/openmaker/issues/821)). The
+bundle's Info.plist is the one `build.rs` embeds in `om-gui` (its name,
+identifier and version) with a bundle's keys added. Its icon is made with
+`sips` and `iconutil` from the app icon
+(`crates/om-gui/assets/openmaker-icon.png`, 512 pixels, so it has no
+1024-pixel image).
+
+- The bundle is signed ad hoc, not with a Developer ID, and not notarized:
+  it is for the Mac that built it. Gatekeeper refuses a copy downloaded on
+  another Mac.
+- Opened from Finder or with `open`, the app gets none of the shell's
+  environment (`OPENMAKER_PROVIDER`, `OPENMAKER_FILE` and the rest). Pass
+  what it needs with `open -n --env OPENMAKER_PROVIDER=mock
+  target/package/OpenMaker.app`, or run
+  `target/package/OpenMaker.app/Contents/MacOS/om-gui` from the shell,
+  which keeps the shell's environment and the name OpenMaker.
+- It registers no document types or URL schemes, so `.fmp12` files and
+  `fmp://` links do not open in it.
+
 ### OpenMaker Server as a macOS service
 
 On macOS, run these scripts from a source checkout. They build the server
