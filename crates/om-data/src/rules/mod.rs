@@ -365,6 +365,29 @@ pub enum WriteLayout {
     Number(u64),
 }
 
+/// The source of a write's `Get ( RecordNumber )` answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordNumber {
+    /// A window position for auto-entry or validation, such as an
+    /// unsorted portal creation row or a duplicate.
+    Window(u64),
+    /// The position at ordinary New Record in an unsorted window of a
+    /// local file. A stored Number calculation can also use this answer.
+    LocalNewRecord(u64),
+    /// Ordinary local New Record in a sorted found set. The held row
+    /// follows the current row before any later re-sort.
+    LocalSortedNewRecord { position: u64, after: u64 },
+}
+
+impl RecordNumber {
+    pub fn value(self) -> u64 {
+        match self {
+            Self::Window(number) | Self::LocalNewRecord(number) => number,
+            Self::LocalSortedNewRecord { position, .. } => position,
+        }
+    }
+}
+
 /// How much the writer can establish about the order of local edits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WriteSequence {
@@ -418,11 +441,9 @@ pub struct WriteContext {
     /// `Get ( CurrentHostTimestamp )`: the clock of the host serving the
     /// file, in the storage form of [`RecordEnvironment::timestamp`].
     pub host_timestamp: Option<String>,
-    /// `Get ( RecordNumber )` of the written record, as its window answers
-    /// it at the save (#1038): only where FileMaker's answer is known (a row
-    /// typed into an unsorted portal's creation row: its place among the
-    /// related records), never a position this planner infers.
-    pub record_number: Option<u64>,
+    /// `Get ( RecordNumber )` as the operation answers it. A stored
+    /// calculation requires [`RecordNumber::LocalNewRecord`].
+    pub record_number: Option<RecordNumber>,
     /// The local file's `$$` variables for directly reading a Text
     /// auto-enter value. New Record's preview retains this snapshot.
     pub file_variables: Option<WriteFileVariables>,
@@ -770,8 +791,8 @@ pub(crate) struct Evaluation {
     /// The session's global values ([`RecordEnvironment::globals`]).
     globals: Option<Arc<RecordValues>>,
     /// `Get ( RecordNumber )` ([`WriteContext::record_number`]).
+    record_number: Option<RecordNumber>,
     file_variables: Option<WriteFileVariables>,
-    record_number: Option<u64>,
     /// [`RecordEnvironment::related_needs`].
     related_needs: Option<Arc<RelatedNeeds>>,
     /// The written record ([`Lookups::written`]) and its stored row, empty
@@ -1852,12 +1873,21 @@ pub fn user_editable(field: &om_hbam::Field) -> bool {
         && !options.auto_entry_editing_prohibited()
 }
 
+fn supports_creation_time_text(locale: &Locale) -> bool {
+    locale.twelve_hour
+        && !locale.pad_hour
+        && !locale.am_pm_before
+        && locale.time_separator == ':'
+        && locale.am == " AM"
+        && locale.pm == " PM"
+}
+
 impl RecordPlan {
     /// The rules of `table` from its definitions in `tree` alone (no other
     /// tables, occurrences or custom functions).
     #[cfg(test)]
     pub fn from_schema(table: &Table, tree: &KeyTree<'_>) -> Result<Self, DataError> {
-        Self::plan(table, tree, None, false)
+        Self::plan(table, tree, None, false, false, None)
     }
 
     /// The rules of `table` from its current definitions in `tree`, within
@@ -1868,17 +1898,23 @@ impl RecordPlan {
         tree: &KeyTree<'_>,
         file: &CalcSchema,
     ) -> Result<Self, DataError> {
-        Self::plan(table, tree, Some(file), false)
+        Self::plan(table, tree, Some(file), false, false, None)
     }
 
     /// The desktop's provider handles the session-global side of New
     /// Record explicitly; the other planner callers only write rows.
+    /// `local` permits a stored Number to use the local creation position
+    /// and a Text creation-time field to use the measured desktop clock format.
     pub fn from_desktop_file_schema(
         table: &Table,
         tree: &KeyTree<'_>,
         file: &CalcSchema,
+        local: bool,
     ) -> Result<Self, DataError> {
-        Self::plan(table, tree, Some(file), true)
+        static SYSTEM: std::sync::LazyLock<Option<Locale>> =
+            std::sync::LazyLock::new(crate::new_file::configured_system_locale);
+        let system = if local { SYSTEM.as_ref() } else { None };
+        Self::plan(table, tree, Some(file), true, local, system)
     }
 
     fn plan(
@@ -1886,6 +1922,8 @@ impl RecordPlan {
         tree: &KeyTree<'_>,
         file: Option<&CalcSchema>,
         global_defaults: bool,
+        local: bool,
+        system: Option<&Locale>,
     ) -> Result<Self, DataError> {
         let mut schema = file
             .cloned()
@@ -2062,9 +2100,7 @@ impl RecordPlan {
             } else {
                 None
             };
-            // An auto-entered or validation formula may read related fields
-            // (`related`); a stored calculation over one is unstored.
-            let formula_at = |key: u64, related: bool| -> Result<Expression, DataError> {
+            let formula_at = |key: u64, usage: FormulaUse| -> Result<Expression, DataError> {
                 let formula = field_node.and_then(|node| node.get(key));
                 let context = formula
                     .and_then(|node| node.get(4))
@@ -2074,7 +2110,7 @@ impl RecordPlan {
                     .and_then(|node| node.get(6))
                     .and_then(|n| n.assembled())
                     .ok_or_else(|| error("calculation code is missing."))?;
-                parse_code_with(&code, &context, related).map_err(|e| error(&e))
+                parse_formula(&code, &context, usage).map_err(|e| error(&e))
             };
             let computed = (kind == FieldKind::Calculation && !unstored) || auto_calculation;
             let expression = if computed {
@@ -2090,7 +2126,26 @@ impl RecordPlan {
                         "repeating calculated fields are not supported for native writes.",
                     ));
                 }
-                let formula = formula_at(FIELD_FORMULA, auto_calculation)?;
+                let usage = if auto_calculation {
+                    FormulaUse::Options
+                } else if field.data_type == DataType::Number {
+                    FormulaUse::StoredNumber
+                } else {
+                    FormulaUse::RecordOnly
+                };
+                let formula = formula_at(FIELD_FORMULA, usage)?;
+                if matches!(usage, FormulaUse::StoredNumber)
+                    && matches!(formula.formula.polish, Expr::Get(selector::RECORD_NUMBER))
+                    && !local
+                {
+                    return Err(DataError::with_code(
+                        error::UNAVAILABLE,
+                        format!(
+                            "Field {}: a stored record number requires a local desktop file.",
+                            field.name
+                        ),
+                    ));
+                }
                 if auto_enters_global
                     && (!formula.dependencies.is_empty() || !formula.related.is_empty())
                 {
@@ -2103,7 +2158,7 @@ impl RecordPlan {
                 None
             };
             let validation = if options.validation_options & VALIDATE_BY_CALCULATION != 0 {
-                Some(formula_at(FIELD_VALIDATION, true)?)
+                Some(formula_at(FIELD_VALIDATION, FormulaUse::Options)?)
             } else {
                 None
             };
@@ -2117,7 +2172,7 @@ impl RecordPlan {
                 } else if options.max_repetitions != 1 {
                     Err(format!("Field {} repeats.", field.name))
                 } else {
-                    formula_at(FIELD_FORMULA, false).map_err(|e| e.to_string())
+                    formula_at(FIELD_FORMULA, FormulaUse::RecordOnly).map_err(|e| e.to_string())
                 };
                 unstored_formulas.insert(field.id, readable);
             }
@@ -2139,9 +2194,20 @@ impl RecordPlan {
                     _ => DataType::Text,
                 };
                 if field.data_type != expected {
-                    return Err(error(
-                        "auto-entry variable storage conversion is unsupported.",
-                    ));
+                    // Both time formats matched in the local native check.
+                    // The provider gives the formula the file's clock text.
+                    let text_creation_time = local
+                        && !schema.locale_unreadable
+                        && variable == EntryVariable::CreationTime
+                        && field.data_type == DataType::Text
+                        && options.max_repetitions == 1
+                        && supports_creation_time_text(&schema.locale)
+                        && system.is_some_and(supports_creation_time_text);
+                    if !text_creation_time {
+                        return Err(error(
+                            "auto-entry variable storage conversion is unsupported.",
+                        ));
+                    }
                 }
             }
             if (options.options & AUTO_ENTRY_MODES).count_ones() > 1
@@ -2217,7 +2283,7 @@ impl RecordPlan {
             } else if options.validation_options & VALIDATE_MESSAGE_CALCULATION != 0 {
                 // A message the rules cannot evaluate leaves the table
                 // writable: only the refusal's wording is at stake.
-                let formula = formula_at(FIELD_MESSAGE_FORMULA, false)
+                let formula = formula_at(FIELD_MESSAGE_FORMULA, FormulaUse::RecordOnly)
                     .ok()
                     .filter(|e| {
                         check_custom_functions(
@@ -3525,6 +3591,35 @@ impl RecordPlan {
             })
     }
 
+    /// Reject an unsupported stored record position before a create or
+    /// preview reserves an ID or a serial number.
+    pub fn check_creation_context(&self, context: &WriteContext) -> Result<(), DataError> {
+        if matches!(
+            context.record_number,
+            Some(RecordNumber::LocalNewRecord(_) | RecordNumber::LocalSortedNewRecord { .. })
+        ) {
+            return Ok(());
+        }
+        if let Some(field) = self.fields.values().find(|field| {
+            field.stored_calculation()
+                && field.expression.as_ref().is_some_and(|expression| {
+                    matches!(
+                        expression.formula.polish,
+                        Expr::Get(selector::RECORD_NUMBER)
+                    )
+                })
+        }) {
+            return Err(DataError::with_code(
+                error::UNAVAILABLE,
+                format!(
+                    "Field {}: a stored record number requires ordinary New Record in a local window with a known insertion position.",
+                    field.name
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     /// Whether a direct Text auto-enter reads the local file's variables.
     pub fn reads_auto_entry_file_variables(&self) -> bool {
         self.fields
@@ -4424,6 +4519,9 @@ impl RecordPlan {
         entry: Entry,
         preview: Option<&BTreeSet<u64>>,
     ) -> Result<Computed, DataError> {
+        if mode == WriteMode::Create {
+            self.check_creation_context(&environment.context)?;
+        }
         let validate = preview.is_none();
         let mut deferred = BTreeSet::new();
         let mut evaluated = BTreeSet::new();
@@ -5322,7 +5420,7 @@ impl RecordPlan {
             // portal row's does; the record's position in this one-record
             // source is no answer. Without one, a formula reading it was
             // refused above.
-            portal_row_number: session.record_number,
+            portal_row_number: session.record_number.map(RecordNumber::value),
             ..Context::default()
         };
         let result = evaluate_formula_with_calculation_budget(
@@ -6346,18 +6444,22 @@ const DYNAMIC_REFERENCES: &str =
 
 /// Expression operations the record-only host cannot evaluate faithfully.
 /// Apply this to both the formula and every reachable custom-function body.
-/// `option`: an auto-entered or validation formula, which may also read the
+/// `window_reads`: whether the operation can supply a selector from
 /// [`CONTEXT_SELECTORS`]. `design`: a host's recomputation of stored values,
 /// which answers the Design functions as the file's own calculation does
 /// ([`crate::host::FileHost::file_context`]).
-fn unsupported_rule_operation(expr: &Expr, option: bool, design: bool) -> Option<&'static str> {
+fn unsupported_rule_operation(
+    expr: &Expr,
+    window_reads: bool,
+    design: bool,
+) -> Option<&'static str> {
     match expr {
         Expr::PluginCall { function, .. } if design && is_design_function(*function) => None,
         Expr::PluginCall { .. } => Some("plug-in functions are unsupported in record rules."),
         expr if resolves_names_at_run_time(expr) => Some(DYNAMIC_REFERENCES),
         Expr::Get(selector)
             if !(RECORD_RULE_SELECTORS.contains(selector)
-                || option && CONTEXT_SELECTORS.contains(selector)) =>
+                || window_reads && CONTEXT_SELECTORS.contains(selector)) =>
         {
             Some("unsupported Get() selector.")
         }
@@ -6474,14 +6576,14 @@ pub(crate) fn stored_formula_problem(code: &[u8], context: &[u8]) -> Option<Stri
 /// relationships it reads through are ones the rules follow is the plan's
 /// to say (`related_hop`).
 pub(crate) fn option_formula_problem(code: &[u8], context: &[u8]) -> Option<String> {
-    parse_code_with(code, context, true).err()
+    parse_formula(code, context, FormulaUse::Options).err()
 }
 
 /// [`option_formula_problem`] for a calculated custom message, which the
 /// rules evaluate over the record alone ([`CustomMessage::Calculation`]):
 /// no related field, and no answer only the write's context gives.
 pub(crate) fn message_formula_problem(code: &[u8], context: &[u8]) -> Option<String> {
-    parse_code_with(code, context, false).err()
+    parse_code(code, context).err()
 }
 
 /// The occurrence (its key as the formula holds it) of the first field
@@ -6506,30 +6608,30 @@ pub(crate) fn first_field_occurrence(code: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn parse_code(code: &[u8], context: &[u8]) -> Result<Expression, String> {
-    parse_code_with(code, context, false)
+    parse_formula(code, context, FormulaUse::RecordOnly)
 }
 
-/// Decode a formula; with `related` (an auto-entered or validation
-/// formula), plain reads of other occurrences' fields are collected rather
-/// than refused (aggregates of them are), and the [`CONTEXT_SELECTORS`] are
-/// read.
-fn parse_code_with(code: &[u8], context: &[u8], related_reads: bool) -> Result<Expression, String> {
-    parse_formula(code, context, related_reads, false)
+#[derive(Clone, Copy)]
+enum FormulaUse {
+    RecordOnly,
+    /// At creation, a stored Number calculation can capture the record's
+    /// position (auto-entry.md, "Get ( RecordNumber )").
+    StoredNumber,
+    /// An auto-entered or validation formula can read related fields and
+    /// the operation's [`CONTEXT_SELECTORS`].
+    Options,
+    /// The host's recomputation can answer the Design functions.
+    Recompute,
 }
 
 /// [`parse_code`] for a host's recomputation of a stored calculation, which
 /// also answers the Design functions ([`unsupported_rule_operation`]).
 fn parse_recomputed(code: &[u8], context: &[u8]) -> Result<Expression, String> {
-    parse_formula(code, context, false, true)
+    parse_formula(code, context, FormulaUse::Recompute)
 }
 
-/// [`parse_code_with`], with the Design functions allowed when `design`.
-fn parse_formula(
-    code: &[u8],
-    context: &[u8],
-    related_reads: bool,
-    design: bool,
-) -> Result<Expression, String> {
+/// Decode a formula with the field reads and selectors its caller can answer.
+fn parse_formula(code: &[u8], context: &[u8], usage: FormulaUse) -> Result<Expression, String> {
     if code.len() > MAX_CODE {
         return Err("calculation is too large.".into());
     }
@@ -6548,6 +6650,13 @@ fn parse_formula(
         DecodeErrorKind::InvalidOpcode(op) => format!("unsupported calculation opcode {op:#04x}."),
         _ => format!("invalid calculation: {e}."),
     })?;
+    let related_reads = matches!(usage, FormulaUse::Options);
+    let window_reads = related_reads
+        || matches!(
+            (usage, &polish),
+            (FormulaUse::StoredNumber, Expr::Get(selector::RECORD_NUMBER))
+        );
+    let design = matches!(usage, FormulaUse::Recompute);
     let mut dependencies = BTreeSet::new();
     let mut related = BTreeSet::new();
     let mut whole = BTreeSet::new();
@@ -6622,7 +6731,7 @@ fn parse_formula(
                 problem = Some("LookupNext over related fields is unsupported.".into());
             }
             _ => {
-                if let Some(reason) = unsupported_rule_operation(e, related_reads, design) {
+                if let Some(reason) = unsupported_rule_operation(e, window_reads, design) {
                     problem = Some(reason.into());
                 }
             }
@@ -7007,6 +7116,53 @@ mod tests {
         );
         assert_eq!(decoded(&prepared, 13), decoded(&prepared, 12));
         assert_eq!(prepared.changed_fields, vec![1, 2, 8, 9, 10, 11, 12, 13]);
+    }
+
+    #[test]
+    fn creation_time_in_text_keeps_the_local_twelve_hour_clock() {
+        let table = Table {
+            id: 0x8002,
+            name: "Example".into(),
+            fields: vec![
+                field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(2, FieldKind::Normal, DataType::Text, 1, 1, 0),
+            ],
+        };
+        let tree = KeyTree::default();
+        let system = Locale::en_us();
+        let mut file = CalcSchema::new("Example", system.clone());
+        let plan = RecordPlan::plan(&table, &tree, Some(&file), true, true, Some(&system)).unwrap();
+        let mut clock = environment();
+        clock.time = "1:26:37 AM".into();
+        let created = plan
+            .prepare(
+                WriteMode::Create,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &clock,
+            )
+            .unwrap();
+        let created_text = decoded(&created, 2).unwrap();
+        assert_eq!(created_text, "1:26:37 AM");
+
+        clock.time = "1:26:43 AM".into();
+        let updated = plan
+            .prepare(
+                WriteMode::Update,
+                &BTreeMap::from([(2, created_text)]),
+                &BTreeMap::from([(1, Some("Changed".into()))]),
+                &clock,
+            )
+            .unwrap();
+        assert_eq!(updated.changed_fields, [1]);
+
+        assert!(RecordPlan::from_file_schema(&table, &tree, &file).is_err());
+        assert!(RecordPlan::from_desktop_file_schema(&table, &tree, &file, false).is_err());
+        let german = Locale::de_de();
+        assert!(RecordPlan::plan(&table, &tree, Some(&file), true, true, Some(&german)).is_err());
+        assert!(RecordPlan::plan(&table, &tree, Some(&file), true, true, None).is_err());
+        file.locale.twelve_hour = false;
+        assert!(RecordPlan::plan(&table, &tree, Some(&file), true, true, Some(&system)).is_err());
     }
 
     /// A record the window holds unsaved (#1063): its values are known only
@@ -7690,7 +7846,7 @@ mod tests {
         formulas: &[(u64, u64, &str)],
         leaves: &[(u64, u64, Vec<u8>)],
     ) -> Result<RecordPlan, DataError> {
-        plan_with(table, formulas, leaves, Vec::new())
+        plan_with(table, formulas, leaves, Vec::new(), true)
     }
 
     /// [`plan_of`] with other keys of the file (value lists).
@@ -7699,6 +7855,7 @@ mod tests {
         formulas: &[(u64, u64, &str)],
         leaves: &[(u64, u64, Vec<u8>)],
         mut entries: Vec<(Vec<Vec<u8>>, Vec<u8>)>,
+        local: bool,
     ) -> Result<RecordPlan, DataError> {
         let path = |field: u64, rest: &[u64]| -> Vec<Vec<u8>> {
             [table.id, 3, 5, field]
@@ -7721,7 +7878,7 @@ mod tests {
             tree.insert(&segments, om_hbam::slot::ChunkKind::Leaf, Some(value))
                 .unwrap();
         }
-        RecordPlan::from_schema(table, &tree)
+        RecordPlan::plan(table, &tree, None, false, local, None)
     }
 
     #[test]
@@ -7921,6 +8078,61 @@ mod tests {
         assert!(!updated.values.contains_key(&21));
     }
 
+    #[test]
+    fn stored_record_number_uses_creation_position_and_keeps_it_on_edit() {
+        let mut table = table();
+        table.fields.push(field(
+            23,
+            FieldKind::Calculation,
+            DataType::Number,
+            0,
+            0x80000,
+            0,
+        ));
+        let mut formulas = base_formulas();
+        formulas.push((23, 5, "Get ( RecordNumber )"));
+        let plan = plan_of(&table, &formulas, &[]).unwrap();
+        let changes = BTreeMap::from([(1, Some("Ada".into()))]);
+        let mut at_creation = environment();
+        at_creation.context.record_number = Some(RecordNumber::LocalNewRecord(3));
+        let created = plan
+            .prepare(WriteMode::Create, &BTreeMap::new(), &changes, &at_creation)
+            .unwrap();
+        assert_eq!(decoded(&created, 23).as_deref(), Some("3"));
+        for number in [None, Some(RecordNumber::Window(3))] {
+            at_creation.context.record_number = number;
+            let error = plan
+                .prepare(WriteMode::Create, &BTreeMap::new(), &changes, &at_creation)
+                .err()
+                .unwrap();
+            assert_eq!(error.code, Some(error::UNAVAILABLE));
+        }
+        let hosted = plan_with(&table, &formulas, &[], Vec::new(), false)
+            .err()
+            .unwrap();
+        assert_eq!(hosted.code, Some(error::UNAVAILABLE));
+
+        let mut row = existing();
+        row.insert(23, "3".into());
+        let edited = plan
+            .prepare(WriteMode::Update, &row, &changes, &environment())
+            .unwrap();
+        assert!(
+            !edited.values.contains_key(&23),
+            "preserve the stored number"
+        );
+
+        for (data_type, source) in [
+            (DataType::Number, "Get ( RecordNumber ) + 0"),
+            (DataType::Text, "Get ( RecordNumber )"),
+        ] {
+            *table.fields.last_mut().unwrap() =
+                field(23, FieldKind::Calculation, data_type, 0, 0x80000, 0);
+            *formulas.last_mut().unwrap() = (23, 5, source);
+            assert!(plan_of(&table, &formulas, &[]).is_err(), "{source}");
+        }
+    }
+
     /// `Get ( LayoutNumber )`, `Get ( RecordNumber )`,
     /// `Get ( CurrentPrivilegeSetName )` and `Get ( CurrentHostTimestamp )`
     /// in auto-entered calculations answer from the write's operation (#187,
@@ -7984,7 +8196,7 @@ mod tests {
             host_timestamp: host.clone(),
             // A row typed after two related rows of an unsorted portal
             // (#1038).
-            record_number: Some(3),
+            record_number: Some(RecordNumber::Window(3)),
             sequence: WriteSequence::Unmeasured,
             file_variables: None,
         };
@@ -8050,10 +8262,10 @@ mod tests {
         let mut checks = formulas.clone();
         checks.push((24, FIELD_VALIDATION, "Get ( RecordNumber ) > 0"));
         let validated = plan_of(&validated, &checks, &[]).unwrap();
-        let validate = |record_number| {
+        let validate = |record_number: Option<u64>| {
             let environment = RecordEnvironment {
                 context: WriteContext {
-                    record_number,
+                    record_number: record_number.map(RecordNumber::Window),
                     ..known.clone()
                 },
                 ..environment()
@@ -8810,7 +9022,7 @@ mod tests {
         let start = definition.len() - om_scsu::encode_counted(" ").len() - 3;
         definition.splice(start..start + 1, [4, 3, 0xd0, 0, 2]);
         lists.extend(related);
-        let plan = plan_with(&table, &base_formulas(), &leaves, lists).unwrap();
+        let plan = plan_with(&table, &base_formulas(), &leaves, lists, true).unwrap();
         let script = Entry::script(false, false);
         let rep = |field: u64, n: u64| field * 256 + n;
         let check =

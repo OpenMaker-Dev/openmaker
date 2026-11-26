@@ -800,6 +800,14 @@ in memory for the session. See the native
 observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
 and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
 
+Local desktop files can auto-enter Creation Time into a single-repetition
+Text field when the file and the desktop's configured system time format
+use hours without a leading zero, colon separators and a trailing AM/PM
+suffix. An unknown or mismatched system format is refused.
+The Text field stores the creation-time string, including seconds. Other
+type conversions and hosted Creation Time into Text remain unsupported.
+[FileMaker Pro measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1035#issuecomment-7185794163).
+
 An ordinary single-repetition Text field in a local file can
 auto-enter a direct `$$` variable read. A Text value comes from the
 owning file's current script variables, and an unset variable gives an
@@ -1054,10 +1062,20 @@ record's place in what the rules read:
 - **Hosted files** take the same answer, an inference (parity-unverified).
 - **Routed writes:** a portal row of another file's table carries the
   calling window's number to that file.
-- The number is also unavailable for a portal that sorts or filters, the
-  desktop's New Record command, and edits of stored records.
+- A stored Number calculation consisting of `Get ( RecordNumber )` can
+  use the position from ordinary New Record in a local window, including
+  when earlier rows are omitted. An unsorted set appends the row. A sorted
+  set inserts it immediately after the current row when that row is known.
+  Unrelated edits and later re-sorting leave its stored value alone.
+  Automatic re-sorting after commit is a separate difference.
+  The same field definition refuses writes
+  on hosted files and routed tables. Duplicate Record, portal creation
+  and other creates without the local New Record position refuse with 3
+  ([#1011](https://github.com/OpenMaker-Dev/openmaker/issues/1011)).
+- The number is unavailable for a portal that sorts or filters, a sorted
+  desktop window without a known insertion position, and edits of stored records.
 - **Edits that evaluate no such formula are written.** An auto-entered
-  calculation with no field inputs is evaluated only at creation.
+  or stored calculation with no field inputs is evaluated only at creation.
 - **The desktop window gives it in the measured shape only**
   (`begun_record_numbers`, `scripting/host/portals.rs`):
   - one record begun in a creation row, the only record of its table the

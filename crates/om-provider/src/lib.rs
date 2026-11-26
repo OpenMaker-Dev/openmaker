@@ -146,6 +146,85 @@ fn failure(context: &str, error: impl std::fmt::Display) -> DataError {
     DataError::new(format!("{context}: {error}"))
 }
 
+/// A server certificate the user permitted for one host and port by its
+/// SHA-256 fingerprint ([`NativeProvider::with_permitted_certificate`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Permit {
+    host: String,
+    port: u16,
+    fingerprint: [u8; 32],
+}
+
+/// The fingerprints `permits` hold for `host` (in any case) and `port`.
+pub(crate) fn permitted_for(permits: &[Permit], host: &str, port: u16) -> Vec<[u8; 32]> {
+    permits
+        .iter()
+        .filter(|permit| permit.host.eq_ignore_ascii_case(host.trim()) && permit.port == port)
+        .map(|permit| permit.fingerprint)
+        .collect()
+}
+
+/// A connection to a host that failed: with what to ask the user when its
+/// certificate could not be verified ([`untrusted_host`]).
+fn connect_failure(host: &str, port: u16, error: om_session::SessionError) -> DataError {
+    match &error {
+        om_session::SessionError::Transport(om_session::TransportError::Unverified(refused)) => {
+            let untrusted = untrusted_host(host, port, refused);
+            DataError {
+                untrusted: Some(Box::new(untrusted.clone())),
+                ..DataError::new(untrusted.message())
+            }
+        }
+        _ => failure("connect to server", error),
+    }
+}
+
+/// A host whose certificate `refused` could not be verified, as the user is
+/// asked about it: why, in words, and what the certificate says.
+pub(crate) fn untrusted_host(
+    host: &str,
+    port: u16,
+    refused: &om_session::UnverifiedCertificate,
+) -> om_data::UntrustedHost {
+    use om_session::CertificateProblem;
+    let why = match refused.problem {
+        CertificateProblem::UnknownIssuer { self_signed: true } => {
+            "Its certificate is self-signed, so it cannot be verified.".to_owned()
+        }
+        CertificateProblem::UnknownIssuer { self_signed: false } => {
+            "Its certificate was issued by an authority this device does not trust.".to_owned()
+        }
+        CertificateProblem::Expired => "Its certificate has expired.".to_owned(),
+        CertificateProblem::NotYetValid => "Its certificate is not valid yet.".to_owned(),
+        CertificateProblem::WrongName => format!("Its certificate does not name {}.", host.trim()),
+        CertificateProblem::OldFormat => "Its certificate is in an old format (X.509 version 1) \
+             that cannot be verified, as FileMaker Server's default certificate is."
+            .to_owned(),
+        CertificateProblem::Other => {
+            format!(
+                "Its certificate could not be verified ({}).",
+                refused.detail
+            )
+        }
+    };
+    let reason = if refused.changed {
+        format!("Its certificate is not the one permitted for it before. {why}")
+    } else {
+        why
+    };
+    om_data::UntrustedHost {
+        host: host.trim().to_owned(),
+        port,
+        reason,
+        subject: refused.subject.clone(),
+        issuer: refused.issuer.clone(),
+        valid_from: refused.valid_from.clone(),
+        valid_until: refused.valid_until.clone(),
+        fingerprint: refused.fingerprint,
+        changed: refused.changed,
+    }
+}
+
 /// An edit of layout objects that failed, as the window shows it: a
 /// refusal keeps the host's status as its code. `sent` names what was sent
 /// ("The deletion was").
@@ -295,6 +374,9 @@ pub struct NativeProvider {
     /// authority is trusted for ([`Self::with_ca_scope`]); `None` trusts it
     /// on every host.
     ca_scope: Option<(String, u16)>,
+    /// Server certificates the user permitted, each for one host and port
+    /// ([`Self::with_permitted_certificate`]).
+    permits: Vec<Permit>,
     /// A hosted file's related files open when something reads them
     /// ([`Self::with_related_on_demand`], calc/demand.rs).
     related_on_demand: bool,
@@ -459,6 +541,8 @@ enum Via {
 /// its path (its private host is `NativeProvider::local`).
 struct Endpoint {
     ca_pem: Vec<u8>,
+    /// The fingerprints of certificates permitted for the host and port.
+    permitted: Vec<[u8; 32]>,
     machine: MachineInfo,
     local: Option<std::path::PathBuf>,
 }
@@ -659,6 +743,7 @@ impl NativeProvider {
             caller: None,
             keepalive: Some(om_session::KEEPALIVE_INTERVAL),
             ca_scope: None,
+            permits: Vec::new(),
             related_on_demand: false,
             related_retry_after: None,
             close_requests: om_data::CloseRequests::default(),
@@ -685,6 +770,37 @@ impl NativeProvider {
     pub fn with_ca_scope(mut self, host: &str, port: u16) -> Self {
         self.ca_scope = Some((host.to_owned(), port));
         self
+    }
+
+    /// Accept, on `host` and `port` (the host's text in any case), the
+    /// server certificate whose SHA-256 fingerprint is `fingerprint` when it
+    /// cannot be verified: one the user chose to connect to anyway after a
+    /// [`om_data::UntrustedHost`] (`om_session::Transport::connect_trusting`).
+    /// It covers listing the host's files, opening a file there and that
+    /// file's related files there; nowhere else.
+    #[must_use]
+    pub fn with_permitted_certificate(
+        mut self,
+        host: &str,
+        port: u16,
+        fingerprint: [u8; 32],
+    ) -> Self {
+        self.permits.push(Permit {
+            host: host.trim().to_owned(),
+            port,
+            fingerprint,
+        });
+        self
+    }
+
+    /// How the open file's connection accepted its host's certificate:
+    /// verified, or permitted by the user; `None` with no hosted file open
+    /// (a local file's private host included).
+    pub fn server_trust(&self) -> Option<om_session::ServerTrust> {
+        if self.local.is_some() {
+            return None;
+        }
+        self.session.as_ref().and_then(Session::server_trust)
     }
 
     /// The configuration a file this provider opens on `host` and `port`
@@ -1785,22 +1901,25 @@ impl NativeProvider {
                 let Some(catalog) = self.catalog.table(table) else {
                     return BTreeSet::new();
                 };
-                let names =
-                    match om_data::rules::RecordPlan::from_desktop_file_schema(catalog, tree, file)
-                    {
-                        Ok(plan) => plan.editable_fields(),
-                        // Refused while a related file its write rules read waits
-                        // to open: offered as the plan would offer it, as for the
-                        // layout's own table; the write opens the file and plans
-                        // first (#1139).
-                        Err(_) if self.rule_files_pending(file, catalog, tree) => catalog
-                            .fields
-                            .iter()
-                            .filter(|field| om_data::rules::user_editable(field))
-                            .map(|field| field.name.clone())
-                            .collect(),
-                        Err(_) => return BTreeSet::new(),
-                    };
+                let names = match om_data::rules::RecordPlan::from_desktop_file_schema(
+                    catalog,
+                    tree,
+                    file,
+                    self.plans_local_record_positions(),
+                ) {
+                    Ok(plan) => plan.editable_fields(),
+                    // Refused while a related file its write rules read waits
+                    // to open: offered as the plan would offer it, as for the
+                    // layout's own table; the write opens the file and plans
+                    // first (#1139).
+                    Err(_) if self.rule_files_pending(file, catalog, tree) => catalog
+                        .fields
+                        .iter()
+                        .filter(|field| om_data::rules::user_editable(field))
+                        .map(|field| field.name.clone())
+                        .collect(),
+                    Err(_) => return BTreeSet::new(),
+                };
                 // Containers take no typing but Insert Picture and File, on a
                 // stored container as `store_table_container` takes it.
                 let container = |field: &om_hbam::catalog::Field| {
@@ -2407,7 +2526,7 @@ impl NativeProvider {
         // reads them (#1019, #1129).
         let layout_index = self.related_on_demand && browse;
         let connect = || {
-            Session::connect_verified(
+            Session::connect_trusting(
                 &connection.host,
                 connection.port,
                 &self.config.client_cert_pem,
@@ -2415,12 +2534,13 @@ impl NativeProvider {
                 &self.config.callback_host,
                 &endpoint.machine,
                 &endpoint.ca_pem,
+                &endpoint.permitted,
             )
             .map_err(|e| {
                 if local {
                     failure("open the file", e)
                 } else {
-                    failure("connect to server", e)
+                    connect_failure(&connection.host, connection.port, e)
                 }
             })
         };
@@ -2689,6 +2809,7 @@ impl NativeProvider {
                 }
                 .remembering(self.login_refusals.clone());
                 self.external.set_ca_scope(self.ca_scope.clone());
+                self.external.set_permits(self.permits.clone());
                 self.external.set_on_demand(self.related_on_demand);
                 self.external.set_retry_after(self.related_retry_after);
                 self.session = Some(session);
@@ -2771,6 +2892,7 @@ impl NativeProvider {
             ca_pem: self
                 .config_for(&connection.host, connection.port)
                 .additional_ca_pem,
+            permitted: permitted_for(&self.permits, &connection.host, connection.port),
             machine: self.config.machine.clone(),
             local: None,
         };
@@ -2840,6 +2962,7 @@ impl NativeProvider {
             .with_keepalive(self.keepalive)
             .with_related_on_demand(self.related_on_demand);
         peer.ca_scope = self.ca_scope.clone();
+        peer.permits = self.permits.clone();
         peer.close_requests = self.close_requests.clone();
         peer.desktop = self.desktop.clone();
         peer.local_hosts = self.local_hosts.clone();
@@ -2941,6 +3064,7 @@ impl NativeProvider {
             .with_keepalive(self.keepalive)
             .with_related_on_demand(self.related_on_demand);
         peer.ca_scope = self.ca_scope.clone();
+        peer.permits = self.permits.clone();
         peer.close_requests = self.close_requests.clone();
         peer.desktop = self.desktop.clone();
         peer.login_refusals = refusals.clone();
@@ -3061,6 +3185,7 @@ impl NativeProvider {
         };
         let endpoint = Endpoint {
             ca_pem: host.certificate_pem().to_vec(),
+            permitted: Vec::new(),
             // No client license goes to a file OpenMaker opens itself.
             machine: MachineInfo {
                 install_code: String::new(),
@@ -3507,7 +3632,12 @@ impl DataProvider for NativeProvider {
         // offer them: the write opens the file and plans before anything is
         // sent (`plan_table`), and a refusal then fails it, the window's
         // drafts kept (#1139).
-        let planned = om_data::rules::RecordPlan::from_desktop_file_schema(table, &tree, &file);
+        let planned = om_data::rules::RecordPlan::from_desktop_file_schema(
+            table,
+            &tree,
+            &file,
+            self.plans_local_record_positions(),
+        );
         let deferred = planned.is_err() && self.rule_files_pending(&file, table, &tree);
         let plan: Option<BTreeSet<String>> = match &planned {
             Ok(plan) => Some(plan.editable_fields()),
@@ -4295,7 +4425,15 @@ impl DataProvider for NativeProvider {
         )?;
         if let Ok(id) = u64::try_from(record.id) {
             match write.record {
-                None => self.found_add(table, id),
+                None => {
+                    let after = match write.record_number {
+                        Some(om_data::rules::RecordNumber::LocalSortedNewRecord {
+                            after, ..
+                        }) => Some(after),
+                        _ => None,
+                    };
+                    self.found_add_after(table, id, after);
+                }
                 Some(_) => self.calc.page.invalidate_record(table, id),
             }
         }
@@ -5087,16 +5225,21 @@ impl DataProvider for NativeProvider {
 
     fn list_files(&mut self, host: &str, port: u16) -> Result<Vec<HostedFile>, DataError> {
         use om_data::HostBrowser;
-        browse::NativeBrowser::new(self.config.clone(), self.ca_scope.clone())
-            .browse(host, port, &std::sync::atomic::AtomicBool::new(false))
-            .map(|listing| listing.files)
-            .map_err(DataError::from)
+        browse::NativeBrowser::new(
+            self.config.clone(),
+            self.ca_scope.clone(),
+            self.permits.clone(),
+        )
+        .browse(host, port, &std::sync::atomic::AtomicBool::new(false))
+        .map(|listing| listing.files)
+        .map_err(DataError::from)
     }
 
     fn host_browser(&self) -> Option<std::sync::Arc<dyn om_data::HostBrowser>> {
         Some(std::sync::Arc::new(browse::NativeBrowser::new(
             self.config.clone(),
             self.ca_scope.clone(),
+            self.permits.clone(),
         )))
     }
 

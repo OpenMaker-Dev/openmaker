@@ -95,6 +95,15 @@ Observations (High unless noted):
   self-signed RSA-2048 cert (`FMCertificateStore::CreateSelfSignPEMFile`, subject
   "Claris Self Signed Certificate (Not for Production Use)", 1-year validity) for
   the server role.
+- The default server certificate as served (observed, FileMaker Server
+  26.0.3 on Ubuntu, a fresh install with SSL on, 2026-11-25): X.509
+  **version 1** (no extensions), RSA, issued by `CN=Claris Root Authority`
+  (not by itself), subject `CN=Claris Self Signed Certificate (Not for
+  Production Use)`, no subjectAltName, valid one year from the install.
+  Verifiers built on webpki (rustls) refuse a version 1 certificate before
+  they look at its issuer or names (`UnsupportedCertVersion`), so no trusted
+  root makes it verify there; OpenMaker connects to it only when the user
+  permits its fingerprint (docs/mobile-client.md).
 
 ### Other open ports on the test host (banners only; High)
 

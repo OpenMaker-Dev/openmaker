@@ -46,7 +46,7 @@ mod step_names;
 pub mod summary;
 pub mod summary_field;
 pub mod value_lists;
-pub use browse::{HostBrowser, HostListing, ListingError, ListingFailure};
+pub use browse::{HostBrowser, HostListing, ListingError, ListingFailure, UntrustedHost};
 pub use schema::{
     arrange, unused_name, Arrangement, DatabaseSchema, FieldColumn, OccurrenceBox, OccurrenceShows,
     RelationshipMatch, RelationshipSide, SchemaCapabilities, SchemaChange, SchemaField,
@@ -179,14 +179,10 @@ pub struct ScriptWrite {
     /// when the caller does not know it, which refuses a write whose formula
     /// reads it.
     pub privilege_set: Option<String>,
-    /// The record's `Get ( RecordNumber )` as the window answers it for the
-    /// write's auto-entered and validation formulas
-    /// (`rules::WriteContext::record_number`), given only where FileMaker's
-    /// answer is known (#1038: a row typed into the creation row of a portal
-    /// that neither sorts nor filters is its place among the portal's
-    /// related records, after those related before the save). `None`
-    /// refuses a write whose formula evaluates it.
-    pub record_number: Option<u64>,
+    /// The position the window supplies for this write's `Get ( RecordNumber )`
+    /// with the operation that established it ([`rules::RecordNumber`]).
+    /// A stored Number calculation requires ordinary local New Record.
+    pub record_number: Option<rules::RecordNumber>,
     /// The preview of this new record its window made before writing it
     /// ([`DataProvider::preview_new_record`], #1047): the write reuses the
     /// serial numbers the preview reserved and the clock and UUID it read,
@@ -634,6 +630,9 @@ pub struct DataError {
     /// cannot key (#571): an import ends at such a row rather than
     /// skipping it as a row FileMaker refused.
     pub unsupported: bool,
+    /// The host's certificate could not be verified: what to ask the user
+    /// about it before connecting anyway ([`UntrustedHost`]).
+    pub untrusted: Option<Box<UntrustedHost>>,
 }
 
 /// What a commit did in one file whose records it held (#1006).
@@ -686,6 +685,7 @@ impl DataError {
             lost: false,
             commit: Vec::new(),
             unsupported: false,
+            untrusted: None,
         }
     }
 
@@ -697,6 +697,7 @@ impl DataError {
             lost: false,
             commit: Vec::new(),
             unsupported: false,
+            untrusted: None,
         }
     }
 
@@ -717,6 +718,7 @@ impl DataError {
             lost: true,
             commit: Vec::new(),
             unsupported: false,
+            untrusted: None,
         }
     }
 }

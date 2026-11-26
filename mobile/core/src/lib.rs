@@ -11,6 +11,11 @@
 //! commands and state come with the frames ([`DocumentState`], [`Menu`]).
 //! File contents and credentials stay in the engine.
 
+// `GoError` crosses UniFFI by value, so its fields cannot be boxed, and
+// its `Untrusted` case carries what a certificate says for the user to be
+// asked about it. It is returned once per open or listing, not in a loop.
+#![allow(clippy::result_large_err)]
+
 use om_data::DataProvider;
 use om_provider::{NativeConfig, NativeProvider};
 
@@ -49,6 +54,30 @@ pub enum GoError {
     /// Any other failure, with FileMaker's error code when it has one.
     #[error("{reason}")]
     Failed { code: Option<i32>, reason: String },
+    /// The host's certificate could not be verified, and was not permitted:
+    /// what to ask the user before connecting anyway, as FileMaker Go asks
+    /// (docs/mobile-client.md). Connecting again with `fingerprint` as the
+    /// host's [`Host::permitted`] accepts this certificate, and no other.
+    #[error("{reason}")]
+    Untrusted {
+        host: String,
+        port: u16,
+        /// Why the certificate could not be verified, as a sentence.
+        reason: String,
+        /// The certificate's subject and issuer (`CN=..., O=...`) and its
+        /// validity (`2027-11-25 20:22:31 UTC`); empty when they do not
+        /// read.
+        subject: String,
+        issuer: String,
+        valid_from: String,
+        valid_until: String,
+        /// Its SHA-256 fingerprint, as `openssl x509 -fingerprint` prints
+        /// one: `AB:CD:...`.
+        fingerprint: String,
+        /// Another certificate was permitted for this host: this one
+        /// replaced it.
+        changed: bool,
+    },
 }
 
 impl GoError {
@@ -66,6 +95,34 @@ impl GoError {
     /// refuses the client license (or wants one) does too: the license is
     /// typed in the sign-in, and the desktop's text points to its own
     /// License dialog.
+    /// A failure the provider reported: [`Self::Untrusted`] for a host whose
+    /// certificate it could not verify, else as [`Self::from_failure`].
+    fn from_data(error: &om_data::DataError) -> Self {
+        match &error.untrusted {
+            Some(host) => Self::untrusted(host),
+            None => Self::from_failure(error.code, &error.message),
+        }
+    }
+
+    fn untrusted(host: &om_data::UntrustedHost) -> Self {
+        GoError::Untrusted {
+            host: host.host.clone(),
+            port: host.port,
+            reason: host.message(),
+            subject: host.subject.clone(),
+            issuer: host.issuer.clone(),
+            valid_from: host.valid_from.clone(),
+            valid_until: host.valid_until.clone(),
+            fingerprint: host
+                .fingerprint
+                .iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect::<Vec<_>>()
+                .join(":"),
+            changed: host.changed,
+        }
+    }
+
     fn from_failure(code: Option<i32>, message: &str) -> Self {
         match code {
             Some(212 | 213) => GoError::Credentials {
@@ -92,6 +149,41 @@ pub struct Host {
     /// A PEM certificate authority to trust for this host besides the
     /// system's, for a privately administered server; empty for none.
     pub certificate: String,
+    /// The SHA-256 fingerprint of a server certificate the user permitted
+    /// for this host and port after a [`GoError::Untrusted`], in
+    /// hexadecimal with or without colons: accepted when it cannot be
+    /// verified. Empty for none.
+    #[uniffi(default = "")]
+    pub permitted: String,
+    /// The certificates the user permitted for other hosts, each accepted
+    /// on its own host and port only: for a file a script opens there.
+    #[uniffi(default = [])]
+    pub permitted_elsewhere: Vec<Permit>,
+}
+
+/// A server certificate the user permitted for a host and port, by its
+/// SHA-256 fingerprint (as [`Host::permitted`]).
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct Permit {
+    pub address: String,
+    pub port: u16,
+    pub fingerprint: String,
+}
+
+/// A fingerprint in hexadecimal, with or without colons or spaces.
+fn fingerprint(text: &str) -> Option<[u8; 32]> {
+    let digits: Vec<u8> = text
+        .bytes()
+        .filter(|byte| !matches!(byte, b':' | b' '))
+        .collect();
+    if digits.len() != 64 {
+        return None;
+    }
+    let mut out = [0; 32];
+    for (byte, pair) in out.iter_mut().zip(digits.chunks_exact(2)) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(out)
 }
 
 /// Where a file is.
@@ -160,9 +252,28 @@ fn provider(host: Option<&Host>) -> Result<NativeProvider, GoError> {
         config.additional_ca_pem = host.certificate.as_bytes().to_vec();
         // Saved for this host and port: a file a script opens elsewhere is
         // not verified against it.
-        return Ok(NativeProvider::new(config)
+        let mut provider = NativeProvider::new(config)
             .with_related_on_demand(true)
-            .with_ca_scope(host.address.trim(), host.port));
+            .with_ca_scope(host.address.trim(), host.port);
+        if !host.permitted.trim().is_empty() {
+            let permitted = fingerprint(&host.permitted).ok_or_else(|| {
+                GoError::failed("The permitted certificate's fingerprint is not valid.")
+            })?;
+            provider =
+                provider.with_permitted_certificate(host.address.trim(), host.port, permitted);
+        }
+        // Each for its own host and port only; one that does not read is
+        // left out rather than stop this host opening.
+        for permit in &host.permitted_elsewhere {
+            if let Some(fingerprint) = fingerprint(&permit.fingerprint) {
+                provider = provider.with_permitted_certificate(
+                    permit.address.trim(),
+                    permit.port,
+                    fingerprint,
+                );
+            }
+        }
+        return Ok(provider);
     }
     Ok(NativeProvider::new(config).with_related_on_demand(true))
 }
@@ -182,6 +293,8 @@ pub fn check_host(address: String, port: String, certificate: String) -> Result<
         address,
         port,
         certificate,
+        permitted: String::new(),
+        permitted_elsewhere: Vec::new(),
     })
 }
 
@@ -197,6 +310,6 @@ pub fn hosted_file_name(name: String) -> String {
 pub fn hosted_files(host: Host) -> Result<Vec<String>, GoError> {
     let files = provider(Some(&host))?
         .list_files(host.address.trim(), host.port)
-        .map_err(|error| GoError::from_failure(error.code, &error.message))?;
+        .map_err(|error| GoError::from_data(&error))?;
     Ok(files.into_iter().map(|file| file.name).collect())
 }

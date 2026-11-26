@@ -1779,7 +1779,10 @@ impl WorkerHost<'_> {
             typed: draft.typed.clone(),
             skip_validation: false,
             privilege_set: set.clone(),
-            record_number: numbers.get(&index).copied(),
+            record_number: numbers
+                .get(&index)
+                .copied()
+                .map(om_data::rules::RecordNumber::Window),
             prepared: draft.prepared.as_ref().map(|prepared| prepared.id),
             single_field_step: false,
         };

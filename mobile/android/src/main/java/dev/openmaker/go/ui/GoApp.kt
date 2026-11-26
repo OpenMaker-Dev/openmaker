@@ -25,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -32,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import dev.openmaker.go.GoViewModel
 import dev.openmaker.go.SignInRequest
+import dev.openmaker.go.engine.GoException
 import dev.openmaker.go.engine.Viewport
 
 /** The Launch Center, or the open file in its place. */
@@ -50,6 +52,15 @@ fun GoApp(model: GoViewModel) {
             model.licenseSaved,
             onOpen = { account, password, license -> model.open(request.entry, account, password, license, viewport) },
             onCancel = { model.signIn = null },
+        )
+    }
+    // Above the sign-in, whose open met the host.
+    model.trustPrompt?.let { prompt ->
+        // Bound to the prompt shown: a newer one is not answered by it.
+        TrustDialog(
+            prompt.untrusted,
+            onPermit = { always -> model.permit(prompt, always) },
+            onDontConnect = { model.dontConnect(prompt) },
         )
     }
     if (model.settings) {
@@ -223,6 +234,55 @@ val TypingDialog = DialogProperties(decorFitsSystemWindows = false)
 
 /** Keeps a [TypingDialog] above the keyboard and inside the system bars; its scrolling text shrinks. */
 fun Modifier.keepClearOfKeyboard() = safeDrawingPadding()
+
+/**
+ * A host whose certificate could not be verified, as FileMaker Go asks about
+ * one: why, what the certificate says, and Don't Connect, Connect (this
+ * time) or Always Permit.
+ */
+@Composable
+private fun TrustDialog(untrusted: GoException.Untrusted, onPermit: (Boolean) -> Unit, onDontConnect: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDontConnect,
+        title = { Text("Connect to ${untrusted.host}?") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(untrusted.reason)
+                Text(
+                    "Connect only if you trust this host and its certificate's fingerprint is the one its administrator gave you.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                CertificateDetail("Certificate", untrusted.subject)
+                CertificateDetail("Issued by", untrusted.issuer)
+                if (untrusted.validFrom.isNotEmpty() || untrusted.validUntil.isNotEmpty()) {
+                    CertificateDetail("Valid", "${untrusted.validFrom} to ${untrusted.validUntil}")
+                }
+                CertificateDetail("SHA-256 fingerprint", untrusted.fingerprint, monospace = true)
+            }
+        },
+        confirmButton = {
+            Row {
+                TextButton(onClick = onDontConnect) { Text("Don't Connect") }
+                TextButton(onClick = { onPermit(false) }) { Text("Connect") }
+                TextButton(onClick = { onPermit(true) }) { Text("Always Permit") }
+            }
+        },
+    )
+}
+
+@Composable
+private fun CertificateDetail(label: String, value: String, monospace: Boolean = false) {
+    if (value.isEmpty()) return
+    Column {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            value,
+            style =
+                if (monospace) MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+                else MaterialTheme.typography.bodyMedium,
+        )
+    }
+}
 
 @Composable
 fun MessageDialog(message: String, onDismiss: () -> Unit) {

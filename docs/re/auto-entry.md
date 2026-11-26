@@ -160,6 +160,16 @@ name and user name are distinct variables. The table describes the selected
 variable; it does not establish when creation and modification defaults are
 scheduled, including initialization of modification fields on creation.
 
+FileMaker Pro 26.1.1 allows Creation Time on a Text field and retains the
+option when a Time field is converted to Text. Both Text fields use the
+creation selector `01` and option word `0x00000001`. With a local English
+12-hour file and system locale, New Record stored the same time-of-day
+string as a Time field's stored text, including seconds and the AM/PM
+suffix. An unrelated edit, a later commit, reopen and the Time field's
+24-hour layout display kept that Text value. A 24-hour file or system
+locale remains unmeasured.
+[Native results](https://github.com/OpenMaker-Dev/openmaker/issues/1035#issuecomment-7185794163).
+
 On FileMaker Pro 26.1.1, a local Text field with the calculated
 auto-enter `$$Marker` read the current file's variable at New Record.
 The two Text assignments produced two corresponding stored values. An
@@ -632,6 +642,29 @@ does not distinguish validation being skipped from other internal timing
 that saves without a dialog. Hosted behavior is unmeasured.
 
 ## Get ( RecordNumber )
+
+FileMaker Pro 26.1.1 [measured sorted ordinary New Record](https://github.com/OpenMaker-Dev/openmaker/issues/1011)
+with a stored Number calculation consisting of `Get ( RecordNumber )`.
+When sorted, a new row initially follows the current row. When unsorted,
+it goes at the end. A new window kept the found set, sort and current
+record. The stored value held the insertion position across commit and
+later reordering. The live record number changed from 3 to 2 in one
+sorted case while the stored value remained 3.
+
+**Stored Number calculation.** [O: FileMaker Pro 26.1.1, local disposable
+file, [#1011](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7184565879).]
+FileMaker lets a Number calculation whose entire formula is
+`Get ( RecordNumber )` store its results (option word `0x00080000`).
+After scripted New Record in an unsorted found set, the field showed the
+record's position immediately. A later Set Field on another field and Commit
+kept that number. Omitting an earlier row before making a record gave the
+new row's position in the reduced found set. A later sort or omit changed
+the window position while the stored result stayed as first evaluated. In
+one descending sorted set, New Record produced a stored 2 and window
+position 2. The closed copies held the stored numbers across unrelated
+edits and reopening. All script steps returned 0 with no alerts. Timing
+before the first read remains unmeasured, as do duplicates, portals and
+hosted files for this stored formula.
 
 Two cases [O: FileMaker Pro 26.0.3, a local disposable pair made in the
 native UI, #1038, relayed sanitized].
