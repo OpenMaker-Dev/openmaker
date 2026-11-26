@@ -39,7 +39,9 @@ use om_protocol::{validate_client_license, LoginEnvironment, MachineInfo, NodeSt
 use om_session::Session;
 
 mod schema;
-pub use authoring::{Authoring, AuthoringError, DesignCatalogs, ScriptDefinitions};
+pub use authoring::{
+    Authoring, AuthoringError, DesignCatalogs, LayoutCatalogSnapshot, ScriptDefinitions,
+};
 pub use calc::local_utc_offset;
 pub use choice::ListedChoices;
 pub use schema::{schema_from_tree, schema_from_tree_with, DatabaseSchemaSnapshot};
@@ -3391,6 +3393,15 @@ impl DataProvider for NativeProvider {
             let route = self.external.route(table.id).ok_or_else(|| {
                 DataError::with_code(3, "The related file holding this table is unavailable.")
             })?;
+            // The layout's related records, its portals and related fields,
+            // as on a layout of this file's table (#43): a table of this
+            // file by its own rules, another file's by its owner's
+            // (`routed_related_fields`), each written by the file that owns
+            // it (`write_record`).
+            let mut related = {
+                let tree = download_tree(&self.schema_downloads)?;
+                self.related_capabilities(&file, &layout, &tree)
+            };
             // Planned over the owner's routed plan (#187), as its write is,
             // opening nothing; deferred while a file its rules read waits
             // (`routed_edits`, #1160).
@@ -3399,6 +3410,7 @@ impl DataProvider for NativeProvider {
                 related_owner::RoutedEdits::ReadOnly => {
                     return Ok(om_data::RecordCapabilities {
                         editable_fields: Some(BTreeSet::new()),
+                        related,
                         ..Default::default()
                     });
                 }
@@ -3452,7 +3464,6 @@ impl DataProvider for NativeProvider {
                 })
                 .map(|f| f.id)
                 .collect();
-            let mut related = BTreeMap::new();
             if !repetitions.is_empty() {
                 related.insert(layout_occurrence(&layout)?, repetitions);
             }
@@ -3465,8 +3476,6 @@ impl DataProvider for NativeProvider {
                 // it does not evaluate the table's field-entry rules.
                 delete: true,
                 editable_fields: Some(editable.unwrap_or_default()),
-                // Related records of a layout of another file's table
-                // are not edited in Browse yet.
                 related,
                 refused,
                 globals: file

@@ -700,13 +700,24 @@ not be read
 `a_login_whose_accounts_cannot_be_read_is_answered_unable_to_open`).
 
 The same switch checks the store engine's reads (`engine::copies::StoreCopy`).
-At a file's first read it writes the file engine's tree as an `.fmp12` and
-imports it into a store in memory, as the store engine imports a file it
-hosts (`paged::import`), with its derived state computed from that view as
-the store engine computes it (`store::derived_of`, with the page 0 the
-file engine loaded, which the store engine records from the source it
-imports; the rewrite the copy imports has a page 0 of its own) and checked
-against the file engine's. Every read at that version is then answered a
+A file's copy holds the version its first read reads: the file engine's
+tree written as an `.fmp12` and imported into a store in memory, as the
+store engine imports a file it hosts (`paged::import`), with its derived
+state computed from that view as the store engine computes it
+(`store::derived_of`, with the page 0 the file engine loaded, which the
+store engine records from the source it imports; the rewrite the copy
+imports has a page 0 of its own) and checked against the file engine's.
+The switch makes it when the file is hosted, before any client can read it
+(`Server::checking_reads` for the files hosted then, and each file loaded
+or opened again under the switch): made inside the first read, a debug
+import of a 60,000-record file took 20 of the 30 seconds its client waits
+for a reply ([#916](https://github.com/OpenMaker-Dev/openmaker/issues/916)).
+The first read takes that copy when it is the one it would make itself
+(the same version, made from the same name, page 0 and desktop flag), and
+otherwise makes its own, so which reads are compared does not depend on
+when the copy was made; a copy made in advance while a first read made its
+own is dropped. A load's copies, read or not, go when its close completes.
+Every read at that version is then answered a
 third time, through a `PagedView` of the copy, and must give the same
 answer, byte for byte where the answer is a reply. The third read takes
 the file engine's state of the file that is not a version's (read-only,
