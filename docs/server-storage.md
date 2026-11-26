@@ -1587,9 +1587,17 @@ script sees it, before it holds anything for the edit (a container's
 data, a lock), and a Commit Records after it has nothing to commit and
 answers 0, as FileMaker Server answers Set Field, New Record, Delete
 Record and Commit Records there (re/script-runtime.md 13.28; 6 for the
-other steps is inferred); Set Next Serial Value and the account steps
-answer 6 before anything is written (inferred), and the engine refuses
-Set Next Serial Value first too, so no save is tried and none fails; a script whose last record
+other supported steps that reach the check, Relookup among them, is
+inferred). A step the server would not make on a writable file either
+answers what it answers there, 3, before the file's 6: Insert File, an
+import from a source or with options it does not import, a step into a
+table whose rules it does not enforce (`refuse_unsupported_before_read_only`,
+`import_request`). Set Next Serial Value and the account steps answer 6
+before anything is written (inferred), and the engine refuses Set Next
+Serial Value first too, so no save is tried and none fails. A file that
+becomes read-only between a script's steps is not measured: a commit then
+fails with the save's error, New Record with 301 from its id reservation,
+Set Next Serial Value with 6; a script whose last record
 is not stored when it ends has that commit's error as the run's result,
 never 0 (op30's reply when it waits; one that does not wait answers only
 that the script started). A script sets a global field all the same: its
@@ -4416,7 +4424,10 @@ Records and the rest that edit records) fails with 6, "File is
 read-only", where the script sees it (`ServerHost::require_edit`),
 before it holds anything for the edit (a container's data, a lock), as
 FileMaker Server answers Set Field, New Record and Delete Record
-(re/script-runtime.md 13.28; inferred for the rest). So no edit waits for
+(re/script-runtime.md 13.28; inferred for the rest). A step the server
+would not make on a writable file either (Insert File, an import from a
+folder, a table whose rules it does not enforce) answers 3 as there,
+before the 6 (section 5). So no edit waits for
 a commit that would be refused later, the explicit Commit Records, which
 then answers 0 as on FileMaker Server, or the one when the session ends.
 Set Next Serial Value fails with 6 before anything is written, on both
@@ -4436,7 +4447,7 @@ host's 6 before they reach it:
 
 | What | Answer |
 |---|---|
-| a server script's step that opens, creates or deletes a record; a script that sets a field and ends | 6, the same on both engines; a Commit Records after it 0 (`server_scripts_that_would_write_fail_alike_on_both_engines`) |
+| a server script's step that opens, creates or deletes a record; a script that sets a field and ends | 6, the same on both engines; a Commit Records after it 0 (`server_scripts_that_would_write_fail_alike_on_both_engines`); 3 for a step the server does not support on any file (section 5) |
 | a server script's Set Next Serial Value | 6, before anything is written, the same on both engines (inferred) |
 | a server script's Set Field on a global | done: the session's own value, the same on both engines |
 | a server script's account steps | 6 (inferred) |

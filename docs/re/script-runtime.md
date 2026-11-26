@@ -2180,11 +2180,21 @@ returned the four. It ran in FileMaker Pro and by Perform Script on Server
   writable run its script's Set Field took the record's op60 lock, Commit Records sent op14 then op70, New Record
   sent op71, and Delete Record of that new record, not yet committed,
   sent nothing.
-- Not measured: the other steps that change a file (Replace Field
-  Contents, Import Records, Duplicate Record, Delete All Records, the
-  Insert steps, Truncate Table, Set Next Serial Value, the account steps),
-  a step that changes the file's design, and a file that becomes read
-  only while a script runs. [I] They answer 6 too.
+- Not measured: the other steps that change a file's records (Replace
+  Field Contents, Import Records, Duplicate Record, Delete All Records,
+  Truncate Table, Relookup, the Insert steps), Set Next Serial Value and
+  the account steps; a step that changes the file's design; and a file
+  that becomes read only while a script runs. [I] On a file hosted read
+  only from the start, the record and account steps answer 6 too, as the
+  three measured do, where the step is one the host supports.
+- OpenMaker Server answers 6 for the steps it supports that reach its
+  read-only check (docs/server-storage.md 5). Where it does not support
+  the step, its source or options, or a table's rules, it answers what it
+  answers on a writable file, 3: Insert File, an import from a folder of
+  files, a table whose rules it does not enforce. A file that becomes read
+  only between a script's steps gets OpenMaker's own answers there, not
+  measured: the commit's save error, 301 from New Record's id reservation,
+  6 from Set Next Serial Value.
 
 ## Unknowns
 

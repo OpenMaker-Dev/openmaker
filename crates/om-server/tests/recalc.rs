@@ -568,6 +568,11 @@ fn tasks_tree_for_writes(tag: &str, read_only: bool) -> (TempFile, OwnedNode) {
             transfer::import(&["rows.tab"], &[NAME, COUNT], false),
         ],
     );
+    // An import from a folder of files (the step's value 2), a source this
+    // server does not import: 3 on any file, a read-only one too.
+    let mut from_folder = transfer::import(&["rows"], &[NAME, COUNT], false);
+    from_folder.value = 2;
+    let unsupported_import = stepped(14, "Import a folder", vec![from_folder]);
     // A global set and read in the next step: the session's own value.
     let global = script(
         12,
@@ -588,6 +593,7 @@ fn tasks_tree_for_writes(tag: &str, read_only: bool) -> (TempFile, OwnedNode) {
         serial,
         global,
         import,
+        unsupported_import,
     ];
     let mut root = fixture::tree(&scripts, true);
     fixture::add_photo(&mut root);
@@ -1373,7 +1379,38 @@ fn a_server_script_opens_no_record_on_a_file_hosted_read_only() {
             String::from_utf8_lossy(&answer)
         );
     }
+    // An import from a source this server does not import answers 3, as on
+    // a writable file, not the file's 6 (script 13's import keeps 6).
+    let unsupported = run_script(&mut client, 14).unwrap();
+    assert!(
+        unsupported.ends_with(b"|3|0"),
+        "{}",
+        String::from_utf8_lossy(&unsupported)
+    );
     assert_eq!(cell(&records_of(&mut client, TABLE), 1, COUNT), Some("3"));
+    assert_eq!(records_of(&mut client, TABLE).len(), 2);
+}
+
+/// On a file hosted read-only, a step the server would not make on a
+/// writable file either answers what it answers there, 3, before the
+/// file's 6 (script-runtime.md 13.28): Set Field, New Record, Replace Field
+/// Contents and Import Records into a table whose rules it does not enforce
+/// (here an auto-entered serial number on Count). Delete Record, which
+/// checks no rules, answers 6.
+#[test]
+fn a_step_the_server_would_not_make_answers_3_on_a_file_hosted_read_only() {
+    let (_, mut root) = tasks_tree_for_writes("recalc-unenforced-base", true);
+    fixture::set_field_options(&mut root, TABLE, COUNT, 0x2);
+    let read_only = TempFile::from_tree("recalc-unenforced-read-only", &root);
+    let (mut client, _) = server::logged_in(server::start(&read_only), "scripter");
+    for (script, step) in [(4, "3"), (8, "3"), (10, "3"), (13, "3"), (9, "6")] {
+        let answer = run_script(&mut client, script).unwrap();
+        assert!(
+            answer.ends_with(format!("|{step}|0").as_bytes()),
+            "script {script}: {}",
+            String::from_utf8_lossy(&answer)
+        );
+    }
     assert_eq!(records_of(&mut client, TABLE).len(), 2);
 }
 
