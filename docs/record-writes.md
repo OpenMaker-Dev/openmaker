@@ -876,6 +876,20 @@ those two steps. Hosted files, compound variable formulas, and non-Text
 variable values are outside this change.
 [FileMaker Pro measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1037#issuecomment-7185794811).
 
+A local stored Text calculation can use a literal `Evaluate` with
+an explicit dependency list. OpenMaker compiles a concatenation of
+ordinary single-repetition Text fields and plain text during planning.
+The measured space form `Char ( 32 )` is also supported. Only the listed
+fields trigger a recalculation. Other referenced fields supply their
+current values when it runs. An untouched ordinary New Record leaves the
+result empty. Creation needs an unsorted local window. Clearing all listed
+fields while an unlisted input still holds a value refuses with error 3
+when the empty-input guard is on. The expression and its dependencies
+are kept in the file.
+A field-supplied expression, hosted files and other dynamic record-rule
+expressions remain outside this support.
+[FileMaker Pro measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1072)
+
 **An auto-entered or validation formula may read an unstored
 calculation** of its own table ([#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); auto-entry.md, "Formulas over
 an unstored calculation or a summary field"). The calculation is

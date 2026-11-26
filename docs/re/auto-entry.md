@@ -680,6 +680,19 @@ or related-values lists. Carry-over to them is inference, and this case
 does not distinguish validation being skipped from other internal timing
 that saves without a dialog. Hosted behavior is unmeasured.
 
+## Stored Evaluate with explicit dependencies
+
+FileMaker Pro 26.1.1 stored a Text calculation of the form
+`Evaluate ( "Given & Char ( 32 ) & Family" ; [ Given ; Family ] )`.
+New Record left it empty. Changing either listed field recomputed it at
+Set Field. A field the text also read and the list omitted did not trigger
+recalculation. The next listed change read its current value. The
+results persisted through commit and reopen. Reading the expression
+from a field was also allowed and writing the expression field itself
+triggered that variant. The literal definitions used option word
+`0x00080000` and stored their result cells. Hosted files were not compared.
+[Native results](https://github.com/OpenMaker-Dev/openmaker/issues/1072)
+
 ## Get ( CurrentTimeUTCMilliseconds )
 
 FileMaker Pro 26.1.1 in a local file displayed the UTC millisecond value
