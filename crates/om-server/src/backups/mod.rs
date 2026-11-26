@@ -1080,7 +1080,9 @@ pub(crate) fn check_folder(_shared: &Shared, _folder: &Path) -> Result<(), Strin
 /// or paused, taken under its slot's lock ([`crate::hosting::Slot::admit`]),
 /// so that a backup never holds a file that is closing or closed. The run
 /// holds what it takes until it ends, as a script does, so a close waits
-/// for it.
+/// for it. For a folder, every file's folder is resolved before any file is
+/// taken: a path that takes long to resolve, on a mount that does not
+/// answer, keeps no file chosen before it from closing.
 pub(crate) fn chosen(shared: &Shared, files: &BackupFiles) -> Vec<Arc<Hosted>> {
     let slots = shared.hosting.slots();
     match files {
@@ -1093,9 +1095,13 @@ pub(crate) fn chosen(shared: &Shared, files: &BackupFiles) -> Vec<Arc<Hosted>> {
             let Ok(folder) = std::fs::canonicalize(folder) else {
                 return Vec::new();
             };
-            slots
+            // Resolved first, taking nothing; then taken.
+            let inside: Vec<&crate::hosting::Slot> = slots
                 .iter()
                 .filter(|slot| real_folder(&slot.path).is_ok_and(|real| real.starts_with(&folder)))
+                .collect();
+            inside
+                .into_iter()
                 .filter_map(|slot| slot.admit(Arc::clone).ok())
                 .collect()
         }

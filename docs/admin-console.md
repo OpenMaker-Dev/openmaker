@@ -1299,7 +1299,12 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
   are open or paused when it starts, taken as a client's session takes
   them; one closing or closed is left out. It holds what it copies until
   it ends, so a file's close waits for a backup under way: the close does
-  not cancel it (inf). Every file the server was given stays protected
+  not cancel it (inf). A backup of one folder resolves every hosted file's
+  folder before it takes any file, so a path on a mount that does not
+  answer keeps no file it chose from closing. A run that waits for another
+  backup to finish copying already holds its files, so a close of one waits
+  for both ([#1079](https://github.com/OpenMaker-Dev/openmaker/issues/1079)).
+  Every file the server was given stays protected
   from deletion, closed or not, and so does what can be found of one that
   failed to open at startup; while such a file cannot be found, backups
   are still made but none is deleted (retention, Delete, or the cleanup of
