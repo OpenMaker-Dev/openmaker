@@ -1168,14 +1168,16 @@ record's place in what the rules read:
   key with replacing `Get ( UUID )` (`0xa0000088`, no validation).
   Related creation uses the copied global as the match value. Direct New
   Record on the related table still evaluates its UUID default.
-  A separate first-match case with that UUID key and no stored Position
-  supports the value-indexed Number default
+  A first-match case with that UUID key also supports the value-indexed Number default
   `If ( IsEmpty ( Self ) ; 0 ; Self )` (`0x80000008`, no validation).
   The related draft shows 0 on creation and keeps a nonempty assignment
-  made before Commit.
+  made before or after an intermediate Commit. This also works with the
+  measured indexed Position. Both stored values can be found after
+  reopen through their indexes.
   The measured unindexed, replacing
   `If ( IsEmpty ( Self ) ; 0 ; Self + 1 )` (`0x00000088`, no validation)
-  also starts at 0 in this relationship. An assigned 25 shows and stores
+  also starts at 0 in this relationship when there is no stored Position.
+  An assigned 25 shows and stores
   26, including when the script commits the new match before assigning
   the Number. The pending read evaluates the proposed value, and Commit
   uses that same proposal to avoid applying the increment twice.
