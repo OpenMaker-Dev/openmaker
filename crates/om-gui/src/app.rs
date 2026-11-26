@@ -1089,6 +1089,10 @@ pub struct OpenMakerApp {
     /// in it: Shift or Option was held as File > Open was chosen.
     open_file_asking: bool,
     viewport_windows: crate::web_viewer::ViewportWindows,
+    /// The layer of the viewport being drawn: the root's background, or the
+    /// egui window an embedded viewport is shown in. Web viewers hide under
+    /// what egui paints above it (`web_viewers.rs`).
+    viewport_layer: egui::LayerId,
     /// Open the form's file when the app first draws (`open_on_launch`).
     open_on_launch: bool,
     /// The reconnect of a file whose connection was lost (recovery.rs).
@@ -1211,6 +1215,7 @@ impl OpenMakerApp {
             file_panel: None,
             open_file_asking: false,
             viewport_windows: Default::default(),
+            viewport_layer: egui::LayerId::background(),
             open_on_launch: false,
             reconnect: None,
             open_file: None,
@@ -1505,7 +1510,10 @@ impl OpenMakerApp {
         // A window's cards are drawn on it, in its viewport
         // (window_styles.rs). Web viewers are children of the viewport's
         // native window: eframe gives out the root's, and the others' are
-        // found as they are shown (`ViewportWindows`).
+        // found as they are shown (`ViewportWindows`). An embedded
+        // viewport is an egui window in the root viewport, drawn in the
+        // root's coordinates: its web viewers are children of the root's
+        // native window, where that egui window shows them.
         let parent = self.native_parent;
         self.viewport_windows
             .begin(parent, !embedded && self.web.hosts_pages());
@@ -1536,7 +1544,7 @@ impl OpenMakerApp {
                 let embedded = class == egui::ViewportClass::EmbeddedWindow;
                 close = ui.input(|i| i.viewport().close_requested());
                 let parent = if embedded {
-                    Err(crate::web_viewer::Unavailable::Window)
+                    parent
                 } else {
                     self.viewport_windows.parent(id, &title)
                 };

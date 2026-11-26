@@ -156,6 +156,22 @@ fn perform(function: &str, parameters: &[&str]) -> Command {
     }
 }
 
+/// A file's object bounds can be anything finite: the view's geometry
+/// stays bounded instead of overflowing, and no native view is made for
+/// it (#953's review).
+#[test]
+fn a_view_of_hostile_bounds_gets_bounded_geometry() {
+    let window = Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 600.0));
+    let huge = Rect::from_min_max(pos2(-3e38, -3e38), pos2(3e38, 3e38));
+    let geometry = Geometry::of(huge, window, 2.0, 1.0);
+    assert_eq!(geometry.frame, [0, 0, 1600, 1200]);
+    assert_eq!(
+        geometry.content,
+        [-16_777_216, -16_777_216, 33_554_432, 33_554_432]
+    );
+    assert!(!geometry.fits(), "no native view is made that large");
+}
+
 #[test]
 fn a_view_follows_its_object_until_the_object_is_no_longer_painted() {
     let ctx = egui::Context::default();

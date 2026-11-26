@@ -1437,15 +1437,7 @@ fn draw(
                     .unwrap_or(theme::CONTENT_BG),
             );
             if let Some(design) = design {
-                for (part, &(key, _)) in geometry.parts.iter().zip(edges.keys) {
-                    let rect = Rect::from_min_size(
-                        origin + vec2(0.0, part.top as f32),
-                        vec2(width, part.height as f32),
-                    );
-                    if rect.is_finite() && rect.is_positive() && ui.clip_rect().intersects(rect) {
-                        design.paint_part(ui, key, rect);
-                    }
-                }
+                design.paint_parts(ui, surface);
             }
             let strip = Rect::from_min_max(area.min, pos2(origin.x, area.bottom()));
             painter.rect_filled(strip, CornerRadius::ZERO, theme::BAR_BG);
@@ -1824,7 +1816,7 @@ fn draw(
                             draft_words,
                         )
                     });
-                if !painted || changed {
+                if !painted || changed || !surface.contains_rect(rect) {
                     if rect.width() < 1.0 || rect.height() < 1.0 {
                         painter.line_segment([rect.min, rect.max], outline);
                     } else {

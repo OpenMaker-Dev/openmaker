@@ -77,6 +77,13 @@ Other resource-based styles are not inferred by this implementation.
 
 ## Date style
 
+Claris documents applying the Inspector's date and time formats to
+`{{CurrentDate}}` and `{{CurrentTime}}`, like date and time fields
+([Formatting fields](https://help.claris.com/archive/help/18/fmp/en/FMP_Help/formatting-fields.html)).
+Browse sends these typed symbol results through the corresponding
+supported format. The object's literals and other symbols retain their
+normal presentation.
+
 `TDateStyle::Read` (`0x2d8040`) and `SaveDateFormat` (`0x4e27c`):
 
 | Offset | Size | XML name / meaning |

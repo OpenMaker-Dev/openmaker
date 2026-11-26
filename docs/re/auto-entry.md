@@ -160,6 +160,14 @@ name and user name are distinct variables. The table describes the selected
 variable; it does not establish when creation and modification defaults are
 scheduled, including initialization of modification fields on creation.
 
+On FileMaker Pro 26.1.1, a local Text field with the calculated
+auto-enter `$$Marker` read the current file's variable at New Record.
+The two Text assignments produced two corresponding stored values. An
+unset variable produced empty and left out the stored cell. Set Field on
+an unrelated field, Commit and reopening kept those results. The check
+did not change the variable between New Record and Commit.
+[Native results](https://github.com/OpenMaker-Dev/openmaker/issues/1037#issuecomment-7185794811).
+
 In this file, a field calculation subtree is `<base-table>/3/5/<field>/5`.
 Child 4 contains its context, child 5 the formatted stream and child 6 the
 unformatted stream. `DBGetFunction::WriteAsPolish` (`0x16c6930`) writes
@@ -350,10 +358,26 @@ lookups; the values are then read through it:
   data-entry conversion is applied.
 - An empty related value is copied as empty (asset 2's date and time).
 
-Not measured: scripts (Set Field) and imports in FileMaker Pro, which of
-several matching records an unsorted relationship gives, container
-fields, Relookup Field Contents, and the next lower or higher value or a
-constant.
+FileMaker Pro 26.1.1, a local two-table Text lookup over an equality
+relationship with "If no exact match: Use" selected
+([native steps and results](https://github.com/OpenMaker-Dev/openmaker/issues/1020#issuecomment-7185793871)):
+
+- New Record and Commit with the key untouched and empty leave the target
+  empty. Setting the key to a missing match copies the fallback immediately.
+  A blank fallback clears the target.
+- An exact match copies the related value. If that value is empty, "Don't
+  copy contents if empty" preserves the prior value. Neither empty-match
+  setting copies the fallback.
+- Explicitly clearing an existing key copies a nonempty fallback. The
+  results survived commit and reopen, with LastError 0 and no alert.
+- Lookup definition `08` stores mode byte `03`. FileMaker writes member
+  `0b` for a nonempty fallback and omits it for a blank fallback.
+
+Unmeasured for this option: explicit clear with a blank fallback, a replacing
+`Get ( UUID )` match key, hosting, imports and other field types. More generally,
+copying the next lower or higher value, container fields, Relookup Field
+Contents, and which of several matches an unsorted relationship gives remain
+unmeasured here.
 
 ## Calculations over related fields
 
@@ -452,6 +476,29 @@ A3 `2#`.
 Not measured: an unstored calculation over a related or global field, a
 chain of unstored calculations, a summary of another kind or over a
 sorted found set, and FileMaker Pro's own data entry.
+
+## Creation Date with a calculated auto-entry value
+
+FileMaker Pro 26.1.1 kept both options on one local Date field after
+reopening, in either authoring order. New Record yielded the creation
+date, including with a calculation that yields a different date and
+with replacement enabled. An explicit date assigned before the first
+commit survived reopening. The conditional formula reads its own field
+and returns that value when present. It does not read `Note`, so the
+unchanged date after editing `Note` does not establish re-evaluation.
+Closed copies store option words `0x00000009` (keep an existing value)
+and `0x00000089` (replace), both with Creation Date selector `0x00`
+and a saved calculation member. In a subsequent local run, changing a
+referenced `Start` date after reopening immediately replaced the creation
+date with `Start + 30` when replacement was enabled. With replacement off,
+clearing the target left it empty until a later `Start` edit calculated a
+new date. The latter formula did not read the target itself. The timing
+of a dependency edit before the first commit, the internal evaluation
+order at creation, the always-evaluate option, Prohibit modification and
+hosted behavior remain unmeasured.
+[Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7184309937).
+[Closed-file readback](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7185113183).
+[Post-creation measurements](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7185359635).
 
 ## A new record's own self-join
 
