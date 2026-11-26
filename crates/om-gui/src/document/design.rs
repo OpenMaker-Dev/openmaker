@@ -3,12 +3,12 @@
 
 use std::borrow::Cow;
 
-use egui::{Color32, Rect, Ui};
+use egui::{pos2, vec2, Color32, CornerRadius, Rect, Stroke, StrokeKind, Ui};
 use om_layout::{Layout, ObjectKind, TextRun};
 
 use super::{
-    color, layout_cache::LayoutCache, line, paint_box, paint_library_image, paint_rich_text,
-    Session,
+    color, layout_cache::LayoutCache, line, paint_box, paint_label_icon, paint_library_image,
+    paint_rich_text, ButtonIconMode, Session,
 };
 
 pub(crate) struct Surface<'a> {
@@ -32,8 +32,15 @@ impl<'a> Surface<'a> {
             .map(color)
     }
 
-    pub(crate) fn paint_part(&self, ui: &Ui, id: u64, rect: Rect) {
-        if let Some(part) = self.layout.parts.iter().find(|part| part.id == id) {
+    pub(crate) fn paint_parts(&self, ui: &Ui, surface: Rect) {
+        for part in &self.layout.parts {
+            let rect = Rect::from_min_size(
+                pos2(surface.left(), surface.top() + part.top as f32),
+                vec2(surface.width(), part.height as f32),
+            );
+            if !rect.is_finite() || !rect.is_positive() || !ui.clip_rect().intersects(rect) {
+                continue;
+            }
             let style = self.cache.part_style(self.layout, part, 1, 1);
             paint_box(ui, rect, &style, ObjectKind::Rectangle);
         }
@@ -79,6 +86,19 @@ impl<'a> Surface<'a> {
             return true;
         }
         paint_box(ui, rect, &style, kind);
+        if matches!(kind, ObjectKind::Field | ObjectKind::Text)
+            && !(0..4).any(|side| {
+                super::border_width(&style, side).is_some()
+                    && style.border_color[side].is_none_or(|c| color(c).a() > 0)
+            })
+        {
+            ui.painter().rect_stroke(
+                rect,
+                CornerRadius::ZERO,
+                Stroke::new(1.0, crate::theme::HAIRLINE),
+                StrokeKind::Inside,
+            );
+        }
         if kind == ObjectKind::Graphic {
             let Some(image) = object.graphic.as_ref().filter(|g| g.library_key != 0) else {
                 return false;
@@ -97,9 +117,10 @@ impl<'a> Surface<'a> {
             kind,
             ObjectKind::Text | ObjectKind::Field | ObjectKind::Button | ObjectKind::PopoverButton
         ) {
+            let button = matches!(kind, ObjectKind::Button | ObjectKind::PopoverButton);
             let text = if kind == ObjectKind::Field {
                 Cow::Borrowed(field_caption)
-            } else if !object.shows_label() {
+            } else if !button && !object.shows_label() {
                 return false;
             } else if let Some(words) = draft_words {
                 Cow::Borrowed(words)
@@ -117,12 +138,29 @@ impl<'a> Surface<'a> {
                         .collect(),
                 )
             };
-            let style = self.cache.text_style(self.layout, object, &[], 1);
+            let text_style = self.cache.text_style(self.layout, object, &[], 1);
             let rich = draft_words
                 .is_none()
                 .then_some(object.rich_text.as_ref())
                 .flatten();
-            let _ = paint_rich_text(ui, rect, &text, &style, rich, None);
+            let label = if button {
+                let (label, has_icon) = paint_label_icon(
+                    ui,
+                    self.cache,
+                    (self.layout, object),
+                    rect,
+                    (&text, &text_style, rich),
+                    ButtonIconMode::Layout,
+                    (1, style.border_color[0]),
+                );
+                let Some(label) = label else {
+                    return has_icon;
+                };
+                label
+            } else {
+                rect
+            };
+            let _ = paint_rich_text(ui, label, &text, &text_style, rich, None);
         }
         true
     }

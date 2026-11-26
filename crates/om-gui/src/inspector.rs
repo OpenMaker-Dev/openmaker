@@ -895,7 +895,7 @@ fn show_field_format(
         return;
     }
     if kind == FieldKind::Text {
-        ui.label("Text field appearance is shown in the Appearance tab.");
+        ui.label("No number, date, time or graphic format applies to a text field.");
         return;
     }
     let Some(format) = &object.data_format else {
@@ -1026,31 +1026,17 @@ mod tests {
             data_format: Some(format),
             ..Default::default()
         };
-        let harness = |show: bool| {
-            let object = object.clone();
-            Harness::builder()
-                .with_size(egui::vec2(crate::theme::INSPECTOR_WIDTH, 140.0))
-                .with_context_setup(crate::theme::install)
-                .renderer(crate::test_renderer::renderer())
-                .build_ui(move |ui| {
-                    section(ui, "Data Formatting", |ui| {
-                        show_field_format(ui, Some(FieldKind::Number), show.then_some(&object));
-                    });
-                })
-        };
-        let mut app = harness(true);
+        let app = Harness::builder()
+            .with_size(egui::vec2(crate::theme::INSPECTOR_WIDTH, 140.0))
+            .with_context_setup(crate::theme::install)
+            .build_ui(|ui| {
+                section(ui, "Data Formatting", |ui| {
+                    show_field_format(ui, Some(FieldKind::Number), Some(&object));
+                });
+            });
         app.get_by_label("Decimal number");
         app.get_by_label("Decimal places 2");
         app.get_by_label("Symbol $");
-        if let Some(dir) = std::env::var_os("OM_INSPECTOR_FORMAT_SHOTS") {
-            let dir = std::path::PathBuf::from(dir);
-            app.render().unwrap().save(dir.join("after.png")).unwrap();
-            harness(false)
-                .render()
-                .unwrap()
-                .save(dir.join("before.png"))
-                .unwrap();
-        }
     }
 
     #[test]

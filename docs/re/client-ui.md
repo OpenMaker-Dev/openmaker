@@ -439,6 +439,25 @@ move is stored.
 how they treat locked objects, and whether a modifier changes the arrow
 step. These gestures were not observed in a running FileMaker Pro window.
 
+### Front panels
+
+The [panel selection help](https://help.claris.com/en/pro-help/content/objects-on-panel-controls.html)
+describes one front panel in Layout mode. Clicking another tab or slide dot
+brings that panel to the front. It also describes selecting objects across
+panels with Shift, and selecting all panels and their objects with a box
+that surrounds a whole control. The panels have their own stacking order.
+The [tab control help](https://help.claris.com/en/pro-help/content/changing-tab-control.html)
+says a tab control keeps the previously displayed tab when entering Layout
+mode. The [slide control help](https://help.claris.com/en/pro-help/content/changing-slide-control.html)
+identifies the leftmost slide as the default.
+
+**Unknowns:** whether selecting an object in the Objects pane switches its
+containing panel or changes the current selection. The [Objects pane
+help](https://help.claris.com/en/pro-help/content/working-with-layout-objects.html)
+describes the object list and its temporary hiding tools, including that
+the pane cannot hide or reorder panels. These behaviors were not measured
+in a running FileMaker Pro window.
+
 ## Layout mode: Align, Distribute and Resize To
 
 From Claris's help (doc), fetched 2026-11-20:

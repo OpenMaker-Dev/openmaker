@@ -792,6 +792,15 @@ currently keeps local globals in memory for the session. See the native
 observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
 and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
 
+An ordinary single-repetition Text field in a local file can
+auto-enter a direct `$$` variable read. A Text value comes from the
+owning file's current script variables, and an unset variable gives an
+empty field. OpenMaker keeps the New Record snapshot through its preview
+and commit. That timing is inferred when the variable changes between
+those two steps. Hosted files, compound variable formulas, and non-Text
+variable values are outside this change.
+[FileMaker Pro measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1037#issuecomment-7185794811).
+
 **An auto-entered or validation formula may read an unstored
 calculation** of its own table ([#39](https://github.com/OpenMaker-Dev/openmaker/issues/39); auto-entry.md, "Formulas over
 an unstored calculation or a summary field"). The calculation is
@@ -817,6 +826,18 @@ write with error 7. FileMaker continues evaluating past that limit. A
 preview treats a formula over a calculation that draws `Random`, the clock
 or a UUID, and a skip that calculation's value decides, as not known until
 the commit.
+
+A single-repetition Date field with both Creation Date and a calculated
+auto-entry value uses the creation-date rule on creation. An explicit
+assignment during scripted creation keeps the assigned date. A held create
+that also sets another input to the calculation returns error 3 when the
+calculation could replace the date. Updates that would run the calculation
+also return 3. FileMaker Pro measured re-evaluation after commit, and the
+desktop has yet to implement that path. The combined options with Prohibit
+modification or with evaluation enabled for all-empty inputs are
+unsupported. FileMaker Pro measured creation in a local file. Applying
+the same creation rule on a host is inferred.
+[Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7184309937).
 
 **A custom message** is shown for any rule of its field that a write
 breaks, not empty included. One stored as a calculation (`0x8000` with
@@ -1726,7 +1747,7 @@ which OpenMaker Server's scripts share) and the client's finds, joins and
 unique scans read those repetitions as empty, never as the cell the key
 would wrap around to. This is OpenMaker's choice; FileMaker's behaviour is
 unmeasured.
-Auto-enter lookups are performed in one form only: the
+Auto-enter lookups are performed for exact matches using the
 exact-match form FileMaker Pro 26.0.3 was seen to save and run
 (auto-entry.md, Lookups; schema-path.md 5.5), with any padding in its key
 buffers: as FileMaker Pro 26 writes it, as the Assets starter solution
@@ -1736,6 +1757,15 @@ FileMaker Server hosts holds (#993). Its option bytes, and the `01` before
 the starting occurrence, must be as FileMaker Pro writes them. It holds:
 - "if no exact match: do not copy", with "don't copy contents if empty"
   on or off;
+- "if no exact match: use" for a Text target, with either empty-copy
+  setting. The stored constant is copied on a miss. A blank fallback
+  (member `0b` absent) clears the target on a miss. If the relationship
+  finds an empty related value, the empty-copy setting decides whether
+  to clear or preserve the target. FileMaker Pro's local Text case was
+  measured ([results](https://github.com/OpenMaker-Dev/openmaker/issues/1020#issuecomment-7185793871)).
+  Its immediate Set Field timing is still outside the commit-time
+  lookup path, and hosted fallback behavior is unmeasured. A fallback
+  with a replacing auto-entered `Get ( UUID )` match key refuses with 3;
 - a stored text, number or date field of one repetition with no other
   auto-entry, copying a stored text, number or date value of one
   repetition (a data field or a stored calculation), a date field only
@@ -1804,7 +1834,7 @@ How OpenMaker performs it:
   unsorted relationship is unmeasured.
 
 Any other lookup keeps its table read-only:
-- the next lower or higher value (#146), or a constant;
+- the next lower or higher value (#146), or a fallback into another field type;
 - any other unknown byte of the definition, or a mix of the two stored
   forms;
 - several relationships;
