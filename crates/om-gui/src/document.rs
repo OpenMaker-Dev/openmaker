@@ -5285,50 +5285,9 @@ fn paint_object_repetition(
                 ),
                 false => String::new(),
             };
-            let mut text_rect = rect;
-            let icon = match (&object.button, &object.popover_button) {
-                (Some(button), _) => Some((button.library_key, button.icon_size)),
-                (None, Some(button)) => Some((button.library_key, button.icon_size)),
-                (None, None) => None,
-            };
-            // A calculated icon (FileMaker Pro 26.1) is the SVG its formula
-            // gives on the record, in the library icon's place.
-            // Not evaluated (Find mode, or until its data is read): the
-            // library icon, if any [I: what Find mode shows is unmeasured].
-            let svg = object
-                .active_icon_formula()
-                .and_then(|_| calc_state.icon_svg.clone());
-            // A library icon shows only with its key; a calculated one
-            // always, its size the button's icon size.
-            let shown = icon.filter(|(key, _)| svg.is_some() || *key != 0);
-            if let Some((library_key, icon_size)) = shown {
-                let size = (icon_size.max(1) as f32)
-                    .min(rect.width())
-                    .min(rect.height());
-                let center = if text.is_empty() {
-                    rect.center()
-                } else {
-                    pos2(rect.left() + size / 2.0 + 6.0, rect.center().y)
-                };
-                let icon = state
-                    .layout_cache
-                    .formatted_style(layout, object, &[], 4, style_state);
-                let tint = icon
-                    .icon_color
-                    .or(icon.color)
-                    .or(style.border_color[0])
-                    .map(color);
-                let at = Rect::from_center_size(center, vec2(size, size));
-                match &svg {
-                    Some(svg) => paint_calculated_icon(ui, svg, at, tint),
-                    None => {
-                        paint_library_image(ui, &state.layout_cache, layout, library_key, at, tint)
-                    }
-                }
-                if !text.is_empty() {
-                    text_rect.min.x += size + 10.0;
-                }
-            }
+            let text_style = state
+                .layout_cache
+                .text_style(layout, object, conditions, style_state);
             let mut rich = object.rich_text.as_ref().map(std::borrow::Cow::Borrowed);
             if !conditions.is_empty() {
                 if let Some(rich) = &mut rich {
@@ -5343,16 +5302,23 @@ fn paint_object_repetition(
                     );
                 }
             }
-            let _ = paint_rich_text(
+            // A calculated icon (FileMaker Pro 26.1) uses the library
+            // icon until its formula is evaluated in this Browse context.
+            let svg = object
+                .active_icon_formula()
+                .and(calc_state.icon_svg.as_deref());
+            let (label, _) = paint_label_icon(
                 ui,
-                text_rect,
-                &text,
-                &state
-                    .layout_cache
-                    .text_style(layout, object, conditions, style_state),
-                rich.as_deref(),
-                None,
+                &state.layout_cache,
+                (layout, object),
+                rect,
+                (&text, &text_style, rich.as_deref()),
+                ButtonIconMode::Browse(svg),
+                (style_state, style.border_color[0]),
             );
+            if let Some(label) = label {
+                let _ = paint_rich_text(ui, label, &text, &text_style, rich.as_deref(), None);
+            }
         }
         ObjectKind::Graphic => {
             if let Some(graphic) = &object.graphic {
@@ -8280,6 +8246,140 @@ fn paint_icon(ui: &Ui, icon: Icon, side: f32, field: Rect, color: Option<Color32
     );
 }
 
+enum ButtonIconMode<'a> {
+    Browse(Option<&'a str>),
+    Layout,
+}
+
+/// Paint the available icon and return the label's bounds, if it shows,
+/// and whether there is icon content. The design canvas uses the latter
+/// to decide whether to show its outline and caption for an image-only button.
+fn paint_label_icon(
+    ui: &Ui,
+    cache: &layout_cache::LayoutCache,
+    (layout, object): (&Layout, &LayoutObject),
+    rect: Rect,
+    (text, text_style, rich): (&str, &ResolvedStyle, Option<&om_layout::StyledText>),
+    mode: ButtonIconMode<'_>,
+    (state, border): (i32, Option<Color>),
+) -> (Option<Rect>, bool) {
+    let icon = match (&object.button, &object.popover_button) {
+        (Some(button), _) => Some((
+            button.library_key,
+            button.icon_size,
+            button.display_type,
+            button.calculated_icon(),
+        )),
+        (None, Some(button)) => Some((
+            button.library_key,
+            button.icon_size,
+            button.display_type,
+            button.calculated_icon(),
+        )),
+        (None, None) => None,
+    };
+    let Some((key, size, direction, calculated)) = icon else {
+        return (Some(rect), false);
+    };
+    // Browse supplies its visible label. Layout keeps an authored
+    // image-only button image-only even when its library key is missing.
+    let label_shows = !matches!(mode, ButtonIconMode::Layout) || direction != 1;
+    let full_label = label_shows.then_some(rect);
+    let svg = match mode {
+        ButtonIconMode::Browse(svg) => svg,
+        ButtonIconMode::Layout if calculated => return (full_label, false),
+        ButtonIconMode::Layout => None,
+    };
+    let style = cache.formatted_style(layout, object, &[], 4, state);
+    let tint = style.icon_color.or(style.color).or(border).map(color);
+    let library = if svg.is_some() {
+        None
+    } else {
+        let Some(source) = (key != 0)
+            .then(|| cache.library_image(layout, key, tint))
+            .flatten()
+        else {
+            return (full_label, false);
+        };
+        Some(source)
+    };
+    let size = (size.max(1) as f32).min(rect.width()).min(rect.height());
+    let (at, label) = button_icon_and_label(
+        rect,
+        size,
+        direction,
+        label_shows && !text.is_empty(),
+        || {
+            let [top, right, bottom, left] = text_style.padding.map(|p| p.unwrap_or(0.0) as f32);
+            ui.fonts_mut(|fonts| {
+                let job = rich_text::layout_job(
+                    fonts,
+                    text,
+                    text_style,
+                    rich,
+                    (rect.width() - left - right).max(0.0),
+                );
+                fonts.layout_job(job).size().y + top + bottom
+            })
+        },
+    );
+    if let Some(svg) = svg {
+        paint_calculated_icon(ui, svg, at, tint);
+    } else if let Some(image) = library {
+        egui::Image::new(image)
+            .show_loading_spinner(false)
+            .paint_at(ui, at);
+    }
+    (label_shows.then_some(label), true)
+}
+
+/// The icon and label's bounds. For vertical choices the
+/// label uses the whole width and the pair is centered together.
+fn button_icon_and_label(
+    rect: Rect,
+    size: f32,
+    display_type: i32,
+    has_label: bool,
+    label_height: impl FnOnce() -> f32,
+) -> (Rect, Rect) {
+    let mut label = rect;
+    let center = if !has_label {
+        rect.center()
+    } else {
+        match display_type {
+            2 | 3 => {
+                // Eight points between the icon and the label's line box
+                // in the measured standard-theme buttons (layout-model 5.6.1).
+                let available = (rect.height() - size).max(0.0);
+                let gap = available.min(8.0);
+                let height = label_height().clamp(0.0, available - gap);
+                let top = rect.center().y - (size + gap + height) / 2.0;
+                label.min.y = if display_type == 2 {
+                    top + size + gap
+                } else {
+                    top
+                };
+                label.max.y = label.min.y + height;
+                let icon_top = if display_type == 2 {
+                    top
+                } else {
+                    label.max.y + gap
+                };
+                pos2(rect.center().x, icon_top + size / 2.0)
+            }
+            5 => {
+                label.max.x -= size + 10.0;
+                pos2(rect.right() - size / 2.0 - 6.0, rect.center().y)
+            }
+            _ => {
+                label.min.x += size + 10.0;
+                pos2(rect.left() + size / 2.0 + 6.0, rect.center().y)
+            }
+        }
+    };
+    (Rect::from_center_size(center, vec2(size, size)), label)
+}
+
 fn paint_library_image(
     ui: &Ui,
     cache: &layout_cache::LayoutCache,
@@ -8896,8 +8996,10 @@ fn object_text(
         .record_at(record_index)
         .and_then(|(_, r)| u64::try_from(r.id).ok());
     let merged = |text: &str| -> String {
-        calc.and_then(|calc| calc.merge_text_in_portal(text, record, portal))
-            .unwrap_or_else(|| text.to_owned())
+        calc.and_then(|calc| {
+            calc.merge_text_in_portal(text, record, portal, object.data_format.as_ref())
+        })
+        .unwrap_or_else(|| text.to_owned())
     };
     if object.text_runs.is_empty() {
         return merged(object.text.as_deref().unwrap_or_default());
@@ -9310,6 +9412,121 @@ mod tests {
         assert_eq!(edit.buffer.value, "AB");
         assert_eq!(edit.buffer.original, "AB");
         assert_eq!(edit.version, Some(7));
+    }
+
+    #[test]
+    fn button_icon_above_or_below_leaves_the_full_width_for_the_label() {
+        let frame = Rect::from_min_size(pos2(20.0, 40.0), vec2(100.0, 90.0));
+        let (above, below_label) = button_icon_and_label(frame, 48.0, 2, true, || 18.0);
+        let (below, above_label) = button_icon_and_label(frame, 48.0, 3, true, || 18.0);
+        assert_eq!(below_label.width(), frame.width());
+        assert_eq!(above_label.width(), frame.width());
+        assert_eq!(above.center().x, frame.center().x);
+        assert_eq!(below.center().x, frame.center().x);
+        assert_eq!(below_label.top() - above.bottom(), 8.0);
+        assert_eq!(below.top() - above_label.bottom(), 8.0);
+    }
+
+    fn layout_button_icon(
+        frame: Rect,
+        button: om_layout::ButtonObject,
+        has_library_image: bool,
+    ) -> (Option<Rect>, bool) {
+        let mut layout = Layout::default();
+        if has_library_image {
+            layout.library_images.insert(
+                button.library_key,
+                om_layout::LibraryImage {
+                    format: om_layout::LibraryImageFormat::Svg,
+                    data: br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><circle cx="4" cy="4" r="4"/></svg>"#.to_vec(),
+                },
+            );
+        }
+        let object = LayoutObject {
+            button: Some(button),
+            ..Default::default()
+        };
+        let cache = layout_cache::LayoutCache::default();
+        let ctx = egui::Context::default();
+        let mut result = None;
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            result = Some(paint_label_icon(
+                ui,
+                &cache,
+                (&layout, &object),
+                frame,
+                ("Open list", &ResolvedStyle::default(), None),
+                ButtonIconMode::Layout,
+                (1, None),
+            ));
+        })
+        .drop_without_applying_deltas();
+        result.unwrap()
+    }
+
+    fn button_frame() -> Rect {
+        Rect::from_min_size(pos2(20.0, 40.0), vec2(100.0, 90.0))
+    }
+
+    #[test]
+    fn missing_layout_button_icon_keeps_the_full_label() {
+        let frame = button_frame();
+        let button = om_layout::ButtonObject {
+            library_key: 7,
+            icon_size: 48,
+            display_type: 4,
+            ..Default::default()
+        };
+        assert_eq!(
+            layout_button_icon(frame, button, false),
+            (Some(frame), false)
+        );
+    }
+
+    #[test]
+    fn missing_image_only_button_icon_requests_the_layout_fallback() {
+        let button = om_layout::ButtonObject {
+            icon_size: 48,
+            display_type: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            layout_button_icon(button_frame(), button, false),
+            (None, false)
+        );
+    }
+
+    #[test]
+    fn layout_image_only_button_centers_its_icon_without_a_label() {
+        let frame = button_frame();
+        let button = om_layout::ButtonObject {
+            library_key: 7,
+            icon_size: 48,
+            display_type: 1,
+            ..Default::default()
+        };
+        let (label, has_icon) = layout_button_icon(frame, button, true);
+        assert_eq!((label, has_icon), (None, true));
+        let (icon, _) = button_icon_and_label(frame, 48.0, 1, label.is_some(), || {
+            panic!("an image-only button does not measure a label")
+        });
+        assert_eq!(icon.center(), frame.center());
+    }
+
+    #[test]
+    fn layout_calculated_icon_skips_a_stale_library_key() {
+        let frame = button_frame();
+        let button = om_layout::ButtonObject {
+            flags: 0x4,
+            library_key: 7,
+            icon_size: 48,
+            display_type: 5,
+            ..Default::default()
+        };
+        assert_eq!(
+            layout_button_icon(frame, button, true),
+            (Some(frame), false)
+        );
     }
 
     #[test]
