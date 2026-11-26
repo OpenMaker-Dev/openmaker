@@ -2250,13 +2250,20 @@ stored tab order.
 - **Selection.** Plain click selects one saved object or field draft;
   Shift-click adds/removes it from the selection, on the canvas or in
   Objects. Blank canvas clicks clear selection. With the Selection tool,
-  Edit > Select All (Cmd/Ctrl+A) selects every shown canvas object and
-  field draft. A box starting on blank layout space replaces the selection
+  Edit > Select All (Cmd/Ctrl+A) selects standalone objects, locked objects,
+  each group as one, both tab panels and their contents, and field drafts.
+  The front panel stays active. With Shape Tools, Select All selects
+  ungrouped rectangles, including those on inactive panels, and returns to
+  the Selection tool. Selected shapes on inactive panels get outlines.
+  The combined handles span the visible selection. Locked objects can be
+  selected and refuse frame edits and deletion. A box starting on blank
+  layout space replaces the selection
   with the objects it crosses. Hold Cmd on macOS or Ctrl elsewhere to
-  select only objects entirely inside. Both use the canvas's existing
-  flat object list, including nested entries it already shows. Draft
-  text, buttons and portals keep their existing editors. Tool-specific
-  selection and popover-scoped boxes are not implemented. Dragging any
+  select only objects entirely inside. The box still uses the visible flat
+  object list. Select All treats slide panels like tab panels and a portal
+  as one object, both unverified against FileMaker. Other tool-specific
+  Select All actions, Select Same and popover-scoped boxes remain unavailable.
+  Draft text, buttons and portals keep their existing editors. Dragging any
   selected movable member moves the whole selection, including a mix of saved
   objects and unsaved field drafts. Origins snap to whole points, keeping
   each object's size and the spacing between whole-point members; fractional

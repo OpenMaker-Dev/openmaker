@@ -5865,6 +5865,7 @@ impl DataProvider for NativeProvider {
                 *id,
                 &layout.objects,
                 &bindings,
+                om_data::layout_selection::Scope::Layout,
                 (0.0, 0.0),
                 &mut seen,
                 &mut objects,
@@ -5877,6 +5878,7 @@ impl DataProvider for NativeProvider {
                     object.id,
                     &layout.objects,
                     &bindings,
+                    om_data::layout_selection::Scope::Layout,
                     (0.0, 0.0),
                     &mut seen,
                     &mut objects,
@@ -6619,6 +6621,7 @@ fn flatten_object(
     id: u64,
     store: &om_layout::ObjectStore,
     bindings: &BTreeMap<u64, String>,
+    scope: om_data::layout_selection::Scope,
     offset: (f64, f64),
     seen: &mut BTreeSet<u64>,
     output: &mut Vec<ObjectGeom>,
@@ -6629,11 +6632,13 @@ fn flatten_object(
     let Some(object) = store.get(id) else {
         return;
     };
+    let kind = object.kind();
+    let (selection, child_scope) = scope.visit(kind);
     let mut child_offset = offset;
     if let Some(rect) = &object.bounds {
         child_offset = (offset.0 + rect.left, offset.1 + rect.top);
         output.push(ObjectGeom {
-            kind_name: object_kind(object.kind()),
+            kind_name: object_kind(kind),
             rect: GeomRect {
                 top: rect.top + offset.1,
                 left: rect.left + offset.0,
@@ -6642,12 +6647,22 @@ fn flatten_object(
             },
             field_name: bindings.get(&id).cloned(),
             key: id,
+            selection,
+            locked: object.is_locked(),
             movable: om_data::layout_objects::movable(store, id).is_ok(),
             deletable: om_data::layout_objects::deletable(store, id).is_ok(),
         });
     }
     for child in &object.children {
-        flatten_object(*child, store, bindings, child_offset, seen, output);
+        flatten_object(
+            *child,
+            store,
+            bindings,
+            child_scope,
+            child_offset,
+            seen,
+            output,
+        );
     }
 }
 
@@ -6731,6 +6746,68 @@ fn layout_menu_from_tree(
 mod tests {
     use super::*;
     use om_hbam::slot::{encode_chunk, minimal_code};
+
+    #[test]
+    fn select_all_geometry_preserves_groups_locked_objects_and_both_panels() {
+        use om_data::layout_selection::{Scope, SelectAll};
+        use om_layout::{LayoutObject, ObjectKind, ObjectStore, Rect};
+
+        let object = |id, object_type, flags, children| LayoutObject {
+            id,
+            object_type,
+            flags,
+            children,
+            bounds: Some(Rect {
+                right: 22.0,
+                bottom: 12.0,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let store = ObjectStore {
+            root: vec![1, 2, 3, 6],
+            objects: vec![
+                object(1, 5, 0, vec![]),
+                object(2, 5, 2, vec![]),
+                object(3, 8, 0, vec![4, 5]),
+                object(4, 5, 0, vec![]),
+                object(5, 5, 0, vec![]),
+                object(6, 11, 0, vec![7, 9]),
+                object(7, 12, 0, vec![8]),
+                object(8, 5, 0, vec![]),
+                object(9, 12, 0, vec![10]),
+                object(10, 5, 0, vec![]),
+            ],
+            ..Default::default()
+        };
+        let mut seen = BTreeSet::new();
+        let mut geometry = Vec::new();
+        for id in &store.root {
+            flatten_object(
+                *id,
+                &store,
+                &BTreeMap::new(),
+                Scope::Layout,
+                (0.0, 0.0),
+                &mut seen,
+                &mut geometry,
+            );
+        }
+        let selected = |filter: SelectAll| {
+            geometry
+                .iter()
+                .filter(|obj| filter.includes(obj.selection))
+                .map(|obj| obj.key)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(selected(SelectAll::Layout), [1, 2, 3, 7, 8, 9, 10]);
+        assert_eq!(
+            selected(SelectAll::Kind(ObjectKind::Rectangle)),
+            [1, 2, 8, 10]
+        );
+        let locked = &geometry[1];
+        assert!(locked.locked && !locked.movable && !locked.deletable);
+    }
 
     fn leaf(key: &[u8], value: &[u8]) -> Vec<u8> {
         encode_chunk(

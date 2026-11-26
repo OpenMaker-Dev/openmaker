@@ -33,6 +33,7 @@ pub mod layout_catalog;
 pub mod layout_move;
 pub mod layout_objects;
 pub mod layout_placement;
+pub mod layout_selection;
 pub mod library_uses;
 pub mod meta;
 pub mod new_file;
@@ -484,6 +485,10 @@ pub struct ObjectGeom {
     /// The object's key in the layout's object store (0 when it is not a
     /// stored object).
     pub key: u64,
+    /// How this object participates in the Select All command.
+    pub selection: layout_selection::Target,
+    /// Whether FileMaker stores this object as locked in Layout mode.
+    pub locked: bool,
     /// Whether Layout mode can move and resize it
     /// ([`layout_objects::movable`]): a top-level object without contents.
     pub movable: bool,

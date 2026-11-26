@@ -23,6 +23,8 @@ use crate::document::{zoom, DocumentState};
 use crate::session::{Geometry, Session};
 use crate::theme;
 
+use om_data::layout_selection::{SelectAll, Target as SelectionTarget};
+
 mod history;
 pub(crate) use history::DraftEdit;
 
@@ -287,7 +289,12 @@ struct Drag {
 }
 
 #[derive(Default)]
-struct Selection(BTreeSet<usize>, Option<&'static str>);
+struct Selection(
+    BTreeSet<usize>,
+    Option<&'static str>,
+    // Whether to paint the separate Select All overlays.
+    bool,
+);
 
 impl Selection {
     fn single(&self) -> Option<usize> {
@@ -304,8 +311,18 @@ impl Selection {
 
     fn replace(&mut self, indices: impl IntoIterator<Item = usize>) {
         self.1 = None;
+        self.2 = false;
         self.0.clear();
         self.0.extend(indices);
+    }
+
+    fn select_all(&mut self, indices: impl IntoIterator<Item = usize>) {
+        self.replace(indices);
+        self.2 = true;
+    }
+
+    fn uses_select_all_overlay(&self) -> bool {
+        self.2
     }
 
     fn start_drag(&mut self, index: usize, shift: bool) {
@@ -313,6 +330,7 @@ impl Selection {
             if shift {
                 self.0.insert(index);
                 self.1 = None;
+                self.2 = false;
             } else {
                 self.set(Some(index));
             }
@@ -321,6 +339,7 @@ impl Selection {
 
     fn click(&mut self, index: Option<usize>, shift: bool) {
         self.1 = None;
+        self.2 = false;
         if let Some(index) = index.filter(|_| shift) {
             if !self.0.remove(&index) {
                 self.0.insert(index);
@@ -778,24 +797,25 @@ impl CanvasState {
         self.drag = None;
     }
 
-    /// Edit > Select All replaces the window's selection with the canvas's
-    /// selectable objects, including field drafts and excluding deletions.
-    pub(crate) fn select_all(&mut self, session: &Session) {
+    /// Replace the window's selection using the active tool's selection rule.
+    pub(crate) fn select_all(&mut self, session: &Session, filter: SelectAll) {
         self.synchronize(session);
         let Some(geometry) = &self.geometry else {
             return;
         };
         let shown = |object: &ObjectGeom| {
-            if session
-                .panel_contents()
-                .is_some_and(|contents| !contents.visible(object.key, &self.front_panels))
-            {
-                return None;
-            }
-            shown_frame(object, &self.moved, &self.deleted)
+            filter
+                .includes(object.selection)
+                .then(|| shown_frame(object, &self.moved, &self.deleted))
+                .flatten()
+        };
+        let fields = if filter.includes(SelectionTarget::Object(om_layout::ObjectKind::Field)) {
+            self.new_fields.as_slice()
+        } else {
+            &[]
         };
         self.selected
-            .replace(selectable_frames(geometry, &self.new_fields, shown).map(|(index, _)| index));
+            .select_all(selectable_frames(geometry, fields, shown).map(|(index, _)| index));
         self.scroll_to_selected = false;
     }
 
@@ -1693,11 +1713,12 @@ fn draw(
                     *selection_drag = None;
                 }
             }
+            let present = |object: &ObjectGeom| shown_frame(object, moved, deleted);
             let shown = |object: &ObjectGeom| {
                 if !visible(object.key) {
                     return None;
                 }
-                shown_frame(object, moved, deleted)
+                present(object)
             };
             let mut marquee = None;
             if let Some(response) = &box_response {
@@ -1986,22 +2007,72 @@ fn draw(
                 );
             }
 
+            let show_all_selection = selected.uses_select_all_overlay();
+            let selection_frame = |object: &ObjectGeom| {
+                if show_all_selection {
+                    present(object)
+                } else {
+                    shown(object)
+                }
+            };
             if selected.0.len() > 1 {
-                for index in &selected.0 {
-                    if let Some(frame) = geometry.objects.get(*index).and_then(shown) {
-                        draw_selection(&painter, object_rect(origin, &frame));
+                let mut bounds = Rect::NOTHING;
+                let mut unlocked = false;
+                for &index in &selected.0 {
+                    let Some(object) = geometry.objects.get(index) else {
+                        if let Some(field) = new
+                            .fields
+                            .get(index - geometry.objects.len())
+                            .filter(|_| show_all_selection)
+                        {
+                            let rect = object_rect(origin, &geom_rect(field.frame()));
+                            if rect.is_finite() {
+                                bounds = bounds.union(rect);
+                                unlocked = true;
+                            }
+                        }
+                        continue;
+                    };
+                    let Some(frame) = selection_frame(object) else {
+                        continue;
+                    };
+                    let rect = object_rect(origin, &frame);
+                    if !rect.is_finite() {
+                        continue;
                     }
+                    draw_selection_outline(&painter, rect, object.locked);
+                    if show_all_selection {
+                        // Inactive children have outlines but do not extend
+                        // the handles around the objects on screen.
+                        if visible(object.key) {
+                            bounds = bounds.union(rect);
+                            unlocked |= !object.locked;
+                        }
+                    } else if !object.locked {
+                        draw_selection_handles(&painter, rect);
+                    }
+                }
+                if unlocked && bounds.is_finite() {
+                    draw_selection_handles(&painter, bounds);
                 }
             }
             if let Some((object, frame)) = selected
                 .single()
                 .and_then(|index| geometry.objects.get(index))
-                .and_then(|object| Some((object, shown(object)?)))
+                .and_then(|object| Some((object, selection_frame(object)?)))
             {
                 let rect = object_rect(origin, &frame);
-                draw_selection(&painter, rect);
+                draw_selection_outline(&painter, rect, object.locked);
+                if !object.locked && rect.is_finite() {
+                    draw_selection_handles(&painter, rect);
+                }
                 // A movable object's handles resize it.
-                if selection_tool && object.movable && object.key != 0 && rect.is_finite() {
+                if selection_tool
+                    && visible(object.key)
+                    && object.movable
+                    && object.key != 0
+                    && rect.is_finite()
+                {
                     for (name, position, edges) in handles(rect) {
                         let handle = ui.interact(
                             Rect::from_center_size(position, vec2(9.0, 9.0)),
@@ -2697,16 +2768,26 @@ fn object_label(index: usize, object: &ObjectGeom) -> String {
     }
 }
 
-fn draw_selection(painter: &egui::Painter, rect: Rect) {
+fn draw_selection_outline(painter: &egui::Painter, rect: Rect, locked: bool) {
     if !rect.is_finite() {
         return;
     }
     painter.rect_stroke(
         rect,
         CornerRadius::ZERO,
-        Stroke::new(1.0, theme::SELECTED),
+        Stroke::new(
+            1.0,
+            if locked {
+                theme::SELECTED.gamma_multiply(0.5)
+            } else {
+                theme::SELECTED
+            },
+        ),
         StrokeKind::Middle,
     );
+}
+
+fn draw_selection_handles(painter: &egui::Painter, rect: Rect) {
     for position in [
         rect.left_top(),
         rect.center_top(),
@@ -2965,7 +3046,7 @@ mod tests {
             ..Default::default()
         });
         let mut state = CanvasState::default();
-        state.select_all(&session);
+        state.select_all(&session, SelectAll::Layout);
         state.nudge_selection(&session, NudgeDirection::Left);
         assert!(state.moved().frames.is_empty());
     }
@@ -3330,8 +3411,9 @@ mod tests {
         app.run_steps(2);
         assert!(app.query_by_label(&first).is_none());
         assert!(app.query_by_label(&second).is_some());
-        app.state_mut().0.select_all(&session);
-        assert_eq!(app.state().0.selected_index(), Some(1));
+        app.state_mut().0.select_all(&session, SelectAll::Layout);
+        assert_eq!(app.state().0.selected.0, BTreeSet::from([0, 1]));
+        assert_eq!(app.state().0.front_panels.get(&1), Some(&4));
         assert!(!app.state().0.unsaved());
 
         // Changing layouts in Browse does not run the Layout canvas between
@@ -3352,8 +3434,9 @@ mod tests {
         assert!(state.selected_object(&session).is_none());
         state.synchronize(&session);
         assert!(state.selected_index().is_none());
-        state.select_all(&session);
-        assert_eq!(state.selected_index(), Some(0));
+        state.select_all(&session, SelectAll::Layout);
+        assert_eq!(state.selected.0, BTreeSet::from([0, 1]));
+        assert!(state.front_panels.is_empty());
     }
 
     #[test]

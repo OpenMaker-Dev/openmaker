@@ -1337,8 +1337,12 @@ impl LayoutWorkspace {
         self.canvas.selection_count(session)
     }
 
-    pub(crate) fn select_all(&mut self, session: &Session) {
-        self.canvas.select_all(session);
+    pub(crate) fn select_all(
+        &mut self,
+        session: &Session,
+        filter: om_data::layout_selection::SelectAll,
+    ) {
+        self.canvas.select_all(session, filter);
     }
 
     pub(crate) fn nudge_selection(
