@@ -155,6 +155,19 @@ pub struct Host {
     /// verified. Empty for none.
     #[uniffi(default = "")]
     pub permitted: String,
+    /// The certificates the user permitted for other hosts, each accepted
+    /// on its own host and port only: for a file a script opens there.
+    #[uniffi(default = [])]
+    pub permitted_elsewhere: Vec<Permit>,
+}
+
+/// A server certificate the user permitted for a host and port, by its
+/// SHA-256 fingerprint (as [`Host::permitted`]).
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct Permit {
+    pub address: String,
+    pub port: u16,
+    pub fingerprint: String,
 }
 
 /// A fingerprint in hexadecimal, with or without colons or spaces.
@@ -249,6 +262,17 @@ fn provider(host: Option<&Host>) -> Result<NativeProvider, GoError> {
             provider =
                 provider.with_permitted_certificate(host.address.trim(), host.port, permitted);
         }
+        // Each for its own host and port only; one that does not read is
+        // left out rather than stop this host opening.
+        for permit in &host.permitted_elsewhere {
+            if let Some(fingerprint) = fingerprint(&permit.fingerprint) {
+                provider = provider.with_permitted_certificate(
+                    permit.address.trim(),
+                    permit.port,
+                    fingerprint,
+                );
+            }
+        }
         return Ok(provider);
     }
     Ok(NativeProvider::new(config).with_related_on_demand(true))
@@ -270,6 +294,7 @@ pub fn check_host(address: String, port: String, certificate: String) -> Result<
         port,
         certificate,
         permitted: String::new(),
+        permitted_elsewhere: Vec::new(),
     })
 }
 

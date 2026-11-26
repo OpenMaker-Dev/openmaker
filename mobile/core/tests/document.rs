@@ -235,6 +235,7 @@ fn text_typed_on_device_is_saved_by_close_and_found_on_a_host() {
         port,
         certificate: pem.clone(),
         permitted: String::new(),
+        permitted_elsewhere: Vec::new(),
     };
     assert!(hosted_files(host()).unwrap().iter().any(|f| f == name));
     // Without its certificate authority the host's self-signed certificate

@@ -188,11 +188,22 @@ impl HostVerifier {
     }
 }
 
-/// Whether a certificate's public key reads as one whose signatures can be
-/// checked: only such a certificate can be permitted.
+/// Whether a certificate's public key is one whose handshake signatures
+/// the client checks: it reads, and is a key the TLS algorithms take (RSA
+/// of at least 2048 bits, ECDSA P-256 or P-384, Ed25519). Only such a
+/// certificate can be permitted: another would fail its handshake once
+/// permitted, after the user had chosen to trust it.
 fn has_usable_key(parsed: Option<&cert::Certificate<'_>>) -> bool {
     parsed.is_some_and(|c| {
-        webpki::RawPublicKeyEntity::try_from(&SubjectPublicKeyInfoDer::from(c.spki)).is_ok()
+        let takes = match c.key {
+            cert::PublicKey::Rsa { bits, .. } => bits >= 2048,
+            cert::PublicKey::EcP256(_)
+            | cert::PublicKey::EcP384(_)
+            | cert::PublicKey::Ed25519(_) => true,
+            cert::PublicKey::Other(_) => false,
+        };
+        takes
+            && webpki::RawPublicKeyEntity::try_from(&SubjectPublicKeyInfoDer::from(c.spki)).is_ok()
     })
 }
 

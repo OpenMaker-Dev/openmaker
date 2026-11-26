@@ -199,7 +199,7 @@ struct LaunchCenter: View {
   @AppStorage("permittedHostCertificates") private var permitsData = Data()
   /// Certificates permitted with Connect, for as long as the app runs, by
   /// host (lowercase) and port.
-  @State private var connectedOnce: [String: String] = [:]
+  @State private var connectedOnce: [String: Permit] = [:]
   /// The host whose certificate a listing could not verify, asked about.
   @State private var askingTrust: UntrustedHost?
   /// The host whose files the Hosts tab shows, if any.
@@ -617,7 +617,7 @@ struct LaunchCenter: View {
       storePermits(all)
       connectedOnce[once] = nil
     } else {
-      connectedOnce[once] = host.fingerprint
+      connectedOnce[once] = Permit(address: host.host, port: host.port, fingerprint: host.fingerprint)
     }
   }
 
@@ -634,13 +634,25 @@ struct LaunchCenter: View {
   /// authority saved for it (`connectCertificate`, which throws when they
   /// cannot all be used), and the certificate permitted for it, the one
   /// permitted with Connect in this run first (a newer certificate than
-  /// one saved with Always Permit).
+  /// one saved with Always Permit); and those permitted for other hosts,
+  /// for a file a script opens there.
   private func endpoint(_ address: String, _ port: UInt16) throws -> Host {
-    let once = connectedOnce[hostKey(address: address, port: port)]
+    let key = hostKey(address: address, port: port)
+    // Those permitted for other hosts, for a file a script opens there.
+    let saved = permits.compactMap { stored, fingerprint -> Permit? in
+      guard let colon = stored.lastIndex(of: ":"), colon > stored.startIndex,
+        let port = UInt16(stored[stored.index(after: colon)...])
+      else { return nil }
+      return Permit(address: String(stored[..<colon]), port: port, fingerprint: fingerprint)
+    }
+    let elsewhere = (saved + Array(connectedOnce.values)).filter {
+      hostKey(address: $0.address, port: $0.port) != key
+    }
     return Host(
       address: address, port: port,
       certificate: try connectCertificate(certificates: authorities, address: address, port: port),
-      permitted: once ?? permitted(address, port))
+      permitted: connectedOnce[key]?.fingerprint ?? permitted(address, port),
+      permittedElsewhere: elsewhere)
   }
 
   /// Save Add Host or Edit Host's `edit` by the engine's rules

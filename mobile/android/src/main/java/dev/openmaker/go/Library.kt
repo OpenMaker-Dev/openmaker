@@ -8,6 +8,7 @@ import android.provider.OpenableColumns
 import java.io.File
 import dev.openmaker.go.engine.HostChange
 import dev.openmaker.go.engine.ListedHost
+import dev.openmaker.go.engine.Permit
 import dev.openmaker.go.engine.SavedHosts
 import dev.openmaker.go.engine.distinctHosts
 import dev.openmaker.go.engine.formerHosts
@@ -162,6 +163,17 @@ class Library(context: Context) {
     fun permitted(host: String, port: Int): String =
         prefs.getString(pinKey(host, port), null)
             ?: pins(host, port).sortedBy { it.key }.firstNotNullOfOrNull { it.value as? String }.orEmpty()
+
+    /** Every certificate permitted with Always Permit, with its host and port. */
+    fun permits(): List<Permit> =
+        prefs.all.entries.mapNotNull { entry ->
+            val stored = entry.key.removePrefix(PIN_PREFIX).takeIf { entry.key.startsWith(PIN_PREFIX) }
+            val colon = stored?.lastIndexOf(':') ?: -1
+            val port = stored?.substring(colon + 1)?.toUShortOrNull()
+            val fingerprint = entry.value as? String
+            if (stored == null || colon <= 0 || port == null || fingerprint == null) null
+            else Permit(stored.substring(0, colon), port, fingerprint)
+        }
 
     /** Always Permit: connect to the host's certificate with [fingerprint] from now on. */
     fun permit(host: String, port: Int, fingerprint: String) {

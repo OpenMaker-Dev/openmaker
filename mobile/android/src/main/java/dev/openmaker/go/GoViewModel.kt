@@ -13,6 +13,7 @@ import dev.openmaker.go.engine.Host
 import dev.openmaker.go.engine.HostChange
 import dev.openmaker.go.engine.hostKey
 import dev.openmaker.go.engine.Input
+import dev.openmaker.go.engine.Permit
 import dev.openmaker.go.engine.SignIn
 import dev.openmaker.go.engine.Source
 import dev.openmaker.go.engine.Viewport
@@ -93,7 +94,7 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
     var trustPrompt by mutableStateOf<TrustPrompt?>(null)
         private set
     /** Certificates permitted with Connect, for as long as the app runs, by host ([hostKey]). */
-    private val connectedOnce = mutableMapOf<String, String>()
+    private val connectedOnce = mutableMapOf<String, Permit>()
     var working by mutableStateOf(false)
         private set
     var message by mutableStateOf<String?>(null)
@@ -153,15 +154,20 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
      * A host as the engine connects to it: with the certificate authorities
      * trusted for it, and the certificate permitted for it, the one
      * permitted with Connect in this run first (a newer certificate than
-     * one saved with Always Permit).
+     * one saved with Always Permit); and those permitted for other hosts,
+     * for a file a script opens there.
      */
-    private fun endpoint(address: String, port: Int) =
-        Host(
+    private fun endpoint(address: String, port: Int): Host {
+        val key = hostKey(address, port.toUShort())
+        val elsewhere = (library.permits() + connectedOnce.values).filter { hostKey(it.address, it.port) != key }
+        return Host(
             address,
             port.toUShort(),
             library.connectCertificate(address, port),
-            connectedOnce[hostKey(address, port.toUShort())] ?: library.permitted(address, port),
+            connectedOnce[key]?.fingerprint ?: library.permitted(address, port),
+            elsewhere,
         )
+    }
 
     /** Ask about a host whose certificate could not be verified, and do [retry] again if it is permitted. */
     private fun askTrust(untrusted: GoException.Untrusted, retry: () -> Unit) {
@@ -182,7 +188,7 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
             library.permit(untrusted.host, untrusted.port.toInt(), untrusted.fingerprint)
             connectedOnce.remove(key)
         } else {
-            connectedOnce[key] = untrusted.fingerprint
+            connectedOnce[key] = Permit(untrusted.host, untrusted.port, untrusted.fingerprint)
         }
         prompt.retry()
     }
