@@ -3,8 +3,9 @@
 FileMaker Server records what happens in text files in its `Logs` folder.
 The Admin Console's Log Viewer shows them ([admin-console.md](admin-console.md)
 4.9). This document records their names, how they are rotated, the format of
-a line, and the catalog of messages the lines come from, for `Event.log`
-(server events) and `Access.log` (client access). OpenMaker Server's own
+a line, and the catalog of messages the lines come from. It covers
+`Event.log` (server events), `Access.log` (client access) and
+`scriptEvent.log` (script errors). OpenMaker Server's own
 logs, written in this format, are described in
 [../admin-console.md](../admin-console.md#the-event-log-and-alerts).
 
@@ -26,6 +27,11 @@ logs, written in this format, are described in
   user, opened with `fmsadmin open <id>` with mode 444 and with mode 664,
   and the lines each open wrote (events 18, 184, 654, 655, section 4;
   [#790](https://github.com/OpenMaker-Dev/openmaker/issues/790#issuecomment-7176757453)).
+- **The test server's `scriptEvent.log`, 2026-11-26, read only.** FileMaker
+  Server 26.0.3.309 for Ubuntu. The complete file had 24 event rows and one
+  header. The rows include the errors from the read-only Perform Script on
+  Server run in [#918](https://github.com/OpenMaker-Dev/openmaker/issues/918).
+  The original file stays in local, git-ignored research data.
 - **FileMaker Server's message table.** `lib/libFMSLib.so` of the 26.0.3.309
   package holds a table of 801 messages in `.data.rel.ro`, entries of 64
   bytes from 0xce3d10 to 0xcf0510 (section 4). It is data read from the
@@ -70,7 +76,7 @@ it past that (inf). The lab server's `Event.log` (146,916,998 bytes) and
 `Access.log` (42,940,004 bytes) were past 40 MiB and had not been rotated
 for months; why is unknown.
 
-## 2. A line
+## 2. An Event.log or Access.log line
 
 One event per line (obs):
 
@@ -251,11 +257,34 @@ copy of a starter file from the command line (obs, 2026-11-25):
   among its enabled extended privileges). A mode-444 copy that already has
   it logs 18 alone and is shared.
 
-Script errors of Perform Script on Server are written by the script engine
-(`fmsased`, which names `Logs/scriptEvent.log`), not from this table; their
-form was not read.
+## 5. Script errors
 
-## 5. Unknowns
+With script logging in its own file, `scriptEvent.log` starts with the
+UTF-8 BOM (`ef bb bf`) and the header
+`Timestamp<TAB>Error<TAB>Message<LF>` (obs). The header and every event
+row end with LF alone. Each sampled row has three tab-separated fields
+(obs):
+
+| Field | Observed form |
+|---|---|
+| Timestamp | `YYYY-MM-DD HH:MM:SS.mmm ±HHMM`, as in Event.log |
+| Error | Decimal FileMaker script error number |
+| Message | `Schedule "<name>" scripting error (<error>) at "<file> : <script> : <line> : <step>".` |
+
+The word `Schedule` also appears for client-invoked Perform Script on
+Server (obs). In the read-only run, the affected steps at lines 3, 7 and 9
+produced separate rows for Set Field, New Record/Request and Delete
+Record/Request, each with error 6 in both the Error column and the
+message. Commit Records returned 0 in that run and produced no row. The
+complete sample also contains rows for errors 3 and 100. Some of the
+observed script names have leading spaces inside the location. An event
+with stand-in names reads:
+
+```text
+2026-11-26 00:50:00.000 +0000<TAB>6<TAB>Schedule "Sample" scripting error (6) at "Example : Edit Record : 3 : Set Field".
+```
+
+## 6. Unknowns
 
 - What limit now applies to rotation: the lab server's `Event.log` and
   `Access.log` were far past 40 MiB without being rotated.
@@ -264,5 +293,6 @@ form was not read.
 - Text outside ASCII: encoding not observed.
 - When FileMaker writes the table's messages that were not seen in the lab
   server's lines (section 4), and what `%2` of 30 and 627 holds.
-- The form of `scriptEvent.log`'s lines.
+- Script event formats other than the observed step errors, including
+  the form when the server routes them to Event.log.
 - Whether the Log Viewer reads anything besides the files themselves.
