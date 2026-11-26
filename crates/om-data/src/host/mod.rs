@@ -444,6 +444,13 @@ impl<'a> FileCalc<'a> {
         } else {
             match self.source.record(table, record)? {
                 Some(values) => {
+                    if values
+                        .unavailable_fields
+                        .as_ref()
+                        .is_some_and(|fields| fields.contains(&field))
+                    {
+                        return Err(CalcError::from_code(3).expect("nonzero"));
+                    }
                     version = values.mod_count;
                     values.get(field, repetition).cloned().unwrap_or_else(empty)
                 }
