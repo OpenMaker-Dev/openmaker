@@ -3579,8 +3579,10 @@ the last one's operations are done, so that a simulator can stop it
 between any two. Whatever drives a member must give it a tick it refused
 while busy once it is idle: a leader whose ticks are lost behind a
 stream of client entries sends no heartbeats, and a follower it probes,
-which only heartbeats feed, then waits (the simulator's own driver did
-this until its progress check found it, section 12). A member's store is reached only through it: it is made
+which only heartbeats feed, then waits. The simulator's steady phase
+ticks a member only when it is idle, as the server's driver must; its
+fault phase drops a tick a busy member refuses, as one more fault (a
+slow clock; section 12). A member's store is reached only through it: it is made
 with `Store::create_member`, opened with `Member::open`, and everything
 that changes it is the crate's own; `Member` gives out its core, a view
 and its published entry to read, and nothing that can write, not even
@@ -3647,10 +3649,30 @@ Beyond the rules above, these are OpenMaker's own choices:
 
 - The ask before an election is Raft's pre-vote (Ongaro's thesis, 9.6):
   it changes no term or vote, and a server that heard from its leader
-  within an election timeout refuses it, as a leader does. A leader steps
-  down at the first tick at which it has not heard from a majority within
-  an election timeout, each follower's last answer timed on its own; a new
-  leader takes every follower as heard when it begins.
+  within an election timeout refuses it, as a leader does. A member that
+  is granted it stands, and standing restarts its election timer (a new
+  timeout drawn), as a candidate's does in Raft: the pre-vote ran on the
+  timeout drawn when it began, and the vote gets one of its own. A leader
+  steps down at the first tick at which it has not heard from a majority
+  within an election timeout, each follower's last answer timed on its
+  own; a new leader takes every follower as heard when it begins.
+- What timing elections need: a pre-vote's round trip (the ask delivered,
+  answered and the answer delivered) must take no more ticks than the
+  timeout drawn when it was asked, and a vote's round trip, which includes
+  the voter's flush of its term and vote, fewer ticks than the timeout
+  drawn when the member stood (the tick at which it stands counts). The
+  shortest timeout is the configured election timeout, so it must be set
+  well above the slowest round trip; when it is not, members time out
+  before their answers arrive and no leader may ever be elected, though
+  every message arrives. (Before round 5 the vote shared the pre-vote's timeout, and
+  two round trips had to fit in one: the second review by experiment found
+  a network delivering every message two ticks late, with a timeout of 4,
+  on which no leader was ever elected.) The other transitions leave no
+  member waiting for answers without a full timeout ahead: a pre-vote
+  begins on a fresh timeout, a member that grants a vote or hears its
+  leader restarts its timer, a leader that steps down restarts it, and a
+  candidate or pre-candidate that hears a higher term becomes a follower,
+  which waits for no answer.
 - Every member passes over a message of an earlier start of its sender,
   whatever its role. The first start count a member hears from another
   is not a rise: only a later, higher one makes the leader forget what it
@@ -4869,7 +4891,14 @@ a step whatever is due, so that deliveries fall far behind their time,
 and in storms a message is now and then held back for several election
 timeouts. The faults are power losses between steps and inside disk
 calls, a process that stops with its cache kept, and failed writes and
-flushes: none breaks what a flush promised. Faults are also drawn where a
+flushes: none breaks what a flush promised. A tick a busy member refuses
+is dropped in this phase, as one more fault (a slow clock). One schedule
+in five gives one member a smaller largest entry (512 bytes) than the
+others, and its client writes, now and then, an entry twice that size:
+the member refuses it for its size and the leader reports it blocked.
+Five election timeouts into the steady phase below, the member starts
+again with the cluster's value (the operator's mistake and its
+correction, section 7.1), and must catch up. Faults are also drawn where a
 rule is at stake: a power loss right after an answer, and a leader cut
 off right after it sends its term's first entry, right after a commit,
 and whenever another member ends its log with entries of a later term
@@ -4940,15 +4969,18 @@ every step it checks:
   every follower comes to hold the leader's durable entry, as it was when
   the watch began (its target), by a deadline fixed then, which later
   writes do not move. A follower the leader reports behind or blocked is
-  exempt only once the disks confirm it: where its log last agrees with
-  the leader's is before the leader's base, or the entry it refused is in
-  the leader's log and larger than its own largest. The deadline is
+  exempt only once the disks confirm it: their logs agree nowhere at or
+  after the leader's base (what it lacks is retired there), or the entry
+  it refused is in the leader's log and larger than its own largest. The
+  deadline is
   six election timeouts and ten ticks, plus a round trip of the slowest
   healthy network (four ticks) for each entry of the follower's log past
   where the two logs meet on the disks, which a probe may have to step
   back over one at a time, and for each batch it lacks from there; the
   watch arms a new target from each target reached, so it holds while
   writes go on (the progress check);
+- that in the steady phase below a leader is in office within an
+  election's bound (the election check);
 - that every server starts (check 11);
 - that every error a member's store returns follows a fault its disk
   injected during that very call.
@@ -4957,17 +4989,36 @@ The progress check needs writes while the network is healthy: in a calm
 phase the client writes only now and then, and the settle phase below
 writes nothing, so a follower left behind only while writes go on would
 not show. After the faults stop, every run therefore has a steady phase:
-every member starts and the client writes on every tick for twenty
-election timeouts, on a network that drops nothing and delays every
-message by one or two ticks. So appends to one follower cross, and no
+every member starts, the leader in office stops and starts again, and
+until a new leader is in office every message takes the same number of
+ticks, as long as it may be for a vote's round trip to take fewer ticks than the
+shortest timeout (half the timeout, less half a tick, rounded down: 1, 4
+and 7 ticks for timeouts of 4, 10 and 16). Each steady phase thus judges
+an election near the limit of the timing section 7.1 states, and checks
+that no candidate's timer runs out while the answers to its vote are on
+their way, which that timing rules out. (With a timeout of 4 no whole
+number of ticks separates one round trip from two, so there a member
+that does not restart its timer on standing is caught only by the fixed
+test below.) Then
+the client writes on every tick for twenty election timeouts (after five
+more for the member with a smaller largest entry, which then starts
+again with the cluster's), on a network that drops nothing and delays
+every message by one or two ticks. So appends to one follower cross, and no
 answer arrives before the next entry's append has gone out: the history
-in which round 2's rule left a follower behind. At the phase's close no
-new target is armed, and the writes go on until every target armed then
-has its verdict (reached, confirmed behind or blocked, or failed at its
-deadline). A steady phase in which a target loses its watch without a
-verdict (the leader changed, or the network was not healthy) is counted
-as unjudged, and at least 95 percent of a run's steady phases must be
-judged. The deadline is the
+in which round 2's rule left a follower behind. The phase must also have
+a leader: a leader of the highest term any member has must be in office
+within an election's bound of the phase's start and of any leader's fall
+(the election check). The bound is eight attempts, each a timeout running
+out (at most twice the election timeout less a tick) and two round trips,
+the pre-vote's and the vote's, of at most twice the phase's largest
+delay, two ticks. Randomized timeouts make split votes rare but not
+impossible, which the attempts allow for; the longest time without a
+leader the runs measure, in attempts, is given with them. At the phase's close the writes go on until every member has
+its verdict under a leader in office: a target reached, or the disks
+confirming it behind or blocked (a target dropped because the leader
+changed is armed again under the next one). The election and progress
+deadlines bound the close, so every steady phase ends with a verdict on
+every member or the run fails; none is excused. The deadline is the
 simulator's, not a measured latency. It first counted only the entries a
 follower lacked, and a long run found a follower whose log diverged for
 a dozen entries of a dozen terms (leaders churning): each refusal could
@@ -4977,20 +5028,23 @@ At the end the faults stop: one leader must serve, and every member must
 hold and publish everything committed or be one the leader reports as
 behind. Then a minority goes down for good, the leader first, and the
 rest must elect a leader that serves and commit a new entry. A run where
-they cannot is passed only where the disks show a barrier: some survivor
-last agrees with the log that would have to send it what it lacks before
-that log's base, so what it lacks is retired there (state transfer is
-not built). That log is the leader's in office, which a behind follower
+they cannot is passed only where the disks show a barrier: some survivor's
+log agrees nowhere at or after the base of the log that would have to
+send it what it lacks, so what it lacks is retired there (state transfer
+is not built). That log is the leader's in office, which a behind follower
 keeps in office by answering its empty heartbeats; with none in office,
 it is each survivor's that could be elected (the most up to date: every
 survivor's vote is needed). The leader's own report does not decide it.
 
-Seventeen planted defects (`consensus::Plant`) each name the checks they
+Nineteen planted defects (`consensus::Plant`) each name the checks they
 must break, and a seed of the default run must find each one by one of
 them. The exception is a leader counting a success of an earlier term:
-it needs the returning-leader history, and only 7 seeds of 240 find it,
-so its search covers sixty seeds from the first of those 240 that finds
-it. The plants:
+the random search does not find it in the default run's sixty seeds. It
+needs the returning-leader history and then an acknowledgement past the
+new `empty`, and only 7 seeds of 240 find it (the first 83), so its
+search covers sixty seeds from 83. Its guard is the fixed returning-leader
+test, which plays that history by hand and fails with the plant in. The
+plants:
 - a vote answered before it is recorded; the term recorded with a vote
   but not the vote; a follower answering an append without recording the
   leader's term; an acknowledgement sent before its flush (what a member
@@ -5014,11 +5068,18 @@ it. The plants:
   leader's committed position (what it applies);
 - a leader serving before its `empty` entry is committed, and a new
   leader opening its term with an ordinary entry in place of its `empty`
-  one (the serving check).
+  one (the serving check);
+- a member that stands without restarting its election timer (the
+  election check);
+- a leader that keeps a follower blocked when it starts again with a
+  larger limit (the progress check, in the steady phase).
 
-A leader counting a success past what it sent is measured but cannot be
-found: only a member that lies claims more than it was sent, and a
-core-level test holds that bound instead. The checks that a leader keeps
+Two are measured but cannot be found, and a core-level test holds each:
+a leader counting a success past what it sent (only a member that lies
+claims more than it was sent), and a leader taking a size refusal of an
+entry the follower acknowledged (a follower that follows the protocol
+refuses before it takes anything, and a new start makes the leader forget
+what it acknowledged, so it never sends one). The checks that a leader keeps
 its entries, that logs match, that states are equal, that held views
 keep reading and that every server starts have no planted defect. Nor
 are four rules checked whose breach only disturbs on these disks: a
@@ -5027,7 +5088,10 @@ from a leader, a leader that keeps leading without a majority, and the
 start count ignored, which becomes unsafe where flushed copies can be
 lost, with repair. Fixed schedules check, at the level of the core or on
 the members themselves, a reply that answers no request or claims more
-than was sent, a malformed message that changes nothing, a refusal that
+than was sent, every check of a message's shape (one message breaking
+each relation of section 7.1's list alone, which changes nothing, the
+receiver's start record included; random schedules send no malformed
+message, so this test is their only guard), a refusal that
 arrives twice, a follower behind by entries larger than its log takes in
 one write, a member's refusal of everything after a failed operation, a
 leader that returns after it was cut and must not count an
@@ -5039,7 +5103,14 @@ same with the other follower stopped once the first is left behind
 (not behind), a heartbeat between each step back and its refusal (seed
 190's loop does not return), a follower given a lower `max_entry`
 (blocked, sent only empty heartbeats), and a member refusing to open
-below the largest entry its log holds. Checks 1, 2, 5 to 9, 12 and 13,
+below the largest entry its log holds; and later rounds' schedules: a
+size refusal counted only for an entry carried and not acknowledged, a
+blocked follower that starts again with the cluster's limit and catches
+up, elections on a network that delivers every message two ticks late
+(a leader within 100 ticks; with the timer not restarted on standing,
+none in 400), and the checker's own hand-built cases for the commit
+record, an acknowledgement at the base and an unconfirmed report of
+behind. Checks 1, 2, 5 to 9, 12 and 13,
 and check 10's repair, are not run on a cluster yet.
 
 **Both engines behind one server.** Every server test runs against both

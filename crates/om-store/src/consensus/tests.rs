@@ -148,6 +148,11 @@ enum Check {
     /// while writes went on did not reach the leader's durable end within
     /// the bound.
     Progress,
+    /// In the steady phase, no leader was in office within the bound of the
+    /// phase's start or of the last leader's fall; or, in its opening
+    /// election, a candidate's timer ran out while the answers to its vote
+    /// were on their way, on a network fast enough for them.
+    Election,
     /// The cluster did not settle once the faults stopped.
     Settle,
 }
@@ -225,11 +230,17 @@ struct Coverage {
     /// or blocked while watched.
     progress_reached: u64,
     progress_excused: u64,
-    /// Steady phases whose every target armed at their close got a
-    /// verdict, and those where one was dropped without one (the leader
-    /// changed or the network was not healthy).
+    /// Steady phases that closed with a verdict on every member.
     steady_judged: u64,
-    steady_unjudged: u64,
+    /// In steady phases: the longest time without a leader in office, in
+    /// ticks, and in tenths of an election attempt (the unit of
+    /// [`World::election_deadline`]).
+    leaderless_ticks: u64,
+    leaderless_tenths: u64,
+    /// Schedules in which one member ran with a smaller largest entry
+    /// until the steady phase, and the size refusals sent.
+    small_limit: u64,
+    size_refusals: u64,
 }
 
 impl Coverage {
@@ -267,7 +278,10 @@ impl Coverage {
         self.progress_reached += o.progress_reached;
         self.progress_excused += o.progress_excused;
         self.steady_judged += o.steady_judged;
-        self.steady_unjudged += o.steady_unjudged;
+        self.leaderless_ticks = self.leaderless_ticks.max(o.leaderless_ticks);
+        self.leaderless_tenths = self.leaderless_tenths.max(o.leaderless_tenths);
+        self.small_limit += o.small_limit;
+        self.size_refusals += o.size_refusals;
     }
 }
 
@@ -291,6 +305,8 @@ struct Node {
     appended: Option<Appended>,
     /// The tick it last opened.
     up_since: u64,
+    /// The term and tick at which it last asked for votes.
+    stood: Option<(u64, u64)>,
 }
 
 /// The simulator's own record (module docs): the committed entries, entry
@@ -307,6 +323,9 @@ struct Oracle {
     /// Each term's first entry seen on any disk, its index and kind: the
     /// leader's opening entry, kept after logs retire it.
     opening: BTreeMap<u64, (u64, u16)>,
+    /// The payload size of each entry read, by index and hash: what a
+    /// refusal for size is checked against once logs retire the entry.
+    sizes: BTreeMap<(u64, [u8; 32]), u64>,
     held: Vec<BTreeMap<u64, u64>>,
     roots: BTreeMap<u64, Vec<(TreeName, Hash)>>,
     leaders: BTreeMap<u64, ServerId>,
@@ -450,7 +469,16 @@ struct World {
     /// target still awaits its verdict; and whether one was dropped
     /// without one.
     closing: Option<Vec<bool>>,
-    unjudged: bool,
+    /// In the steady phase, since when no leader has been in office.
+    leaderless: Option<u64>,
+    /// The steady phase's opening election is under way, since this tick:
+    /// every message takes [`World::electing_delay`] ticks.
+    electing: bool,
+    elect_from: u64,
+    /// The member that runs with a smaller largest entry until the steady
+    /// phase, when it starts again with the cluster's (an operator's
+    /// mistake and its correction, section 7.1).
+    small: Option<usize>,
     /// Power losses right after a member answered a vote or an append,
     /// the window in which the answer must already be durable.
     after_answer: u64,
@@ -489,6 +517,13 @@ impl World {
             sims.push(sim);
             ids.push(id);
         }
+        // One schedule in five gives one member a smaller largest entry
+        // until the steady phase. Drawn from a stream of its own, so that
+        // the other schedules are the ones they would be without it.
+        let small = {
+            let mut r = Rng::stream(seed, 11);
+            r.one_in(5).then(|| r.below(setup.members as u64) as usize)
+        };
         let mut rng = Rng::stream(seed, 7);
         // One schedule in three churns leaders: short timeouts, one entry
         // an append, and new leaders often cut off (Raft's figure 8).
@@ -517,7 +552,10 @@ impl World {
             watch: vec![None; setup.members],
             writing: false,
             closing: None,
-            unjudged: false,
+            leaderless: None,
+            electing: false,
+            elect_from: 0,
+            small,
             after_answer: 0,
             after_append: 0,
             rng,
@@ -555,6 +593,7 @@ impl World {
                 asked: None,
                 appended: None,
                 up_since: 0,
+                stood: None,
             });
         }
         Ok(w)
@@ -568,7 +607,11 @@ impl World {
             heartbeat: self.timing.1,
             batch: self.batch.0,
             batch_bytes: self.batch.1,
-            max_entry: u64::from(self.setup.store.log.max_payload),
+            max_entry: if self.small == Some(i) {
+                SMALL_ENTRY
+            } else {
+                u64::from(self.setup.store.log.max_payload)
+            },
             seed: self.seed,
             plant: self.setup.plant,
         }
@@ -630,34 +673,118 @@ impl World {
             }
         }
         self.writing = true;
-        let ticks = 20 * self.timing.0;
-        self.run_until(ticks, |_| false)?;
-        // The close: no new targets, and the writes go on until every
-        // target armed now has its verdict, which its deadline bounds.
-        let armed: Vec<bool> = self.watch.iter().map(Option::is_some).collect();
-        let latest = self.watch.iter().flatten().map(|w| w.2).max();
-        let judged = match latest {
-            Some(latest) => {
-                self.closing = Some(armed);
-                self.unjudged = false;
-                let ticks = latest.saturating_sub(self.now) + 2;
-                let done = |w: &World| {
-                    w.unjudged || w.closing.as_ref().is_some_and(|p| !p.contains(&true))
-                };
-                let over = self.run_until(ticks, done)?;
-                let judged = over && !self.unjudged;
-                self.closing = None;
-                judged
-            }
-            None => false,
-        };
-        if judged {
-            self.cov.steady_judged += 1;
-        } else {
-            self.cov.steady_unjudged += 1;
+        self.leaderless = None;
+        let election = self.timing.0;
+        // It opens with an election: the leader in office stops and starts
+        // again, and until a leader is in office every message takes the
+        // same time, a vote's round trip less than the shortest timeout.
+        // The election check bounds it.
+        if let Some(l) = self.leading() {
+            self.restart(l)?;
         }
+        self.electing = true;
+        self.elect_from = self.now;
+        self.run_until(1000 * election, |w| !w.electing)?;
+        // The member given a smaller largest entry keeps it a while under
+        // that leader, which reports it blocked, then starts again with the
+        // cluster's (the operator's mistake and its correction).
+        if let Some(m) = self.small {
+            self.run_until(5 * election, |_| false)?;
+            self.small = None;
+            self.cov.small_limit += 1;
+            self.restart(m)?;
+        }
+        self.run_until(20 * election, |_| false)?;
+        // The close: the writes go on until every member has a verdict
+        // under a leader in office, a target reached or the disks
+        // confirming it behind or blocked. The election and progress
+        // deadlines bound it; the cap only guards the loop.
+        self.closing = Some(vec![true; self.nodes.len()]);
+        let done = |w: &World| w.closing.as_ref().is_some_and(|p| !p.contains(&true));
+        let closed = self.run_until(1000 * election, done)?;
+        self.closing = None;
+        if !closed {
+            return Err(self.fail(
+                Check::Progress,
+                "the steady phase did not close: a member never had its verdict",
+            ));
+        }
+        self.cov.steady_judged += 1;
         self.writing = false;
+        self.leaderless = None;
         Ok(())
+    }
+
+    /// Member `i` stops and starts again, with no fault.
+    fn restart(&mut self, i: usize) -> Outcome {
+        self.nodes[i].member = None;
+        self.nodes[i].down_until = self.now;
+        self.open(i)
+    }
+
+    /// In the steady phase, a leader is in office (a leader of the highest
+    /// term any member has) within [`World::election_deadline`] ticks of
+    /// the phase's start and of the last leader's fall.
+    fn watch_election(&mut self) -> Outcome {
+        if !self.writing {
+            self.leaderless = None;
+            return Ok(());
+        }
+        let up = self.up();
+        let top = up.iter().map(|i| self.core_of(*i).term()).max();
+        let in_office = up.iter().any(|i| {
+            let c = self.core_of(*i);
+            c.role() == Role::Leader && Some(c.term()) == top
+        });
+        if in_office {
+            self.electing = false;
+            if let Some(since) = self.leaderless.take() {
+                let spell = self.now - since;
+                self.cov.leaderless_ticks = self.cov.leaderless_ticks.max(spell);
+                let tenths = spell * 10 / (self.election_deadline() / ATTEMPTS);
+                self.cov.leaderless_tenths = self.cov.leaderless_tenths.max(tenths);
+            }
+            return Ok(());
+        }
+        let since = *self.leaderless.get_or_insert(self.now);
+        let deadline = self.election_deadline();
+        if self.now - since > deadline {
+            let state: Vec<String> = up
+                .iter()
+                .map(|i| {
+                    let c = self.core_of(*i);
+                    format!("{i}: {:?} t{} last {:?}", c.role(), c.term(), c.last())
+                })
+                .collect();
+            return Err(self.fail(
+                Check::Election,
+                format!(
+                    "no leader in office for {} ticks on a healthy network since tick {since}, \
+                     past the bound of {deadline}: {state:?}",
+                    self.now - since
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// How long an election may take in the steady phase: [`ATTEMPTS`]
+    /// attempts, each a member's timeout running out (at most `2 *
+    /// election - 1` ticks) and two round trips, the pre-vote's and the
+    /// vote's, each at most twice the phase's largest delay. Randomized
+    /// timeouts make split votes rare but not impossible, which the
+    /// attempts allow for.
+    fn election_deadline(&self) -> u64 {
+        let delay = self.electing_delay().max(2);
+        ATTEMPTS * (2 * self.timing.0 - 1 + 2 * 2 * delay)
+    }
+
+    /// The delay of every message during the steady phase's opening
+    /// election: as long as it may be for a vote's round trip to take
+    /// fewer ticks than the shortest timeout (section 7.1), so that a
+    /// candidate's timer never runs out before its vote's answers arrive.
+    fn electing_delay(&self) -> u64 {
+        ((self.timing.0 - 1) / 2).max(1)
     }
 
     fn one_step(&mut self) -> Outcome {
@@ -747,6 +874,12 @@ impl World {
                 let mut answered = 0;
                 let mut appended = None;
                 if let Some(m) = done.sent {
+                    if matches!(m.body, Body::Vote { .. }) {
+                        self.nodes[i].stood = Some((m.term, self.now));
+                    }
+                    if matches!(m.body, Body::AppendTooLarge { .. }) {
+                        self.cov.size_refusals += 1;
+                    }
                     answered = match m.body {
                         Body::VoteReply { granted: true } => 6,
                         Body::AppendReply {
@@ -1200,10 +1333,15 @@ impl World {
                 self.cov.stalled += 1;
                 self.cov.faults += 1;
                 self.timing.0 * (2 + self.rng.below(6))
+            } else if self.writing && self.electing {
+                // The steady phase's opening election: every message takes
+                // the same time, a round trip less than the shortest
+                // timeout.
+                self.electing_delay()
             } else if self.writing {
-                // The steady phase: one or two ticks, so that appends to a
-                // follower cross, and no answer arrives before the next
-                // entry's append has gone out.
+                // The rest of the steady phase: one or two ticks, so that
+                // appends to a follower cross, and no answer arrives before
+                // the next entry's append has gone out.
                 1 + self.rng.below(2)
             } else {
                 self.rng.below(storm.delay.min(self.timing.0) + 1)
@@ -1261,6 +1399,29 @@ impl World {
             let carried = entries.iter().map(|e| (e.index, e.hash)).collect();
             self.nodes[i].appended = Some((m.from, echo, *prev, carried));
         }
+        if self.electing && matches!(m.body, Body::VoteReply { granted: true }) {
+            // A vote's round trip is shorter than the shortest timeout here:
+            // a candidate that asked for votes in this election is still
+            // standing in that term when a grant arrives (section 7.1). A
+            // vote asked before it, on the faults' network, may come late.
+            let core = &self.nodes[i].member.as_ref().unwrap().core;
+            let asked = self.nodes[i]
+                .stood
+                .is_some_and(|(t, at)| t == m.term && at >= self.elect_from);
+            if asked && core.term() == m.term && core.role() == Role::PreCandidate {
+                return Err(self.fail(
+                    Check::Election,
+                    format!(
+                        "member {i}'s timer ran out while the answers to its vote of term {} \
+                         were on their way: a round trip takes {} ticks, its shortest \
+                         timeout {}",
+                        m.term,
+                        2 * self.electing_delay(),
+                        self.timing.0
+                    ),
+                ));
+            }
+        }
         let member = self.nodes[i].member.as_mut().unwrap();
         member.receive(m);
         self.cov.delivered += 1;
@@ -1281,12 +1442,16 @@ impl World {
                 }
                 continue;
             }
+            // In the fault phase a tick a busy member refuses is dropped, as
+            // one more fault (a slow clock); `run_until` ticks only idle
+            // members.
             let member = self.nodes[i].member.as_mut().unwrap();
             if member.tick() {
                 self.check(i)?;
             }
         }
-        self.watch_progress()
+        self.watch_progress()?;
+        self.watch_election()
     }
 
     /// While the network is healthy (no fault drawn, no split, every
@@ -1318,13 +1483,15 @@ impl World {
                 self.unwatch(f);
             }
             if f == l {
+                // The leader is not judged.
+                self.judged(f);
                 continue;
             }
             if self.excused(l, f)? {
                 if self.watch[f].take().is_some() {
                     self.cov.progress_excused += 1;
-                    self.judged(f);
                 }
+                self.judged(f);
                 continue;
             }
             let durable = self.nodes[f]
@@ -1362,8 +1529,10 @@ impl World {
                     ));
                 }
             }
-            // A new target, unless the phase is closing.
-            if self.watch[f].is_none() && self.closing.is_none() {
+            // A new target, unless the phase is closing and the member has
+            // its verdict.
+            let pending = self.closing.as_ref().is_none_or(|p| p[f]);
+            if self.watch[f].is_none() && pending {
                 let deadline = self.deadline(f, l, to_durable);
                 self.watch[f] = Some((self.now, to_durable, deadline, l, term));
             }
@@ -1371,16 +1540,10 @@ impl World {
         Ok(())
     }
 
-    /// Member `f`'s watch ends without a verdict.
+    /// Member `f`'s watch ends without a verdict: in the close, it is
+    /// watched again under the next leader in office.
     fn unwatch(&mut self, f: usize) {
-        if self.watch[f].take().is_some() {
-            if let Some(pending) = self.closing.as_mut() {
-                if pending[f] {
-                    pending[f] = false;
-                    self.unjudged = true;
-                }
-            }
-        }
+        self.watch[f] = None;
     }
 
     /// Member `f`'s target has its verdict.
@@ -1391,28 +1554,39 @@ impl World {
     }
 
     /// Whether leader `l` reports follower `f` behind or blocked and the
-    /// disks confirm it: what `f` lacks is retired from `l`'s log (where
-    /// their logs last agree is before `l`'s base), or the entry it refused
-    /// is in `l`'s log and larger than `f`'s largest.
+    /// disks confirm it: what `f` lacks is retired from `l`'s log (their
+    /// logs agree nowhere at or after `l`'s base), or the entry it refused
+    /// was in `l`'s log (or is in the record, retired) and is larger than
+    /// `f`'s largest.
     fn excused(&self, l: usize, f: usize) -> Outcome<bool> {
         let core = self.core_of(l);
-        if core.behind().contains(&self.ids[f])
-            && self.meet(f, l).is_none_or(|m| m < self.base_of(l))
-        {
+        // `meet` finds only a place at or after both logs' bases: none
+        // means the logs agree nowhere the leader still holds, so what the
+        // follower lacks is retired there.
+        if core.behind().contains(&self.ids[f]) && self.meet(f, l).is_none() {
             return Ok(true);
         }
         let Some((_, oversize)) = core.blocked().into_iter().find(|b| b.0 == self.ids[f]) else {
             return Ok(false);
         };
+        // The entry's size: from the leader's log, or, once it retired the
+        // entry (committed), from the record's entry there.
         let at = oversize.index;
-        let read = self
-            .quiet(l, |m| m.store.read_wire(at, at, u64::MAX, u64::MAX))
-            .unwrap()
-            .map_err(|e| self.fail(Check::Progress, format!("member {l}'s log: {e}")))?;
+        let size = if at > self.base_of(l) {
+            let read = self
+                .quiet(l, |m| m.store.read_wire(at, at, u64::MAX, u64::MAX))
+                .unwrap()
+                .map_err(|e| self.fail(Check::Progress, format!("member {l}'s log: {e}")))?;
+            read.first()
+                .filter(|e| e.index == at)
+                .map(|e| e.payload.len() as u64)
+        } else {
+            self.oracle
+                .hash(at)
+                .and_then(|h| self.oracle.sizes.get(&(at, h)).copied())
+        };
         let limit = self.config(f).max_entry;
-        Ok(read
-            .first()
-            .is_some_and(|e| e.index == at && e.payload.len() as u64 > limit))
+        Ok(size.is_some_and(|size| size > limit))
     }
 
     /// By when follower `f` must hold leader `l`'s entry `target`: six
@@ -1595,6 +1769,11 @@ impl World {
                 } else {
                     edits.push(Edit::leaf(path, value(&mut self.rng)));
                 }
+            }
+            if self.small.is_some() && self.rng.one_in(5) {
+                // An entry past the smaller largest entry.
+                let path = vec![b"big".to_vec()];
+                edits.push(Edit::leaf(path, vec![1; 2 * SMALL_ENTRY as usize]));
             }
             let change = Change {
                 edits,
@@ -1905,6 +2084,11 @@ impl World {
                 ),
             ));
         }
+        for e in read {
+            self.oracle
+                .sizes
+                .insert((e.index, e.hash), e.payload.len() as u64);
+        }
         // One leader makes a term's entries, so two at one index are a
         // breach.
         let entries = read
@@ -2024,6 +2208,8 @@ impl World {
             ));
         }
         for e in read {
+            let size = e.payload.len() as u64;
+            self.oracle.sizes.insert((e.index, e.hash), size);
             self.oracle.committed.push((e.term, e.hash));
         }
         Ok(())
@@ -2404,12 +2590,9 @@ impl World {
                 ups.iter().copied().filter(|i| tip(*i) == best).collect()
             }
         };
-        let barrier = ups.iter().any(|j| {
-            !sources.contains(j)
-                && sources
-                    .iter()
-                    .all(|m| self.meet(*j, *m).is_none_or(|at| at < self.base_of(*m)))
-        });
+        let barrier = ups
+            .iter()
+            .any(|j| !sources.contains(j) && sources.iter().all(|m| self.meet(*j, *m).is_none()));
         let ends: Vec<(u64, u64)> = ups
             .iter()
             .map(|i| {
@@ -2519,9 +2702,13 @@ impl World {
             }
             // Every member is idle now, so each takes its tick: a member
             // takes nothing while busy, and a client entry before the tick
-            // would keep the leader busy at every one, so that it never
-            // sent a heartbeat. The entry follows once the tick's work is
-            // done.
+            // would keep the leader busy at every one, so that it could
+            // send no heartbeat. The entry follows once the tick's work is
+            // done. This order is the simulator's own, standing for the
+            // duty section 7.1 gives a member's driver, not a rule of the
+            // core, so no check holds it; the client's limit of four
+            // uncommitted entries would leave a leader idle often enough to
+            // hide it anyway.
             self.step += 1;
             self.tick()?;
             if self.writing {
@@ -2654,19 +2841,16 @@ fn run_all(name: &str, seeds: Vec<u64>, steps: u64) {
     }
     report(name, &total, started.elapsed().as_secs_f64());
     assert!(total.elections > 0 && total.committed > 0, "{total:?}");
-    // The progress check judges what it watched: nearly every steady phase
-    // ends with a verdict on every target armed at its close.
-    assert!(
-        total.steady_judged * 100 >= JUDGED * total.schedules,
-        "{} of {} steady phases ended with a verdict on every target, below {JUDGED}%",
-        total.steady_judged,
-        total.schedules
-    );
+    // Every steady phase ends with a verdict on every member, or the run
+    // fails.
+    assert_eq!(total.steady_judged, total.schedules, "{total:?}");
 }
 
-/// The share, in percent, of steady phases that must end with a verdict on
-/// every progress target armed at their close.
-const JUDGED: u64 = 95;
+/// The largest entry of the member given a smaller one (`World::small`).
+const SMALL_ENTRY: u64 = 512;
+
+/// The election attempts the steady phase allows ([`World::election_deadline`]).
+const ATTEMPTS: u64 = 8;
 
 #[test]
 fn clusters_keep_the_rules_of_consensus() {
@@ -2680,7 +2864,7 @@ fn long_clusters_keep_the_rules_of_consensus() {
 }
 
 /// The planted defects a seed of the default run must find.
-const PLANTS: [Plant; 17] = [
+const PLANTS: [Plant; 19] = [
     Plant::VoteUnflushed,
     Plant::CountOlderTerm,
     Plant::CommitUnchecked,
@@ -2698,12 +2882,17 @@ const PLANTS: [Plant; 17] = [
     Plant::ServeBeforeEmpty,
     Plant::RefusalLatestOnly,
     Plant::OpenWithoutEmpty,
+    Plant::StandWithoutRestart,
+    Plant::BlockedKeptAcrossRestart,
 ];
 
-/// Planted defects measured but not required: a success past what the
-/// leader sent comes only from a member that lies, which the trust rule
-/// leaves out; a core-level test holds the bound instead.
-const MEASURED: [Plant; 1] = [Plant::CountPastSent];
+/// Planted defects measured but not required, each held by a core-level
+/// test instead: a success past what the leader sent comes only from a
+/// member that lies, which the trust rule leaves out; and a follower that
+/// follows the protocol never refuses for its size an entry it has
+/// acknowledged within one start (it refuses before it takes anything, and
+/// a new start makes the leader forget what it acknowledged).
+const MEASURED: [Plant; 2] = [Plant::CountPastSent, Plant::SizeRefusalAtMatched];
 
 /// The checks a planted defect must break, and for a refusal what the
 /// store must have refused.
@@ -2746,6 +2935,13 @@ fn expected(plant: Plant) -> (&'static [Check], &'static [&'static str]) {
         // A term opened with an ordinary entry: the leader serves without
         // its `empty`.
         Plant::OpenWithoutEmpty => (&[Check::Serving], &[]),
+        // Elections that must fit two round trips in one timeout: no leader
+        // for longer than an election may take.
+        Plant::StandWithoutRestart => (&[Check::Election], &[]),
+        // A follower that started again with the cluster's limit, still
+        // sent nothing but empty heartbeats.
+        Plant::BlockedKeptAcrossRestart => (&[Check::Progress], &[]),
+        Plant::SizeRefusalAtMatched => (&[Check::Progress], &[]),
         Plant::AppendTermUnsaved | Plant::VoteForgotten | Plant::AckBeforeFlush => {
             (&[Check::DurableAnswer], &[])
         }
@@ -2987,44 +3183,6 @@ fn a_core_takes_from_a_message_only_what_it_asked_for() {
     // to a follower is a probe: `next` stays until a success.)
     assert!(a.receive(reply(2, term, 1, None, 0)).is_empty());
     assert_eq!(a.progress[&id(2)].next, 4);
-    // Fields that contradict each other: malformed, nothing changes. A
-    // success whose term is below the term it repeats (the follower records
-    // a term before it acknowledges in it), a success whose log ends before
-    // what it acknowledges, a refusal in the term it repeats that names
-    // where to try next at or past the entry the append named (so no hint
-    // can overflow the step back), a pre-vote for a round other than its
-    // sender's next term.
-    let low = Message {
-        term: term - 1,
-        ..reply_to(2, term, 1, term, 1, 3, Some(4), 4)
-    };
-    let malformed = [
-        low,
-        reply(2, term, 3, Some(4), 3),
-        reply(2, term, 3, None, 3),
-        reply(2, term, 3, None, MAX_INDEX),
-        Message {
-            from: id(3),
-            to: id(1),
-            term: term + 5,
-            start: 1,
-            body: Body::PreVote {
-                round: term + 7,
-                last: Pos::default(),
-            },
-        },
-    ];
-    for m in malformed {
-        assert!(a.receive(m).is_empty());
-    }
-    assert_eq!(
-        (
-            a.term(),
-            a.progress[&id(2)].matched,
-            a.progress[&id(2)].next
-        ),
-        (term, 0, 4)
-    );
     // A success claiming past what was sent counts only as far as was sent:
     // the leader's entry 4 is committed, nothing past it.
     a.receive(reply(2, term, 3, Some(9), 9));
@@ -3642,6 +3800,28 @@ impl Net {
     fn last(&self, i: usize) -> u64 {
         self.cores[i].last().index
     }
+
+    /// Member `i` starts again from what it holds, with `max_entry` and its
+    /// next start count.
+    fn restart(&mut self, i: usize, max_entry: u64) {
+        let c = &self.cores[i];
+        let cfg = Config {
+            max_entry,
+            ..c.cfg.clone()
+        };
+        let rec = Recovered {
+            server: c.me(),
+            start_count: c.start() + 1,
+            term: c.term(),
+            vote: c.vote,
+            base: c.base(),
+            terms: c.terms.clone(),
+            committed: c.committed(),
+            published: c.published(),
+            largest: None,
+        };
+        self.cores[i] = Core::new(cfg, &rec).unwrap();
+    }
 }
 
 /// Round 3's finding 1: member 1 leads; member 2 gets the append of entry
@@ -4138,4 +4318,302 @@ fn a_report_of_behind_exempts_a_follower_only_on_the_disks_word() {
     w.nodes[l].member.as_mut().unwrap().core.behind.insert(id);
     assert!(w.core_of(l).behind().contains(&id));
     assert!(!w.excused(l, f).unwrap());
+}
+
+/// The first tick at which a member leads, within `ticks`, of three bare
+/// cores (election timeout 4, heartbeat 1) ticked each tick, on a network
+/// that delivers every message exactly `delay` ticks after it is sent.
+fn first_leader(delay: u64, ticks: u64, plant: Option<Plant>) -> Option<u64> {
+    let mut net = Net::new(1, plant);
+    let mut queue: Vec<(u64, Message)> = Vec::new();
+    let post = |net: &mut Net, queue: &mut Vec<(u64, Message)>, now: u64| {
+        queue.extend(net.flight.drain(..).map(|m| (now + delay, m)));
+    };
+    for now in 1..=ticks {
+        while let Some(k) = queue.iter().position(|(due, _)| *due <= now) {
+            let (_, m) = queue.remove(k);
+            net.flight.push(m);
+            let last = net.flight.len() - 1;
+            net.deliver(last);
+            post(&mut net, &mut queue, now);
+        }
+        for i in 0..3 {
+            net.tick(i);
+            post(&mut net, &mut queue, now);
+        }
+        if net.cores.iter().any(|c| c.role() == Role::Leader) {
+            return Some(now);
+        }
+    }
+    None
+}
+
+/// Round 5's finding 1 (the second review by experiment): members that
+/// follow the protocol, every message delivered two ticks late, elect a
+/// leader. Standing restarts the election timer, so the vote has a full
+/// timeout of its own; without that (planted), the pre-vote and the vote
+/// must share one, and no leader comes in 400 ticks.
+#[test]
+fn a_candidate_has_a_full_timeout_for_its_vote() {
+    let first = first_leader(2, 400, None);
+    assert!(first.is_some_and(|t| t <= 100), "{first:?}");
+    assert_eq!(first_leader(2, 400, Some(Plant::StandWithoutRestart)), None);
+}
+
+/// A follower blocked for its size starts again with the cluster's limit,
+/// and writes go on: it catches up (the leader forgets it was blocked with
+/// the rest of what it held of it). Planted, the leader keeps it blocked.
+fn blocked_restart(plant: Option<Plant>) -> (u64, u64) {
+    let (a, b) = (0, 1);
+    let mut net = Net::new(1, plant);
+    net.elect_first();
+    net.write();
+    let k = net.find(a, b).unwrap();
+    let Body::Append { prev, .. } = net.flight.remove(k).body else {
+        panic!("an append");
+    };
+    let term = net.cores[a].term();
+    net.flight.push(Message {
+        from: id(2),
+        to: id(1),
+        term,
+        start: 1,
+        body: Body::AppendTooLarge {
+            echo: Echo {
+                term,
+                start: 1,
+                prev: prev.index,
+            },
+            index: prev.index + 1,
+            size: 4096,
+            limit: 1024,
+        },
+    });
+    net.pass(b, a);
+    assert_eq!(net.cores[a].blocked().len(), 1);
+    net.restart(b, 1 << 10);
+    for _ in 0..20 {
+        net.write();
+        net.tick(a);
+        net.settle(a, b);
+        net.settle(a, 2);
+    }
+    (net.last(b), net.last(a))
+}
+
+#[test]
+fn a_blocked_follower_that_starts_again_catches_up() {
+    let (follower, leader) = blocked_restart(None);
+    assert_eq!(follower, leader);
+    let (follower, leader) = blocked_restart(Some(Plant::BlockedKeptAcrossRestart));
+    assert!(
+        leader - follower > 15,
+        "planted: at {follower}, the leader at {leader}"
+    );
+}
+
+/// Within one start, a size refusal of an entry the follower acknowledged is
+/// old news, even when the leader carried that entry to it: the `matched`
+/// half of the rule on its own (round 5's finding 3). Planted, it blocks
+/// the follower.
+fn size_refusal_at_matched(plant: Option<Plant>) -> bool {
+    let (a, b) = (0, 1);
+    let mut net = Net::new(1, plant);
+    net.elect_first();
+    for _ in 0..3 {
+        net.write();
+        net.settle(a, b);
+        net.settle(a, 2);
+    }
+    let p = net.cores[a].progress[&id(2)];
+    assert!(p.matched >= 3 && p.carried >= 3);
+    let term = net.cores[a].term();
+    let refusal = Message {
+        from: id(2),
+        to: id(1),
+        term,
+        start: 1,
+        body: Body::AppendTooLarge {
+            echo: Echo {
+                term,
+                start: 1,
+                prev: 2,
+            },
+            index: 3,
+            size: 4096,
+            limit: 1024,
+        },
+    };
+    net.cores[a].receive(refusal);
+    net.cores[a].blocked().is_empty()
+}
+
+#[test]
+fn a_size_refusal_of_an_acknowledged_entry_is_old_news() {
+    assert!(size_refusal_at_matched(None));
+    assert!(!size_refusal_at_matched(Some(Plant::SizeRefusalAtMatched)));
+}
+
+/// Every check of a message's shape (`Core::well_formed`), each broken alone
+/// by one message: the receiver answers nothing and changes nothing, not
+/// even the start count it records of a sender it has not heard from, so
+/// that without that one check the message would change something (round
+/// 5's finding 2). Section 7.1 lists the relations.
+#[test]
+fn a_message_that_breaks_one_relation_changes_nothing() {
+    use crate::entry::Kind;
+    // A follower of term 1 holding two entries of term 1; a leader of term
+    // 2 (its empty at 4); a pre-candidate asking for round 2.
+    let follower = core_of(3, &[1, 1], 1);
+    let mut leader = core_of(1, &[1, 1, 1], 1);
+    elect(&mut leader, id(2));
+    assert_eq!(leader.term(), 2);
+    let mut precandidate = core_of(2, &[1], 1);
+    for _ in 0..100 {
+        if precandidate.role() == Role::PreCandidate {
+            break;
+        }
+        precandidate.tick();
+    }
+    assert_eq!(precandidate.role(), Role::PreCandidate);
+    let pos = |index, term| Pos { index, term };
+    let wire = |index, term, len: usize| Wire {
+        index,
+        term,
+        kind: Kind::Empty.code(),
+        file: 0,
+        payload: vec![0; len],
+        hash: [0; 32],
+    };
+    let message = |from: u8, to: u8, term, body| Message {
+        from: id(from),
+        to: id(to),
+        term,
+        start: 1,
+        body,
+    };
+    let append = |term, prev, entries| {
+        let body = Body::Append {
+            prev,
+            entries,
+            committed: 0,
+        };
+        message(1, 3, term, body)
+    };
+    let echo = |prev| Echo {
+        term: 2,
+        start: 1,
+        prev,
+    };
+    let reply = |term, prev, matched, hint| {
+        let body = Body::AppendReply {
+            echo: echo(prev),
+            matched,
+            hint,
+        };
+        message(3, 1, term, body)
+    };
+    let too_large = |term, index, size| {
+        let body = Body::AppendTooLarge {
+            echo: echo(3),
+            index,
+            size,
+            limit: 1024,
+        };
+        message(3, 1, term, body)
+    };
+    let prevote = |round, last| Body::PreVote { round, last };
+    let (f, l, p) = (0, 1, 2);
+    let cases = [
+        (
+            "the term past its bound",
+            f,
+            append(MAX_TERM + 1, pos(2, 1), vec![]),
+        ),
+        (
+            "an index past its bound",
+            f,
+            append(2, pos(MAX_INDEX + 1, 1), vec![]),
+        ),
+        (
+            "prevote_position",
+            f,
+            message(1, 3, 1, prevote(2, pos(0, 1))),
+        ),
+        ("prevote_round", f, message(1, 3, 1, prevote(5, pos(2, 1)))),
+        (
+            "prevote_last_term",
+            f,
+            message(1, 3, 1, prevote(2, pos(2, 3))),
+        ),
+        (
+            "granted_round",
+            p,
+            message(
+                1,
+                2,
+                2,
+                Body::PreVoteReply {
+                    round: 2,
+                    granted: true,
+                },
+            ),
+        ),
+        (
+            "vote_position",
+            f,
+            message(1, 3, 2, Body::Vote { last: pos(5, 0) }),
+        ),
+        (
+            "vote_last_term",
+            f,
+            message(1, 3, 2, Body::Vote { last: pos(2, 3) }),
+        ),
+        (
+            "append_count",
+            f,
+            append(
+                2,
+                pos(2, 1),
+                vec![wire(3, 2, 0), wire(4, 2, 0), wire(5, 2, 0)],
+            ),
+        ),
+        (
+            "append_bytes",
+            f,
+            append(2, pos(2, 1), vec![wire(3, 2, 600), wire(4, 2, 600)]),
+        ),
+        (
+            "append_follows",
+            f,
+            append(2, pos(2, 1), vec![wire(4, 2, 0)]),
+        ),
+        (
+            "append_entry_terms",
+            f,
+            append(2, pos(2, 1), vec![wire(3, 3, 0)]),
+        ),
+        (
+            "append_rising",
+            f,
+            append(2, pos(2, 1), vec![wire(3, 2, 0), wire(4, 1, 0)]),
+        ),
+        ("append_position", f, append(2, pos(2, 0), vec![])),
+        ("append_prev_term", f, append(2, pos(2, 3), vec![])),
+        ("reply_term", l, reply(1, 3, Some(4), 4)),
+        ("success_reaches", l, reply(3, 3, Some(2), 3)),
+        ("success_hint", l, reply(2, 3, Some(4), 3)),
+        ("refusal_hint", l, reply(2, 3, None, 3)),
+        ("too_large_term", l, too_large(1, 4, 2048)),
+        ("too_large_index", l, too_large(2, 3, 2048)),
+        ("too_large_size", l, too_large(2, 4, 1024)),
+    ];
+    let receivers = [follower, leader, precandidate];
+    for (relation, to, m) in cases {
+        let mut core = receivers[to].clone();
+        let before = format!("{core:?}");
+        let out = core.receive(m);
+        assert!(out.is_empty(), "{relation}: {out:?}");
+        assert_eq!(format!("{core:?}"), before, "{relation}");
+    }
 }

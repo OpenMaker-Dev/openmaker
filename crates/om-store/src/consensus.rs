@@ -188,6 +188,15 @@ pub enum Plant {
     /// A new leader opens its term with an ordinary entry in place of its
     /// `empty` one, which would have discarded the groups left open.
     OpenWithoutEmpty,
+    /// A member that stands does not restart its election timer: the
+    /// pre-vote and the vote must both finish within one timeout.
+    StandWithoutRestart,
+    /// The leader keeps a follower blocked when the follower starts again
+    /// (with a larger limit).
+    BlockedKeptAcrossRestart,
+    /// The leader takes a size refusal of an entry the follower has
+    /// acknowledged.
+    SizeRefusalAtMatched,
 }
 
 /// An entry's place: its index and term. Raft compares logs by their last.
@@ -765,6 +774,12 @@ impl Core {
         self.role = Role::Candidate;
         self.leader = None;
         self.grants = BTreeSet::from([self.cfg.me]);
+        // A full timeout for the vote, as Raft's candidate has: the
+        // pre-vote used the one drawn when it began.
+        if !planted!(self, StandWithoutRestart) {
+            self.elapsed = 0;
+            self.timeout = draw(&mut self.rng, self.cfg.election);
+        }
         self.persist(out);
         if self.grants.len() >= self.majority() {
             self.lead(out);
@@ -1000,10 +1015,14 @@ impl Core {
             *seen = m.start;
             let next = self.last().index + 1;
             let now = self.ticks;
+            let keep_blocked = planted!(self, BlockedKeptAcrossRestart);
             if let Some(p) = self.progress.get_mut(&m.from).filter(|_| rose) {
-                let heard_at = p.heard_at;
+                let (heard_at, blocked) = (p.heard_at, p.blocked);
                 *p = Progress::new(next, now);
                 p.heard_at = heard_at;
+                if keep_blocked {
+                    p.blocked = blocked;
+                }
             }
         }
         // Raft's rule, for every message: a higher term is taken and
@@ -1117,49 +1136,79 @@ impl Core {
     /// named, larger than the limit it gives. What is not changes nothing
     /// (section 7.1). An entry past this member's largest is not
     /// malformed: it is refused with its reason ([`Body::AppendTooLarge`]).
+    // Each relation is a named binding, the single ones too.
+    #[allow(clippy::let_and_return)]
     fn well_formed(&self, m: &Message) -> bool {
         if m.term > MAX_TERM || !m.body.bounded() {
             return false;
         }
+        // One relation a line, each named, so that a test can play a
+        // message that breaks exactly one (section 7.1 lists them).
         let pos = |p: &Pos| (p.index == 0) == (p.term == 0);
         match &m.body {
             Body::PreVote { round, last } => {
-                m.term.checked_add(1) == Some(*round) && pos(last) && last.term <= m.term
+                let prevote_position = pos(last);
+                let prevote_round = m.term.checked_add(1) == Some(*round);
+                let prevote_last_term = last.term <= m.term;
+                prevote_position && prevote_round && prevote_last_term
             }
-            Body::PreVoteReply { round, granted } => !granted || *round > m.term,
-            Body::Vote { last } => pos(last) && last.term <= m.term,
+            Body::PreVoteReply { round, granted } => {
+                let granted_round = !granted || *round > m.term;
+                granted_round
+            }
+            Body::Vote { last } => {
+                let vote_position = pos(last);
+                let vote_last_term = last.term <= m.term;
+                vote_position && vote_last_term
+            }
             Body::VoteReply { .. } => true,
             Body::Append { prev, entries, .. } => {
                 let count = entries.len() as u64;
                 let bytes: u64 = entries.iter().map(|e| e.payload.len() as u64).sum();
-                let sized =
-                    count <= self.cfg.batch && (count <= 1 || bytes <= self.cfg.batch_bytes);
-                let follows = entries.iter().enumerate().all(|(k, e)| {
-                    Some(e.index) == prev.index.checked_add(k as u64 + 1) && e.term <= m.term
-                });
-                let rising = entries
+                let append_count = count <= self.cfg.batch;
+                let append_bytes = count <= 1 || bytes <= self.cfg.batch_bytes;
+                let append_follows = entries
+                    .iter()
+                    .enumerate()
+                    .all(|(k, e)| Some(e.index) == prev.index.checked_add(k as u64 + 1));
+                let append_entry_terms = entries.iter().all(|e| e.term <= m.term);
+                let append_rising = entries
                     .iter()
                     .try_fold(prev.term, |t, e| (e.term >= t).then_some(e.term))
                     .is_some();
-                sized && follows && rising && pos(prev) && prev.term <= m.term
+                let append_position = pos(prev);
+                let append_prev_term = prev.term <= m.term;
+                append_count
+                    && append_bytes
+                    && append_follows
+                    && append_entry_terms
+                    && append_rising
+                    && append_position
+                    && append_prev_term
             }
             Body::AppendReply {
                 echo,
                 matched,
                 hint,
             } => {
-                m.term >= echo.term
-                    && match matched {
-                        Some(k) => *k >= echo.prev && *hint >= *k,
-                        None => m.term > echo.term || *hint < echo.prev,
-                    }
+                let reply_term = m.term >= echo.term;
+                let (success_reaches, success_hint, refusal_hint) = match matched {
+                    Some(k) => (*k >= echo.prev, *hint >= *k, true),
+                    None => (true, true, m.term > echo.term || *hint < echo.prev),
+                };
+                reply_term && success_reaches && success_hint && refusal_hint
             }
             Body::AppendTooLarge {
                 echo,
                 index,
                 size,
                 limit,
-            } => m.term >= echo.term && *index > echo.prev && size > limit,
+            } => {
+                let too_large_term = m.term >= echo.term;
+                let too_large_index = *index > echo.prev;
+                let too_large_size = size > limit;
+                too_large_term && too_large_index && too_large_size
+            }
         }
     }
 
@@ -1193,10 +1242,10 @@ impl Core {
         if self.role != Role::Leader || !self.answers(from, &echo) {
             return;
         }
-        let ours = self
-            .progress
-            .get(&from)
-            .is_some_and(|p| oversize.index <= p.carried && oversize.index > p.matched);
+        let at_matched = planted!(self, SizeRefusalAtMatched);
+        let ours = self.progress.get(&from).is_some_and(|p| {
+            oversize.index <= p.carried && (oversize.index > p.matched || at_matched)
+        });
         if !ours {
             return;
         }
