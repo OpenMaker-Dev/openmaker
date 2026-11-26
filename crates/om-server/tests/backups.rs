@@ -906,6 +906,49 @@ fn an_unresolved_save_location_blocks_retention_but_not_an_unrelated_backup() {
     assert!(old.exists(), "unresolved data prevents retention");
 }
 
+/// A backup of one folder copies the hosted files in it and no other
+/// (`BackupFiles::Folder`, whose folders are all resolved before any file is
+/// taken, #1006).
+#[test]
+fn a_folder_backup_copies_the_files_in_its_folder_alone() {
+    let folder = Folder::new("one-folder");
+    let file = hosted_file(&folder);
+    let elsewhere = folder.0.join("other");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let built = TempFile::new("backup-other", &[], true);
+    let other = TempFile(elsewhere.join("Other.fmp12"));
+    std::fs::rename(&built.0, &other.0).unwrap();
+
+    let backups = folder.0.join("Backups");
+    let clock = ManualClock::new(at(8, 59));
+    let mut schedule = backup_schedule("Folder", 1);
+    let ScheduleTask::Backup(task) = &mut schedule.task else {
+        unreachable!();
+    };
+    task.files = BackupFiles::Folder(folder.0.join("db"));
+    let (_, handle) =
+        server::start_hosting(&[(fixture::FILE, &file), ("Other", &other)], |server| {
+            server
+                .with_clock(clock.clone())
+                .with_backup_folder(&backups)
+                .unwrap()
+                .with_schedules(vec![schedule])
+                .unwrap()
+        });
+    assert!(
+        handle.wait_for_schedules(WAIT),
+        "the scheduler did not start"
+    );
+    let databases = backups
+        .join(back_up_now(&handle, "Folder"))
+        .join("Databases");
+    assert_eq!(
+        std::fs::read(databases.join("db/Sample.fmp12")).unwrap(),
+        std::fs::read(&file.0).unwrap(),
+    );
+    assert!(!databases.join("other").exists(), "{databases:?}");
+}
+
 #[cfg(unix)]
 #[test]
 fn container_data_is_never_a_backup_folder() {
