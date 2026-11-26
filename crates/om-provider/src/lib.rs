@@ -1709,6 +1709,21 @@ impl NativeProvider {
         self.decoded_layout_for_found_set(layout_id)
     }
 
+    fn render_layout_with_demand(
+        &mut self,
+        layout_id: u32,
+        scripted: bool,
+    ) -> Result<Option<RenderLayout>, DataError> {
+        let mut layout = self.decoded_layout(layout_id)?;
+        let field_bindings = self.bindings(&layout)?;
+        let schema = self.calc_schema_for_layout(&layout, scripted)?;
+        resolve_merge_bindings(&mut layout, &schema);
+        Ok(Some(RenderLayout {
+            layout,
+            field_bindings,
+        }))
+    }
+
     /// Layout `layout_id`, decoded also when the account's custom set
     /// hides it: only for its table, whose found set a script's New Window
     /// or Go to Related Record may move the window through, as FileMaker
@@ -2093,6 +2108,36 @@ impl NativeProvider {
             return Err(DataError::with_code(201, FIELD_NOT_MODIFIABLE));
         }
         Ok(schema)
+    }
+
+    /// Check a script's assignment before changing the session global.
+    fn assigned_global(
+        &mut self,
+        table: u64,
+        field: u64,
+        repetition: u32,
+        text: &str,
+        local: bool,
+    ) -> Result<om_data::GlobalChanges, DataError> {
+        let schema = self.global_write_schema(table, field, repetition)?;
+        let definition = schema
+            .table(table)
+            .and_then(|table| table.fields.get(&field))
+            .ok_or_else(|| DataError::with_code(102, "The field is missing."))?;
+        let options = self
+            .catalog
+            .table(table)
+            .and_then(|table| table.field(field))
+            .and_then(om_hbam::Field::decoded_options);
+        let value = om_data::rules::global_text_assignment(
+            definition,
+            options.as_ref(),
+            &schema.locale,
+            local,
+            text,
+        )?
+        .unwrap_or_else(|| text.to_owned());
+        Ok(om_data::GlobalChanges::from([((field, repetition), value)]))
     }
 
     /// The text a user's typing `text` into repetition `repetition` of
@@ -3500,6 +3545,14 @@ impl DataProvider for NativeProvider {
         &mut self,
         layout_id: u32,
     ) -> Result<om_data::RecordCapabilities, DataError> {
+        self.record_capabilities_for_layout(layout_id, false)
+    }
+
+    fn record_capabilities_for_layout(
+        &mut self,
+        layout_id: u32,
+        scripted: bool,
+    ) -> Result<om_data::RecordCapabilities, DataError> {
         let none = || om_data::RecordCapabilities {
             editable_fields: Some(BTreeSet::new()),
             ..Default::default()
@@ -3519,7 +3572,7 @@ impl DataProvider for NativeProvider {
         let layout = self.decoded_layout(layout_id)?;
         // The related files it reads open first, so their fields' rules
         // count (#983): the window asks before it draws the layout.
-        let file = self.calc_schema_for_layout(&layout)?;
+        let file = self.calc_schema_for_layout(&layout, scripted)?;
         if shows_related_file(&file, layout_occurrence(&layout)?) {
             if denied {
                 return Ok(none());
@@ -4505,15 +4558,21 @@ impl DataProvider for NativeProvider {
         repetition: u32,
         text: &str,
     ) -> Result<(), DataError> {
-        let change = om_data::GlobalChanges::from([((field, repetition), text.to_owned())]);
         if let Some(route) = self.global_owner(table)? {
-            self.external.with_owner(route, |owner, wire| {
-                owner.global_write_schema(wire, field, repetition)?;
-                owner.keep_globals(wire, change.clone())
+            let change = self.external.with_owner(route, |owner, wire| {
+                let change = owner.assigned_global(wire, field, repetition, text, false)?;
+                owner.keep_globals(wire, change.clone())?;
+                Ok(change)
             })?;
             return self.keep_globals(table, change);
         }
-        self.global_write_schema(table, field, repetition)?;
+        let change = self.assigned_global(
+            table,
+            field,
+            repetition,
+            text,
+            self.plans_local_record_positions(),
+        )?;
         self.keep_globals(table, change)
     }
 
@@ -5786,15 +5845,11 @@ impl DataProvider for NativeProvider {
     }
 
     fn render_layout(&mut self, layout_id: u32) -> Result<Option<RenderLayout>, DataError> {
-        let mut layout = self.decoded_layout(layout_id)?;
-        let field_bindings = self.bindings(&layout)?;
-        // The related files it reads open before it is drawn (#983).
-        let schema = self.calc_schema_for_layout(&layout)?;
-        resolve_merge_bindings(&mut layout, &schema);
-        Ok(Some(RenderLayout {
-            layout,
-            field_bindings,
-        }))
+        self.render_layout_with_demand(layout_id, false)
+    }
+
+    fn render_script_layout(&mut self, layout_id: u32) -> Result<Option<RenderLayout>, DataError> {
+        self.render_layout_with_demand(layout_id, true)
     }
 
     fn layout_geometry(&mut self, layout_id: u32) -> Result<Option<LayoutGeometry>, DataError> {

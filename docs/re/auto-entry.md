@@ -222,6 +222,23 @@ The formatted stream is 20 bytes and must not be confused with that two-byte
 code. The high option bit in PrimaryKey is preserved, not treated as an
 auto-entry flag. Fields 1..7 have none of the four supported auto-entry modes.
 
+## Filenames from a repeating Container
+
+FileMaker Pro 26.1.1 on a disposable local file saved a 24-repetition Text
+field with option word `0x88` and `GetContainerAttribute ( Attachment ;
+"Filename" )`, where Attachment was a 24-repetition Container of the
+same occurrence. "Do not evaluate if all referenced fields are empty"
+was on. Creating and committing a record with Attachment empty left no
+stored Text cells. Inserting or replacing a container affected only the
+matching Text repetition. Clearing the second container removed the
+second Text cell and kept the first. A separate Text edit left both
+repetitions as they were. Each write returned 0 with no alert, and
+closed copies confirmed the stored cells.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39)
+
+Entering a value directly in the result field, preparing a new record
+with a nonempty source, other formulas and hosted writes are unmeasured.
+
 ## Lookups
 
 Option `0x400` auto-enters a looked-up value. Its definition is the
@@ -398,6 +415,19 @@ Unmeasured for this option: explicit clear with a blank fallback, a replacing
 copying the next lower or higher value, container fields, Relookup Field
 Contents, which of several matches an unsorted relationship gives, and
 additional scripted and import cases remain unmeasured here.
+
+## Reading a global from an unrelated table
+
+Claris documents that a calculation can read a global field from any
+context of the same file, including an unrelated table occurrence.
+[Global fields](https://help.claris.com/en/pro-help/content/global-fields.html) and
+[calculation context](https://help.claris.com/en/pro-help/content/calculation-evaluation-context.html).
+In FileMaker Pro 26.1.1, a local Text field with calculated auto-enter
+copied an unrelated table's Text global at New Record. An unrelated edit
+kept that value. Changing the global affected subsequent new records,
+and the earlier record kept its stored value. The same read and copy
+worked with a saved global and zero records in its source table.
+[Native Browse check](https://github.com/OpenMaker-Dev/openmaker/issues/1051).
 
 ## Calculations over related fields
 
@@ -641,6 +671,17 @@ or related-values lists. Carry-over to them is inference, and this case
 does not distinguish validation being skipped from other internal timing
 that saves without a dialog. Hosted behavior is unmeasured.
 
+## Get ( CurrentTimeUTCMilliseconds )
+
+FileMaker Pro 26.1.1 in a local file displayed the UTC millisecond value
+of a Text auto-enter calling a custom function at New Record. Its value
+fell inside a bracket around that operation and survived an unrelated
+Text edit and close. A direct Number auto-enter was stored as well. With
+replacement enabled, one record stored the direct and custom results
+one millisecond apart, so different field evaluations can take different
+samples. These checks did not change an input the calculation reads.
+[Native Browse check](https://github.com/OpenMaker-Dev/openmaker/issues/1055).
+
 ## Get ( RecordNumber )
 
 FileMaker Pro 26.1.1 [measured sorted ordinary New Record](https://github.com/OpenMaker-Dev/openmaker/issues/1011)
@@ -794,6 +835,22 @@ records had no cell for the global field. This measures the counter
 persisted at close. The timing of the counter write before close and
 the result of reverting a newly created record were not measured.
 [O, closed-file readback](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7185027447).
+
+### Self in a calculated global Text auto-entry
+
+[O, FileMaker Pro 26.1.1] A local single-repetition global Text field
+stores option `0x00010088` for a replacing calculation and `0x00010008`
+with replacement off. The measured formulas were
+`If ( IsEmpty ( Self ) ; "Initial" ; Self )` and the same formula with
+`Self & "!"` as the final branch. The empty-input control was left on.
+New Record sees the current global through Self. Set Field sees its
+proposed text through Self. With replacement off, a nonempty value
+survives either operation. Clearing the field re-enters the default.
+Writing an unrelated field leaves the global unchanged.
+These scripts all continued with LastError 0. The local global persisted
+across reopen. Hosted files, Browse typing, Duplicate Record and portal
+creation were not tested.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1095#issuecomment-7191245589)
 
 ## A stored calculation before the commit
 

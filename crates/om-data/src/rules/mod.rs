@@ -11,7 +11,7 @@
 //! a record: lookups other than the exact-match form FileMaker Pro
 //! was seen to write (their related values are read by the host first,
 //! [`RecordPlan::read_lookups`]), entry from the previous record, unknown option
-//! or validation bits, repeating calculated fields, calculations that read
+//! or validation bits, most repeating calculations, calculations that read
 //! globals, summaries, unstored calculations or related fields,
 //! plug-in functions, custom functions that read fields, `Get` selectors
 //! that need a window, and cyclic dependencies. A calculation the host cannot
@@ -19,6 +19,8 @@
 //! field values; it does not send protocol requests or write records.
 //! Refusals carry the FileMaker error a script step reports
 //! ([`DataError::code`]).
+mod global_text_self;
+pub use global_text_self::global_text_assignment;
 pub mod recalc;
 pub mod schema;
 mod typing;
@@ -33,10 +35,11 @@ use om_calc::eval::{
 use om_calc::ops::{self, CompareOp};
 use om_calc::{Ctx, Date, Locale, Number, Time, Timestamp, Value, ValueType};
 use om_collate::DateOrder;
-use om_formula::{DecodeErrorKind, Expr, Formula, Key};
-use om_hbam::catalog::{DataType, FieldKind};
+use om_formula::{DecodeErrorKind, Expr, Formula, Key, Opcode};
+use om_hbam::catalog::{DataType, Field, FieldKind};
 use om_hbam::{EntryVariable, FieldOptions, KeyTree, Node, Table};
 
+use self::global_text_self::GlobalTextSelf;
 use crate::containers::{self, MemberInfo};
 use crate::meta::{ValueList, ValueSource};
 
@@ -147,11 +150,12 @@ const RECORD_RULE_SELECTORS: [u8; 10] = [1, 2, 5, 16, 29, 31, 32, 63, 68, 101];
 /// auto-entered and validation formulas, which the writing client
 /// evaluates. A stored calculation, which a host recalculates with no
 /// operation, and a privilege set's record limit keep refusing them.
-const CONTEXT_SELECTORS: [u8; 4] = [
+const CONTEXT_SELECTORS: [u8; 5] = [
     selector::LAYOUT_NUMBER,
     selector::RECORD_NUMBER,
     selector::CURRENT_PRIVILEGE_SET_NAME,
     selector::CURRENT_HOST_TIMESTAMP,
+    selector::CURRENT_TIME_UTC_MILLISECONDS,
 ];
 
 /// Whether FileMaker leaves index language `language` untailored, so that
@@ -388,6 +392,42 @@ impl RecordNumber {
     }
 }
 
+/// The UTC millisecond samples a new record's formulas have drawn. Clones
+/// identify the same creation so a preview and its commit replay the
+/// calls in their field's evaluation order.
+#[derive(Clone, Debug, Default)]
+pub struct CreationUtcClock(Arc<Mutex<BTreeMap<u64, Vec<Value>>>>);
+
+impl PartialEq for CreationUtcClock {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for CreationUtcClock {}
+
+impl CreationUtcClock {
+    fn sample(&self, field: u64, call: usize) -> Result<Value, om_calc::CalcError> {
+        // A loop or recursion cannot keep growing the record's sample
+        // log. Refuse large sequences rather than replay a partial one.
+        const MAX_CLOCK_CALLS: usize = 64;
+        if call >= MAX_CLOCK_CALLS {
+            return Err(om_calc::CalcError::NOT_SUPPORTED);
+        }
+        let mut by_field = self
+            .0
+            .lock()
+            .map_err(|_| om_calc::CalcError::NOT_SUPPORTED)?;
+        let samples = by_field.entry(field).or_default();
+        if let Some(value) = samples.get(call) {
+            return Ok(value.clone());
+        }
+        let value = crate::host::session::utc_milliseconds()?;
+        samples.push(value.clone());
+        Ok(value)
+    }
+}
+
 /// How much the writer can establish about the order of local edits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WriteSequence {
@@ -424,6 +464,16 @@ impl PartialEq for WriteFileVariables {
 
 impl Eq for WriteFileVariables {}
 
+/// Local-session Text globals read from other tables by auto-entry.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct OtherGlobalValues(Arc<BTreeMap<(u64, u64), String>>);
+
+impl std::fmt::Debug for OtherGlobalValues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OtherGlobalValues").finish_non_exhaustive()
+    }
+}
+
 /// What the operation making a write knows that its formulas may read
 /// ([`CONTEXT_SELECTORS`]). A value left out refuses a write whose
 /// evaluated formula reads it; it is never answered empty in its place.
@@ -444,9 +494,14 @@ pub struct WriteContext {
     /// `Get ( RecordNumber )` as the operation answers it. A stored
     /// calculation requires [`RecordNumber::LocalNewRecord`].
     pub record_number: Option<RecordNumber>,
+    /// The clock samples of a local New Record, retained by its preview.
+    pub creation_utc_clock: Option<CreationUtcClock>,
     /// The local file's `$$` variables for directly reading a Text
     /// auto-enter value. New Record's preview retains this snapshot.
     pub file_variables: Option<WriteFileVariables>,
+    /// The local session's globals when the write started. A held new
+    /// record reuses its first snapshot through subsequent edits.
+    pub other_globals: Option<OtherGlobalValues>,
 }
 
 impl WriteContext {
@@ -656,6 +711,8 @@ pub struct Lookups {
     /// that reads them all ([`RelatedRead::whole`]); none when none is
     /// related.
     related: Arc<RelatedRecords>,
+    /// Session globals read by a formula from another table in the file.
+    other_globals: OtherGlobalValues,
     /// The record the reads were made for ([`Written`]).
     written: Written,
 }
@@ -790,6 +847,8 @@ pub(crate) struct Evaluation {
     related: Arc<RelatedRecords>,
     /// The session's global values ([`RecordEnvironment::globals`]).
     globals: Option<Arc<RecordValues>>,
+    creation_utc_clock: Option<CreationUtcClock>,
+    other_globals: OtherGlobalValues,
     /// `Get ( RecordNumber )` ([`WriteContext::record_number`]).
     record_number: Option<RecordNumber>,
     file_variables: Option<WriteFileVariables>,
@@ -872,6 +931,7 @@ impl RecordEnvironment {
             .filter(|selector| match *selector {
                 selector::LAYOUT_NUMBER => context.layout == WriteLayout::Unknown,
                 selector::RECORD_NUMBER => context.record_number.is_none(),
+                selector::CURRENT_TIME_UTC_MILLISECONDS => context.creation_utc_clock.is_none(),
                 selector::CURRENT_PRIVILEGE_SET_NAME => context.privilege_set.is_none(),
                 _ => host_now.is_none(),
             })
@@ -901,7 +961,12 @@ impl RecordEnvironment {
             limits: self.limits,
             related: self.lookups.related.clone(),
             globals: self.globals.clone(),
+            other_globals: context
+                .other_globals
+                .clone()
+                .unwrap_or_else(|| self.lookups.other_globals.clone()),
             record_number: context.record_number,
+            creation_utc_clock: context.creation_utc_clock.clone(),
             file_variables: context.file_variables.clone(),
             related_needs: self.related_needs.clone(),
             written: self.lookups.written,
@@ -1046,6 +1111,8 @@ struct PlannedField {
     editable: bool,
     /// A stored calculation or an auto-enter calculation.
     expression: Option<Expression>,
+    /// This local global's auto-entry reads Self.
+    global_text_self: GlobalTextSelf,
     /// Creation Date supplies the value on create. The calculation's
     /// dependencies identify updates with an unmeasured result.
     creation_date_with_calculation: bool,
@@ -1774,6 +1841,58 @@ pub fn cell_of(field: u64, repetition: u32) -> Option<u64> {
     }
 }
 
+/// The measured repeating auto-entry form: a bare reference to a plain
+/// Container's matching repetition, with no other inputs (auto-entry.md).
+fn repeating_container_filename(
+    table: &Table,
+    target: &Field,
+    options: &FieldOptions,
+    expression: &Expression,
+) -> bool {
+    if target.kind != FieldKind::Normal
+        || target.data_type != DataType::Text
+        || options.max_repetitions != 24
+        || options.options & !(INDEX_OPTIONS | BOOKKEEPING_OPTIONS) != 0x88
+        || options.validation_options != 0
+    {
+        return false;
+    }
+    // Opcode 3500 is GetContainerAttribute (calc-encoding.md).
+    let Expr::Call {
+        op: Opcode(3500),
+        args,
+    } = &expression.formula.polish
+    else {
+        return false;
+    };
+    let [Expr::Field(source), Expr::Text(attribute)] = args.as_slice() else {
+        return false;
+    };
+    if source.flags != 0
+        || source.repetition != 1
+        || source.occurrence.id().is_none()
+        || source.occurrence.id() != expression.formula.occurrence()
+        || !attribute.value.eq_ignore_ascii_case("filename")
+    {
+        return false;
+    }
+    let Some(id) = source.field.id() else {
+        return false;
+    };
+    if expression.dependencies.len() != 1 || !expression.dependencies.contains(&id) {
+        return false;
+    }
+    table.fields.iter().any(|field| {
+        field.id == id
+            && field.kind == FieldKind::Normal
+            && field.data_type == DataType::Container
+            && field.decoded_options().is_some_and(|source| {
+                source.max_repetitions == 24
+                    && (source.options == 0 || source.pending_embedded_container_transfer())
+            })
+    })
+}
+
 /// Whether a value of another record may not be what that record's commit
 /// stores ([`RecordPlan::pending_row`], #1063): by its table, its record,
 /// and its field. With no record (`None`), whether that field is unknown
@@ -1808,6 +1927,9 @@ struct Expression {
     /// one for [`Self::whole`] (auto-entry.md, "Calculations over related
     /// fields").
     related: BTreeSet<(u64, u64)>,
+    /// Readable global fields by base table and field id, separate from
+    /// relationships. Only the local same-file auto-enter case is planned.
+    other_globals: BTreeSet<(u64, u64)>,
     /// The occurrences of which it reads every related record: a related
     /// field passed where a field is required, to `Max`, `Count`, `List`,
     /// `Last`, `GetNthRecord` and the other aggregates (#1036), rather than
@@ -1987,6 +2109,11 @@ impl RecordPlan {
                     INDEX_OPTIONS | BOOKKEEPING_OPTIONS | ALWAYS_EVALUATE | UNSTORED
                 }
                 FieldKind::Summary => INDEX_OPTIONS | BOOKKEEPING_OPTIONS,
+                // While this container's transfer is pending, other cells
+                // may be written without touching its payload or definition.
+                FieldKind::Normal if local && options.pending_embedded_container_transfer() => {
+                    options.options
+                }
                 // A lookup alone: with other auto-entry its order is unmeasured.
                 // Furigana leaves a normal field's table writable: a change
                 // of its value alone is refused (`refuse_unwritable_changes`).
@@ -2121,11 +2248,6 @@ impl RecordPlan {
                         "only text, number, date and time calculation results are supported.",
                     ));
                 }
-                if options.max_repetitions != 1 {
-                    return Err(error(
-                        "repeating calculated fields are not supported for native writes.",
-                    ));
-                }
                 let usage = if auto_calculation {
                     FormulaUse::Options
                 } else if field.data_type == DataType::Number {
@@ -2134,6 +2256,13 @@ impl RecordPlan {
                     FormulaUse::RecordOnly
                 };
                 let formula = formula_at(FIELD_FORMULA, usage)?;
+                if options.max_repetitions != 1
+                    && !(local && repeating_container_filename(table, field, &options, &formula))
+                {
+                    return Err(error(
+                        "repeating calculated fields are not supported for native writes.",
+                    ));
+                }
                 if matches!(usage, FormulaUse::StoredNumber)
                     && matches!(formula.formula.polish, Expr::Get(selector::RECORD_NUMBER))
                     && !local
@@ -2156,6 +2285,21 @@ impl RecordPlan {
                 Some(formula)
             } else {
                 None
+            };
+            let global_text_self = if auto_enters_global {
+                expression
+                    .as_ref()
+                    .map(|formula| {
+                        global_text_self::classify(
+                            &def,
+                            Some(&options),
+                            &formula.formula.polish,
+                            local,
+                        )
+                    })
+                    .unwrap_or_default()
+            } else {
+                GlobalTextSelf::Unused
             };
             let validation = if options.validation_options & VALIDATE_BY_CALCULATION != 0 {
                 Some(formula_at(FIELD_VALIDATION, FormulaUse::Options)?)
@@ -2321,6 +2465,7 @@ impl RecordPlan {
                     data_type: field.data_type,
                     editable,
                     expression,
+                    global_text_self,
                     creation_date_with_calculation,
                     constant,
                     validation,
@@ -2380,6 +2525,7 @@ impl RecordPlan {
             // Only the auto-entered formula's own reads evaluate it again;
             // a validation calculation's are checked at the write.
             let mut matches = BTreeSet::new();
+            let mut global_refs = BTreeMap::new();
             for expression in field.formulas() {
                 let context = expression.formula.occurrence().unwrap_or_default();
                 let own = field
@@ -2387,6 +2533,32 @@ impl RecordPlan {
                     .as_ref()
                     .is_some_and(|e| std::ptr::eq(e, expression));
                 for (occurrence, read) in &expression.related {
+                    // Claris documents that a global field is readable
+                    // from an unrelated table occurrence in the same file.
+                    let local_auto_enter = local
+                        && own
+                        && field.in_row()
+                        && field.data_type == DataType::Text
+                        && field.options.max_repetitions == 1
+                        && field.options.auto_entry_calculation()
+                        && !expression.whole.contains(occurrence);
+                    let target = schema.table_of(*occurrence).filter(|target| {
+                        local_auto_enter
+                            && target.id != table.id
+                            && schema.table_file(target.id) == schema.table_file(table.id)
+                            && schema.path(context, *occurrence).is_none()
+                            && target.fields.get(read).is_some_and(|def| {
+                                def.class == crate::host::FieldClass::Data
+                                    && def.global
+                                    && def.stored
+                                    && def.repetitions == 1
+                                    && def.value_type == ValueType::Text
+                            })
+                    });
+                    if let Some(target) = target {
+                        global_refs.insert((*occurrence, *read), (target.id, *read));
+                        continue;
+                    }
                     let first_auto_enter = own
                         && !field.stored_calculation()
                         && !field.options.calculation_replaces_existing()
@@ -2411,6 +2583,10 @@ impl RecordPlan {
             }
             if let Some(expression) = fields.get_mut(&id).and_then(|f| f.expression.as_mut()) {
                 expression.dependencies.extend(matches);
+                expression
+                    .related
+                    .retain(|read| !global_refs.contains_key(read));
+                expression.other_globals.extend(global_refs.into_values());
             }
         }
         // The records read are scanned again by the repetition 1 of each
@@ -2491,6 +2667,22 @@ impl RecordPlan {
                     &mut BTreeSet::new(),
                 )
                 .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
+                if context_selectors(&schema, &expression.formula.polish)
+                    .contains(&selector::CURRENT_TIME_UTC_MILLISECONDS)
+                    && !(local
+                        && own
+                        && !calculation
+                        && !field.auto_enters_global()
+                        && matches!(field.data_type, DataType::Text | DataType::Number))
+                {
+                    return Err(DataError::with_code(
+                        error::UNAVAILABLE,
+                        format!(
+                            "Field {}: Get ( CurrentTimeUTCMilliseconds ) requires local Text or Number auto-entry.",
+                            field.name
+                        ),
+                    ));
+                }
                 for dependency in &expression.dependencies {
                     let Some(referenced) = fields.get(dependency) else {
                         return Err(DataError::new(format!(
@@ -2663,7 +2855,8 @@ impl RecordPlan {
             if !field.auto_enters_global() {
                 continue;
             }
-            let nonempty = globals.get(id, 1).is_some_and(|value| !value.is_empty());
+            let existing = globals.get(id, 1);
+            let nonempty = existing.is_some_and(|value| !value.is_empty());
             if nonempty && !allow_nonempty {
                 return Err(DataError::with_code(
                     error::UNAVAILABLE,
@@ -2681,9 +2874,25 @@ impl RecordPlan {
                 if nonempty && !field.options.calculation_replaces_existing() {
                     continue;
                 }
-                let value = self
-                    .evaluate_repetition(id, 1, expression, &row, &session, &mut remaining)
-                    .map_err(RunError::into_error)?;
+                let value = match field.global_text_self {
+                    GlobalTextSelf::Supported if allow_nonempty => self
+                        .run(
+                            id,
+                            expression,
+                            &row,
+                            &session,
+                            Some(existing.cloned().unwrap_or_else(|| Value::text(""))),
+                            Some(ValueType::Text),
+                            InRepetition::Calculation(1),
+                            &mut remaining,
+                        )
+                        .map(|(_, text)| text),
+                    GlobalTextSelf::Unused => {
+                        self.evaluate_repetition(id, 1, expression, &row, &session, &mut remaining)
+                    }
+                    _ => return Err(global_text_self::unavailable(&field.name)),
+                }
+                .map_err(RunError::into_error)?;
                 values.insert((id, 1), value);
             }
         }
@@ -2725,9 +2934,11 @@ impl RecordPlan {
 
     /// Whether a field of the table auto-enters a looked-up value.
     pub fn has_lookups(&self) -> bool {
-        self.fields
-            .values()
-            .any(|f| f.lookup.is_some() || f.formulas().any(|e| !e.related.is_empty()))
+        self.fields.values().any(|f| {
+            f.lookup.is_some()
+                || f.formulas()
+                    .any(|e| !e.related.is_empty() || !e.other_globals.is_empty())
+        })
     }
 
     /// The tables (of this file's schema) the write's lookups and related
@@ -2979,6 +3190,41 @@ impl RecordPlan {
         reads
     }
 
+    /// Read the local Text globals needed by this plan. An unreadable or
+    /// styled value is omitted so only an evaluation that reads it fails.
+    pub fn read_other_globals(
+        &self,
+        mut read: impl FnMut(u64) -> Option<Arc<RecordValues>>,
+    ) -> Option<OtherGlobalValues> {
+        let mut tables = BTreeMap::<u64, BTreeSet<u64>>::new();
+        for (table, field) in self
+            .fields
+            .values()
+            .flat_map(PlannedField::formulas)
+            .flat_map(|expression| expression.other_globals.iter().copied())
+        {
+            tables.entry(table).or_default().insert(field);
+        }
+        if tables.is_empty() {
+            return None;
+        }
+        let mut texts = BTreeMap::new();
+        for (table, fields) in tables {
+            let Some(values) = read(table) else {
+                continue;
+            };
+            for field in fields {
+                let text = match values.get(field, 1) {
+                    None => String::new(),
+                    Some(Value::Text(value)) if value.is_plain() => value.as_str().to_owned(),
+                    _ => continue,
+                };
+                texts.insert((table, field), text);
+            }
+        }
+        Some(OtherGlobalValues(Arc::new(texts)))
+    }
+
     /// What the lookups `entry`'s write fires copy (auto-entry.md,
     /// Lookups), read from `source`, the host's records: for each lookup
     /// one of whose match fields the write changes, the copied field on the
@@ -3026,6 +3272,9 @@ impl RecordPlan {
         if !self.has_lookups() {
             return Ok(lookups);
         }
+        lookups.other_globals = self
+            .read_other_globals(|table| source.globals(table).ok())
+            .unwrap_or_default();
         let (row, dirty) = self.written(existing, changes, entry)?;
         for (id, field) in &self.fields {
             let Some(lookup) = &field.lookup else {
@@ -3490,6 +3739,7 @@ impl RecordPlan {
             }),
             dependencies: BTreeSet::from([id]),
             related: BTreeSet::new(),
+            other_globals: BTreeSet::new(),
             whole: BTreeSet::new(),
             uses: BTreeMap::new(),
             through_unstored: BTreeSet::new(),
@@ -3508,8 +3758,18 @@ impl RecordPlan {
         globals: Option<&RecordValues>,
         remaining: &mut u64,
     ) -> Result<bool, RunError> {
-        if expression.dependencies.is_empty() {
+        if expression.dependencies.is_empty() && expression.other_globals.is_empty() {
             return Ok(false);
+        }
+        for field in &expression.other_globals {
+            let text = session
+                .other_globals
+                .0
+                .get(field)
+                .ok_or_else(missing_other_globals)?;
+            if !text.is_empty() {
+                return Ok(false);
+            }
         }
         for id in expression
             .dependencies
@@ -4072,6 +4332,24 @@ impl RecordPlan {
                 DataError::with_code(error::FIELD_MISSING, "A changed field no longer exists.")
             })?;
             let field = &self.fields[&field_id];
+            if field.options.pending_embedded_container_transfer() {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {} cannot be changed while its container storage transfer is pending.",
+                        field.name
+                    ),
+                ));
+            }
+            if field.expression.is_some() && field.options.max_repetitions > 1 {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: direct writes to repeated filenames are unsupported.",
+                        field.name
+                    ),
+                ));
+            }
             // A container's text is its host's reference to the data
             // (containers.md 1.4), set by the client for any writer.
             let allowed = if entry.script {
@@ -4618,6 +4896,12 @@ impl RecordPlan {
             }
         }
         let mut session = environment.session();
+        if mode != WriteMode::Create {
+            session.creation_utc_clock = None;
+            session
+                .unanswered
+                .insert(selector::CURRENT_TIME_UTC_MILLISECONDS);
+        }
         session.stored = existing.clone();
         // Each field's turn passes before the next: its value is final then,
         // unless it was left out, or a preview passed over it uncomputed.
@@ -4693,6 +4977,26 @@ impl RecordPlan {
             if !field.stored_calculation()
                 && (entry.skip_auto_enter || (entry.keeps(changes, *id) && !combined_create))
             {
+                continue;
+            }
+            if field.options.max_repetitions > 1 {
+                match self.repeating_filename_updates(*id, expression, &row, &session, mode) {
+                    Ok(updates) => {
+                        if !updates.is_empty() {
+                            evaluated.insert(*id);
+                        }
+                        for (cell, value) in updates {
+                            assign(&mut row, &mut dirty, cell, value);
+                            if dirty.contains(&cell) {
+                                dirty.insert(*id);
+                            }
+                        }
+                    }
+                    Err(_) if !validate => {
+                        deferred.insert(*id);
+                    }
+                    Err(error) => return Err(error.into_error()),
+                }
                 continue;
             }
             let depends_on_deferred = expression
@@ -5361,6 +5665,21 @@ impl RecordPlan {
         {
             inner.set_globals(self.table, (*globals).clone());
         }
+        let mut global_values = BTreeMap::<u64, RecordValues>::new();
+        for field in &expression.other_globals {
+            let text = session
+                .other_globals
+                .0
+                .get(field)
+                .ok_or_else(missing_other_globals)?;
+            global_values
+                .entry(field.0)
+                .or_default()
+                .set(field.1, 1, Value::text(text.clone()));
+        }
+        for (table, values) in global_values {
+            inner.set_globals(table, values);
+        }
         let source = RuleSource {
             inner,
             own: self.table,
@@ -5405,6 +5724,19 @@ impl RecordPlan {
             .map(|f| f as &dyn Fn() -> bool);
         host.limits = session.limits;
         host.file_context = session.file_context;
+        let call = std::cell::Cell::new(0);
+        let sample_clock = || {
+            let index = call.get();
+            call.set(index + 1);
+            session
+                .creation_utc_clock
+                .as_ref()
+                .ok_or(om_calc::CalcError::NOT_SUPPORTED)?
+                .sample(field, index)
+        };
+        if session.creation_utc_clock.is_some() {
+            host.creation_utc_sample = Some(&sample_clock);
+        }
         let (repetition, extend_fields) = match repetition {
             InRepetition::Validation(n) => (n, n > 1),
             InRepetition::Calculation(n) => (n, false),
@@ -5504,6 +5836,62 @@ impl RecordPlan {
         }
         let text = display(&result.value, &host);
         Ok((result.value, text))
+    }
+
+    fn repeating_filename_updates(
+        &self,
+        target: u64,
+        expression: &Expression,
+        row: &BTreeMap<u64, String>,
+        session: &Evaluation,
+        mode: WriteMode,
+    ) -> Result<Vec<(u64, String)>, RunError> {
+        let source = *expression
+            .dependencies
+            .first()
+            .expect("measured one-field rule");
+        let field = &self.fields[&target];
+        let mut budget = session.calculation_budget();
+        let mut updates = Vec::new();
+        for repetition in 1..=u32::from(field.options.max_repetitions) {
+            let cell = |id| {
+                cell_of(id, repetition)
+                    .filter(|cell| self.cell_field(*cell) == Some((id, repetition)))
+                    .ok_or_else(|| {
+                        RunError::Unread(DataError::with_code(
+                            error::UNAVAILABLE,
+                            format!("Field {}: ambiguous repetition cell.", field.name),
+                        ))
+                    })
+            };
+            let input = cell(source)?;
+            let proposed = row.get(&input).map_or("", String::as_str);
+            if mode == WriteMode::Create && !proposed.is_empty() {
+                return Err(RunError::Unread(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: creation with a container already set is unsupported.",
+                        field.name
+                    ),
+                )));
+            }
+            if proposed != session.stored.get(&input).map_or("", String::as_str) {
+                let value = if proposed.is_empty() {
+                    String::new()
+                } else {
+                    self.evaluate_repetition(
+                        target,
+                        repetition,
+                        expression,
+                        row,
+                        session,
+                        &mut budget,
+                    )?
+                };
+                updates.push((cell(target)?, value));
+            }
+        }
+        Ok(updates)
     }
 
     /// The new stored text of repetition `repetition` of calculated field
@@ -5795,6 +6183,13 @@ fn rule_of(list: ValueList) -> Result<ListRule, String> {
             Err("value lists other than custom values or a field's values are unsupported.".into())
         }
     }
+}
+
+fn missing_other_globals() -> RunError {
+    RunError::Unread(DataError::with_code(
+        error::UNAVAILABLE,
+        "Global fields read by auto-entry were not supplied. No values were changed.",
+    ))
 }
 
 fn assign(row: &mut BTreeMap<u64, String>, dirty: &mut BTreeSet<u64>, id: u64, value: String) {
@@ -6435,6 +6830,7 @@ fn selector_name(selector: u8) -> &'static str {
         selector::LAYOUT_NUMBER => "Get ( LayoutNumber )",
         selector::RECORD_NUMBER => "Get ( RecordNumber )",
         selector::CURRENT_PRIVILEGE_SET_NAME => "Get ( CurrentPrivilegeSetName )",
+        selector::CURRENT_TIME_UTC_MILLISECONDS => "Get ( CurrentTimeUTCMilliseconds )",
         _ => "Get ( CurrentHostTimestamp )",
     }
 }
@@ -6748,6 +7144,7 @@ fn parse_formula(code: &[u8], context: &[u8], usage: FormulaUse) -> Result<Expre
         }),
         dependencies,
         related,
+        other_globals: BTreeSet::new(),
         whole,
         uses,
         through_unstored: BTreeSet::new(),
@@ -7759,6 +8156,47 @@ mod tests {
     }
 
     #[test]
+    fn a_pending_container_transfer_leaves_other_local_cells_writable() {
+        let tree = KeyTree::default();
+        let file = CalcSchema::new("Items", Locale::en_us());
+        let env = environment();
+        for (options, repetitions, cell) in [(0x6000, 1u16, 2), (0x4000, 24, 2 * 256 + 2)] {
+            let mut container = field(2, FieldKind::Normal, DataType::Container, 0, options, 0);
+            container.options[24..26].copy_from_slice(&repetitions.to_be_bytes());
+            let table = Table {
+                id: 0x8002,
+                name: "Items".into(),
+                fields: vec![
+                    field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                    container,
+                ],
+            };
+            assert!(RecordPlan::from_desktop_file_schema(&table, &tree, &file, false).is_err());
+            let plan = RecordPlan::from_desktop_file_schema(&table, &tree, &file, true).unwrap();
+            let existing =
+                BTreeMap::from([(1, "Before".into()), (cell, "Existing reference".into())]);
+            let changes = BTreeMap::from([(1, Some("Example".into()))]);
+            for (mode, row) in [
+                (WriteMode::Create, &BTreeMap::new()),
+                (WriteMode::Update, &existing),
+            ] {
+                let prepared = plan.prepare(mode, row, &changes, &env).unwrap();
+                assert_eq!(prepared.changed_fields, [1]);
+                assert_eq!(decoded(&prepared, 1).as_deref(), Some("Example"));
+                assert!(!prepared.values.contains_key(&cell));
+            }
+            let refused = plan.compute(
+                WriteMode::Update,
+                &existing,
+                &BTreeMap::from([(cell, None)]),
+                &env,
+                Entry::script(false, false),
+            );
+            assert_eq!(refused.err().and_then(|e| e.code), Some(error::UNAVAILABLE));
+        }
+    }
+
+    #[test]
     fn container_dependencies_plan_and_oversized_cells_fail_before_transport() {
         // A calculation reading a container plans: a write's container
         // reader gives it the data (script oracle s34-containers-calc).
@@ -7777,6 +8215,92 @@ mod tests {
             .unwrap()
             .to_string()
             .contains("single-cell size"));
+    }
+
+    #[test]
+    fn repeated_filenames_follow_only_the_changed_container_repetition() {
+        struct FileNames;
+        impl ContainerReader for FileNames {
+            fn value(&self, _: u64, text: &str) -> Option<om_calc::Container> {
+                Some(om_calc::Container::file(text, vec![1]))
+            }
+
+            fn data(&self, _: u64, _: &[u8]) -> Option<om_calc::eval::StoredContainer> {
+                None
+            }
+        }
+
+        let mut table = table();
+        table.fields.retain(|field| field.id <= 2);
+        let mut attachment = field(3, FieldKind::Normal, DataType::Container, 0, 0, 0);
+        attachment.options[24..26].copy_from_slice(&24u16.to_be_bytes());
+        let mut filename = field(4, FieldKind::Normal, DataType::Text, 0, 0x2000_0088, 0);
+        filename.options[24..26].copy_from_slice(&24u16.to_be_bytes());
+        table.fields.extend([attachment, filename]);
+        let formulas = [(4, 5, "GetContainerAttribute ( Field3 ; \"Filename\" )")];
+        let plan = plan_of(&table, &formulas, &[]).unwrap();
+        assert!(plan_with(&table, &formulas, &[], Vec::new(), false).is_err());
+        assert!(plan_of(
+            &table,
+            &[(4, 5, "GetContainerAttribute ( Field3 ; \"Width\" )")],
+            &[]
+        )
+        .is_err());
+        let mut env = environment();
+        env.containers = Some(Arc::new(FileNames));
+        let prepare = |mode, row: &BTreeMap<_, _>, changes: &BTreeMap<_, _>| {
+            plan.prepare(mode, row, changes, &env).unwrap()
+        };
+        let title = BTreeMap::from([(1, Some("One".into()))]);
+        let new = prepare(WriteMode::Create, &BTreeMap::new(), &title);
+        assert_eq!(new.changed_fields, [1]);
+
+        let second_attachment = cell_of(3, 2).unwrap();
+        let second_filename = cell_of(4, 2).unwrap();
+        let populated = BTreeMap::from([(3, Some("red.png".into()))]);
+        let refused = plan.prepare(WriteMode::Create, &BTreeMap::new(), &populated, &env);
+        assert_eq!(refused.err().and_then(|e| e.code), Some(error::UNAVAILABLE));
+        let unrelated = BTreeMap::from([(3, "red.png".into()), (4, "red.png".into())]);
+        let inserted = prepare(
+            WriteMode::Update,
+            &unrelated,
+            &BTreeMap::from([(second_attachment, Some("green.png".into()))]),
+        );
+        assert_eq!(
+            inserted.changed_fields,
+            [second_attachment, second_filename]
+        );
+        assert_eq!(
+            decoded(&inserted, second_filename).as_deref(),
+            Some("green.png")
+        );
+
+        let mut two = unrelated;
+        two.extend([
+            (second_attachment, "green.png".into()),
+            (second_filename, "green.png".into()),
+        ]);
+        let replaced = prepare(
+            WriteMode::Update,
+            &two,
+            &BTreeMap::from([(second_attachment, Some("blue.png".into()))]),
+        );
+        assert_eq!(
+            replaced.changed_fields,
+            [second_attachment, second_filename]
+        );
+        assert_eq!(
+            decoded(&replaced, second_filename).as_deref(),
+            Some("blue.png")
+        );
+        let cleared = prepare(
+            WriteMode::Update,
+            &two,
+            &BTreeMap::from([(second_attachment, None)]),
+        );
+        assert_eq!(cleared.changed_fields, [second_attachment, second_filename]);
+        assert_eq!(cleared.values.get(&second_filename), Some(&None));
+        assert_eq!(prepare(WriteMode::Update, &two, &title).changed_fields, [1]);
     }
 
     #[test]
@@ -8197,8 +8721,10 @@ mod tests {
             // A row typed after two related rows of an unsorted portal
             // (#1038).
             record_number: Some(RecordNumber::Window(3)),
+            creation_utc_clock: None,
             sequence: WriteSequence::Unmeasured,
             file_variables: None,
+            other_globals: None,
         };
         let created = write(known.clone(), WriteMode::Create).unwrap();
         assert_eq!(
@@ -9221,6 +9747,70 @@ mod tests {
     /// and on (field 3). Any padding in the definition's key buffers reads
     /// the same; other option bytes or a broken buffer keep the table
     /// read-only, and a write that fires a lookup it did not read fails.
+    #[test]
+    fn local_auto_entry_reads_a_global_from_an_unrelated_table_without_records() {
+        use crate::host::FieldDef;
+
+        let table = Table {
+            id: 0x8002,
+            name: "Requests".into(),
+            fields: vec![field(8, FieldKind::Normal, DataType::Text, 0, 0x8, 0)],
+        };
+        let mut file = CalcSchema::new("Example", Locale::en_us());
+        file.add_table(0x8003, "Settings");
+        let mut marker = FieldDef::data(1, "Marker", ValueType::Text);
+        marker.global = true;
+        file.add_field(0x8003, marker);
+        file.add_occurrence(0xd0_0002, "Requests", table.id);
+        file.add_occurrence(0xd0_0003, "Settings", 0x8003);
+
+        let formula =
+            om_formula::polish::encode(&Expr::Field(om_formula::Field::new(0xd0_0003, 1, true)));
+        let mut tree = KeyTree::default();
+        let prefix = [
+            KeySegment(&[0x80, 2]),
+            KeySegment(&[3]),
+            KeySegment(&[5]),
+            KeySegment(&[8]),
+            KeySegment(&[5]),
+        ];
+        for (child, bytes) in [(&[4][..], CONTEXT), (&[6][..], formula.as_slice())] {
+            let mut path = prefix.to_vec();
+            path.push(KeySegment(child));
+            tree.insert(&path, om_hbam::slot::ChunkKind::Leaf, Some(bytes))
+                .unwrap();
+        }
+        let plan = RecordPlan::from_desktop_file_schema(&table, &tree, &file, true).unwrap();
+        let mut source = MemorySource::new();
+        let mut globals = RecordValues::default();
+        globals.set(1, 1, Value::text("alpha"));
+        source.set_globals(0x8003, globals);
+        let existing = BTreeMap::new();
+        let changes = BTreeMap::new();
+        let mut environment = environment();
+        assert_eq!(
+            plan.prepare(WriteMode::Create, &existing, &changes, &environment)
+                .err()
+                .unwrap()
+                .code,
+            Some(error::UNAVAILABLE)
+        );
+        environment.lookups = plan
+            .read_lookups(
+                WriteMode::Create,
+                &existing,
+                &changes,
+                Entry::default(),
+                &source,
+            )
+            .unwrap();
+        let created = plan
+            .prepare(WriteMode::Create, &existing, &changes, &environment)
+            .unwrap();
+        assert_eq!(decoded(&created, 8).as_deref(), Some("alpha"));
+        assert!(RecordPlan::from_desktop_file_schema(&table, &tree, &file, false).is_err());
+    }
+
     #[test]
     fn exact_lookups_copy_the_first_related_value_as_filemaker_pro_did() {
         use crate::host::{FieldDef, JoinOp, JoinPredicate, RelationshipDef};

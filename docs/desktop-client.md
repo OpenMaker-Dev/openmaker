@@ -623,6 +623,14 @@ authoring part tabs or object kind captions.
 
 - Text objects in Browse draw an edge only when its style resolves to a
   line. A width and color alone leave the edge hidden.
+- Styled layout labels keep the stored formatting of literal text around
+  a merge symbol or field. The replacement takes the styling at its
+  opening delimiter. OpenMaker also applies this rule to merge variables
+  and paragraph runs (layout-model.md 8.2).
+- Date fields, merge fields and date symbols in Browse can show the
+  fixed named month and weekday presets in month-first English (see
+  data-format.md). OpenMaker takes names from the file's locale for
+  those presets. Short System Date is still displayed as entered.
 - A text, number, date, time or timestamp value stored with character
   styles (a chunked value beside a style subtree `ff`, calc-values.md
   implementation notes) shows its text; a nested form the provider cannot

@@ -294,7 +294,8 @@ pub struct Page {
     refs: usize,
     slots: Vec<Slot>,
     /// A leaf whose bytes prove each item's key below the next one's
-    /// ([`Page::keys_ordered`]).
+    /// ([`Page::keys_ordered`]), or an index page whose bytes prove each
+    /// separator below the next one ([`Page::separators_ordered`]).
     ordered: bool,
 }
 
@@ -420,7 +421,7 @@ impl Page {
         let mut refs = 0usize;
         let mut at = BODY_AT;
         let malformed = Fault::Malformed;
-        let mut ordered = h.kind == PageKind::Leaf;
+        let mut ordered = h.kind != PageKind::Overflow;
         match h.kind {
             PageKind::Leaf => {
                 if h.level != 0 {
@@ -478,7 +479,7 @@ impl Page {
                     return Err(malformed("an index page without children"));
                 }
                 refs = h.count;
-                let mut previous: Option<(usize, usize)> = None;
+                let mut previous: Option<(usize, usize, bool)> = None;
                 for i in 0..h.count {
                     let mut entry_end = at + HASH_LEN + 8;
                     if entry_end > end {
@@ -516,16 +517,14 @@ impl Page {
                         if !ok {
                             return Err(malformed("a separator that begins no path"));
                         }
-                        if let Some((p_at, p_len)) = previous {
-                            if !in_order(
-                                &bytes[p_at..p_at + p_len],
-                                &bytes[sep_at..sep_at + part],
-                                complete,
-                            ) {
+                        if let Some((p_at, p_len, p_complete)) = previous {
+                            let (a, b) = (&bytes[p_at..p_at + p_len], sep);
+                            if !in_order(a, b, complete) {
                                 return Err(malformed("separators out of order"));
                             }
+                            ordered &= known_in_order(a, p_complete, b);
                         }
-                        previous = Some((sep_at, part));
+                        previous = Some((sep_at, part, complete));
                         refs += n;
                     }
                     slots.push(slot(at, first_ref)?);
@@ -567,7 +566,21 @@ impl Page {
     /// overflow pages to do it. A reader may take a leaf's last key as a
     /// bound for every key in it only on such a leaf.
     pub(crate) fn keys_ordered(&self) -> bool {
-        self.ordered
+        self.kind == PageKind::Leaf && self.ordered
+    }
+
+    /// Whether the page is an index page whose own bytes prove each
+    /// separator below the next one, as [`Page::keys_ordered`] says of a
+    /// leaf's keys. A search of such a page's separators answers what each
+    /// separator, compared alone, says (`tree::read`, `Cursor::reposition`).
+    pub(crate) fn separators_ordered(&self) -> bool {
+        self.kind == PageKind::Index && self.ordered
+    }
+
+    /// Whether the page is an index page whose separators are all held in
+    /// it, none spilled to overflow pages: comparing one reads nothing else.
+    pub(crate) fn separators_inline(&self) -> bool {
+        self.kind == PageKind::Index && self.refs == self.count
     }
 
     /// The page's number.
