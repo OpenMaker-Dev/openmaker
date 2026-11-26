@@ -933,7 +933,7 @@ impl OpenMakerApp {
             if app.record_modified() {
                 // The save failed: the action it held goes (closing the
                 // file stops here); a later one runs its own triggers.
-                app.closing = None;
+                app.cancel_close(deferred.as_ref().and_then(Action::close_id));
                 // Saved in some files but not all: the provider keeps it,
                 // and the window shows it frozen until it is settled (#1006).
                 if let Some((_, _, error)) = &refusal {
@@ -1457,6 +1457,7 @@ impl OpenMakerApp {
                 stages.push(TriggerEvent::ModeExit);
             }
             Action::CommitRecord
+            | Action::ContinueCloseCommit(_)
             | Action::GoToRecord(_)
             | Action::ExportRecords
             | Action::SaveRecordsAs(_)
@@ -1469,7 +1470,7 @@ impl OpenMakerApp {
             // The window closes; the file's last window closes the file
             // (its record is committed after these, with its own
             // OnRecordCommit).
-            Action::CloseWindow if self.w.session.is_some() => {
+            action if action.is_close_window() && self.w.session.is_some() => {
                 stages.push(TriggerEvent::WindowClose);
                 if !self.windows.iter().any(|d| d.file_id == self.w.file_id) {
                     stages.push(TriggerEvent::LastWindowClose);
@@ -1485,7 +1486,10 @@ impl OpenMakerApp {
     fn action_stages(&mut self, ctx: &egui::Context, action: &Action, from: usize) -> bool {
         let stages = self.stages_of(action);
         for (i, event) in stages.iter().enumerate().skip(from) {
-            let held = Some(Held::Action(action.clone(), i + 1));
+            let held = Some(Held::Action(
+                self.scoped_close_action(action.clone()),
+                i + 1,
+            ));
             if self.fire(ctx, *event, None, held, TriggerInfo::default()) {
                 return true;
             }
@@ -2051,7 +2055,8 @@ impl OpenMakerApp {
     /// meanwhile. `false` when no such trigger is running.
     pub(super) fn take_over_close(&mut self, file: Option<u64>, quit: bool) -> bool {
         let held = self.script.held.iter().find_map(|(token, (origin, held))| {
-            let closes = matches!(held, Held::Action(Action::CloseWindow, _));
+            let closes = matches!(held, Held::Action(action, _) if action.is_close_window()
+                && action.close_id().is_none_or(|id| self.close_is_current(id)));
             // The trigger's window, or the file it had if it closed.
             let origin_file = self
                 .docs()
@@ -2173,9 +2178,26 @@ impl OpenMakerApp {
                 return;
             }
         }
-        let closes = proceed && matches!(held, Held::Action(Action::CloseWindow, _));
+        let close_id = match &held {
+            Held::Action(action, _) => action.close_id(),
+            _ => None,
+        };
+        if close_id.is_some_and(|id| !self.close_is_current(id)) {
+            if let Held::Action(Action::ContinueCloseCommit(id), _) = held {
+                self.with_window(origin, |app| {
+                    if app.commit_is_for_close(id) {
+                        app.w.deferred_action = None;
+                    }
+                });
+            }
+            return;
+        }
+        let closes =
+            proceed && matches!(&held, Held::Action(action, _) if action.is_close_window());
         let resumed =
             self.with_window(origin, |app| match (held, proceed) {
+                (Held::Action(Action::ContinueCloseCommit(id), _), _)
+                    if !app.commit_is_for_close(id) => {}
                 (Held::Action(action, stage), true) => {
                     if !app.action_stages(ctx, &action, stage) {
                         app.script.bypass = true;
@@ -2188,12 +2210,13 @@ impl OpenMakerApp {
                 // save must not run it).
                 (Held::Action(..), false) => {
                     app.w.document.cancel_pending_focus();
+                    let deferred = app.w.deferred_action.take();
                     // A close a trigger's Close File or Exit Application
                     // took over is that script's now, not this action's.
                     if !app.script.taken_over {
-                        app.closing = None;
+                        app.cancel_close(close_id);
+                        app.cancel_close(deferred.as_ref().and_then(Action::close_id));
                     }
-                    app.w.deferred_action = None;
                 }
                 (Held::Exit(_, _, _, _, owner, _), _) if owner != app.key_owner() => {
                     app.w.document.cancel_pending_focus();
@@ -2229,7 +2252,7 @@ impl OpenMakerApp {
                 }
                 (Held::Key(key), proceed) => app.resume_keystroke(ctx, *key, proceed),
             });
-        if resumed.is_none() {
+        if resumed.is_none() && close_id.is_some() {
             // Its window closed meanwhile. A close of it its triggers let
             // go on (their script's Close Window closed it) goes on with
             // the file's next window; otherwise closing the file stops.
@@ -2241,7 +2264,7 @@ impl OpenMakerApp {
                 self.close_next(ctx, origin);
             } else if !self.script.taken_over {
                 // A close a trigger took over is that script's now.
-                self.closing = None;
+                self.cancel_close(close_id);
             }
         }
     }
@@ -2334,6 +2357,9 @@ impl OpenMakerApp {
             }
         }
         if mode != self.w.mode || state.layout != session.layout || state.focus.is_some() {
+            if mode != self.w.mode || state.layout != session.layout {
+                self.w.layout_workspace.clear_history();
+            }
             // A trigger that ends with the focus where the user put it
             // (the option set being entered) keeps the set's waiting
             // change; one that moved the focus or the context does not.

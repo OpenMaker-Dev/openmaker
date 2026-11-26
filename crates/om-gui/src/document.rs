@@ -214,6 +214,8 @@ pub(crate) struct DocumentState {
     /// were read again (`portals::PortalPaintRow::stale`): a click waiting
     /// for its row waits for the rows as they are now.
     painting_stale: bool,
+    /// Form canvas click left unclaimed by its interactive controls.
+    empty_field_click: Option<egui::Pos2>,
     /// The related records each portal showed, by layout, portal and
     /// parent record: in this frame and in the one before. While a
     /// portal's records are read again it shows those (#536); a portal not
@@ -3355,6 +3357,15 @@ fn show_document(
                 let area = ui.max_rect();
                 let background =
                     ui.interact(area, ui.scope_id().with("document_canvas"), Sense::click());
+                // An empty field has no editor. Check the canvas click so
+                // buttons and other existing hit targets keep their clicks.
+                state.empty_field_click = if background.clicked_by(egui::PointerButton::Primary)
+                    && session.empty_field_alert().is_some()
+                {
+                    background.interact_pointer_pos()
+                } else {
+                    None
+                };
                 let origin = area.min;
                 let growth = vec2(
                     (area.width() - width).max(0.0),
@@ -3439,6 +3450,7 @@ fn show_document(
                         &mut visited,
                     );
                 }
+                state.empty_field_click = None;
                 if background.clicked() {
                     state.selected_row = None;
                 }
@@ -5345,6 +5357,23 @@ fn paint_object_repetition(
         }
         ObjectKind::Field if finding => find_field(ui, state, (layout, object, rect)),
         ObjectKind::Field => {
+            if state
+                .empty_field_click
+                .is_some_and(|pos| rect.intersect(ui.clip_rect()).contains(pos))
+                && !state.pending
+                && !state.clicks_held
+                && !state.painting_stale
+                && !masked
+                && portal.is_none()
+                && document.field_bindings.contains_key(&object.id)
+                && object.field_obj.as_ref().is_some_and(|field| {
+                    field.display_type == 0
+                        && field.field_entry(false) == om_layout::FieldEntry::Edit
+                })
+            {
+                state.empty_field_click = None;
+                actions.push(Action::ClickEmptyField(layout.id));
+            }
             let (mut value, mut rich_value, data) =
                 field_content(session, document, calc, object, record_index, portal);
             // The value the editor begins from: a Refresh Object's, or a
