@@ -29,11 +29,22 @@ pub(crate) struct NativeBrowser {
     /// Where the additional certificate authority is trusted
     /// ([`crate::NativeProvider::with_ca_scope`]).
     ca_scope: Option<(String, u16)>,
+    /// Certificates the user permitted
+    /// ([`crate::NativeProvider::with_permitted_certificate`]).
+    permits: Vec<crate::Permit>,
 }
 
 impl NativeBrowser {
-    pub(crate) fn new(config: NativeConfig, ca_scope: Option<(String, u16)>) -> Self {
-        Self { config, ca_scope }
+    pub(crate) fn new(
+        config: NativeConfig,
+        ca_scope: Option<(String, u16)>,
+        permits: Vec<crate::Permit>,
+    ) -> Self {
+        Self {
+            config,
+            ca_scope,
+            permits,
+        }
     }
 }
 
@@ -56,7 +67,7 @@ impl HostBrowser for NativeBrowser {
             install_code: String::new(),
             ..self.config.machine.clone()
         };
-        let result = match Session::connect_verified(
+        let result = match Session::connect_trusting(
             host,
             port,
             &self.config.client_cert_pem,
@@ -65,6 +76,7 @@ impl HostBrowser for NativeBrowser {
             &machine,
             &crate::scoped_config(&self.config, self.ca_scope.as_ref(), host, port)
                 .additional_ca_pem,
+            &crate::permitted_for(&self.permits, host, port),
         ) {
             Ok(mut session) => {
                 let listed = list(&mut session, host, port, canceled);
@@ -271,6 +283,9 @@ fn unsupported(host: &str, port: u16, version: &str, detail: &str) -> ListingErr
 /// or what answered is not a FileMaker-protocol host.
 fn connect_failure(host: &str, port: u16, error: &SessionError) -> ListingError {
     match error {
+        SessionError::Transport(TransportError::Unverified(refused)) => {
+            ListingError::untrusted(crate::untrusted_host(host, port, refused))
+        }
         SessionError::Transport(TransportError::Tls(e)) => ListingError::new(
             ListingFailure::Unreachable,
             format!("Could not make a trusted connection to {host}:{port} ({e})."),

@@ -11,7 +11,9 @@ import dev.openmaker.go.engine.Document
 import dev.openmaker.go.engine.GoException
 import dev.openmaker.go.engine.Host
 import dev.openmaker.go.engine.HostChange
+import dev.openmaker.go.engine.hostKey
 import dev.openmaker.go.engine.Input
+import dev.openmaker.go.engine.Permit
 import dev.openmaker.go.engine.SignIn
 import dev.openmaker.go.engine.Source
 import dev.openmaker.go.engine.Viewport
@@ -43,8 +45,17 @@ data class HostEditor(
     val certificate: String = "",
     /** The certificate authorities Edit Host showed when it opened. */
     val loaded: String = "",
+    /** The fingerprint of the certificate permitted for the host edited; empty for none. */
+    val permitted: String = "",
     val error: String? = null,
 )
+
+/**
+ * A host whose certificate could not be verified, as FileMaker Go asks
+ * about one: Always Permit, Connect (this time) or Don't Connect. [retry]
+ * does again what met it once the user permits the certificate.
+ */
+class TrustPrompt(val untrusted: GoException.Untrusted, val retry: () -> Unit)
 
 /** A host's file list, as its page shows it. */
 sealed interface Listing {
@@ -80,6 +91,10 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
     var listings by mutableStateOf(mapOf<Pair<String, Int>, Listing>())
         private set
     var hostEditor by mutableStateOf<HostEditor?>(null)
+    var trustPrompt by mutableStateOf<TrustPrompt?>(null)
+        private set
+    /** Certificates permitted with Connect, for as long as the app runs, by host ([hostKey]). */
+    private val connectedOnce = mutableMapOf<String, Permit>()
     var working by mutableStateOf(false)
         private set
     var message by mutableStateOf<String?>(null)
@@ -128,9 +143,70 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
 
     fun removeLicense() = background({ vault.remove() }) { licenseSaved = vault.saved }
 
-    /** A hosted entry's host, with the certificate authorities it trusts, or a [GoException]. */
-    private fun host(entry: Entry) =
-        Host(entry.host, entry.port.toUShort(), library.connectCertificate(entry.host, entry.port))
+    /**
+     * A hosted entry's host, with the certificate authorities it trusts and
+     * the certificate permitted for it, or a [GoException] when its
+     * certificate authorities cannot all be used.
+     */
+    private fun host(entry: Entry) = endpoint(entry.host, entry.port)
+
+    /**
+     * A host as the engine connects to it: with the certificate authorities
+     * trusted for it, and the certificate permitted for it, the one
+     * permitted with Connect in this run first (a newer certificate than
+     * one saved with Always Permit); and those permitted for other hosts,
+     * for a file a script opens there.
+     */
+    private fun endpoint(address: String, port: Int): Host {
+        val key = hostKey(address, port.toUShort())
+        val elsewhere = (library.permits() + connectedOnce.values).filter { hostKey(it.address, it.port) != key }
+        return Host(
+            address,
+            port.toUShort(),
+            library.connectCertificate(address, port),
+            connectedOnce[key]?.fingerprint ?: library.permitted(address, port),
+            elsewhere,
+        )
+    }
+
+    /** Ask about a host whose certificate could not be verified, and do [retry] again if it is permitted. */
+    private fun askTrust(untrusted: GoException.Untrusted, retry: () -> Unit) {
+        trustPrompt = TrustPrompt(untrusted, retry)
+    }
+
+    /**
+     * Connect (this time), or with [always] Always Permit: the certificate
+     * [prompt] asked about is accepted for its host. Only the prompt shown
+     * now is answered.
+     */
+    fun permit(prompt: TrustPrompt, always: Boolean) {
+        if (trustPrompt !== prompt) return
+        trustPrompt = null
+        val untrusted = prompt.untrusted
+        val key = hostKey(untrusted.host, untrusted.port)
+        if (always) {
+            library.permit(untrusted.host, untrusted.port.toInt(), untrusted.fingerprint)
+            connectedOnce.remove(key)
+        } else {
+            connectedOnce[key] = Permit(untrusted.host, untrusted.port, untrusted.fingerprint)
+        }
+        prompt.retry()
+    }
+
+    /** Don't Connect. */
+    fun dontConnect(prompt: TrustPrompt) {
+        if (trustPrompt === prompt) trustPrompt = null
+    }
+
+    /** Forget the certificate permitted for the host Edit Host edits. */
+    fun forgetPermitted() {
+        val editor = hostEditor ?: return
+        val host = editor.replaces ?: return
+        library.forgetPermitted(host.address, host.port)
+        connectedOnce.remove(host.key)
+        forgetListing(host)
+        hostEditor = editor.copy(permitted = "")
+    }
 
     /** Add Host. */
     fun addHost() {
@@ -140,7 +216,16 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
     /** Edit Host, with the certificate authority trusted for it. */
     fun editHost(host: SavedHost) {
         val certificate = library.certificate(host.address, host.port)
-        hostEditor = HostEditor(host, host.address, host.port.toString(), host.name, certificate, loaded = certificate)
+        hostEditor =
+            HostEditor(
+                host,
+                host.address,
+                host.port.toString(),
+                host.name,
+                certificate,
+                loaded = certificate,
+                permitted = library.permitted(host.address, host.port),
+            )
     }
 
     /**
@@ -167,6 +252,8 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
                 hostEditor = editor.copy(error = error.goMessage())
                 return
             }
+        // Nor does a certificate permitted with Connect stay with an address or port the host left.
+        editor.replaces?.takeUnless { it.isHost(host) }?.let { connectedOnce.remove(it.key) }
         hosts = library.hosts
         hostEditor = null
         // Its files are listed again: the address, port or certificate
@@ -180,6 +267,7 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
 
     fun removeHost(host: SavedHost) {
         library.removeHost(host)
+        connectedOnce.remove(host.key)
         hosts = library.hosts
         forgetListing(host)
         if (hostPage?.isHost(host) == true) hostPage = null
@@ -203,17 +291,16 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun listHost(host: SavedHost) {
         val key = key(host)
+        // Read here, as the permits are kept on this thread; a host whose
+        // certificate authorities cannot all be used fails as a listing.
+        val endpoint = runCatching { endpoint(host.address, host.port) }
         val asked = Listing.Pending()
         listings = listings + (key to asked)
         viewModelScope.launch {
             val result =
-                withContext(Dispatchers.IO) {
-                    runCatching {
-                        val certificate = library.connectCertificate(host.address, host.port)
-                        dev.openmaker.go.engine.hostedFiles(Host(host.address, host.port.toUShort(), certificate))
-                    }
-                }
+                withContext(Dispatchers.IO) { endpoint.mapCatching { dev.openmaker.go.engine.hostedFiles(it) } }
             if (listings[key] !== asked) return@launch
+            (result.exceptionOrNull() as? GoException.Untrusted)?.let { askTrust(it) { listHost(host) } }
             listings =
                 listings +
                     (key to
@@ -263,6 +350,11 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
         }
         opening = viewModelScope.launch {
             val signal = FrameSignal()
+            // Read here, as the permits are kept on this thread; a host whose
+            // certificate authorities cannot all be used fails as an open.
+            val source = runCatching {
+                if (entry.local) Source.Local(library.path(entry)) else Source.Hosted(host(entry), entry.name)
+            }
             // An open can't be interrupted, and its document belongs to this
             // coroutine until the session takes it: if the view model is
             // cleared first (the activity went), even as the open's result
@@ -271,12 +363,7 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val result =
                     withContext(Dispatchers.IO + NonCancellable) {
-                        runCatching {
-                            // A host whose certificate authorities cannot all
-                            // be used fails here, shown as other failures.
-                            val source =
-                                if (entry.local) Source.Local(library.path(entry))
-                                else Source.Hosted(host(entry), entry.name)
+                        source.mapCatching { source ->
                             // A hosted sign-in with no license typed sends
                             // the one saved in Settings.
                             val key = license.trim().ifEmpty { if (entry.local) "" else vault.load() }
@@ -306,6 +393,11 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
                             // or whose own account is refused, asks for one.
                             is GoException.Credentials -> signIn = SignInRequest(entry, error.reason.takeIf { prompted })
                             is GoException.SignInRequired -> signIn = SignInRequest(entry, error.reason.takeIf { prompted })
+                            // Asked about, and opened again with the same sign-in if permitted.
+                            is GoException.Untrusted -> {
+                                signIn = SignInRequest(entry, error.reason.takeIf { prompted })
+                                askTrust(error) { open(entry, account, password, license, viewport, prompted) }
+                            }
                             else -> {
                                 signIn = null
                                 message = error.goMessage()
@@ -362,5 +454,6 @@ fun Throwable.goMessage(): String =
         is GoException.Credentials -> reason
         is GoException.SignInRequired -> reason
         is GoException.Failed -> reason
+        is GoException.Untrusted -> reason
         else -> localizedMessage ?: "The operation failed."
     }
