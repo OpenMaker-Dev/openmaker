@@ -234,8 +234,9 @@ impl LayoutSetup {
                             ui.add_enabled(false, egui::Button::new("Reset Quick Find"))
                                 .on_disabled_hover_text(NOT_YET);
                         });
-                        // The nib's places, in `general::OPTIONS`' order.
-                        // The field-alert label wraps at this dialog width.
+                        // In `general::OPTIONS` order. The positions and
+                        // sizes around the wrapping field-alert row are
+                        // estimates based on the older General tab.
                         let rows = [
                             (149.0, 18.0),
                             (173.0, 18.0),
