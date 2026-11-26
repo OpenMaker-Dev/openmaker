@@ -4107,7 +4107,11 @@ Steps
   A paused script goes on in the window the user left in
   front. `Get ( WindowName )`, the window selectors the session answers
   and `WindowNames` answer for each window (front to back). Window > New
-  Window runs the step; the Window menu lists the windows. A window's own
+  Window runs the step; the Window menu lists the windows, and its Show
+  Window every open file's, a hidden one in parentheses: choosing one
+  brings it to the front, shown if it was hidden, and the scripts'
+  windows then have it shown too (client-ui.md; the list and parentheses
+  are inferred). A window's own
   close box closes it as the user's action (2026-10-30): OnWindowClose
   (and OnLastWindowClose for the file's last window, which closes the
   file), then its record's commit with OnRecordCommit; the window stays

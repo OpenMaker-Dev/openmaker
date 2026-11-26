@@ -3394,7 +3394,8 @@ impl DataProvider for NativeProvider {
             // Planned over the owner's routed plan (#187), as its write is,
             // opening nothing; deferred while a file its rules read waits
             // (`routed_edits`, #1160).
-            let (editable, typed) = match self.routed_edits(route, &file)? {
+            let mut refused = BTreeMap::new();
+            let editable = match self.routed_edits(route, &file)? {
                 related_owner::RoutedEdits::ReadOnly => {
                     return Ok(om_data::RecordCapabilities {
                         editable_fields: Some(BTreeSet::new()),
@@ -3402,37 +3403,53 @@ impl DataProvider for NativeProvider {
                     });
                 }
                 // Only the fields Browse writes through the owner
-                // (`routed_browse_field`): a repeating field the owner's
-                // plan offers is not. Its typed globals are the owner's
-                // session values (`set_typed_globals`).
+                // (`routed_layout_field`), and its typed globals, the
+                // owner's session values (`set_typed_globals`). One the
+                // owner's account may only view is entered and refused, as
+                // on a layout of this file's table.
                 related_owner::RoutedEdits::Offered {
                     fields,
                     globals,
+                    view_only,
                     table,
-                } => (
-                    Some(
-                        fields
-                            .into_iter()
-                            .filter(|name| {
-                                table.fields.iter().any(|field| {
-                                    field.name == *name && Self::routed_browse_field(field)
-                                })
+                } => {
+                    let (shown, offered): (BTreeSet<String>, BTreeSet<String>) = fields
+                        .into_iter()
+                        .filter(|name| {
+                            table.fields.iter().any(|field| {
+                                field.name == *name && Self::routed_layout_field(&table, field)
                             })
-                            .chain(globals.iter().cloned())
-                            .collect(),
-                    ),
-                    globals,
-                ),
-                related_owner::RoutedEdits::Refused => (None, BTreeSet::new()),
+                        })
+                        .chain(globals)
+                        .partition(|name| view_only.contains(name));
+                    refused = shown
+                        .into_iter()
+                        .map(|name| (name, om_data::EditRefusal::ViewOnlyField))
+                        .collect();
+                    Some(offered)
+                }
+                related_owner::RoutedEdits::Refused => None,
             };
-            // A typed global's later repetitions are entered as cells of the
-            // record's own related draft (#185), as on a layout of this
-            // file's table: by the layout's occurrence and field id.
-            let repetitions: BTreeSet<u64> = file
+            // A name two of its fields share, as a malformed file can have
+            // it, names neither for certain: neither is offered.
+            let fields: Vec<_> = file
                 .table(table.id)
                 .into_iter()
                 .flat_map(|t| t.fields.values())
-                .filter(|f| typed.contains(&f.name))
+                .collect();
+            let unique = |name: &String| fields.iter().filter(|f| f.name == *name).count() == 1;
+            let editable =
+                editable.map(|names| names.into_iter().filter(|name| unique(name)).collect());
+            // Later repetitions are entered as cells of the record's own
+            // related draft (#185), as on a layout of this file's table: by
+            // the layout's occurrence and field id.
+            let repetitions: BTreeSet<u64> = fields
+                .iter()
+                .filter(|f| {
+                    editable
+                        .as_ref()
+                        .is_some_and(|e: &BTreeSet<String>| e.contains(&f.name))
+                })
                 .map(|f| f.id)
                 .collect();
             let mut related = BTreeMap::new();
@@ -3451,7 +3468,7 @@ impl DataProvider for NativeProvider {
                 // Related records of a layout of another file's table
                 // are not edited in Browse yet.
                 related,
-                refused: BTreeMap::new(),
+                refused,
                 globals: file
                     .table(table.id)
                     .into_iter()
@@ -4151,6 +4168,19 @@ impl DataProvider for NativeProvider {
             // the transaction, and nothing stored until it commits or
             // reverts (#892, #1006).
             if self.in_transaction() {
+                // The user's typing into a later repetition of the record is
+                // the user's own edit, which a script's transaction does not
+                // take on such a layout (#411): refused, its draft kept, as
+                // the user's other saves there are (`with_existing_record_owner`).
+                if self.transaction_kind() == Some(transaction::TransactionKind::Script) {
+                    let schema = self.calc_schema_cached()?;
+                    let def = schema.table(table);
+                    if write.typed.iter().any(|cell| {
+                        *cell & 0xff >= 2 && def.is_some_and(|t| !t.fields.contains_key(cell))
+                    }) {
+                        return Err(Self::unsupported_peer_transaction());
+                    }
+                }
                 // A record the session's new record is not on the host: the
                 // window saw no version of it to check its save against.
                 if let Some(id) = write.record.and_then(|id| u64::try_from(id).ok()) {
