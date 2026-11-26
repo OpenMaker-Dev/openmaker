@@ -2982,22 +2982,49 @@ fn local_new_record_keeps_utc_clock_samples_through_commit() {
         .write_record(&ScriptWrite {
             prepared: Some(preview.id),
             cells: [(NAME, Some("Unrelated edit".into()))].into(),
-            ..request
+            ..request.clone()
         })
         .unwrap();
+
+    let fields = provider.records(request.layout, 0, 0).unwrap().fields;
+    let tracked = [(CUSTOM, "ViaFunction"), (DIRECT, "Direct")]
+        .map(|(id, name)| (id, fields.iter().position(|f| f.name == name).unwrap()));
+    provider.begin_record_commit().unwrap();
+    let held = provider.write_record(&request).unwrap();
+    let held_samples = tracked.map(|(id, index)| {
+        let value = held.values[index].clone().unwrap();
+        assert!(value.parse::<i64>().is_ok());
+        (id, value)
+    });
+    for name in ["First edit", "Second edit"] {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let edited = provider
+            .write_record(&ScriptWrite {
+                record: Some(held.id),
+                cells: [(NAME, Some(name.into()))].into(),
+                ..request.clone()
+            })
+            .unwrap();
+        for ((_, index), (_, value)) in tracked.iter().zip(&held_samples) {
+            assert_eq!(edited.values[*index].as_deref(), Some(value.as_str()));
+        }
+    }
+    provider.commit_record_session(false).unwrap();
     provider.close();
 
     let file = om_hbam::HbamFile::open(&path).unwrap();
     let records = file.records(TABLE).unwrap();
-    let stored = records
-        .iter()
-        .find(|record| record.id == row.id as u64)
-        .unwrap();
-    for (field, value) in observed {
-        assert_eq!(
-            stored.text(field).transpose().unwrap().as_deref(),
-            Some(value.as_str())
-        );
+    for (record, samples) in [(row, observed.as_slice()), (held, held_samples.as_slice())] {
+        let stored = records
+            .iter()
+            .find(|stored| stored.id == record.id as u64)
+            .unwrap();
+        for (field, value) in samples {
+            assert_eq!(
+                stored.text(*field).transpose().unwrap().as_deref(),
+                Some(value.as_str())
+            );
+        }
     }
 }
 
