@@ -182,7 +182,7 @@ pub fn compile_address(
         decimal_comma: schema.locale.decimal_separator == ',',
         ..om_formula::Context::new(schema.names())
     };
-    let compiled = om_formula::compile(text, &ctx).map_err(|error| {
+    let mut compiled = om_formula::compile(text, &ctx).map_err(|error| {
         let code = i32::from(error.code.number());
         Refusal::Invalid(format!(
             "The web address is not a calculation FileMaker accepts: {} (error {code}).",
@@ -191,9 +191,20 @@ pub fn compile_address(
                 .unwrap_or("there is an error in this calculation")
         ))
     })?;
+    // A viewer's address has no context of its own, so each field is
+    // stored qualified, as Pro stored W1's `Contacts::Website`: the text
+    // then names the field the calculation reads.
+    for token in &mut compiled.tokens {
+        if let om_formula::Token::Field(field) = token {
+            field.flags |= om_formula::Field::TABLE_PRESENT;
+        }
+    }
+    let expr = om_formula::compile_tokens(&compiled.tokens, &ctx).map_err(|_| {
+        Refusal::Invalid("The web address does not compile with its fields qualified.".into())
+    })?;
     Ok((
         om_formula::formatted::encode(&compiled.tokens),
-        om_formula::polish::encode(&compiled.expr),
+        om_formula::polish::encode(&expr),
     ))
 }
 
@@ -229,7 +240,61 @@ fn address(viewer: &WebViewerPlacement) -> Result<om_formula::Expr, Refusal> {
             "text and the calculation evaluated are not the same calculation".into(),
         ));
     }
+    // The address has no context of its own (`01 00`): a field written
+    // without its occurrence would show a name that could stand for
+    // another occurrence's field, so each one must be qualified.
+    if expr
+        .field_references()
+        .iter()
+        .any(|field| field.flags & om_formula::Field::TABLE_PRESENT == 0)
+    {
+        return Err(invalid(
+            "names a field without its table occurrence; each field must be written \
+             Occurrence::Field"
+                .into(),
+        ));
+    }
+    if calls_functions_of_the_file(&expr) {
+        return Err(Refusal::Unsupported(
+            "The web address calls a custom or plug-in function; this version places addresses \
+             that use the file's fields and FileMaker's own functions only."
+                .into(),
+        ));
+    }
     Ok(expr)
+}
+
+/// Whether `expr` calls a custom function or a plug-in function, which
+/// the address's text cannot be checked against without the file's names.
+fn calls_functions_of_the_file(expr: &om_formula::Expr) -> bool {
+    use om_formula::Expr;
+    match expr {
+        Expr::CustomCall { .. } | Expr::PluginCall { .. } => true,
+        Expr::List(items) | Expr::Call { args: items, .. } | Expr::Evaluate { args: items, .. } => {
+            items.iter().any(calls_functions_of_the_file)
+        }
+        Expr::Case(pairs) => pairs
+            .iter()
+            .any(|(a, b)| calls_functions_of_the_file(a) || calls_functions_of_the_file(b)),
+        Expr::Choose { test, results } => {
+            calls_functions_of_the_file(test) || results.iter().any(calls_functions_of_the_file)
+        }
+        Expr::Let { bindings, body } => {
+            bindings.iter().any(calls_functions_of_the_file) || calls_functions_of_the_file(body)
+        }
+        Expr::While {
+            initial,
+            condition,
+            logic,
+            result,
+        } => initial
+            .iter()
+            .chain(logic)
+            .chain([&**condition, &**result])
+            .any(calls_functions_of_the_file),
+        Expr::GetField { arg, .. } => calls_functions_of_the_file(arg),
+        _ => false,
+    }
 }
 
 /// The fields `expr` reads, as the field reference index keys them: each

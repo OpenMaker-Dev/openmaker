@@ -612,9 +612,12 @@ with a custom web address (operation 28, planned with
   The host checks that each field the address reads is a field of one of
   the file's tables, and that the address's text compiles again to the
   calculation it stores (so the text Web Viewer Setup shows and what
-  Browse evaluates cannot differ). It compiles that text without the
-  file's names, so an address calling a custom or plug-in function is
-  refused.
+  Browse evaluates cannot differ). The address has no context of its own
+  (`01 00`, as Pro stores it), so each field is stored with its occurrence
+  (`Occurrence::Field`, as Pro stored W1's): `place_web_viewer` qualifies
+  the fields it compiles, and the host refuses a field stored without its
+  occurrence. An address calling a custom or plug-in function is refused,
+  as the host cannot check it against the file's names.
 - **Frame and retries.** Its frame follows `place_field`'s rules. A
   request repeated after a lost answer finds the same viewer on top and
   reports `already_applied`. Any other request at an old revision is a

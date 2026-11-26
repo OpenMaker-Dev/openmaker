@@ -2776,6 +2776,24 @@ mod tests {
             Err(Refusal::Invalid(_))
         ));
 
+        // A field without its occurrence is refused: with no context of
+        // its own, the address's text would not say which field it reads.
+        let bare = om_formula::Field {
+            flags: 0,
+            occurrence: om_formula::Key(vec![3, 0xd0, 0, 2]),
+            field: om_formula::Key(vec![1, 7]),
+            repetition: 1,
+        };
+        let unqualified = WebViewerPlacement {
+            formatted: om_formula::formatted::encode(&[om_formula::Token::Field(bare.clone())]),
+            polish: om_formula::polish::encode(&om_formula::Expr::Field(bare)),
+            ..viewer.clone()
+        };
+        assert!(matches!(
+            plan_web_viewer(&before, &unqualified),
+            Err(Refusal::Invalid(_))
+        ));
+
         let unmeasured = WebViewerPlacement {
             flags: 0x800c,
             ..viewer
