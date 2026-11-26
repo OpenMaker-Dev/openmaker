@@ -503,6 +503,77 @@ fn only_a_commit_whose_upload_a_failed_save_took_is_refused_without_it() {
     client.disconnect().unwrap();
 }
 
+/// A lost upload stays lost for its transaction until that transaction
+/// stores the record, gives up, or deletes it: uploading the record again
+/// forgets nothing, since that upload can be lost too, to another
+/// transaction's failed save (#1113 of github.com/OpenMaker-Dev/openmaker).
+#[test]
+fn a_lost_upload_stays_lost_until_its_transaction_stores_the_record() {
+    let file = TempFile::new("save-op70-lost-twice", &[], true);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "op70-lost-twice");
+    let table = uint_segment(TABLE);
+    let changed = || {
+        OwnedNode::list(
+            serial::encode(1),
+            vec![OwnedNode::leaf(uint_segment(NAME), Vec::new())],
+        )
+    };
+    let upload = |client: &mut om_session::Session, name: &str| {
+        let record = OwnedNode::list(
+            serial::encode(1),
+            vec![
+                OwnedNode::leaf(uint_segment(NAME), om_scsu::encode_scsu(name)),
+                OwnedNode::leaf(vec![0xfc], vec![0x01, 0x01]),
+            ],
+        );
+        client.upload_records(&table, vec![record]).unwrap();
+    };
+    let fails = |client: &mut om_session::Session, txn: u32| {
+        let blocked = BlockedSaves::new(&file);
+        let error = client
+            .commit_records(&table, vec![changed()], txn)
+            .unwrap_err();
+        assert!(error.to_string().contains("SystemException"), "{error}");
+        drop(blocked);
+    };
+
+    // A's commit loses its upload; record 1 is uploaded again; B's commit
+    // loses that one. A's commit sent again with nothing uploaded: refused.
+    upload(&mut client, "First");
+    fails(&mut client, 0x61);
+    upload(&mut client, "Second");
+    fails(&mut client, 0x62);
+    let error = client
+        .commit_records(&table, vec![changed()], 0x61)
+        .expect_err("refused: A's upload was never stored");
+    assert!(error.to_string().contains("SystemException"), "{error}");
+    assert_eq!(on_disk(&file, 1, NAME).as_deref(), Some("Write tests"));
+
+    // A uploads again and commits: stored, and A's mark goes, so a later
+    // bare commit of A is done, as on main. B's lost upload is not the one
+    // A stored, so B's commit sent again is still refused, until B gives
+    // its transaction up.
+    upload(&mut client, "Third");
+    client
+        .commit_records(&table, vec![changed()], 0x61)
+        .unwrap();
+    assert_eq!(on_disk(&file, 1, NAME).as_deref(), Some("Third"));
+    client
+        .commit_records(&table, vec![changed()], 0x61)
+        .expect("done: A's upload was stored");
+    let error = client
+        .commit_records(&table, vec![changed()], 0x62)
+        .expect_err("refused: B's upload was never stored");
+    assert!(error.to_string().contains("SystemException"), "{error}");
+    client.kill_all_locks(0x62).unwrap();
+    client
+        .commit_records(&table, vec![changed()], 0x62)
+        .unwrap();
+    assert_eq!(on_disk(&file, 1, NAME).as_deref(), Some("Third"));
+    client.disconnect().unwrap();
+}
+
 /// A commit naming a new record with nothing uploaded for it is refused
 /// whole: done would say a record was made that nothing made, and a
 /// staged edit in the same commit would be stored without it (#839 of
