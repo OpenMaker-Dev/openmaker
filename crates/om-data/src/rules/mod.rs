@@ -1869,12 +1869,21 @@ pub fn user_editable(field: &om_hbam::Field) -> bool {
         && !options.auto_entry_editing_prohibited()
 }
 
+fn supports_creation_time_text(locale: &Locale) -> bool {
+    locale.twelve_hour
+        && !locale.pad_hour
+        && !locale.am_pm_before
+        && locale.time_separator == ':'
+        && locale.am == " AM"
+        && locale.pm == " PM"
+}
+
 impl RecordPlan {
     /// The rules of `table` from its definitions in `tree` alone (no other
     /// tables, occurrences or custom functions).
     #[cfg(test)]
     pub fn from_schema(table: &Table, tree: &KeyTree<'_>) -> Result<Self, DataError> {
-        Self::plan(table, tree, None, false, false)
+        Self::plan(table, tree, None, false, false, None)
     }
 
     /// The rules of `table` from its current definitions in `tree`, within
@@ -1885,19 +1894,23 @@ impl RecordPlan {
         tree: &KeyTree<'_>,
         file: &CalcSchema,
     ) -> Result<Self, DataError> {
-        Self::plan(table, tree, Some(file), false, false)
+        Self::plan(table, tree, Some(file), false, false, None)
     }
 
     /// The desktop's provider handles the session-global side of New
     /// Record explicitly; the other planner callers only write rows.
-    /// `local` permits a stored Number to use the local creation position.
+    /// `local` permits a stored Number to use the local creation position
+    /// and a Text creation-time field to use the measured desktop clock format.
     pub fn from_desktop_file_schema(
         table: &Table,
         tree: &KeyTree<'_>,
         file: &CalcSchema,
         local: bool,
     ) -> Result<Self, DataError> {
-        Self::plan(table, tree, Some(file), true, local)
+        static SYSTEM: std::sync::LazyLock<Option<Locale>> =
+            std::sync::LazyLock::new(crate::new_file::configured_system_locale);
+        let system = if local { SYSTEM.as_ref() } else { None };
+        Self::plan(table, tree, Some(file), true, local, system)
     }
 
     fn plan(
@@ -1906,6 +1919,7 @@ impl RecordPlan {
         file: Option<&CalcSchema>,
         global_defaults: bool,
         local: bool,
+        system: Option<&Locale>,
     ) -> Result<Self, DataError> {
         let mut schema = file
             .cloned()
@@ -2176,9 +2190,20 @@ impl RecordPlan {
                     _ => DataType::Text,
                 };
                 if field.data_type != expected {
-                    return Err(error(
-                        "auto-entry variable storage conversion is unsupported.",
-                    ));
+                    // Both time formats matched in the local native check.
+                    // The provider gives the formula the file's clock text.
+                    let text_creation_time = local
+                        && !schema.locale_unreadable
+                        && variable == EntryVariable::CreationTime
+                        && field.data_type == DataType::Text
+                        && options.max_repetitions == 1
+                        && supports_creation_time_text(&schema.locale)
+                        && system.is_some_and(supports_creation_time_text);
+                    if !text_creation_time {
+                        return Err(error(
+                            "auto-entry variable storage conversion is unsupported.",
+                        ));
+                    }
                 }
             }
             if (options.options & AUTO_ENTRY_MODES).count_ones() > 1
@@ -7080,6 +7105,53 @@ mod tests {
         assert_eq!(prepared.changed_fields, vec![1, 2, 8, 9, 10, 11, 12, 13]);
     }
 
+    #[test]
+    fn creation_time_in_text_keeps_the_local_twelve_hour_clock() {
+        let table = Table {
+            id: 0x8002,
+            name: "Example".into(),
+            fields: vec![
+                field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(2, FieldKind::Normal, DataType::Text, 1, 1, 0),
+            ],
+        };
+        let tree = KeyTree::default();
+        let system = Locale::en_us();
+        let mut file = CalcSchema::new("Example", system.clone());
+        let plan = RecordPlan::plan(&table, &tree, Some(&file), true, true, Some(&system)).unwrap();
+        let mut clock = environment();
+        clock.time = "1:26:37 AM".into();
+        let created = plan
+            .prepare(
+                WriteMode::Create,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &clock,
+            )
+            .unwrap();
+        let created_text = decoded(&created, 2).unwrap();
+        assert_eq!(created_text, "1:26:37 AM");
+
+        clock.time = "1:26:43 AM".into();
+        let updated = plan
+            .prepare(
+                WriteMode::Update,
+                &BTreeMap::from([(2, created_text)]),
+                &BTreeMap::from([(1, Some("Changed".into()))]),
+                &clock,
+            )
+            .unwrap();
+        assert_eq!(updated.changed_fields, [1]);
+
+        assert!(RecordPlan::from_file_schema(&table, &tree, &file).is_err());
+        assert!(RecordPlan::from_desktop_file_schema(&table, &tree, &file, false).is_err());
+        let german = Locale::de_de();
+        assert!(RecordPlan::plan(&table, &tree, Some(&file), true, true, Some(&german)).is_err());
+        assert!(RecordPlan::plan(&table, &tree, Some(&file), true, true, None).is_err());
+        file.locale.twelve_hour = false;
+        assert!(RecordPlan::plan(&table, &tree, Some(&file), true, true, Some(&system)).is_err());
+    }
+
     /// A record the window holds unsaved (#1063): its values are known only
     /// where its commit stores what its rules give now, not with a UUID or
     /// clock its commit draws again, nor ever with a `Random` draw.
@@ -7793,7 +7865,7 @@ mod tests {
             tree.insert(&segments, om_hbam::slot::ChunkKind::Leaf, Some(value))
                 .unwrap();
         }
-        RecordPlan::plan(table, &tree, None, false, local)
+        RecordPlan::plan(table, &tree, None, false, local, None)
     }
 
     #[test]
