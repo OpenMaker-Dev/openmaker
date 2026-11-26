@@ -590,7 +590,12 @@ impl<'a> WorkerHost<'a> {
     /// The window's layout as rendered (triggers, field objects).
     fn render(&mut self, id: u32) -> Option<Arc<om_data::RenderLayout>> {
         if !self.s.file.rendered.contains_key(&id) {
-            let render = self.p().render_layout(id).ok().flatten().map(Arc::new);
+            let render = self
+                .p()
+                .render_script_layout(id)
+                .ok()
+                .flatten()
+                .map(Arc::new);
             self.s.file.rendered.insert(id, render);
         }
         // Rendering can bind a pending related table. Adopt that schema
@@ -2073,16 +2078,15 @@ impl<'a> WorkerHost<'a> {
             // provider's found set as it is now, not the window's last
             // read of it. A sorted found set's is unmeasured: the copy has
             // none, and such a calculation refuses the save (3).
-            let layout = window.state.layout.unwrap_or_default();
-            let record_number = match provider.records_with_summary(layout, 0, 0, &[]) {
-                Ok((_, Some(found))) if !found.sorted => Some(found.found + 1),
-                _ => None,
-            };
+            let record_number = window
+                .next_unsorted_record_number(provider)
+                .map(om_data::rules::RecordNumber::Window);
             window.make_new_record(
                 provider,
                 session,
                 (values, cells),
                 (privilege_set, record_number),
+                om_data::RecordCreation::Other,
             )
         };
         let made = match made {
@@ -2497,6 +2501,7 @@ impl<'a> WorkerHost<'a> {
             privilege_set: self.privilege_set_name(),
             record_number: None,
             prepared: None,
+            single_field_step: false,
         };
         let others: Vec<om_data::PendingRecord> = open
             .related
@@ -2828,6 +2833,7 @@ impl<'a> WorkerHost<'a> {
             },
             window: state.placement.as_ref().map(|p| {
                 let mut info = p.window_info(state.toolbar, state.menubar, state.zoom, &state.uuid);
+                info.toolbar_locked = state.toolbar_locked;
                 info.style = state.style.number();
                 info
             }),
@@ -3786,6 +3792,13 @@ impl CalcHost for WorkerHost<'_> {
     }
 
     fn get(&mut self, selector: u8, context: &Context) -> Result<Value, CalcError> {
+        if selector == om_data::host::session::selector::STATUS_AREA_STATE {
+            let window = &self.s.file.window.state;
+            return Ok(om_data::host::window::status_area_state(
+                window.toolbar,
+                window.toolbar_locked,
+            ));
+        }
         let context = without_begun(context);
         let context = &*context;
         if let Some((record, index, page)) = self.report_record {
@@ -5928,13 +5941,17 @@ impl Windows for WorkerHost<'_> {
         Ok(())
     }
 
-    fn show_hide(&mut self, bar: Bar, visibility: Visibility, _lock: bool) -> HostResult {
-        let flag = bar_flag(&mut self.s.file.window.state, bar).ok_or(HostError::Unsupported)?;
+    fn show_hide(&mut self, bar: Bar, visibility: Visibility, lock: bool) -> HostResult {
+        let state = &mut self.s.file.window.state;
+        let flag = bar_flag(state, bar).ok_or(HostError::Unsupported)?;
         *flag = match visibility {
             Visibility::Show => true,
             Visibility::Hide => false,
             Visibility::Toggle => !*flag,
         };
+        if matches!(bar, Bar::Toolbars { .. }) {
+            state.toolbar_locked = lock;
+        }
         self.s.file.window.touch();
         Ok(())
     }

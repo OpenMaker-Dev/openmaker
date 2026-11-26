@@ -84,6 +84,7 @@ mod worker;
 
 pub use app::mobile::{ChromeCommand, ChromeMenu, ChromeState, MenuRow, MenuRowKind};
 pub use app::{CardFrame, Mode, OpenMakerApp, ViewMode, APP_TITLE};
+pub use connect::host_address;
 pub use document::PdfViewer;
 pub use theme::install as install_theme;
 

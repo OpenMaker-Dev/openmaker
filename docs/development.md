@@ -653,6 +653,27 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 xvfb-run -a cargo test --locked --workspace --no-fail-fast
 ```
 
+A pull request that touches `om-server` also builds it in release, where
+code under `cfg(debug_assertions)` and code only tests use drop out and can
+leave a variable or a variant unused, which the debug-build clippy above
+does not see. Both builds must succeed and print no `warning:` (the gate
+sets no `RUSTFLAGS`, so the output is read instead). In bash, with
+`pipefail` so that a build that fails fails the check even when `tee`
+does not:
+
+```bash
+set -o pipefail
+cargo build --locked --release -p om-server 2>&1 | tee release-build.log &&
+cargo test --locked --release -p om-server --lib --no-run 2>&1 | tee release-test-build.log &&
+! grep -h '^warning' release-build.log release-test-build.log
+```
+
+Only the lib's own tests are built: the integration tests call debug-only
+test hooks and do not build in release. This runs on the gate's machine,
+Linux; a code path built only on another platform is not checked here
+([#865](https://github.com/OpenMaker-Dev/openmaker/issues/865) found two such
+variants, which Linux constructs and macOS and Windows do not).
+
 While iterating, check only what you touched: `cargo test -p <crate>`,
 `cargo test -p <crate> --test <file>` for one integration-test file, or
 `cargo test -p <crate> --lib` to skip examples and integration tests. The
@@ -682,10 +703,12 @@ of each dependency, unless there is a concrete reason not to.
 - **Dependencies.** Requirements are ordinary (`"0.4"`, not `"=0.4.42"`),
   and the lockfile follows the latest compatible releases. A pin, or a
   hold below a crate's latest major release, needs its concrete reason in
-  a comment beside it. The exact pins today are `webkit2gtk = "=2.0.2"`
-  and `javascriptcore-rs = "=1.1.2"` (`om-gui`, `web-viewer`): they must
-  match the versions `wry` uses, because `om-gui` installs its own page
-  message handler (wry's IPC drops messages from `data:` URLs).
+  a comment beside it. The exact pins today are `webkit2gtk = "=3.0.0"`
+  and `javascriptcore-rs = "=2.0.0"` (`om-gui`, `web-viewer`): they must
+  match the versions `wry` 0.58 uses, because `om-gui` installs its own
+  page message handler (wry's IPC drops messages from `data:` URLs). Move
+  them together with `wry`; a different version links the WebKitGTK
+  system library twice, which Cargo refuses.
 - **Checking.** `rustup check` shows a newer stable.
   `cargo update --dry-run --verbose` lists compatible updates, and as
   `Unchanged ... (available: ...)` the crates behind a newer major

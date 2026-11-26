@@ -27,6 +27,7 @@ pub mod layout;
 pub mod library;
 pub mod object;
 pub mod pagination;
+pub mod panels;
 pub mod paper;
 pub mod rich_text;
 pub mod style;

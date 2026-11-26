@@ -948,7 +948,7 @@ Assets           : 00 00 | 04 03 d0 00 04 | 7f | 02 01 08 | be 33 11 00 | 01 | 0
 
 | bytes | meaning |
 |-------|---------|
-| 0 | "If no exact match, then": `00` do not copy, `01` copy next lower value, `02` copy next higher value, `03` use the constant in member `0b` [O-run: l01-l04] |
+| 0 | "If no exact match, then": `00` do not copy, `01` copy next lower value, `02` copy next higher value, `03` use the constant in member `0b`, or empty when that member is absent [O-run: l01-l04, [FileMaker Pro 26.1.1](https://github.com/OpenMaker-Dev/openmaker/issues/1020#issuecomment-7185793871)] |
 | 1 | "Don't copy contents if empty": `01` OFF, `00` ON [O: the native pair differs only here]. Assets' `00` is ON [O: Assets' dialog, below] |
 | key string 1 | the occurrence looked up from ("Lookup from related table") [O: B], preceded by its length as the base table is in an occurrence's `02` |
 | next byte | padding: key string 1 sits in a 6-byte buffer (length byte and up to 5 bytes). `00` native, `7f` Assets (no setting the dialog shows, below) and `5e`, `5f`, `5a` in the engine's runs, so not meaningful [O-run, O]; `00`, `ff` and `24` in the 29 lookups of a solution FileMaker Server hosts, in production use [O, #993] |

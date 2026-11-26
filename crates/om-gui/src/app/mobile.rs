@@ -133,12 +133,21 @@ impl OpenMakerApp {
     /// failure that raised it had one.
     pub fn failure(&self) -> Option<(Option<i32>, &str)> {
         let shown = self.error()?;
-        let code = self
-            .failure
+        Some((self.shown_failure().and_then(|failure| failure.code), shown))
+    }
+
+    /// The failure the window shows is a host whose certificate could not
+    /// be verified: what to ask the user before connecting anyway.
+    pub fn untrusted(&self) -> Option<&om_data::UntrustedHost> {
+        self.shown_failure()?.untrusted.as_deref()
+    }
+
+    /// The last failure reported, while the window still shows it.
+    fn shown_failure(&self) -> Option<&om_data::DataError> {
+        let shown = self.error()?;
+        self.failure
             .as_ref()
-            .filter(|(_, message)| message == shown)
-            .and_then(|(code, _)| *code);
-        Some((code, shown))
+            .filter(|failure| failure.message == shown)
     }
 
     /// A window holds changes not saved to the host that nothing saves

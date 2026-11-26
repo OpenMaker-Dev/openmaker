@@ -844,7 +844,13 @@ impl ServerHandle {
 
     /// The hosted files in id order, open or not, each with its state and
     /// how many connected clients have it open. Sizes come from the file
-    /// system, so a file busy with a request is not waited for.
+    /// system, so a file busy with a request is not waited for, and are
+    /// read with nothing of the file held, so a slow read keeps no close
+    /// from finishing ([`crate::hosting::Slot::seen`]). A row shows the
+    /// size only if its slot served the same load of the file before and
+    /// after the read ([`crate::hosting::Slot::revision`]). The listing
+    /// takes the client registry's lock once, and each row its slot's lock
+    /// briefly, twice.
     pub fn files(&self) -> Vec<FileInfo> {
         let counts = self.shared.clients.open_counts();
         self.shared
@@ -852,30 +858,31 @@ impl ServerHandle {
             .slots()
             .iter()
             .map(|slot| {
+                // The path and the size from the file system, with nothing
+                // of the file held: on a mount that does not answer they
+                // can take long. The slot's revision before them says
+                // which load of the file the size belongs to.
+                let before = slot.revision();
                 let path = std::path::absolute(&slot.path).unwrap_or_else(|_| slot.path.clone());
-                // The status, the error and the served file from one look,
-                // so that a row agrees with itself while a close finishes.
+                let size = std::fs::metadata(&path).ok().map(|metadata| metadata.len());
+                // Then the status, the error and the read-only cause from
+                // one look, so that a row agrees with itself while a close
+                // finishes; the look does not keep the file. A size read
+                // while the slot came to serve another load (closed, the
+                // file replaced, opened again) is not this load's, and the
+                // row has none this time.
                 let seen = slot.seen();
+                let size = size.filter(|_| seen.revision == before);
                 FileInfo {
                     id: slot.id,
                     name: slot.name.clone(),
                     folder: path.parent().map(Path::to_path_buf).unwrap_or_default(),
-                    size: std::fs::metadata(&path).ok().map(|metadata| metadata.len()),
+                    size,
                     path,
                     status: seen.status,
                     clients: counts.get(&slot.id).copied().unwrap_or(0),
-                    error: seen.error.or_else(|| {
-                        seen.file
-                            .as_ref()
-                            .and_then(|file| file.writes_refused().map(str::to_owned))
-                    }),
-                    // Without the store's lock, as `error` is read: a
-                    // save holds it through its write and flush.
-                    read_only: seen
-                        .file
-                        .as_ref()
-                        .and_then(|file| file.read_only_cause())
-                        .map(crate::store::ReadOnlyCause::why),
+                    error: seen.error,
+                    read_only: seen.read_only.map(crate::store::ReadOnlyCause::why),
                 }
             })
             .collect()
