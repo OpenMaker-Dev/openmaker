@@ -374,14 +374,30 @@ pub enum RecordNumber {
     /// The position at ordinary New Record in an unsorted window of a
     /// local file. A stored Number calculation can also use this answer.
     LocalNewRecord(u64),
+    /// Ordinary local New Record in a sorted found set. The held row
+    /// follows the current row before any later re-sort.
+    LocalSortedNewRecord { position: u64, after: u64 },
 }
 
 impl RecordNumber {
     pub fn value(self) -> u64 {
         match self {
             Self::Window(number) | Self::LocalNewRecord(number) => number,
+            Self::LocalSortedNewRecord { position, .. } => position,
         }
     }
+}
+
+/// How much the writer can establish about the order of local edits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WriteSequence {
+    /// A host, routed write, or other writer without a measured sequence.
+    #[default]
+    Unmeasured,
+    /// A write through a layout of the opened local file.
+    Local,
+    /// A single field-setting step on an otherwise unchanged local row.
+    SingleLocalFieldStep,
 }
 
 /// The owning local file's script variables at the start of a write.
@@ -414,6 +430,8 @@ impl Eq for WriteFileVariables {}
 /// The operation supplies only what [`RecordPlan::context_reads`] names.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WriteContext {
+    /// Evidence for auto-entry whose result depends on entry order.
+    pub sequence: WriteSequence,
     /// `Get ( LayoutNumber )`.
     pub layout: WriteLayout,
     /// `Get ( CurrentPrivilegeSetName )`: the session's current set, the
@@ -1015,6 +1033,8 @@ pub struct RecordPlan {
     table: u64,
     fields: BTreeMap<u64, PlannedField>,
     evaluation_order: Vec<u64>,
+    /// (auto-entered result, equality key, inequality key) for #297.
+    grouped_self_joins: BTreeSet<(u64, u64, u64)>,
     /// The file's calculation schema with this table's current fields.
     schema: Arc<CalcSchema>,
 }
@@ -1235,15 +1255,20 @@ fn lookup_matches(
     }
     let mut matches = Vec::new();
     for predicate in &hop.predicates {
-        // Plain text, a supported stored calculation, or a parent's
-        // auto-entered UUID. Calculated keys are demanded after evaluation.
+        // Plain Text and calculated Text stored in the row. An auto-entry
+        // calculation may depend on this row but cannot read a relationship.
         let ours = fields.get(&predicate.left).is_some_and(|f| {
             f.data_type == DataType::Text
                 && f.options.max_repetitions == 1
-                && (f.stored_calculation() && f.in_row() && f.expression.is_some()
+                && f.in_row()
+                && (f.stored_calculation() && f.expression.is_some()
                     || f.options.field_kind == 1
                         && (f.options.options & !(INDEX_OPTIONS | BOOKKEEPING_OPTIONS) == 0
-                            || f.fresh_key()))
+                            || f.fresh_key()
+                            || f.options.auto_entry_calculation()
+                                && f.expression.as_ref().is_some_and(|expression| {
+                                    expression.related.is_empty() && expression.whole.is_empty()
+                                })))
         });
         if !ours
             || !to_table
@@ -1252,8 +1277,7 @@ fn lookup_matches(
                 .is_some_and(stored_text)
         {
             return Err(
-                "lookups need stored text match fields: supported stored calculations, plain fields \
-                 without auto-entry, or keys auto-entered as Get ( UUID ).",
+                "lookups need stored Text match fields: plain fields or supported calculated keys.",
             );
         }
         matches.push(predicate.left);
@@ -1299,7 +1323,7 @@ impl LookupSource<'_> {
     }
 
     /// `table`'s records, the related table's narrowed by the value index
-    /// of its first match field.
+    /// of the first equality predicate.
     fn narrowed(&self, table: u64) -> Result<Arc<[u64]>, om_calc::CalcError> {
         self.check()?;
         let all = self.inner.records(table)?;
@@ -1852,12 +1876,21 @@ pub fn user_editable(field: &om_hbam::Field) -> bool {
         && !options.auto_entry_editing_prohibited()
 }
 
+fn supports_creation_time_text(locale: &Locale) -> bool {
+    locale.twelve_hour
+        && !locale.pad_hour
+        && !locale.am_pm_before
+        && locale.time_separator == ':'
+        && locale.am == " AM"
+        && locale.pm == " PM"
+}
+
 impl RecordPlan {
     /// The rules of `table` from its definitions in `tree` alone (no other
     /// tables, occurrences or custom functions).
     #[cfg(test)]
     pub fn from_schema(table: &Table, tree: &KeyTree<'_>) -> Result<Self, DataError> {
-        Self::plan(table, tree, None, false, false)
+        Self::plan(table, tree, None, false, false, None)
     }
 
     /// The rules of `table` from its current definitions in `tree`, within
@@ -1868,19 +1901,23 @@ impl RecordPlan {
         tree: &KeyTree<'_>,
         file: &CalcSchema,
     ) -> Result<Self, DataError> {
-        Self::plan(table, tree, Some(file), false, false)
+        Self::plan(table, tree, Some(file), false, false, None)
     }
 
     /// The desktop's provider handles the session-global side of New
     /// Record explicitly; the other planner callers only write rows.
-    /// `local` permits the stored calculations that require a local file.
+    /// `local` permits the stored calculations that need a desktop file
+    /// and Text creation time in its measured system format.
     pub fn from_desktop_file_schema(
         table: &Table,
         tree: &KeyTree<'_>,
         file: &CalcSchema,
         local: bool,
     ) -> Result<Self, DataError> {
-        Self::plan(table, tree, Some(file), true, local)
+        static SYSTEM: std::sync::LazyLock<Option<Locale>> =
+            std::sync::LazyLock::new(crate::new_file::configured_system_locale);
+        let system = if local { SYSTEM.as_ref() } else { None };
+        Self::plan(table, tree, Some(file), true, local, system)
     }
 
     fn plan(
@@ -1889,6 +1926,7 @@ impl RecordPlan {
         file: Option<&CalcSchema>,
         global_defaults: bool,
         local: bool,
+        system: Option<&Locale>,
     ) -> Result<Self, DataError> {
         let mut schema = file
             .cloned()
@@ -2174,9 +2212,20 @@ impl RecordPlan {
                     _ => DataType::Text,
                 };
                 if field.data_type != expected {
-                    return Err(error(
-                        "auto-entry variable storage conversion is unsupported.",
-                    ));
+                    // Both time formats matched in the local native check.
+                    // The provider gives the formula the file's clock text.
+                    let text_creation_time = local
+                        && !schema.locale_unreadable
+                        && variable == EntryVariable::CreationTime
+                        && field.data_type == DataType::Text
+                        && options.max_repetitions == 1
+                        && supports_creation_time_text(&schema.locale)
+                        && system.is_some_and(supports_creation_time_text);
+                    if !text_creation_time {
+                        return Err(error(
+                            "auto-entry variable storage conversion is unsupported.",
+                        ));
+                    }
                 }
             }
             if (options.options & AUTO_ENTRY_MODES).count_ones() > 1
@@ -2343,6 +2392,7 @@ impl RecordPlan {
             .filter(|(_, f)| f.formulas().any(|e| !e.related.is_empty()))
             .map(|(id, _)| *id)
             .collect();
+        let mut grouped_self_joins = BTreeSet::new();
         for id in reading {
             let field = &fields[&id];
             // Only the auto-entered formula's own reads evaluate it again;
@@ -2355,11 +2405,25 @@ impl RecordPlan {
                     .as_ref()
                     .is_some_and(|e| std::ptr::eq(e, expression));
                 for (occurrence, read) in &expression.related {
-                    let hop = related_hop(&schema, &fields, context, *occurrence, *read).map_err(
-                        |reason| DataError::new(format!("Field {}: {reason}", field.name)),
-                    )?;
+                    let first_auto_enter = own
+                        && !field.stored_calculation()
+                        && !field.options.calculation_replaces_existing()
+                        && expression.uses.get(occurrence).is_some_and(|uses| {
+                            uses.first && !uses.placed && uses.aggregated.is_empty()
+                        });
+                    let hop = related_hop(
+                        &schema,
+                        &fields,
+                        context,
+                        (*occurrence, *read),
+                        first_auto_enter,
+                    )
+                    .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
+                    if let Some((group, key)) = hop.grouped_keys {
+                        grouped_self_joins.insert((id, group, key));
+                    }
                     if own {
-                        matches.extend(hop);
+                        matches.extend(hop.match_fields);
                     }
                 }
             }
@@ -2573,6 +2637,7 @@ impl RecordPlan {
             table: table.id,
             fields,
             evaluation_order,
+            grouped_self_joins,
             schema: Arc::new(schema),
         })
     }
@@ -2594,13 +2659,15 @@ impl RecordPlan {
     }
 
     /// Prepare the constant and calculated defaults, and the serial fields
-    /// for which New Record must take a value. Refuse before reserving a
-    /// record or a serial when the global already has a value (#987).
+    /// for which New Record must take a value. A calculated default with
+    /// replacement off keeps a nonempty global. Without `allow_nonempty`,
+    /// a nonempty global refuses the creation before any serial is reserved.
     pub fn new_record_globals(
         &self,
         entry: Entry,
         globals: &RecordValues,
         environment: &RecordEnvironment,
+        allow_nonempty: bool,
     ) -> Result<(crate::GlobalChanges, Vec<Serial>), DataError> {
         let mut values = crate::GlobalChanges::new();
         let mut serials = Vec::new();
@@ -2614,11 +2681,12 @@ impl RecordPlan {
             if !field.auto_enters_global() {
                 continue;
             }
-            if globals.get(id, 1).is_some_and(|value| !value.is_empty()) {
+            let nonempty = globals.get(id, 1).is_some_and(|value| !value.is_empty());
+            if nonempty && !allow_nonempty {
                 return Err(DataError::with_code(
                     error::UNAVAILABLE,
                     format!(
-                        "Field {}: auto-entry into a nonempty global is unsupported.",
+                        "Field {}: auto-entry into a nonempty global requires New Record in a local file.",
                         field.name
                     ),
                 ));
@@ -2628,6 +2696,9 @@ impl RecordPlan {
             } else if let Some(value) = &field.constant {
                 values.insert((id, 1), value.clone());
             } else if let Some(expression) = &field.expression {
+                if nonempty && !field.options.calculation_replaces_existing() {
+                    continue;
+                }
                 let value = self
                     .evaluate_repetition(id, 1, expression, &row, &session, &mut remaining)
                     .map_err(RunError::into_error)?;
@@ -2988,10 +3059,13 @@ impl RecordPlan {
             }
             let keys = match keyed.get(&(lookup.from, lookup.to)) {
                 Some(keys) => keys.clone(),
-                None if lookup
-                    .matches
-                    .iter()
-                    .any(|m| self.fields[m].stored_calculation()) =>
+                // Wait for calculated keys to be evaluated. A caller may
+                // supply those final keys on its next read.
+                None if lookup.matches.iter().any(|m| {
+                    let field = &self.fields[m];
+                    field.stored_calculation()
+                        || field.options.auto_entry_calculation() && !field.fresh_key()
+                }) =>
                 {
                     continue
                 }
@@ -3115,15 +3189,20 @@ impl RecordPlan {
     ) -> bool {
         self.lookup_allowed(id, lookup, mode, changes, entry)
             && lookup.matches.iter().any(|m| {
-                dirty.contains(m)
-                    || (mode == WriteMode::Create && self.fields[m].stored_calculation())
-                    || {
-                        let inputs = self.match_inputs(*m);
-                        changes.keys().any(|cell| {
-                            self.cell_field(*cell)
-                                .is_some_and(|(field, _)| inputs.contains(&field))
-                        })
-                    }
+                if dirty.contains(m) || changes.contains_key(m) {
+                    return true;
+                }
+                // An auto-entered key can retain its old value even after
+                // an input edit. A stored calculation still follows its inputs.
+                if !self.fields[m].stored_calculation() {
+                    return false;
+                }
+                let inputs = self.match_inputs(*m);
+                mode == WriteMode::Create
+                    || changes.keys().any(|cell| {
+                        self.cell_field(*cell)
+                            .is_some_and(|(field, _)| inputs.contains(&field))
+                    })
             })
     }
 
@@ -3255,13 +3334,18 @@ impl RecordPlan {
             })
     }
 
-    // Include editable inputs of a calculated match field for same-value
-    // writes and Relookup callers. Planning has already rejected cycles.
+    // Include inputs of stored calculations for same-value writes and
+    // Relookup. Auto-enter keys require a value change, so their inputs
+    // cannot relookup by writing the current value back.
     fn match_inputs(&self, field: u64) -> BTreeSet<u64> {
         let mut inputs = BTreeSet::from([field]);
         let mut pending = vec![field];
         while let Some(id) = pending.pop() {
-            for dependency in self.fields[&id].dependencies() {
+            let field = &self.fields[&id];
+            if !field.stored_calculation() {
+                continue;
+            }
+            for dependency in field.dependencies() {
                 if inputs.insert(*dependency) {
                     pending.push(*dependency);
                 }
@@ -3359,10 +3443,15 @@ impl RecordPlan {
             .schema
             .path(from, to)
             .ok_or_else(crate::host::relationship_missing)?;
-        let key = path
-            .first()
-            .and_then(|hop| hop.predicates.first())
-            .map(|p| (p.right, keys.first().cloned().unwrap_or_default()));
+        // Only equality can use an exact value-index lookup. A preceding
+        // inequality is checked by the scan over those candidates.
+        let key = path.first().and_then(|hop| {
+            hop.predicates
+                .iter()
+                .zip(keys)
+                .find(|(predicate, _)| predicate.op == crate::meta::JoinOp::Equal)
+                .map(|(predicate, value)| (predicate.right, value.clone()))
+        });
         let overlay = LookupSource {
             inner: source,
             table: self.table,
@@ -3524,7 +3613,10 @@ impl RecordPlan {
     /// Reject a creation path whose stored calculation behavior is unknown
     /// before a create or preview reserves an ID or a serial number.
     pub fn check_creation_context(&self, context: &WriteContext) -> Result<(), DataError> {
-        if matches!(context.record_number, Some(RecordNumber::LocalNewRecord(_))) {
+        if matches!(
+            context.record_number,
+            Some(RecordNumber::LocalNewRecord(_) | RecordNumber::LocalSortedNewRecord { .. })
+        ) {
             return Ok(());
         }
         for (field, expression) in self.fields.values().filter_map(|field| {
@@ -4393,6 +4485,52 @@ impl RecordPlan {
         volatile
     }
 
+    /// Preserve the measured stored result when evaluation is deferred to
+    /// commit. A group set and then cleared is still an assignment, even
+    /// if it would appear unchanged in the final row.
+    fn check_grouped_self_join_write(
+        &self,
+        mode: WriteMode,
+        stored: &BTreeMap<u64, String>,
+        changes: &BTreeMap<u64, Option<String>>,
+        row: &BTreeMap<u64, String>,
+        environment: &RecordEnvironment,
+    ) -> Result<(), DataError> {
+        for &(result, group, key) in &self.grouped_self_joins {
+            let single_line = [stored, row].into_iter().all(|values| {
+                [group, key]
+                    .into_iter()
+                    .all(|id| values.get(&id).is_none_or(|value| single_line_key(value)))
+            });
+            let stored_group_empty = stored.get(&group).is_none_or(String::is_empty);
+            let group_assigned = changes.contains_key(&group);
+            let keeps_result = stored.get(&result).is_some_and(|value| !value.is_empty())
+                && !changes.contains_key(&result);
+            let safe_without_assignment = !group_assigned
+                && !changes.contains_key(&key)
+                && (stored_group_empty || keeps_result);
+            let measured_assignment = mode == WriteMode::Update
+                && environment.context.sequence == WriteSequence::SingleLocalFieldStep
+                && stored_group_empty
+                && group_assigned
+                && changes.len() == 1
+                && row.get(&group).is_some_and(|value| !value.is_empty());
+            if environment.context.sequence == WriteSequence::Unmeasured
+                || !single_line
+                || !(safe_without_assignment || measured_assignment)
+            {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: this grouped self-join needs a single local group-key assignment with single-line keys. No values were changed.",
+                        self.fields[&result].name
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// [`Self::compute_values`]'s whole computation: the record's cells as
     /// the write leaves them, those it changed, and those a preview
     /// (`preview`) left out.
@@ -4414,6 +4552,9 @@ impl RecordPlan {
         let mut probed = BTreeSet::new();
         let mut supplied_dependencies = None;
         let (mut row, mut dirty) = self.written(existing, changes, entry)?;
+        if !entry.skip_auto_enter {
+            self.check_grouped_self_join_write(mode, existing, changes, &row, environment)?;
+        }
         // A write that changes nothing changes nothing, unless it sets a
         // lookup's match field: FileMaker performs the lookup then, also on
         // the value the field had (auto-entry.md, Lookups, battery s41).
@@ -4904,6 +5045,19 @@ impl RecordPlan {
         if session.written == Written::Unknown {
             return Ok(false);
         }
+        let path = self.schema.path(context, occurrence);
+        let hop = path.as_ref().and_then(|path| path.first());
+        let unequal = hop.is_some_and(grouped_unequal_self_join);
+        if unequal
+            && hop.is_some_and(|hop| {
+                hop.predicates.iter().any(|predicate| {
+                    row.get(&predicate.left)
+                        .is_some_and(|value| !single_line_key(value))
+                })
+            })
+        {
+            return Ok(false);
+        }
         // An empty match value relates nothing (file-metadata.md 4.3, rule
         // 2 [O]): with a match field on the record's side
         // empty, as the write computes it, the related set is empty, the
@@ -4912,18 +5066,14 @@ impl RecordPlan {
         // of a key left out is left out itself, and one read with other keys
         // is not answered. Only a field the record's row holds counts (not a
         // global or unstored calculation, whose value is not in it).
-        let empty_key = self
-            .schema
-            .path(context, occurrence)
-            .and_then(|path| path.first().cloned())
-            .is_some_and(|hop| {
-                hop.predicates.iter().any(|p| {
-                    self.fields.get(&p.left).is_some_and(PlannedField::in_row)
-                        && self
-                            .cells(p.left)
-                            .all(|cell| row.get(&cell).is_none_or(String::is_empty))
-                })
-            });
+        let empty_key = hop.is_some_and(|hop| {
+            hop.predicates.iter().any(|p| {
+                self.fields.get(&p.left).is_some_and(PlannedField::in_row)
+                    && self
+                        .cells(p.left)
+                        .all(|cell| row.get(&cell).is_none_or(String::is_empty))
+            })
+        });
         if empty_key && found.is_empty() {
             return Ok(true);
         }
@@ -4931,12 +5081,12 @@ impl RecordPlan {
         // pending deletes. s47 read committed membership, so a new row
         // with held peers cannot use these reads, even in the fallbacks
         // that are independent of the written row's own membership.
-        if let Written::New(own) = session.written {
+        if unequal || matches!(session.written, Written::New(_)) {
             let others = session.others_held.contains(&self.table)
                 || session
                     .held
                     .as_ref()
-                    .is_some_and(|held| held.holds_other(self.table, own));
+                    .is_some_and(|held| held.holds_other(self.table, session.written.id()));
             if others {
                 return Ok(false);
             }
@@ -4948,15 +5098,11 @@ impl RecordPlan {
                     && (f.given() || f.expression.is_some() && session.settled.contains(field))
             })
         };
-        let final_keys = self
-            .schema
-            .path(context, occurrence)
-            .and_then(|path| path.first().cloned())
-            .is_some_and(|hop| {
-                hop.predicates
-                    .iter()
-                    .all(|p| final_value(&p.left) && final_value(&p.right))
-            });
+        let final_keys = hop.is_some_and(|hop| {
+            hop.predicates
+                .iter()
+                .all(|p| final_value(&p.left) && final_value(&p.right))
+        });
         // Measured: a new record's auto-entry reading a one-hop self-join
         // by final match fields on both sides reads the other records
         // committed with its key, never itself. #1035's native cases (a
@@ -4970,12 +5116,8 @@ impl RecordPlan {
         // first related record read them in creation order. Not measured:
         // reads by place, sorted or non-equality joins with matches, and
         // the stored result when auto-entry keeps its creation-time value.
-        if let (Some(replaces), Written::New(own)) = (auto_entry, session.written) {
-            let hop = self
-                .schema
-                .path(context, occurrence)
-                .and_then(|path| path.first().cloned());
-            let unsorted_equal = hop.as_ref().is_some_and(|hop| {
+        if let (false, Some(replaces), Written::New(own)) = (unequal, auto_entry, session.written) {
+            let unsorted_equal = hop.is_some_and(|hop| {
                 !hop.sorted()
                     && hop
                         .predicates
@@ -4991,7 +5133,7 @@ impl RecordPlan {
                 && !uses.placed
                 && !uses.aggregated.is_empty()
                 && unsorted_equal
-                && hop.as_ref().is_some_and(|hop| {
+                && hop.is_some_and(|hop| {
                     hop.predicates.iter().any(|p| {
                         self.fields
                             .get(&p.left)
@@ -5029,6 +5171,12 @@ impl RecordPlan {
         if related.is_empty() && final_keys {
             return Ok(true);
         }
+        // For the grouped unequal case (#297), the record must be
+        // excluded both as written and as stored. Do not infer its
+        // membership from the cases measured for equality-only joins.
+        if unequal {
+            return Ok(false);
+        }
         let earlier = match session.written {
             Written::New(None) => !found.is_empty(),
             Written::New(Some(id)) | Written::Stored(id) => {
@@ -5036,11 +5184,7 @@ impl RecordPlan {
             }
             Written::Unknown => false,
         };
-        let sorted = self
-            .schema
-            .path(context, occurrence)
-            .and_then(|path| path.first().map(|hop| hop.sorted()))
-            .unwrap_or(true);
+        let sorted = hop.is_none_or(crate::host::Hop::sorted);
         let empty = |field: &u64| {
             row.get(field).is_none_or(String::is_empty)
                 && session.stored.get(field).is_none_or(String::is_empty)
@@ -5782,6 +5926,7 @@ impl Expression {
             table,
             fields: BTreeMap::new(),
             evaluation_order: Vec::new(),
+            grouped_self_joins: BTreeSet::new(),
             schema: Arc::new(schema),
         };
         let first = InRepetition::Calculation(1);
@@ -6735,6 +6880,12 @@ fn parse_literal_evaluate(
     Ok(expression)
 }
 
+struct RelatedWriteHop {
+    match_fields: Vec<u64>,
+    /// The equality and inequality keys of the measured self-join.
+    grouped_keys: Option<(u64, u64)>,
+}
+
 /// The match fields of this table through which a formula of `table`,
 /// evaluated from `context`, reads field `field` of `occurrence`, once the
 /// rules can follow it: another table's stored value of one repetition,
@@ -6742,14 +6893,16 @@ fn parse_literal_evaluate(
 /// type, text or number: this table's a stored field, not global, which the
 /// write itself may compute (it is read again with that value, #1035), the
 /// other table's a stored one, auto-entered or not (its stored value is
-/// matched; a serial key, #187). Otherwise why not.
+/// matched; a serial key, #187). A keep-existing auto-entry can also read
+/// the first row through the grouped unequal self-join when the membership
+/// check in [`RecordPlan::answers_own`] can settle it. Otherwise why not.
 fn related_hop(
     schema: &CalcSchema,
     fields: &BTreeMap<u64, PlannedField>,
     context: u64,
-    occurrence: u64,
-    field: u64,
-) -> Result<Vec<u64>, &'static str> {
+    (occurrence, field): (u64, u64),
+    first_auto_enter: bool,
+) -> Result<RelatedWriteHop, &'static str> {
     use crate::host::FieldClass;
     use crate::meta::JoinOp;
     let to = schema
@@ -6780,7 +6933,14 @@ fn related_hop(
             "calculations over related fields through more than one relationship are unsupported.",
         );
     };
-    if hop.predicates.is_empty() || hop.predicates.iter().any(|p| p.op != JoinOp::Equal) {
+    let grouped_unequal = first_auto_enter
+        && schema
+            .occurrence(context)
+            .is_some_and(|from| from.table == to.table)
+        && grouped_unequal_self_join(hop);
+    if hop.predicates.is_empty()
+        || (!grouped_unequal && hop.predicates.iter().any(|p| p.op != JoinOp::Equal))
+    {
         return Err(
             "calculations over related fields through other than = predicates are unsupported.",
         );
@@ -6792,6 +6952,26 @@ fn related_hop(
              or by a summary or a value list of field values) are unsupported.",
         );
     }
+    let grouped_keys = if grouped_unequal {
+        let group = hop
+            .predicates
+            .iter()
+            .find(|p| p.op == JoinOp::Equal)
+            .expect("grouped join has an equality key")
+            .left;
+        let key = hop
+            .predicates
+            .iter()
+            .find(|p| p.op == JoinOp::NotEqual)
+            .expect("grouped join has an inequality key")
+            .left;
+        if !fields.get(&group).is_some_and(PlannedField::given) {
+            return Err("the group field of an unequal self-join must be written explicitly.");
+        }
+        Some((group, key))
+    } else {
+        None
+    };
     let mut matches = Vec::new();
     for predicate in &hop.predicates {
         // Auto-entered and stored calculation keys participate in the
@@ -6819,9 +6999,37 @@ fn related_hop(
                  number, stored, not global on this table's side.",
             );
         }
+        if grouped_unequal && ours != Some(ValueType::Text) {
+            return Err("auto-entry through an unequal self-join needs stored text match fields.");
+        }
         matches.push(predicate.left);
     }
-    Ok(matches)
+    Ok(RelatedWriteHop {
+        match_fields: matches,
+        grouped_keys,
+    })
+}
+
+fn single_line_key(value: &str) -> bool {
+    value
+        .split(['\r', '\n'])
+        .filter(|line| !line.is_empty())
+        .nth(1)
+        .is_none()
+}
+
+/// Unsorted, same-field predicates on a group key and a distinct row key.
+/// The caller establishes that both occurrences are of the same table.
+fn grouped_unequal_self_join(hop: &crate::host::Hop) -> bool {
+    use crate::meta::JoinOp::{Equal, NotEqual};
+    let [a, b] = hop.predicates.as_slice() else {
+        return false;
+    };
+    !hop.sorted()
+        && matches!((a.op, b.op), (Equal, NotEqual) | (NotEqual, Equal))
+        && a.left == a.right
+        && b.left == b.right
+        && a.left != b.left
 }
 
 /// The sort language whose text order OpenMaker's collation does not
@@ -7033,6 +7241,53 @@ mod tests {
         );
         assert_eq!(decoded(&prepared, 13), decoded(&prepared, 12));
         assert_eq!(prepared.changed_fields, vec![1, 2, 8, 9, 10, 11, 12, 13]);
+    }
+
+    #[test]
+    fn creation_time_in_text_keeps_the_local_twelve_hour_clock() {
+        let table = Table {
+            id: 0x8002,
+            name: "Example".into(),
+            fields: vec![
+                field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(2, FieldKind::Normal, DataType::Text, 1, 1, 0),
+            ],
+        };
+        let tree = KeyTree::default();
+        let system = Locale::en_us();
+        let mut file = CalcSchema::new("Example", system.clone());
+        let plan = RecordPlan::plan(&table, &tree, Some(&file), true, true, Some(&system)).unwrap();
+        let mut clock = environment();
+        clock.time = "1:26:37 AM".into();
+        let created = plan
+            .prepare(
+                WriteMode::Create,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &clock,
+            )
+            .unwrap();
+        let created_text = decoded(&created, 2).unwrap();
+        assert_eq!(created_text, "1:26:37 AM");
+
+        clock.time = "1:26:43 AM".into();
+        let updated = plan
+            .prepare(
+                WriteMode::Update,
+                &BTreeMap::from([(2, created_text)]),
+                &BTreeMap::from([(1, Some("Changed".into()))]),
+                &clock,
+            )
+            .unwrap();
+        assert_eq!(updated.changed_fields, [1]);
+
+        assert!(RecordPlan::from_file_schema(&table, &tree, &file).is_err());
+        assert!(RecordPlan::from_desktop_file_schema(&table, &tree, &file, false).is_err());
+        let german = Locale::de_de();
+        assert!(RecordPlan::plan(&table, &tree, Some(&file), true, true, Some(&german)).is_err());
+        assert!(RecordPlan::plan(&table, &tree, Some(&file), true, true, None).is_err());
+        file.locale.twelve_hour = false;
+        assert!(RecordPlan::plan(&table, &tree, Some(&file), true, true, Some(&system)).is_err());
     }
 
     /// A record the window holds unsaved (#1063): its values are known only
@@ -7748,7 +8003,7 @@ mod tests {
             tree.insert(&segments, om_hbam::slot::ChunkKind::Leaf, Some(value))
                 .unwrap();
         }
-        RecordPlan::plan(table, &tree, None, false, local)
+        RecordPlan::plan(table, &tree, None, false, local, None)
     }
 
     #[test]
@@ -8067,6 +8322,7 @@ mod tests {
             // A row typed after two related rows of an unsorted portal
             // (#1038).
             record_number: Some(RecordNumber::Window(3)),
+            sequence: WriteSequence::Unmeasured,
             file_variables: None,
         };
         let created = write(known.clone(), WriteMode::Create).unwrap();
@@ -9586,7 +9842,7 @@ mod tests {
         let other = plan_for(0x8000_0101, 4, &[0x9b, 0x65], LOOKUP);
         assert!(other
             .err()
-            .is_some_and(|e| e.message.contains("auto-entered as Get ( UUID )")));
+            .is_some_and(|e| e.message.contains("stored Text match fields")));
 
         // The key is validated as a generated UUID (509 otherwise).
         const K0: &str = "0F3C1D2E-5A6B-4C7D-8E9F-A0B1C2D3E4F5";
@@ -9642,6 +9898,149 @@ mod tests {
     /// ascending, the one made first. Sorted by an unstored calculation,
     /// which `host::sort` orders as empty, or by text in Japanese, which it
     /// orders otherwise than FileMaker in places, the table stays read-only.
+    #[test]
+    fn a_lookup_uses_the_auto_entered_key_when_it_changes() {
+        use crate::host::{FieldDef, JoinOp, JoinPredicate, RelationshipDef};
+
+        const FROM: u64 = 0xd0_0006;
+        const TO: u64 = 0xd0_0007;
+        let mut file = CalcSchema::new("Lookups", Locale::en_us());
+        file.add_table(0x8007, "Directory");
+        file.add_field(0x8007, FieldDef::data(1, "Key", ValueType::Text));
+        file.add_field(0x8007, FieldDef::data(2, "Label", ValueType::Text));
+        file.add_occurrence(FROM, "Requests", 0x8006);
+        file.add_occurrence(TO, "Directory", 0x8007);
+        file.add_relationship(RelationshipDef::new(
+            4,
+            FROM,
+            TO,
+            vec![JoinPredicate {
+                op: JoinOp::Equal,
+                left: 2,
+                right: 1,
+            }],
+        ));
+        let mut directory = MemorySource::new();
+        for (id, key, label) in [(1, "A", "First"), (2, "B", "Second")] {
+            let mut values = RecordValues::default();
+            values.set(1, 1, Value::text(key));
+            values.set(2, 1, Value::text(label));
+            directory.put_record(0x8007, id, values);
+        }
+
+        let mut names = om_formula::NameTable::default();
+        names.add_occurrence(FROM, "Requests", 0x8006);
+        names.add_field(0x8006, 1, "Field1");
+        let mut compiler = om_formula::Context::new(&names);
+        compiler.occurrence = Some(FROM);
+        let plan_for = |formula, options| {
+            let table = Table {
+                id: 0x8006,
+                name: "Requests".into(),
+                fields: vec![
+                    field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                    field(2, FieldKind::Normal, DataType::Text, 0, options, 0),
+                    field(3, FieldKind::Normal, DataType::Text, 0, LOOKUP, 0),
+                ],
+            };
+            let formula = om_formula::compile(formula, &compiler).unwrap().expr;
+            let encoded = om_formula::polish::encode(&formula);
+            let context = om_formula::Key::from_id(FROM);
+            let definition = crate::field_options::Lookup {
+                from: FROM,
+                to: TO,
+                copied: 2,
+                copy_empty: true,
+                no_match: crate::field_options::NoMatch::DoNotCopy,
+            }
+            .encode()
+            .unwrap();
+            let leaves: [(&[u64], &[u8]); 3] = [
+                (&[2, FIELD_FORMULA, 4], &context.0),
+                (&[2, FIELD_FORMULA, 6], &encoded),
+                (&[3, FIELD_LOOKUP], &definition),
+            ];
+            let paths: Vec<Vec<Vec<u8>>> = leaves
+                .iter()
+                .map(|(suffix, _)| {
+                    [table.id, 3, 5]
+                        .into_iter()
+                        .chain(suffix.iter().copied())
+                        .map(om_hbam::slot::uint_segment)
+                        .collect()
+                })
+                .collect();
+            let mut tree = KeyTree::default();
+            for (keys, (_, value)) in paths.iter().zip(leaves) {
+                let path: Vec<KeySegment<'_>> = keys.iter().map(|key| KeySegment(key)).collect();
+                tree.insert(&path, om_hbam::slot::ChunkKind::Leaf, Some(value))
+                    .unwrap();
+            }
+            RecordPlan::from_file_schema(&table, &tree, &file).unwrap()
+        };
+
+        let write = |plan: &RecordPlan, mode, existing: &[(u64, &str)], input: Option<&str>| {
+            let existing = existing
+                .iter()
+                .map(|(id, text)| (*id, (*text).into()))
+                .collect();
+            let changes = input
+                .into_iter()
+                .map(|text| (1, Some(text.into())))
+                .collect();
+            let mut environment = environment();
+            let needs = Arc::new(RelatedNeeds::default());
+            environment.related_needs = Some(Arc::clone(&needs));
+            let entry = Entry::script(false, false);
+            let mut keyed = BTreeMap::new();
+            for pass in 0..2 {
+                environment.lookups = plan
+                    .read_lookups_with(
+                        mode,
+                        &existing,
+                        &changes,
+                        entry,
+                        &directory,
+                        (&keyed, Written::Unknown),
+                    )
+                    .unwrap();
+                let result = plan.compute(mode, &existing, &changes, &environment, entry);
+                keyed = needs.take();
+                if keyed.is_empty() {
+                    return result.unwrap();
+                }
+                assert_eq!(pass, 0, "lookup reread must use the final key");
+                assert_eq!(result.unwrap_err().code, Some(error::UNAVAILABLE));
+            }
+            unreachable!("each write computes at most one final key");
+        };
+
+        let from_constant = plan_for(r#""A""#, 0x8);
+        let created = write(&from_constant, WriteMode::Create, &[], None);
+        assert_eq!(created.get(&2), Some(&Some("A".into())));
+        assert_eq!(created.get(&3), Some(&Some("First".into())));
+
+        let replace = plan_for("Field1", 0x88);
+        assert!(write(&replace, WriteMode::Create, &[], None).is_empty());
+        let entered = write(&replace, WriteMode::Update, &[], Some("A"));
+        assert_eq!(entered.get(&2), Some(&Some("A".into())));
+        assert_eq!(entered.get(&3), Some(&Some("First".into())));
+
+        let existing = [(1, "A"), (2, "A"), (3, "Prior")];
+        let replaced = write(&replace, WriteMode::Update, &existing, Some("B"));
+        assert_eq!(replaced.get(&2), Some(&Some("B".into())));
+        assert_eq!(replaced.get(&3), Some(&Some("Second".into())));
+        let keep = plan_for("Field1", 0x8);
+        let kept = write(&keep, WriteMode::Update, &existing, Some("B"));
+        assert_eq!(kept, BTreeMap::from([(1, Some("B".into()))]));
+        for plan in [&replace, &keep] {
+            assert_eq!(
+                plan.relookup_target("Field1").unwrap_err().code,
+                Some(error::UNAVAILABLE)
+            );
+        }
+    }
+
     #[test]
     fn sorted_lookups_copy_the_first_record_in_the_sort() {
         use crate::host::{FieldClass, FieldDef, JoinOp, JoinPredicate, RelationshipDef};

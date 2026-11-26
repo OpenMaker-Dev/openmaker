@@ -33,6 +33,15 @@ come from the fmp12 file (see `layout-model.md`), not from the application.
 
 ## Status toolbar (Browse), left to right
 
+In FileMaker Pro 26.1.1, Show/Hide Toolbars [Hide] removes both the
+status toolbar and the layout bar. The same step in OnFirstWindowOpen
+gives the same view as running it after open. Lock disables View >
+Status Toolbar and its Option-Command-S shortcut whether the bars are
+shown or hidden. A Show with Lock off restores manual control, even if
+the bars were already shown. The native steps all returned LastError 0.
+Toggle with Lock and new-window inheritance were not measured.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1040#issuecomment-7188552787)
+
 1. **Record navigation group**, captioned **Records** (caption centered under
    the group):
    - Previous / Next chevrons (thin gray, ~16 px tall) separated by a hairline.
@@ -438,6 +447,25 @@ move is stored.
 **Unknowns:** Which nested objects Select All and a layout-level box select,
 how they treat locked objects, and whether a modifier changes the arrow
 step. These gestures were not observed in a running FileMaker Pro window.
+
+### Front panels
+
+The [panel selection help](https://help.claris.com/en/pro-help/content/objects-on-panel-controls.html)
+describes one front panel in Layout mode. Clicking another tab or slide dot
+brings that panel to the front. It also describes selecting objects across
+panels with Shift, and selecting all panels and their objects with a box
+that surrounds a whole control. The panels have their own stacking order.
+The [tab control help](https://help.claris.com/en/pro-help/content/changing-tab-control.html)
+says a tab control keeps the previously displayed tab when entering Layout
+mode. The [slide control help](https://help.claris.com/en/pro-help/content/changing-slide-control.html)
+identifies the leftmost slide as the default.
+
+**Unknowns:** whether selecting an object in the Objects pane switches its
+containing panel or changes the current selection. The [Objects pane
+help](https://help.claris.com/en/pro-help/content/working-with-layout-objects.html)
+describes the object list and its temporary hiding tools, including that
+the pane cannot hide or reorder panels. These behaviors were not measured
+in a running FileMaker Pro window.
 
 ## Layout mode: Align, Distribute and Resize To
 

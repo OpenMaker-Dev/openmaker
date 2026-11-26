@@ -5,9 +5,9 @@
 use super::*;
 use om_data::rules::{
     error, Entry, RecordEnvironment, RecordNumber, RecordPlan, Serial, WriteContext, WriteLayout,
-    WriteMode, Written,
+    WriteMode, WriteSequence, Written,
 };
-use om_data::FieldChanges;
+use om_data::{FieldChanges, RecordCreation};
 use om_hbam::{Cell, OwnedNode};
 use om_protocol::write::{self, Conflict, LockReply};
 use om_query::keys::{record_value_keys, TextKeys};
@@ -867,6 +867,9 @@ impl NativeProvider {
         use om_data::host::session::selector;
         let reads = plan.context_reads();
         let mut context = WriteContext::default();
+        if layout.is_some() && self.local.is_some() {
+            context.sequence = WriteSequence::Local;
+        }
         if self.local.is_some() && plan.reads_auto_entry_file_variables() {
             context.file_variables = Some(self.external.file_variables());
         }
@@ -906,6 +909,9 @@ impl NativeProvider {
         }
         let mut context = self.write_context(plan, origin.layout, origin.set)?;
         context.record_number = origin.record_number;
+        if origin.single_field_step && context.sequence == WriteSequence::Local {
+            context.sequence = WriteSequence::SingleLocalFieldStep;
+        }
         Ok(context)
     }
 
@@ -949,6 +955,7 @@ impl NativeProvider {
         plan: &RecordPlan,
         entry: Entry,
         environment: &RecordEnvironment,
+        creation: RecordCreation,
     ) -> Result<NewGlobals, DataError> {
         if !plan.has_global_auto_entry(entry) {
             return Ok(NewGlobals::default());
@@ -961,7 +968,9 @@ impl NativeProvider {
                 "The table's global values could not be read.",
             )
         })?;
-        let (values, serials) = plan.new_record_globals(entry, globals, environment)?;
+        let allow_nonempty = creation == RecordCreation::NewRecord && self.local_path().is_some();
+        let (values, serials) =
+            plan.new_record_globals(entry, globals, environment, allow_nonempty)?;
         Ok(NewGlobals { values, serials })
     }
 
@@ -1626,7 +1635,7 @@ impl NativeProvider {
         let (table, plan) = self.record_plan(layout_id)?;
         let changes = Self::writable_values(&table, &plan, &values)?;
         let context = self.write_context(&plan, Some(layout_id), CurrentSet::Account)?;
-        self.insert_table_record(&table, &plan, &changes, context)
+        self.insert_table_record(&table, &plan, &changes, context, RecordCreation::NewRecord)
     }
 
     /// The shared ordinary creation engine, with an explicitly owning
@@ -1637,10 +1646,11 @@ impl NativeProvider {
         plan: &RecordPlan,
         changes: &BTreeMap<u64, Option<String>>,
         context: WriteContext,
+        creation: RecordCreation,
     ) -> Result<Record, DataError> {
         let environment = self.rule_environment(table.id, plan, context)?;
         let entry = Entry::default();
-        let globals = self.new_record_defaults(plan, entry, &environment)?;
+        let globals = self.new_record_defaults(plan, entry, &environment, creation)?;
         // Compute and check every value before reserving a record id.
         let prepared = self.prepare_record(
             plan,
@@ -2011,9 +2021,8 @@ impl NativeProvider {
             return self.hold_script(table, record, (cells, typed), origin);
         }
         let (table, plan) = self.table_plan(table)?;
-        let prepared = origin.prepared;
+        let write = (record, origin.prepared, origin.creation);
         let context = self.origin_context(&plan, origin)?;
-        let write = (record, prepared);
         let cells = (cells, typed);
         self.script_table_record(&table, &plan, write, cells, skip_validation, context)
     }
@@ -2026,7 +2035,7 @@ impl NativeProvider {
         &mut self,
         table: &Table,
         plan: &RecordPlan,
-        (record, prepared): (Option<i64>, Option<om_data::PreparedId>),
+        (record, prepared, creation): (Option<i64>, Option<om_data::PreparedId>, RecordCreation),
         (cells, typed): (&BTreeMap<u64, Option<String>>, &BTreeSet<u64>),
         skip_validation: bool,
         context: WriteContext,
@@ -2053,7 +2062,7 @@ impl NativeProvider {
         let txn = self.new_transaction();
         let result = (|| match record {
             None => {
-                let globals = self.new_record_defaults(plan, entry, &environment)?;
+                let globals = self.new_record_defaults(plan, entry, &environment, creation)?;
                 self.prepare_record(
                     plan,
                     (WriteMode::Create, entry, Written::New(None)),
@@ -2626,6 +2635,11 @@ pub(crate) struct Origin {
     /// (`ScriptWrite::prepared`, preview.rs): its context, serial numbers,
     /// clock and UUID are the write's.
     pub prepared: Option<om_data::PreparedId>,
+    /// The operation that created the new record, if this is a creation.
+    pub creation: RecordCreation,
+    /// The window proved a single field-setting step, with no other
+    /// staged edits to the record.
+    pub single_field_step: bool,
 }
 
 /// Whose privilege set a write's formulas read as current

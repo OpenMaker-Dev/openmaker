@@ -2186,9 +2186,34 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   new windows or downloads, and navigate only to http, https, data, blob,
   file and about URLs. On an X server without DRI3 the process turns off
   WebKitGTK's DMA-BUF renderer at startup (it draws blank pages there) unless
-  `WEBKIT_DISABLE_DMABUF_RENDERER` is set; the page bridge uses its own
-  `openmaker` script message handler (wry's IPC drops messages from `data:`
-  pages, whose URL it cannot parse).
+  `WEBKIT_DISABLE_DMABUF_RENDERER` is set.
+- On Linux (`web_viewer/gtk.rs`) the page bridge posts to a script message
+  handler of its own, `openmaker` (wry's IPC drops messages from `data:`
+  pages, whose URL it cannot parse). WebKit shows a page's message
+  handlers to every frame of the page, and WebKitGTK does not say which
+  frame posted a message (its `WebKitFrame` belongs to the web process's
+  extension API), so the handler is registered in a script world of
+  OpenMaker's own, where no script of the page or of its frames runs. Two
+  scripts go into the main frame only, as each document starts and before
+  the page's own scripts: the `FileMaker` object, in the page's world, and
+  in OpenMaker's world a poster, which posts what `FileMaker` hands it
+  through an element that only the two hold (it is taken out of the
+  document at once). A view starts loading only once both halves and the
+  handler are in place. Another site's frame in the page reaches neither the
+  handler nor the main frame's `FileMaker`; a frame of the page's own
+  origin can call `parent.FileMaker` [I, OpenMaker's choice; FileMaker
+  Pro's scope for `FileMaker.PerformScript` in frames is unmeasured].
+  Unlike macOS's token, nothing has to reach a document after it commits,
+  and a page whose Content Security Policy forbids frames still posts.
+  `tests/web_viewer_native.rs` embeds a frame from another loopback port,
+  which posts to the handler and calls `parent.FileMaker`, and checks that
+  neither reaches the bridge and no script runs, and that the first
+  document's inline call does run. On both platforms the bridge's
+  messages are bounded where they arrive, on the thread that hears the page
+  and without waiting for the app: only well-formed ones are kept, and one
+  longer than 16 MiB, or one that would put more than 256 messages or
+  32 MiB (each counted as at least 1 KiB) in wait for the app, is dropped
+  [I, OpenMaker's bounds; FileMaker's are unmeasured].
 - On macOS (`web_viewer/appkit.rs`) AppKit's views live on the main thread,
   where the app's frames run: commands apply as they come, and a page is
   made at the end of the frame, with wry, as a child of the root window,
@@ -2203,11 +2228,9 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   from the OS's random source (without it the bridge stays off), and the
   last document's stops working as the next one commits, with what it
   posted that the app has not taken yet: another site's frame in the page
-  cannot post, nor can a page that learned an earlier document's token. Only
-  well-formed messages are kept; one longer than 16 MiB, or one that would
-  put more than 256 messages or 32 MiB (each counted as at least 1 KiB) in
-  wait for the app, is dropped. A page whose Content
-  Security Policy forbids frames (`frame-src 'none'`) cannot post at all.
+  cannot post, nor can a page that learned an earlier document's token. A
+  page whose Content Security Policy forbids frames (`frame-src 'none'`)
+  cannot post at all.
   For the same reason the history and loading state that Set Web Viewer's
   Back and Forward need are read through key-value coding. wry reports a
   load only when it commits and when it finishes, so each frame also looks

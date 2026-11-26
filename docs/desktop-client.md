@@ -37,6 +37,14 @@ own chrome uses are in [design.md](design.md). Related notes:
   to the front. Elsewhere, and in the GUI tests, which run without a native
   window, the menu bar is drawn inside each window. The window title is the
   platform's own.
+- Show/Hide Toolbars changes the status toolbar and layout bar together.
+  Lock disables View > Status Toolbar and its shortcut in the current
+  window until a script changes the lock. `Get ( StatusAreaState )` returns
+  1 for shown, 0 for hidden, 2 for shown and locked, and 3 for hidden and
+  locked. New windows inherit the current toolbar state, which is
+  unmeasured in FileMaker. OpenMaker keeps the outer frame size when the
+  bars change. The measured FileMaker Pro window changes its outer
+  height ([#1064](https://github.com/OpenMaker-Dev/openmaker/issues/1064)).
 - The Window menu's New Window runs the step. Show Window lists every open
   file's windows but cards, front first, a hidden one in parentheses, and
   scrolls when they do not fit; choosing one brings it to the front, shown
@@ -2158,8 +2166,8 @@ without evaluating record calculations or running document actions. If an icon
 cannot be resolved, a labeled button keeps its full-width label and an
 image-only button uses the canvas's outline and caption.
 Pasteboard objects, unsupported objects and geometry-only providers still
-use outlines and captions. Panel visibility and design-time web viewer
-placeholders are tracked in [#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019).
+use outlines and captions. Design-time web viewer placeholders are tracked
+in [#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019).
 The scrollable canvas, part tabs, objects and selection handles scale
 together. Placement, movement, resizing and the Inspector use the original
 layout points at every zoom. The toolbar, Objects pane and Inspector keep
@@ -2553,6 +2561,16 @@ document objects; they cannot be edited.
 The revision is the one the window read when it opened the file or after
 its last placement: a layout another client changed since is refused at
 Save Layout, not shown changed before.
+
+On a decoded layout, the canvas draws and picks objects on the front tab
+or slide of each control. It starts with the stored current tab, the
+stored default tab, or the first panel, in that order. The Objects list
+still includes inactive panels and their contents. Selecting one of those
+rows reveals its containing panels in this window. This is
+OpenMaker's editor navigation and makes no layout changes. Tab and slide
+navigation directly on the design surface, handoff of the last Browse
+panel, and FileMaker's box selection of an entire control across its panels
+are not implemented.
 
 Manage Layouts opens from File > Manage > Layouts, Layouts > Manage Layouts
 and the Layout mode Manage button. Search, row selection, double-click,
