@@ -77,8 +77,8 @@ own chrome uses are in [design.md](design.md). Related notes:
   Linux and Windows.
 - The UI font is the bundled Inter (OFL), a cross-platform stand-in for the
   system font with similar metrics. Layout text uses the fonts the host
-  sends; on macOS, System Arial is used when the file asks for it and it is
-  installed, with a bundled open font as the fallback.
+  sends. On macOS, a document's Arial or Helvetica Neue selection uses the
+  installed family when available, with a bundled open font as the fallback.
 
 ## Opening files
 
