@@ -62,7 +62,7 @@ impl Settings {
                 return Err("Non-finite page format number".into());
             }
             let scale = values[0];
-            if !om_layout::paper::SCALES.contains(&scale) {
+            if !om_layout::paper::valid_scale(scale) {
                 return Err("Page Setup scale must be between 1% and 1000%".into());
             }
             let orientation = match payload[0] {
@@ -165,9 +165,11 @@ pub(crate) fn dialog(
     });
     ui.horizontal(|ui| {
         // Edited as a percentage; only an edit writes it back, so a stored
-        // f32 scale (0.6 reads 0.6000000238) is kept as it is.
+        // f32 scale (0.6 reads 0.6000000238) is kept as it is. Leaving the
+        // field reparses the shown "60", which is no edit.
         let label = ui.label("Scale");
-        let mut percent = paper.scale * 100.0;
+        let stored = paper.scale * 100.0;
+        let mut percent = stored;
         let edit = ui
             .add(
                 egui::DragValue::new(&mut percent)
@@ -180,7 +182,7 @@ pub(crate) fn dialog(
                     .suffix(" %"),
             )
             .labelled_by(label.id);
-        if edit.changed() {
+        if edit.changed() && (percent - stored).abs() >= 0.005 {
             paper.scale = percent / 100.0;
         }
     });
@@ -295,6 +297,10 @@ pub(crate) mod tests {
                     scale: f64::from(scale),
                 }
             );
+        }
+        // The range's ends, as the f32 a page format holds them.
+        for scale in [0.01, 10.0] {
+            assert!(Settings::restored(&scaled(A4, scale)).is_ok(), "{scale}");
         }
         for bad in [
             A4[..A4.len() - 1].to_vec(),

@@ -18,10 +18,13 @@ of its size: the page, in layout points, is the sheet divided by the scale, so
 at 50% a page holds twice as much of the layout each way. This is how
 FileMaker stores a scaled setup: the sheet as it is, and the printable size
 divided by the scale (script-steps.md 11.6). Preview draws the page at the
-sheet's size with the layout scaled on it; Save Records as PDF writes the
-sheet as each page's media box and scales the page's content onto it; Print
-sends that PDF on the sheet. The printer's margins scale with the page, so
-they stay 18 / 40 / 18 / 18 points on paper. Inferred, unverified parity
+sheet's size with the layout scaled on it: up to 100% its text is laid out
+at the size it prints; above 100% the layout is drawn at its own size and
+magnified, as zooming in does. Save Records as PDF writes the sheet as each
+page's media box and scales the page's content onto it; Print sends that
+PDF on the sheet. Pictures, SVGs and button icons are sampled for the size
+they print at. The printer's margins scale with the page, so they stay
+18 / 40 / 18 / 18 points on paper. Inferred, unverified parity
 ([#871](https://github.com/OpenMaker-Dev/openmaker/issues/871)): the 1%–1000%
 bounds are OpenMaker's (FileMaker Pro's are unmeasured; Claris documents scale
 only as a macOS Page Setup option), and so are a layout's fixed page margins

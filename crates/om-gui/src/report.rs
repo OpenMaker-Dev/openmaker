@@ -1288,12 +1288,14 @@ fn decode_picture(key: u64, image: &LibraryImage) -> Result<Picture, ReportError
 /// Container data's picture for a frame of `size` points, bounded as Browse
 /// bounds it (16,384 pixels a side, 256 MiB per decode), turned by its EXIF
 /// orientation and kept at most at 300 pixels an inch of the size it prints
-/// at (and [`MAX_PICTURE_SIDE`]); `None` when it does not decode, which
-/// prints the field empty as Browse shows it.
+/// at, `print_scale` times `size` (Page Setup's scale), and at most
+/// [`MAX_PICTURE_SIDE`]; `None` when it does not decode, which prints the
+/// field empty as Browse shows it.
 fn decode_container_picture(
     data: &[u8],
     format: GraphicFormat,
     size: (f64, f64),
+    print_scale: f64,
 ) -> ContainerPicture {
     use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
     let decoded = std::panic::catch_unwind(|| {
@@ -1330,8 +1332,11 @@ fn decode_container_picture(
     }
     // A picture pixel is a point, as in Browse.
     let placed = format.place((f64::from(width), f64::from(height)), size);
-    let wanted =
-        |points: f64, pixels: u32| (points * 300.0 / 72.0).ceil().clamp(1.0, f64::from(pixels));
+    let wanted = |points: f64, pixels: u32| {
+        (points * print_scale * 300.0 / 72.0)
+            .ceil()
+            .clamp(1.0, f64::from(pixels))
+    };
     let scale = (wanted(placed[2], width) / f64::from(width))
         .min(wanted(placed[3], height) / f64::from(height))
         .min(f64::from(MAX_PICTURE_SIDE) / f64::from(width.max(height)));
@@ -1637,9 +1642,9 @@ fn drawing_pictures() -> ReportError {
 /// drawn at.
 type PictureKey = (u64, Option<[u32; 2]>);
 type DecodedPicture = (LibraryImage, Result<Arc<Picture>, ReportError>);
-/// Container data's MD5, its frame's size in hundredths of a point and its
-/// graphic format.
-type ContainerKey = ([u8; 16], [u64; 2], u16);
+/// Container data's MD5, its frame's size in hundredths of a point, its
+/// graphic format and the scale it prints at (its bits).
+type ContainerKey = ([u8; 16], [u64; 2], u16, u64);
 /// The picture and where it goes in the frame; `None` for data that does
 /// not decode.
 type ContainerPicture = Option<(Arc<Picture>, [f64; 4])>;
@@ -1787,15 +1792,16 @@ impl Pictures {
         picture
     }
 
-    /// What container data shows in a frame of `size` points: its picture
-    /// and where the format places it ([left, top, width, height] in the
-    /// frame), `Some(None)` for data that does not decode, `None` for data
-    /// without a picture (a file).
+    /// What container data shows in a frame of `size` points, printed at
+    /// `print_scale`: its picture and where the format places it ([left,
+    /// top, width, height] in the frame), `Some(None)` for data that does
+    /// not decode, `None` for data without a picture (a file).
     fn container(
         &self,
         data: &om_data::calc::Container,
         format: GraphicFormat,
         size: (f64, f64),
+        print_scale: f64,
     ) -> Option<ContainerPicture> {
         let (_, bytes) = om_data::containers::picture_stream(data)?;
         let md5 = match &data.library {
@@ -1803,16 +1809,28 @@ impl Pictures {
             None => om_data::containers::md5([(b"".as_slice(), bytes)]),
         };
         let hundredths = |v: f64| (v.max(0.0) * 100.0).round() as u64;
-        let key = (md5, [hundredths(size.0), hundredths(size.1)], format.0);
+        let key = (
+            md5,
+            [hundredths(size.0), hundredths(size.1)],
+            format.0,
+            print_scale.to_bits(),
+        );
         if let Some(shown) = self.1.borrow().get(&key) {
             return Some(shown.clone());
         }
-        let shown = decode_container_picture(bytes, format, size);
+        let shown = decode_container_picture(bytes, format, size, print_scale);
         self.1.borrow_mut().insert(key, shown.clone());
         Some(shown)
     }
 
-    fn get(&self, layout: &Layout, object: &LayoutObject) -> Result<Arc<Picture>, ReportError> {
+    /// Static picture `object` of `layout`; an SVG rasterized for the size
+    /// it prints at, `print_scale` times its frame.
+    fn get(
+        &self,
+        layout: &Layout,
+        object: &LayoutObject,
+        print_scale: f64,
+    ) -> Result<Arc<Picture>, ReportError> {
         let key = object.graphic.as_ref().map_or(0, |g| g.library_key);
         let image = layout.library_images.get(&key).ok_or_else(|| {
             ReportError::unsupported(format!(
@@ -1826,8 +1844,8 @@ impl Pictures {
                 .as_ref()
                 .ok_or_else(|| ReportError::unsupported("A report SVG picture has no bounds"))?;
             Some(static_picture::raster_size(
-                bounds.width(),
-                bounds.height(),
+                bounds.width() * print_scale,
+                bounds.height() * print_scale,
             )?)
         } else {
             None
@@ -4101,7 +4119,7 @@ pub(crate) fn prepare_page(
             }
             let style = crate::document::formatted_style(layout, object, &conditions, 1, state);
             let mut picture = if object.kind() == ObjectKind::Graphic {
-                Some(pictures.get(layout, object)?)
+                Some(pictures.get(layout, object, plan.paper.scale)?)
             } else {
                 None
             };
@@ -4115,7 +4133,8 @@ pub(crate) fn prepare_page(
             let room = |frame: &Rect| frame.width() > 0.0 && frame.height() > 0.0;
             if let (Some(data), Some(frame)) = (&data, frame.filter(room)) {
                 let format = object.graphic_format.unwrap_or_default();
-                match pictures.container(&data.data, format, (frame.width(), frame.height())) {
+                let size = (frame.width(), frame.height());
+                match pictures.container(&data.data, format, size, plan.paper.scale) {
                     Some(Some((shown, [x, y, w, h]))) => {
                         picture = Some(shown);
                         let image = Rect {
@@ -4159,7 +4178,10 @@ pub(crate) fn prepare_page(
                     let tint = (component.icon_color)
                         .or(component.color)
                         .or(style.border_color[0]);
-                    let side = (square.width() * ICON_SCALE).ceil().clamp(1.0, 1024.0) as u32;
+                    // Rasterized for the size it prints at.
+                    let side = (square.width() * ICON_SCALE * plan.paper.scale)
+                        .ceil()
+                        .clamp(1.0, 1024.0) as u32;
                     let picture = pictures.icon(layout, object, button.library_key, tint, side)?;
                     Some((picture, square))
                 }
@@ -5306,7 +5328,7 @@ pub(crate) mod tests {
             },
         );
         let object = picture(1, 77, at(0.0, 0.0, 8.0, 8.0));
-        let in_line = Pictures::default().get(&layout, &object).unwrap();
+        let in_line = Pictures::default().get(&layout, &object, 1.0).unwrap();
         let apart = Pictures::drawn_apart();
         let (sender, repaint) = std::sync::mpsc::channel();
         apart.on_drawn(|| {
@@ -5314,16 +5336,19 @@ pub(crate) mod tests {
                 let _ = sender.send(());
             })
         });
-        assert_eq!(apart.get(&layout, &object).unwrap_err().code, -1);
+        assert_eq!(apart.get(&layout, &object, 1.0).unwrap_err().code, -1);
         repaint
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("drawn");
-        let drawn = apart.get(&layout, &object).unwrap();
+        let drawn = apart.get(&layout, &object, 1.0).unwrap();
         assert_eq!(
             (drawn.width, drawn.height, &drawn.rgba),
             (in_line.width, in_line.height, &in_line.rgba)
         );
-        assert!(Arc::ptr_eq(&apart.get(&layout, &object).unwrap(), &drawn));
+        assert!(Arc::ptr_eq(
+            &apart.get(&layout, &object, 1.0).unwrap(),
+            &drawn
+        ));
         assert!(repaint.try_recv().is_err());
     }
 
@@ -5374,6 +5399,23 @@ pub(crate) mod tests {
         assert_eq!(drawn.unwrap_err().message, "after the clear");
     }
 
+    /// A container photo is kept at 300 pixels an inch of the size it
+    /// prints at: a 72-point frame takes 300 pixels at 100%, the source's
+    /// 1,200 at 400% and 150 at 50% (Page Setup's scale, #112).
+    #[test]
+    fn container_photos_keep_their_detail_at_the_size_they_print() {
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(1200, 1200, image::Rgba([0, 0, 255, 255]))
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let png = png.into_inner();
+        for (scale, side) in [(1.0, 300), (4.0, 1200), (0.5, 150)] {
+            let (picture, _) =
+                decode_container_picture(&png, GraphicFormat(7), (72.0, 72.0), scale).unwrap();
+            assert_eq!((picture.width, picture.height), (side, side), "{scale}");
+        }
+    }
+
     #[test]
     fn pictures_decode_like_browse_and_never_reuse_another_layouts_bytes() {
         // Browse's loader premultiplies the same oriented straight samples.
@@ -5420,21 +5462,24 @@ pub(crate) mod tests {
         );
         let object = first.objects.get(41).unwrap().clone();
         let pictures = Pictures::default();
-        let decoded = pictures.get(&first, &object).unwrap();
+        let decoded = pictures.get(&first, &object, 1.0).unwrap();
         assert!(Arc::ptr_eq(
             &decoded,
-            &pictures.get(&first, &object).unwrap()
+            &pictures.get(&first, &object, 1.0).unwrap()
         ));
-        let reused = pictures.get(&second, &object).unwrap();
+        let reused = pictures.get(&second, &object, 1.0).unwrap();
         assert_eq!((reused.width, reused.height), (64, 16));
-        assert_eq!(pictures.get(&first, &object).unwrap().rgba, decoded.rgba);
+        assert_eq!(
+            pictures.get(&first, &object, 1.0).unwrap().rgba,
+            decoded.rgba
+        );
 
         // SVG cache identity includes the raster size as well as source bytes.
         let small = first.objects.get(504).unwrap().clone();
         let mut large = small.clone();
         large.bounds.as_mut().unwrap().right += 28.0;
-        let small_image = pictures.get(&first, &small).unwrap();
-        let large_image = pictures.get(&first, &large).unwrap();
+        let small_image = pictures.get(&first, &small, 1.0).unwrap();
+        let large_image = pictures.get(&first, &large, 1.0).unwrap();
         assert_eq!((small_image.width, small_image.height), (112, 40));
         assert_eq!((large_image.width, large_image.height), (224, 40));
         assert!(
@@ -5539,7 +5584,7 @@ pub(crate) mod tests {
                     .library_images
                     .insert(PNG_KEY, LibraryImage { format, data });
             }
-            let error = Pictures::default().get(&layout, &object).unwrap_err();
+            let error = Pictures::default().get(&layout, &object, 1.0).unwrap_err();
             assert!(error.message.contains(reason), "{}", error.message);
         }
     }

@@ -33,6 +33,13 @@ pub enum Orientation {
 /// (#871), and 1% to 1000% is OpenMaker's choice.
 pub const SCALES: std::ops::RangeInclusive<f64> = 0.01..=10.0;
 
+/// Whether `scale` is in [`SCALES`], to the precision of the f32 a page
+/// format stores it in: 1% stored reads 0.009999999776.
+pub fn valid_scale(scale: f64) -> bool {
+    let (low, high) = (*SCALES.start() as f32, *SCALES.end() as f32);
+    (low..=high).contains(&(scale as f32))
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PaperSettings {
     /// Unrotated sheet dimensions, in points (72 points = one inch).
@@ -67,7 +74,7 @@ impl PaperSettings {
                 "Paper dimensions must be between 72 and 14400 points (1–200 inches).".into(),
             );
         }
-        if !SCALES.contains(&self.scale) {
+        if !valid_scale(self.scale) {
             return Err("Scale must be between 1% and 1000%.".into());
         }
         Ok(())

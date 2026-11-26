@@ -173,12 +173,16 @@ pub(crate) fn show(
     if let Some(offset) = frame.offset() {
         scroll = scroll.scroll_offset(offset);
     }
-    let (sheet_width, sheet_height) = plan.paper.sheet();
+    let (draw, magnify) = drawn(plan.paper.scale);
+    let gutter = 16.0 / magnify;
     let output = scroll.stick_to_bottom(frame.at_end()).show(ui, |ui| {
         zoom::show(
             ui,
-            vec2(sheet_width as f32 + 32.0, sheet_height as f32 + 32.0),
-            zoom.factor(),
+            vec2(
+                plan.paper.width as f32 * draw + 2.0 * gutter,
+                plan.paper.height as f32 * draw + 2.0 * gutter,
+            ),
+            zoom.factor() * magnify,
             |ui| paint(ui, &scene, &plan.paper),
         );
         frame.hold(ui);
@@ -198,14 +202,29 @@ fn color(c: Color) -> Color32 {
         (c.alpha * 255.0) as u8,
     )
 }
-/// `r`, in the page's layout points, on the sheet Preview draws: Page
-/// Setup's `scale` times it, inside the 16-point gutter.
-fn sheet_rect(r: &om_layout::Rect, scale: f32) -> Rect {
+/// How Preview shows a page at Page Setup's `scale`: the scene's layout
+/// points drawn times the first, and that drawing magnified by the second
+/// with the zoom. Up to 100% the scene is drawn on the sheet, so text is
+/// rasterized at the size it prints; above it, at its own size and
+/// magnified, as zooming in does, since egui drops glyphs rasterized
+/// past 1,024 pixels.
+fn drawn(scale: f64) -> (f32, f32) {
+    let scale = scale as f32;
+    if scale > 1.0 {
+        (1.0, scale)
+    } else {
+        (scale, 1.0)
+    }
+}
+
+/// `r`, in the page's layout points, drawn `draw` times its size inside
+/// the gutter (`gutter` drawn points).
+fn sheet_rect(r: &om_layout::Rect, draw: f32, gutter: f32) -> Rect {
     Rect::from_min_max(
-        pos2(r.left as f32 * scale + 16.0, r.top as f32 * scale + 16.0),
+        pos2(r.left as f32 * draw + gutter, r.top as f32 * draw + gutter),
         pos2(
-            r.right as f32 * scale + 16.0,
-            r.bottom as f32 * scale + 16.0,
+            r.right as f32 * draw + gutter,
+            r.bottom as f32 * draw + gutter,
         ),
     )
 }
@@ -402,16 +421,17 @@ pub(crate) fn paint(
     scene: &report::ReportPage,
     paper: &om_layout::pagination::PageSize,
 ) {
-    // The scene is in the page's layout points; it is drawn on the sheet,
-    // at Page Setup's scale, so text is laid out at the size it prints.
-    let scale = paper.scale as f32;
-    let rect = |r: &om_layout::Rect| sheet_rect(r, scale);
+    // The scene is in the page's layout points, drawn at Page Setup's
+    // scale ([`drawn`]); the gutter and the guide look the same at every
+    // scale.
+    let (scale, magnify) = drawn(paper.scale);
+    let gutter = 16.0 / magnify;
+    let rect = |r: &om_layout::Rect| sheet_rect(r, scale, gutter);
     let painter = ui.painter().clone();
     painter.rect_filled(ui.max_rect(), CornerRadius::ZERO, theme::PRINT_WORKSPACE);
-    let (sheet_width, sheet_height) = paper.sheet();
     let page = Rect::from_min_size(
-        pos2(16.0, 16.0),
-        vec2(sheet_width as f32, sheet_height as f32),
+        pos2(gutter, gutter),
+        vec2(paper.width as f32 * scale, paper.height as f32 * scale),
     );
     painter.rect_filled(page, CornerRadius::ZERO, Color32::WHITE);
     for part in &scene.parts {
@@ -515,7 +535,7 @@ pub(crate) fn paint(
                         // rasterizes the bundled font glyphs at those positions,
                         // each part of the line in its color.
                         for (glyphs, part_color, start) in line.parts() {
-                            let mut x = start as f32 * scale + 16.0;
+                            let mut x = start as f32 * scale + gutter;
                             for (_, advance, ch) in glyphs {
                                 let galley = painter.layout_no_wrap(
                                     ch.to_string(),
@@ -528,7 +548,7 @@ pub(crate) fn paint(
                                     .and_then(|r| r.glyphs.first().map(|g| r.pos.y + g.pos.y))
                                     .unwrap_or(0.0);
                                 painter.galley(
-                                    pos2(x, line.baseline as f32 * scale + 16.0 - baseline),
+                                    pos2(x, line.baseline as f32 * scale + gutter - baseline),
                                     galley,
                                     color(part_color),
                                 );
@@ -568,9 +588,9 @@ pub(crate) fn paint(
     ] {
         painter.add(egui::Shape::dashed_line(
             &[a, b],
-            Stroke::new(0.7, MARGIN_GUIDE),
-            2.0,
-            3.0,
+            Stroke::new(0.7 / magnify, MARGIN_GUIDE),
+            2.0 / magnify,
+            3.0 / magnify,
         ));
     }
 }
