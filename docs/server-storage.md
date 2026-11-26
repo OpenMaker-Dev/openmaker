@@ -1661,16 +1661,24 @@ staged records left staged
   commit's answer, and the upload went with it. Answered done, the same
   commit sent again would report as stored what is not, which FileMaker
   Pro's user then believes. The connection's temporary area keeps such a
-  record's path with the commit's transaction (`writes::TempArea`),
-  recorded once the commit's outcome is known, so that each record the
-  commit was lent ends up staged again, stored, or kept there; a commit of
-  that transaction naming it with nothing staged is refused. The record is
-  forgotten only:
-  - when it is uploaded again (op14), in any transaction;
+  record's path with the commit's transaction, one entry for each record
+  and transaction (`writes::TempArea`), recorded once the commit's outcome
+  is known, so that each record the commit was lent ends up staged again,
+  stored, or kept there; a commit of that transaction naming it with
+  nothing staged is refused. The entry is forgotten only:
+  - when a commit of that transaction that stores an upload of the record
+    is saved;
   - when the transaction is given up: op65 for it, or the op65 that
     releases all of the connection's locks;
   - when a commit of that transaction naming it for deletion is saved;
   - with the session (the file closed, logout, the session's end).
+
+  Uploading the record again forgets nothing: until it is stored, that
+  upload can be lost too, to another transaction's failed save, and the
+  first transaction's commit sent again would then be answered done
+  ([#1113](https://github.com/OpenMaker-Dev/openmaker/issues/1113)). A
+  store by another transaction forgets nothing either: that transaction's
+  upload is not the one this transaction's commit lost.
 
   op65 forgets whether or not the transaction held a lock: it is the
   client giving the transaction up (FileMaker Pro sends it when its user
@@ -1682,8 +1690,8 @@ staged records left staged
   the "done" a lost upload must not get, where refusing too long only asks
   the client to upload the record again. The price: after a failed save of
   a record, a later commit of that record in the same transaction with
-  nothing uploaded is refused until the record is uploaded again or the
-  transaction is given up, even if the client unlocked it meanwhile; no
+  nothing uploaded is refused until the transaction stores an upload of
+  the record or is given up, even if the client unlocked it meanwhile; no
   client is known to send one (OpenMaker's choice). A deletion by another
   session forgets nothing: the refusal stays true.
   Each entry is charged to the client's upload memory, at most what its
