@@ -416,6 +416,19 @@ copying the next lower or higher value, container fields, Relookup Field
 Contents, which of several matches an unsorted relationship gives, and
 additional scripted and import cases remain unmeasured here.
 
+## Reading a global from an unrelated table
+
+Claris documents that a calculation can read a global field from any
+context of the same file, including an unrelated table occurrence.
+[Global fields](https://help.claris.com/en/pro-help/content/global-fields.html) and
+[calculation context](https://help.claris.com/en/pro-help/content/calculation-evaluation-context.html).
+In FileMaker Pro 26.1.1, a local Text field with calculated auto-enter
+copied an unrelated table's Text global at New Record. An unrelated edit
+kept that value. Changing the global affected subsequent new records,
+and the earlier record kept its stored value. The same read and copy
+worked with a saved global and zero records in its source table.
+[Native Browse check](https://github.com/OpenMaker-Dev/openmaker/issues/1051).
+
 ## Calculations over related fields
 
 **Stored calculated match fields (#1204).** Claris's

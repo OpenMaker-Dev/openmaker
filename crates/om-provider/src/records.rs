@@ -866,7 +866,16 @@ impl NativeProvider {
     ) -> Result<WriteContext, DataError> {
         use om_data::host::session::selector;
         let reads = plan.context_reads();
-        let mut context = WriteContext::default();
+        let mut context = WriteContext {
+            other_globals: plan.read_other_globals(|table| {
+                self.read_calc_data(&[om_data::host::CalcNeed::Globals { table }])
+                    .ok()?
+                    .globals
+                    .get(&table)
+                    .cloned()
+            }),
+            ..Default::default()
+        };
         if layout.is_some() && self.local.is_some() {
             context.sequence = WriteSequence::Local;
         }

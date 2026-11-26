@@ -153,7 +153,9 @@ OpenMaker does the same with the window's record session
   instead.
 - **The commit** writes the record, and what was changed through it,
   together (op14, op70) and reads them back
-  (`DataProvider::commit_record_session`). The related files' records it
+  (`DataProvider::commit_record_session`). Committing a held new record
+  without further edits also reloads the window's page, so the next edit
+  uses the stored record version. The related files' records it
   wrote, a row of a related file's table typed into the record's portal
   among them, are committed in their files before this file's (#1119).
   Each file takes part in its own way. A related file on this file's
@@ -818,6 +820,16 @@ remain unsupported for global auto-entry. OpenMaker keeps local globals
 in memory for the session. See the native
 observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
 and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
+
+A local Text auto-enter calculation can read a single-repetition plain
+Text global from another table in the same file, through an unrelated
+occurrence. The field is read from the session, independent of the
+table's records. A held new record keeps the value read at creation. A
+formula that reads a missing or styled session value refuses the write.
+FileMaker Pro 26.1.1 copied the value at New Record, including with zero
+source rows.
+[Claris global-field documentation](https://help.claris.com/en/pro-help/content/global-fields.html)
+and [the timing check](https://github.com/OpenMaker-Dev/openmaker/issues/1051).
 
 Local desktop files can auto-enter Creation Time into a single-repetition
 Text field when the file and the desktop's configured system time format
