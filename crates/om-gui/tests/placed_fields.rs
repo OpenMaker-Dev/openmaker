@@ -2164,6 +2164,69 @@ fn part_setup_turns_on_the_bodys_page_break() {
     assert_eq!(parts[0].flags & PAGE_BREAK_BEFORE, PAGE_BREAK_BEFORE);
 }
 
+/// A retyped text whose Save Layout meets a layout another client changed
+/// (306) stays unsaved: the alert says it is kept, closing still waits for
+/// Save or Revert Layout, and Revert Layout discards it (#1048's re-check).
+#[test]
+fn a_retyped_text_is_kept_when_save_layout_meets_a_changed_layout() {
+    let mut tree = form_tree(encode::text_object(1, &rect(110.0, 20.0, 120.0, 20.0)));
+    let layout = uint_segment(fixture::LAYOUT);
+    tree.put(
+        &[&[4], &[5], &layout, &[5], &[1], &[1]],
+        om_scripts::text_node(&[], "Due"),
+    );
+    let file = fixture::TempFile::from_tree("gui-retype-conflict", &tree);
+    let hosted = hosted::host_file(
+        "retype-conflict",
+        Path::new(&file.0),
+        fixture::FILE,
+        (ACCOUNT, PASSWORD),
+    );
+    let mut app = open_window(&hosted);
+    common::click(&mut app, "Edit Layout");
+    common::wait_until(&mut app, "the layout canvas", |app| {
+        app.query_by_label("Text (object 1)").is_some()
+    });
+    let at = app.get_by_label("Text (object 1)").rect().center();
+    common::workspace::double_click_at(&mut app, at);
+    common::wait_until(&mut app, "the text being typed", |app| {
+        app.query_by_label("Text being typed").is_some()
+    });
+    app.event(egui::Event::Text(" date".into()));
+    app.run_steps(2);
+    app.key_press(egui::Key::Enter);
+    app.run_steps(2);
+    // Another client adds a Footer: the layout's revision moves on.
+    let mut other = hosted.opened();
+    let shown = other.layout_member(fixture::LAYOUT).unwrap().unwrap();
+    other
+        .set_layout_parts(om_data::layout_placement::PartsChange {
+            layout: u32::try_from(fixture::LAYOUT).unwrap(),
+            expected: catalog_revision(&shown),
+            change: om_data::layout_placement::PartChange::Add {
+                part_type: 7,
+                size: 22.0,
+            },
+        })
+        .unwrap();
+    other.close();
+    save_layout(&mut app);
+    common::wait_until(&mut app, "the refusal", |app| app.state().error().is_some());
+    let error = app.state().error().unwrap().to_owned();
+    assert!(error.contains("are kept"), "{error}");
+    assert!(app.state().layout_unsaved(), "the retyped text is kept");
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "the layout read again", |app| {
+        app.state().is_settled()
+    });
+    app.run_steps(5);
+    assert!(app.state().layout_unsaved(), "still kept after the read");
+    common::open_menu(&mut app, "Layouts");
+    common::click(&mut app, "Revert Layout");
+    app.run_steps(2);
+    assert!(!app.state().layout_unsaved());
+}
+
 /// Part Setup's Create adds a Header above the body, which moves the body's
 /// field down by its 110 points, and Delete removes it again, each with the
 /// operation `om-author`'s `change_parts` uses

@@ -2524,8 +2524,9 @@ operation `om-author`'s `set_field_control` uses
 controls") after any deletions, one object at a time on the layout the one
 before made, then places a new field and sends its control. A list control
 without a value list is not sent: an alert asks for one. A layout changed
-since it was shown is refused (306): the control changes are dropped and
-the layout read again; another refusal keeps them. Revert Layout drops
+since it was shown is refused (306): the layout is read again, and the
+control changes, like retyped texts, are kept (any refusal keeps them: a
+refused save never drops them; the alert says so). Revert Layout drops
 them. When the layout is read again without the object (another window
 or client deleted it), the change stays, as a retyped text's words do: an
 alert says it cannot be saved, Save Layout is refused for it, and closing

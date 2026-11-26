@@ -6587,12 +6587,11 @@ impl OpenMakerApp {
             self.w.layout_workspace.drop_moves();
             if result.is_err() {
                 self.w.layout_workspace.drop_deletions();
-                self.w.layout_workspace.drop_controls();
-                self.w.layout_workspace.drop_words();
             }
         }
         if let Err(err) = &result {
             self.fail(err);
+            self.note_kept_drafts(err);
         }
         if done {
             self.reread_file_layouts(ctx);
@@ -6631,10 +6630,9 @@ impl OpenMakerApp {
     /// The host's answer to Save Layout's control for the first field object
     /// in [`crate::layout_canvas::ControlChanges`], as
     /// [`Self::objects_framed`]: saved, the next object's control (or the
-    /// new object) is sent on the layout as now stored; refused because the
-    /// layout changed (306), every control change is dropped; either way
-    /// every window of the file reads the layout again. Another refusal
-    /// keeps them, to be changed.
+    /// new object) is sent on the layout as now stored; refused, the control
+    /// and text changes are kept (`note_kept_drafts`), and after a 306 every
+    /// window of the file reads the layout again.
     fn control_set(
         &mut self,
         ctx: &egui::Context,
@@ -6645,16 +6643,12 @@ impl OpenMakerApp {
         let sent = controls.revision;
         let object = controls.objects.keys().next().copied();
         let done = layout_change_done(&result);
-        match (&result, object) {
-            (Ok(_), Some(object)) => self.w.layout_workspace.control_sent(object),
-            (Err(_), _) if done => {
-                self.w.layout_workspace.drop_controls();
-                self.w.layout_workspace.drop_words();
-            }
-            _ => {}
+        if let (Ok(_), Some(object)) = (&result, object) {
+            self.w.layout_workspace.control_sent(object);
         }
         if let Err(err) = &result {
             self.fail(err);
+            self.note_kept_drafts(err);
         }
         if done {
             self.reread_file_layouts(ctx);
@@ -6667,8 +6661,8 @@ impl OpenMakerApp {
     /// The host's answer to Save Layout's words for the first text object
     /// in [`crate::layout_canvas::WordChanges`], as [`Self::control_set`]:
     /// saved, the next text's words (or the new object) are sent on the
-    /// layout as now stored; refused because the layout changed (306),
-    /// every retyped text is dropped; another refusal keeps them.
+    /// layout as now stored; refused, the retyped texts are kept, as the
+    /// controls are.
     fn words_set(
         &mut self,
         ctx: &egui::Context,
@@ -6679,13 +6673,12 @@ impl OpenMakerApp {
         let sent = words.revision;
         let object = words.objects.keys().next().copied();
         let done = layout_change_done(&result);
-        match (&result, object) {
-            (Ok(_), Some(object)) => self.w.layout_workspace.words_sent(object),
-            (Err(_), _) if done => self.w.layout_workspace.drop_words(),
-            _ => {}
+        if let (Ok(_), Some(object)) = (&result, object) {
+            self.w.layout_workspace.words_sent(object);
         }
         if let Err(err) = &result {
             self.fail(err);
+            self.note_kept_drafts(err);
         }
         if done {
             self.reread_file_layouts(ctx);
@@ -6709,13 +6702,10 @@ impl OpenMakerApp {
         let done = layout_change_done(&result);
         if done {
             self.w.layout_workspace.drop_deletions();
-            if result.is_err() {
-                self.w.layout_workspace.drop_controls();
-                self.w.layout_workspace.drop_words();
-            }
         }
         if let Err(err) = &result {
             self.fail(err);
+            self.note_kept_drafts(err);
         }
         if done {
             self.reread_file_layouts(ctx);
@@ -6951,6 +6941,23 @@ impl OpenMakerApp {
 
     /// Show an error and stop waiting on whatever the Hosts dialog was doing.
     /// A lost connection shows as the banner instead.
+    /// After Save Layout's refusal: text and control changes are never what
+    /// a refused save drops. They stay unsaved (closing waits for Save or
+    /// Revert Layout), and the alert says so.
+    fn note_kept_drafts(&mut self, err: &DataError) {
+        let workspace = &self.w.layout_workspace;
+        let kept =
+            !workspace.words().objects.is_empty() || !workspace.controls().objects.is_empty();
+        if kept && !err.lost {
+            if let Some(error) = self.error.as_mut() {
+                error.push_str(
+                    " Your unsaved text and control changes are kept; Revert Layout discards \
+                     them.",
+                );
+            }
+        }
+    }
+
     fn fail(&mut self, err: &DataError) {
         if err.lost && self.w.session.is_some() {
             self.lose_connection(err);
