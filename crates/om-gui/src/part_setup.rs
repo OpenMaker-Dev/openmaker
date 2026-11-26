@@ -185,7 +185,8 @@ impl PartSetup {
         if let Some(y) = dropped_at {
             let bottom: f64 = self.parts.iter().map(|p| p.height).sum();
             // Not a number when a stored height is not one: refused.
-            let height = (y - bottom).round();
+            let below = y - bottom;
+            let height = below.round();
             // The host puts a new part before the first part ranked after
             // it, which is after the last part only when the parts are in
             // FileMaker's order.
@@ -196,7 +197,10 @@ impl PartSetup {
             };
             let last = ranks.last().copied();
             // Nothing goes after a Bottom Navigation part.
-            if !(1.0..=MAX_DROP_HEIGHT).contains(&height) || last == part_rank(13) {
+            if !(1.0..=MAX_DROP_HEIGHT).contains(&height)
+                || below > MAX_DROP_HEIGHT
+                || last == part_rank(13)
+            {
                 return Err(CANNOT_POSITION);
             }
             self.dropped = Some((height, last));
@@ -863,7 +867,7 @@ mod tests {
         let opened = dialog(&footer).creating_alone(Some(279.0)).ok().unwrap();
         assert_eq!(opened.dropped, Some((17.0, part_rank(7))));
         assert_eq!(opened.creating, Some(Some(8)), "Title Footer chosen");
-        for at in [100.0, 262.0, 262.0 + 26.0] {
+        for at in [100.0, 262.0, 262.0 + 25.25] {
             assert_eq!(
                 dialog(&footer).creating_alone(Some(at)).err(),
                 Some(CANNOT_POSITION),
