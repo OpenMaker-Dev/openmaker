@@ -232,6 +232,21 @@ of the starter templates in the FileMaker Pro installers has the bit set
 does in Browse is in script-runtime.md, Implementation notes (desktop
 client), Errors and dialogs.
 
+[O, 2026-11-26, FileMaker Pro 26.1.1 for macOS,
+[#353](https://github.com/OpenMaker-Dev/openmaker/issues/353)]
+Bit `0x2000` in the effective layout flags enables Layout Setup >
+General's **Show alerts when field isn't modifiable or no records are
+present**. On an English Tasks copy, Task Details' member and catalog
+entry flag words both moved from `0x10f3080d` to `0x10f3280d` after
+enabling the option and saving the layout. Reopen showed the checkbox
+still enabled. Clearing and saving it restored both original flag words.
+
+In Browse with zero records, clicking the same Task field with the
+option off showed no alert. With the option on, clicking showed
+"No records are present. To create a new record choose the New Record
+menu command." Typing without focus after the click with the option off
+still showed the regular focus alert.
+
 [O, 2026-11-14, FileMaker Pro 26.0.3, local disposable Tasks copies, #609]
 Bit `0x40` set means Layout Setup > Printing's **Use fixed page margins** is
 checked. On Task List, the effective flag word at both
@@ -242,7 +257,15 @@ that flag word; unchecking restored `0x10f30a0b`. Protobuf
 `LayoutDef.customMargins` (field 12 of `[4,5,<layout>,02]`) stores the
 rectangle in top/left/bottom/right order even with the option off. Pro also
 rewrote `printColumnWidth` and save metadata, so their changes do not
-identify the checkbox. With the box off and Format For set to **Any
+identify the checkbox. [O, 2026-11-25: the same copies' Task List
+`LayoutDef` re-read with `tools/fmp12_keytree.py`] Pro rewrote the stored
+`Rect` in place: top/bottom/left/right 50/60/70/80 is stored as its fields
+1-4 top 50, left 70, bottom 60, right 80. `printColumnWidth` (field 10)
+became the US Letter width less the left and right margins over
+`printColumnCount` (2): 270 with fixed 36 pt margins, 231 with 70/80, and
+288 with the box off (the printer's 18/18). Every save also wrote
+`layoutClientType` (field 17) 0 explicitly, 3 bytes the original lacked.
+With the box off and Format For set to **Any
 Printer**, Page Setup's paper help and Task List's disabled Printing fields
 read as follows [O, local disposable copies, #609]:
 
@@ -3465,11 +3488,9 @@ name 26.0.3.307a.
     set behind `Get ( FoundCount ) > 1000`), and when it computes it after
     the condition stops holding (#1023). Unmeasured; a hidden object shows
     nothing either way.
-14. FileMaker Pro 26.1.1's Layout Setup option "Show alerts when field
-    isn't modifiable or no records are present" (on in new files, off in
-    existing ones; Claris): where it is stored. No new symbol names it; a
-    `LayoutDef` flag bit is the likely place [I]. Needs a layout saved by
-    26.1.1 with the option on and off.
+14. For the Layout Setup alert option (4.2), compare the not-modifiable
+    field case and defaults on layouts created in a new file. The
+    stored flag and zero-record click case are measured.
 15. For the other 26.1.1 options (5.3.2, 5.3.4, 5.4.1): a layout saved by
     FileMaker Pro 26.1.1, to confirm the bits as stored; whether popover
     buttons offer the calculated icon; what FileMaker Pro 26.0 shows for

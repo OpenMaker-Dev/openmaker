@@ -205,8 +205,10 @@ pub struct Store {
     /// without a lock writes only where the path still leads to it (#468).
     file: Option<FileId>,
     /// Why the file may not be written, if it may not: saves fail, their
-    /// changes stay in memory ([`Store::set_read_only`]).
-    read_only: Option<ReadOnlyCause>,
+    /// changes stay in memory ([`Store::set_read_only`]). Set once, the
+    /// first cause, and shared with the hosting, which reads it without the
+    /// store's lock ([`Store::read_only_published`]).
+    read_only: Arc<std::sync::OnceLock<ReadOnlyCause>>,
 }
 
 /// Why a hosted file may not be written ([`Store::set_read_only`]).
@@ -221,9 +223,45 @@ pub enum ReadOnlyCause {
     /// Its deferred field work cannot be done, or could not be saved, and
     /// is kept (`Store::recover`, op73).
     DeferredWork,
+    /// The server's user may not write it, or its file system is
+    /// read-only ([`save_refused`]): a save, which renames a new copy over
+    /// it, would replace it all the same.
+    NotWritable,
+    /// The folder that holds it does not allow the new copy a save writes
+    /// beside it ([`save_refused`]).
+    FolderNotWritable,
+    /// Whether a save may write it could not be checked: a question of its
+    /// permissions could not be asked, or the entry at its name is not the
+    /// file loaded ([`save_refused`]; the log says which). Held read-only
+    /// all the same: nothing is written where it may be forbidden.
+    Unchecked,
     /// The store engine hosts it, which takes no changes yet
     /// (docs/server-storage.md 5, 11).
     StoreEngine,
+}
+
+impl ReadOnlyCause {
+    /// Why a file is held read-only for this cause, as the server's log,
+    /// its alerts and the Admin Console say it.
+    pub fn why(self) -> &'static str {
+        match self {
+            ReadOnlyCause::Opened => "it was opened read-only",
+            ReadOnlyCause::Unwritable => "it holds content OpenMaker cannot write back",
+            ReadOnlyCause::DeferredWork => {
+                "its deferred field work cannot be done or could not be saved"
+            }
+            ReadOnlyCause::NotWritable => {
+                "the server's user may not write the file, or its file system is read-only"
+            }
+            ReadOnlyCause::FolderNotWritable => {
+                "its folder does not allow the new copy a save writes beside it"
+            }
+            ReadOnlyCause::Unchecked => {
+                "whether a save may write it could not be checked (the server's log says why)"
+            }
+            ReadOnlyCause::StoreEngine => "the store engine hosts it, which takes no changes yet",
+        }
+    }
 }
 
 /// Deferred field work that cannot be done (an unknown work bit or field
@@ -688,6 +726,80 @@ enum Undo {
     Node(Vec<Vec<u8>>, Option<OwnedNode>),
 }
 
+/// Why this process may not save the hosted file `at`, the one it loaded
+/// (`loaded`, its device and inode), the way a save writes it, a new copy
+/// beside it renamed over it, with what the log says of it. Asked of the
+/// file's folder and entry as a save finds them, never through a link and
+/// without opening the file, so nothing is copied up, no lease is broken
+/// and no time changes: the entry must be the regular file loaded
+/// ([`Folder::entry`]); this process may not write it, or its file system
+/// is read-only (`NotWritable`, [`Folder::may_write`]); its folder does not
+/// allow the new copy (`FolderNotWritable`, [`Folder::allows_new_entries`]).
+/// Where the entry is not the file loaded, or a question could not be
+/// asked, the file is held read-only all the same, never written where it
+/// may be forbidden, for a cause that says so (`Unchecked`), the detail in
+/// what is returned. A server hosting the file asks once, as it hosts it;
+/// the desktop's host asks the same two questions as it opens a file, which
+/// it keeps open (`local::open_file`). On Windows the entry has no identity
+/// here, so it is not verified to be the file loaded.
+pub(crate) fn save_refused(at: &FileAt, loaded: Option<FileId>) -> Option<(ReadOnlyCause, String)> {
+    let unchecked = |why: String| Some((ReadOnlyCause::Unchecked, why));
+    let folder = match at.folder() {
+        Ok(folder) => folder,
+        Err(error) => {
+            return unchecked(format!(
+                "its folder could not be opened to check it: {error}"
+            ))
+        }
+    };
+    match folder.entry(at.name()) {
+        Ok(Some(entry)) if entry.regular && entry.id == loaded => {}
+        Ok(_) => {
+            return unchecked(
+                "the entry at its name is not the file it loaded, so whether a save may \
+                 write it was not asked"
+                    .to_owned(),
+            )
+        }
+        Err(error) => {
+            return unchecked(format!(
+                "whether the entry at its name is the file it loaded could not be asked: {error}"
+            ))
+        }
+    }
+    match folder.may_write(at.name()) {
+        Ok(true) => {}
+        Ok(false) => {
+            let cause = ReadOnlyCause::NotWritable;
+            return Some((cause, cause.why().to_owned()));
+        }
+        Err(error) => {
+            return unchecked(format!(
+                "whether it may be written could not be asked: {error}"
+            ))
+        }
+    }
+    match folder.allows_new_entries() {
+        Ok(true) => None,
+        Ok(false) => {
+            let cause = ReadOnlyCause::FolderNotWritable;
+            Some((cause, cause.why().to_owned()))
+        }
+        Err(error) => unchecked(format!(
+            "whether its folder allows a save's new copy could not be asked: {error}"
+        )),
+    }
+}
+
+/// Whether `error`, of opening a file for writing, says this user may not
+/// write it or its file system is read-only.
+pub(crate) fn refuses_writing(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+    )
+}
+
 /// Where a save writes the file's new copy: `<file>.omsave` beside it.
 pub(crate) fn save_copy_path(path: &Path) -> PathBuf {
     let mut temporary = path.as_os_str().to_owned();
@@ -793,7 +905,7 @@ impl Store {
             waiting: Waiting::default(),
             lock: None,
             file: None,
-            read_only: Some(cause),
+            read_only: Arc::new(std::sync::OnceLock::from(cause)),
         }
     }
 
@@ -828,7 +940,7 @@ impl Store {
             waiting: Waiting::default(),
             lock: None,
             file: None,
-            read_only: None,
+            read_only: Arc::default(),
         };
         // A file holding keys or values the writer cannot write (a reader
         // accepts longer key segments and one more level) is served but
@@ -841,7 +953,7 @@ impl Store {
                  it is hosted read-only",
                 describe(&unwritable)
             );
-            store.read_only = Some(ReadOnlyCause::Unwritable);
+            let _ = store.read_only.set(ReadOnlyCause::Unwritable);
             store.unwritable = true;
         }
         // Tables with deferred work pending (the server stopped between a
@@ -1014,27 +1126,34 @@ impl Store {
     /// changes stay in memory (a commit's are taken back,
     /// [`Store::save_commit`]).
     pub fn set_read_only(&mut self, cause: ReadOnlyCause) {
-        self.read_only.get_or_insert(cause);
+        let _ = self.read_only.set(cause);
+    }
+
+    /// The read-only cause as the store sets it, to be read without the
+    /// store's lock: the administrator's list of files reads it while a
+    /// save holds the store (`Hosted::read_only_cause`).
+    pub(crate) fn read_only_published(&self) -> Arc<std::sync::OnceLock<ReadOnlyCause>> {
+        Arc::clone(&self.read_only)
     }
 
     /// Why the file may not be written ([`Store::set_read_only`]), the
     /// first cause that made it so.
     pub fn read_only_cause(&self) -> Option<ReadOnlyCause> {
-        self.read_only
+        self.read_only.get().copied()
     }
 
     /// Serve the file as one that loaded with content the writer cannot
     /// write back (tests: such a file cannot be written to make one).
     #[cfg(all(test, debug_assertions))]
     pub(crate) fn set_unwritable_for_tests(&mut self) {
-        self.read_only = Some(ReadOnlyCause::Unwritable);
+        let _ = self.read_only.set(ReadOnlyCause::Unwritable);
         self.unwritable = true;
     }
 
     /// Whether the file may not be written: [`Store::set_read_only`], or it
     /// loaded with content the writer cannot write back.
     pub fn is_read_only(&self) -> bool {
-        self.read_only.is_some()
+        self.read_only.get().is_some()
     }
 
     /// How many saves have written the file since it was loaded. The file
@@ -1154,7 +1273,7 @@ impl Store {
         created: &mut dyn FnMut(&Path),
     ) -> std::io::Result<Folder> {
         use std::io::{Error, ErrorKind};
-        if self.read_only.is_some() {
+        if self.read_only.get().is_some() {
             return Err(Error::new(
                 ErrorKind::PermissionDenied,
                 "the file is open read-only",
@@ -1823,7 +1942,7 @@ impl Store {
     /// indexes taken out (each once) and what stays.
     pub fn drop_unwritable_indexes(&mut self) -> (Vec<Unwritable>, Vec<Unwritable>) {
         let (mut dropped, mut kept): (Vec<Unwritable>, Vec<Unwritable>) = (Vec::new(), Vec::new());
-        if self.read_only.is_some() {
+        if self.read_only.get().is_some() {
             return (dropped, kept);
         }
         loop {
@@ -3549,7 +3668,7 @@ impl Store {
             waiting: Waiting::default(),
             lock: None,
             file: None,
-            read_only: None,
+            read_only: Arc::default(),
         }
     }
 
@@ -4341,6 +4460,40 @@ pub(crate) mod tests {
         }
     }
 
+    /// The check of a hosted file's permissions is of the file the server
+    /// loaded (the reviews of #842 of github.com/OpenMaker-Dev/openmaker):
+    /// asked of its folder's entry, never through a link, and of that
+    /// file's device and inode. Another file at its name, or a link there,
+    /// holds it read-only as unchecked, saying why; the file loaded,
+    /// writable, in a writable folder, holds nothing.
+    #[cfg(unix)]
+    #[test]
+    fn the_permission_check_is_of_the_file_loaded() {
+        use crate::anchored::{file_identity, FileAt};
+        let folder = std::env::temp_dir().join(format!(
+            "om-save-refused-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("Tasks.fmp12");
+        std::fs::write(&path, b"a file").unwrap();
+        let at = FileAt::open(&path).unwrap();
+        let loaded = file_identity(&std::fs::File::open(&path).unwrap()).unwrap();
+        assert_eq!(save_refused(&at, loaded), None);
+        let (cause, why) = save_refused(&at, Some((0, 0))).unwrap();
+        assert_eq!(cause, ReadOnlyCause::Unchecked);
+        assert!(why.contains("not the file it loaded"), "{why}");
+        // A link at the name, to the very file: not followed.
+        let real = folder.join("Real.fmp12");
+        std::fs::rename(&path, &real).unwrap();
+        std::os::unix::fs::symlink(&real, &path).unwrap();
+        let (cause, why) = save_refused(&at, loaded).unwrap();
+        assert_eq!(cause, ReadOnlyCause::Unchecked);
+        assert!(why.contains("not the file it loaded"), "{why}");
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
     /// A store holding `root`, with nothing unsaved and no lock.
     pub(crate) fn store_of(root: OwnedNode) -> Store {
         let derived = Derived::new(&TreeView::new(&root, 0), Catalog::default(), "")
@@ -4368,7 +4521,7 @@ pub(crate) mod tests {
             waiting: Waiting::default(),
             lock: None,
             file: None,
-            read_only: None,
+            read_only: Arc::default(),
         }
     }
 

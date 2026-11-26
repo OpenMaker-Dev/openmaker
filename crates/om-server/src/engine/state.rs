@@ -45,6 +45,15 @@ impl FileEngine {
         file.read_store().file()
     }
 
+    /// Whether this engine saves a hosted file by writing the file it was
+    /// loaded from, a new copy renamed over it: the file engine does. An
+    /// engine that never writes its source answers `false`, and a file the
+    /// server's user may not write, or whose folder refuses a save's copy,
+    /// is then no reason to hold it read-only (`hosting::load_hosted`).
+    pub fn saves_to_source(&self) -> bool {
+        true
+    }
+
     /// Hold `file` read-only for `cause` from now on, unless it already is
     /// for another (the first cause stays, `Store::set_read_only`).
     pub(crate) fn hold_read_only(&self, file: &Hosted, cause: ReadOnlyCause) {
