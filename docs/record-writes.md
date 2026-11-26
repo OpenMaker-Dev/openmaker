@@ -993,6 +993,18 @@ is omitted. Stored self-cycles and cycles between different fields remain
 refused. This named-reference behavior is inferred from Claris's documented
 `Self` auto-entry support (auto-entry.md), without a native comparison.
 
+Local scripted Text auto-entry supports concatenating a plain Text trigger,
+a literal separator, and a one-argument helper consisting of
+`GetField ( name )`. The helper receives the name from a plain Text field
+in the same occurrence and reads another plain scalar Text field of that
+record. The named field does not trigger the rule. Ordinary unsorted
+New Record with the measured keep-existing option keeps its initial result
+through the first Commit. The replacing option evaluates on a change to
+either direct input. This covers option words `0x00000028` and
+`0x000000a8` without validation. Qualified, repeating and computed
+targets, other helper forms, and other creation contexts remain unsupported.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7205073084)
+
 **A field validated against a related-values list** (one field's values,
 "Include only related values starting from", file-metadata.md 6.4) is
 checked by the desktop at the commit (`om-provider` `related_lists.rs`).

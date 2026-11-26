@@ -17,7 +17,8 @@ A container field a formula reads is read as its data, through the
 write's container reader. An auto-entered or validation calculation may
 read one repetition of a non-container global of its own table. Other
 global reads, entry from the last visited record, summary fields, plug-in
-functions, custom functions that read fields and dependency cycles fail
+functions, custom functions that read fields outside the measured named
+Text case, and dependency cycles fail
 preflight. The supported lookups, related reads and unstored calculations
 are listed in docs/record-writes.md, Limits.
 
@@ -89,6 +90,22 @@ and `0xa8` (off). Both cases showed 0 at New Record, 25 after an explicit
 assignment, and 0 immediately on clear, with the last value stored.
 Writing an unrelated field left Amount alone. Every step returned 0.
 The off option was unmeasured in a sorted window.
+
+### GetField in a local custom auto-enter helper
+
+FileMaker Pro 26.1.1 evaluated a Text field with the formula
+`Trigger & ":" & ReadNamed ( FieldName )`, where the one-parameter
+helper was exactly `GetField ( name )`. The closed replacing and
+keep-existing definitions held `0x000000a8` and `0x00000028`.
+Ordinary New Record produced `:` in both cases. In the replacing
+case, changing a directly named field recalculated the result at once.
+Changing a field reached only by GetField did not recalculate it. The
+next direct change read that field's new value. The keep-existing case
+retained its creation value through both pre-Commit and later edits.
+The results persisted across reopen. Both scripts returned 0 at every
+step. Other helper bodies and dynamic target types were not part of
+this run.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7205073084)
 
 ## Fixed field definition
 
