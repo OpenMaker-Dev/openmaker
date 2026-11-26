@@ -12,15 +12,8 @@
 //! developer tools; they open no other windows, download nothing, and go
 //! only to http, https, data, blob, file and about URLs.
 //!
-//! The page bridge has two halves, both injected into the page's main
-//! frame only: the `FileMaker` object in the page's own script world
-//! ([`BRIDGE`]), and in a script world of OpenMaker's own ([`WORLD`]) the
-//! poster ([`BRIDGE_POSTER`]), which posts what `FileMaker` hands it to the
-//! view's message handler. The handler is registered in that world only,
-//! where no script of the page or of its frames runs, so another site's
-//! frame in the page cannot post to it (WebKitGTK does not say which frame
-//! posted a message). Messages are bounded on this thread, as they arrive
-//! ([`MessageBudget`]).
+//! The view itself, with the page bridge, is `webkit.rs`'s, which the
+//! Wayland backend's page host makes too.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -30,13 +23,7 @@ use std::time::Duration;
 
 use gtk::glib;
 use gtk::prelude::*;
-use javascriptcore::{ContextExt as _, ValueExt as _};
-use webkit2gtk::{
-    UserContentInjectedFrames, UserContentManagerExt as _, UserScript, UserScriptInjectionTime,
-    WebViewExt as _,
-};
-use wry::dpi::{PhysicalPosition, PhysicalSize};
-use wry::{WebView, WebViewBuilder, WebViewBuilderExtUnix, WebViewExtUnix};
+use wry::WebViewExtUnix as _;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
     ConfigureWindowAux, ConnectionExt as _, CreateWindowAux, InputFocus, WindowClass,
@@ -44,9 +31,9 @@ use x11rb::protocol::xproto::{
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
+use super::webkit::{self, Page};
 use super::{
-    allowed, Backend, Event, Geometry, MessageBudget, NativeParent, Navigation, Unavailable,
-    ViewSpec, BRIDGE, BRIDGE_POSTER, MAX_MESSAGE,
+    Backend, Event, Geometry, MessageBudget, NativeParent, Navigation, Unavailable, ViewSpec,
 };
 
 enum Command {
@@ -139,11 +126,6 @@ fn x11_libraries() -> bool {
         && XInput2::open().is_ok()
         && xkbcommon_dl::x11::xkbcommon_x11_option().is_some()
 }
-
-/// The bridge's message handler (`window.webkit.messageHandlers.openmaker`).
-const HANDLER: &str = "openmaker";
-/// The script world the handler and the bridge's poster are in.
-const WORLD: &str = "openmaker-bridge";
 
 /// How long the app waits, once, for GTK to start.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -264,6 +246,12 @@ impl Events {
             self.ctx.request_repaint();
         }
     }
+
+    /// These events as a view's sink.
+    fn sink(&self) -> webkit::Events {
+        let events = self.clone();
+        std::sync::Arc::new(move |event| events.send(event))
+    }
 }
 
 struct Hosted {
@@ -271,11 +259,8 @@ struct Hosted {
     window: u32,
     gtk_window: gtk::Window,
     fixed: gtk::Fixed,
-    webview: WebView,
-    generation: Rc<Cell<u64>>,
-    active_generation: Rc<Cell<u64>>,
+    page: Page,
     shown: bool,
-    zoom: f64,
 }
 
 thread_local! {
@@ -387,54 +372,16 @@ impl State {
                 navigation,
             } => {
                 if let Some(hosted) = self.views.get(&view) {
-                    hosted.generation.set(generation);
-                    let webview = &hosted.webview;
-                    let page = webview.webview();
-                    let unchanged = matches!(&navigation, Navigation::Back) && !page.can_go_back()
-                        || matches!(&navigation, Navigation::Forward) && !page.can_go_forward();
-                    if unchanged {
-                        // WebKit emits no load signal for a history no-op.
-                        // Adopt an in-flight load too, so its completion still
-                        // belongs to the registry's latest generation.
-                        hosted.active_generation.set(generation);
-                        self.events.send(if page.is_loading() {
-                            Event::LoadStarted { view, generation }
-                        } else {
-                            Event::Loaded { view, generation }
-                        });
-                        return;
-                    }
-                    let result = match navigation {
-                        Navigation::Load(url) => webview.load_url(&url),
-                        Navigation::Reload => webview.reload(),
-                        Navigation::Back => webview.go_back(),
-                        Navigation::Forward => webview.go_forward(),
-                    };
-                    if let Err(error) = result {
-                        self.events.send(Event::Failed {
-                            view,
-                            generation,
-                            reason: error.to_string(),
-                        });
-                    }
+                    hosted
+                        .page
+                        .navigate(view, generation, navigation, &self.events.sink());
                 }
             }
             Command::Evaluate { view, call, script } => {
-                let Some(hosted) = self.views.get(&view) else {
-                    return;
-                };
-                let events = self.events.clone();
-                let result = hosted
-                    .webview
-                    .evaluate_script_with_callback(&script, move |result| {
-                        events.send(Event::Evaluated { view, call, result });
-                    });
-                if result.is_err() {
-                    self.events.send(Event::Evaluated {
-                        view,
-                        call,
-                        result: String::new(),
-                    });
+                if let Some(hosted) = self.views.get(&view) {
+                    hosted
+                        .page
+                        .evaluate(view, call, &script, &self.events.sink());
                 }
             }
             Command::ReleaseFocus { parent } => self.release_focus(parent),
@@ -443,10 +390,10 @@ impl State {
                     let Hosted {
                         window,
                         gtk_window,
-                        webview,
+                        page,
                         ..
                     } = hosted;
-                    drop(webview);
+                    drop(page);
                     let released = Rc::new(Cell::new(false));
                     let flag = Rc::clone(&released);
                     gtk_window.connect_destroy(move |_| flag.set(true));
@@ -468,7 +415,9 @@ impl State {
     /// Give the X11 input focus back to `parent` when one of the views (or
     /// a window inside one) has it.
     fn release_focus(&self, parent: NativeParent) {
-        let NativeParent::X11(parent) = parent;
+        let NativeParent::X11(parent) = parent else {
+            return;
+        };
         let Ok(parent) = u32::try_from(parent) else {
             return;
         };
@@ -505,7 +454,9 @@ impl State {
     }
 
     fn create(&mut self, view: u64, parent: NativeParent, spec: ViewSpec) -> Result<(), String> {
-        let NativeParent::X11(parent) = parent;
+        let NativeParent::X11(parent) = parent else {
+            return Err("not an X11 window".into());
+        };
         let parent = u32::try_from(parent).map_err(|_| "not an X11 window id".to_owned())?;
         let x11 = &self.x11;
         let [x, y, width, height] = spec.geometry.frame;
@@ -541,101 +492,36 @@ impl State {
         let fixed = gtk::Fixed::new();
         gtk_window.add(&fixed);
 
-        let [cx, cy, cw, ch] = spec.geometry.content;
-        let loads = self.events.clone();
-        let messages = self.events.clone();
-        // The page loads once the bridge is in place (below): its first
-        // document gets both halves.
-        let mut builder = WebViewBuilder::new()
-            .with_incognito(true)
-            .with_devtools(false)
-            .with_bounds(wry::Rect {
-                position: PhysicalPosition::new(cx, cy).into(),
-                size: PhysicalSize::new(cw.max(1) as u32, ch.max(1) as u32).into(),
-            })
-            .with_navigation_handler(|url| allowed(&url))
-            .with_new_window_req_handler(|_, _| wry::NewWindowResponse::Deny)
-            .with_download_started_handler(|_, _| false);
-        if spec.scripts {
-            builder = builder.with_initialization_script(BRIDGE);
-        }
-        let webview = builder.build_gtk(&fixed).map_err(|e| e.to_string())?;
-        let page = webview.webview();
-        let generation = Rc::new(Cell::new(0));
-        let requested = Rc::clone(&generation);
-        let active_generation = Rc::new(Cell::new(0));
-        let active = Rc::clone(&active_generation);
-        // wry's Started maps to Committed on GTK. Use WebKit's real
-        // provisional-load signal, and tag completions with the generation
-        // that started that load rather than a later queued navigation.
-        page.connect_load_changed(move |page, event| match event {
-            webkit2gtk::LoadEvent::Started => {
-                active.set(requested.get());
-                loads.send(Event::LoadStarted {
-                    view,
-                    generation: active.get(),
-                });
-            }
-            webkit2gtk::LoadEvent::Finished if !page.is_loading() => {
-                loads.send(Event::Loaded {
-                    view,
-                    generation: active.get(),
-                });
-            }
-            _ => {}
-        });
-        if spec.scripts {
-            let manager = page
-                .user_content_manager()
-                .ok_or_else(|| "the page has no content manager".to_owned())?;
-            manager.add_script(&UserScript::for_world(
-                BRIDGE_POSTER,
-                UserContentInjectedFrames::TopFrame,
-                UserScriptInjectionTime::Start,
-                WORLD,
-                &[],
-                &[],
-            ));
-            // WebKit has already copied the message into this process; only
-            // text the bridge could have posted, within the budget, goes
-            // further.
-            let budget = self.budget.clone();
-            manager.connect_script_message_received(Some(HANDLER), move |_, message| {
-                let Some(body) = message.js_value().as_ref().and_then(bridge_text) else {
-                    return;
-                };
-                if budget.admit(&body) {
-                    messages.send(Event::Message { view, body });
-                }
-            });
-            if !manager.register_script_message_handler_in_world(HANDLER, WORLD) {
-                return Err("the page's message handler could not be registered".into());
-            }
-        }
-        webview.load_url(&spec.url).map_err(|e| e.to_string())?;
-        // "Allow interaction with web viewer content" off: the page takes
-        // no pointer or keyboard input.
-        page.set_sensitive(spec.interactive);
-        page.set_can_focus(spec.interactive);
+        let page = Page::new(
+            &fixed,
+            webkit::Spec {
+                view,
+                url: spec.url,
+                bounds: spec.geometry.content,
+                interactive: spec.interactive,
+                scripts: spec.scripts,
+                budget: Some(self.budget.clone()),
+            },
+            &self.events.sink(),
+        )?;
         if spec.interactive {
             // Without a window manager to give it the focus, a click in the
             // page puts the X11 input focus in its window, so keys reach it.
             let x11 = Rc::clone(&self.x11);
-            page.connect_button_press_event(move |_, _| {
-                let _ = x11.set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME);
-                let _ = x11.flush();
-                glib::Propagation::Proceed
-            });
+            page.webview
+                .webview()
+                .connect_button_press_event(move |_, _| {
+                    let _ = x11.set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME);
+                    let _ = x11.flush();
+                    glib::Propagation::Proceed
+                });
         }
         let mut hosted = Hosted {
             window,
             gtk_window,
             fixed,
-            webview,
-            generation,
-            active_generation,
+            page,
             shown: false,
-            zoom: 1.0,
         };
         place(&self.x11, &mut hosted, spec.geometry, spec.visible);
         self.views.insert(view, hosted);
@@ -662,13 +548,10 @@ fn place(x11: &RustConnection, hosted: &mut Hosted, geometry: Geometry, visible:
         hosted
             .gtk_window
             .size_allocate(&gtk::Allocation::new(0, 0, width / scale, height / scale));
-        let page = hosted.webview.webview();
+        let page = hosted.page.webview.webview();
         page.set_size_request((cw / scale).max(1), (ch / scale).max(1));
         hosted.fixed.move_(&page, cx / scale, cy / scale);
-        if (geometry.zoom - hosted.zoom).abs() > f64::EPSILON {
-            let _ = hosted.webview.zoom(geometry.zoom);
-            hosted.zoom = geometry.zoom;
-        }
+        hosted.page.zoom(geometry.zoom);
     }
     if shown != hosted.shown {
         if shown {
@@ -682,69 +565,10 @@ fn place(x11: &RustConnection, hosted: &mut Hosted, geometry: Geometry, visible:
     }
 }
 
-/// The text of a message a page posted to the bridge's handler, if it can
-/// be a bridge message: a string of ASCII without a NUL, which is all the
-/// bridge posts (`encodeURIComponent`'s output), no longer than
-/// [`MAX_MESSAGE`]. Its length is read before it is copied out, so one too
-/// long is not copied; one JavaScriptCore cannot convert (an unpaired
-/// surrogate) is `None`.
-fn bridge_text(value: &javascriptcore::Value) -> Option<String> {
-    if !value.is_string() {
-        return None;
-    }
-    let units = utf16_length(value).filter(|&units| units <= MAX_MESSAGE)?;
-    // As bytes, the string's whole length, where a C string would stop at
-    // a NUL. Their number first, so that no more than the limit is read;
-    // ASCII has as many bytes as units. A raw NUL is never the bridge's,
-    // which encodes one as `%00`.
-    let bytes = value.to_string_as_bytes()?;
-    if bytes.len() != units || !bytes.is_ascii() || bytes.contains(&0) {
-        return None;
-    }
-    std::str::from_utf8(&bytes).ok().map(str::to_owned)
-}
-
-/// A JavaScript string's length in UTF-16 code units, which is at most its
-/// length in UTF-8 bytes, read in JavaScript without copying the string.
-fn utf16_length(value: &javascriptcore::Value) -> Option<usize> {
-    let length = value
-        .context()?
-        .evaluate("(function (text) { return text.length; })")?;
-    let units = length
-        .function_callv(std::slice::from_ref(value))?
-        .to_double();
-    (units.is_finite() && units >= 0.0).then_some(units as usize)
-}
-
 fn clamp_i16(v: i32) -> i16 {
     v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
 
 fn clamp_u16(v: i32) -> u16 {
     v.clamp(1, i32::from(u16::MAX)) as u16
-}
-
-#[cfg(test)]
-mod tests {
-    use javascriptcore::ContextExt as _;
-
-    /// What a page posts reaches the app only as text the bridge could have
-    /// posted, and nothing it posts makes the handler panic (a panic in a
-    /// GTK callback aborts the app).
-    #[test]
-    fn only_text_the_bridge_could_post_is_taken_from_a_page() {
-        let context = javascriptcore::Context::new();
-        let text = |code: &str| super::bridge_text(&context.evaluate(code).expect("evaluates"));
-        let message = "openmaker-perform-script&s=a&p=%C3%A9%00&o=0";
-        assert_eq!(text(&format!("'{message}'")).as_deref(), Some(message));
-        // An unpaired surrogate, which JavaScriptCore may fail to convert,
-        // other text that is not ASCII, a raw NUL, and what is not text.
-        assert_eq!(text("'openmaker-perform-script&s=a\\uD800&p=&o=0'"), None);
-        assert_eq!(text("'openmaker-perform-script&s=\\u00e9&p=&o=0'"), None);
-        assert_eq!(text("'openmaker-perform-script&s=a&p=b\\u0000c&o=0'"), None);
-        assert_eq!(text("42"), None);
-        // Longer than a message may be, by its length alone.
-        let long = format!("'x'.repeat({})", super::MAX_MESSAGE + 1);
-        assert_eq!(text(&long), None);
-    }
 }

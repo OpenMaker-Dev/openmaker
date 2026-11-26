@@ -24,6 +24,8 @@ fn number(parent: NativeParent) -> u64 {
         NativeParent::X11(window) => window,
         #[cfg(all(feature = "web-viewer", target_os = "macos"))]
         NativeParent::AppKit(number) => number.unsigned_abs() as u64,
+        #[cfg(all(feature = "web-viewer", target_os = "linux"))]
+        NativeParent::Composited => 0,
     }
 }
 
@@ -71,6 +73,12 @@ impl Backend for Recording {
     fn poll(&mut self) -> Vec<Event> {
         std::mem::take(&mut self.0.borrow_mut().events)
     }
+    fn input(&mut self, view: u64, input: PageInput) {
+        self.0
+            .borrow_mut()
+            .commands
+            .push(format!("input {view} {input:?}"));
+    }
 }
 
 fn viewers() -> (WebViewers, Rc<RefCell<Recorded>>) {
@@ -106,6 +114,8 @@ fn placement(address: Option<&str>) -> Placement {
         record: None,
         current: true,
         zoom: 1.0,
+        input: Vec::new(),
+        hovered: false,
     }
 }
 
@@ -261,6 +271,40 @@ fn a_view_follows_its_object_until_the_object_is_no_longer_painted() {
     viewers.reconcile(&ctx, &moved);
     assert_eq!(commands(&recorded), ["destroy 3"]);
     assert_eq!(viewers.len(), 0);
+}
+
+/// A painted page (`composited`) gets the pointer's input Browse noted over
+/// it and hears the pointer leave; a press on it keeps the keyboard there,
+/// and a press elsewhere in the window takes it back.
+#[test]
+fn a_painted_page_gets_the_pointer_input_over_it() {
+    let (mut viewers, recorded) = viewers();
+    let ctx = egui::Context::default();
+    let page = placement(Some("about:blank"));
+    viewers.reconcile(&ctx, &frame(std::slice::from_ref(&page), &[]));
+    commands(&recorded);
+    let press = PageInput::Button {
+        x: 5.0,
+        y: 6.0,
+        button: 0,
+        pressed: true,
+    };
+    let over = Placement {
+        hovered: true,
+        input: vec![press],
+        ..page.clone()
+    };
+    let mut pressed = frame(std::slice::from_ref(&over), &[]);
+    pressed.pressed = true;
+    viewers.reconcile(&ctx, &pressed);
+    assert_eq!(commands(&recorded), [format!("input 1 {press:?}")]);
+    let mut elsewhere = frame(std::slice::from_ref(&page), &[]);
+    elsewhere.pressed = true;
+    viewers.reconcile(&ctx, &elsewhere);
+    assert_eq!(
+        commands(&recorded),
+        ["input 1 Leave", "release focus to 4194305"]
+    );
 }
 
 #[test]

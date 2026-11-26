@@ -28,7 +28,7 @@ struct Seen {
 fn x11(parent: &Result<NativeParent, Unavailable>) -> Option<u32> {
     match parent {
         Ok(NativeParent::X11(w)) => u32::try_from(*w).ok(),
-        Err(_) => None,
+        _ => None,
     }
 }
 

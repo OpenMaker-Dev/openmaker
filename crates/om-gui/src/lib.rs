@@ -180,6 +180,22 @@ pub fn prepare_web_viewers() {
     PREPARED.call_once(web_viewer::prepare_environment);
 }
 
+/// The page host of web viewers in native Wayland windows: the
+/// `om-gui-webview` program, which `om-gui` runs from beside itself with
+/// `OPENMAKER_WEB_VIEWER_BACKEND=wayland` (`web_viewer::host`). It fails
+/// where that backend does not exist.
+pub fn web_viewer_host() -> std::process::ExitCode {
+    #[cfg(all(feature = "web-viewer", target_os = "linux"))]
+    {
+        web_viewer::host::serve()
+    }
+    #[cfg(not(all(feature = "web-viewer", target_os = "linux")))]
+    {
+        eprintln!("om-gui-webview: this build has no Wayland web viewers");
+        std::process::ExitCode::FAILURE
+    }
+}
+
 /// Install the logger [`run`] reads the error that ends its event loop
 /// with, passed through `wrap`, as the process's logger at `level`: for a
 /// program that reads the log too (the `om-gui` program's error reports),
