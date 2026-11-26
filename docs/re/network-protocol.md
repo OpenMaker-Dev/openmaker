@@ -347,13 +347,18 @@ OpenMaker Server does with them, its own choices throughout (`om-server`'s
   key. If one certificate is shared, by every copy of a product or by a
   site's users, it proves nothing between those who share it; what is left
   is the session's id (32 random bits, in the server's log and the Admin
-  API's client list), the address, and what guessing costs: each refused
-  read on a connection without a session counts against the connection and
-  against its address (an IPv6 /64 as one), 16 each by default
-  (`JoinRefusals`). An address that has met 16 has every such read refused
-  without being looked at, and the connection closed after its answer,
-  until it earns one back every 10 s; a connection is closed at its own
-  16th. A neighbour at the same address so gets a few dozen guesses and
+  API's client list), the address, and what guessing costs: each read on a
+  connection without a session takes an attempt from its address's
+  allowance (an IPv6 /64 as one) before it is looked at, in the same step
+  that decides whether any is left, and gives it back when admitted, so
+  that however many connections an address opens at once they get no
+  more looks than the allowance; each refusal also counts against the
+  connection. The allowance is 16 per address and per connection by
+  default (`JoinRefusals`). An address that has used its 16 has every such
+  read refused without being looked at, and the connection closed after
+  its answer, until it earns one back every 10 s; a connection is closed
+  at its own 16th. A neighbour at the same address so gets a few dozen
+  guesses and
   then about one every 10 s; one that keeps it up also keeps that
   address's honest second connections from joining meanwhile (their first
   connections are untouched). FileMaker Pro met 9 refusals in a row on its
@@ -363,9 +368,16 @@ OpenMaker Server does with them, its own choices throughout (`om-server`'s
   view limits withhold to the session's own record of it. It changes
   nothing else of the session: no Login, lock, staged record, file close
   or Disconnect, and the session's change notifications wait for its own
-  connection's replies. A download it pages is continued on it alone and
-  is dropped when the session's Login of the file changes. While the file
-  is paused its reads wait, as the session's own do.
+  connection's replies. It loses a file in the same step in which the
+  session does, before the session's own request goes on: at Logout, at
+  a new Login before its password is checked, and when the file is opened
+  again or closed; a Login that succeeds gives it the new account once the
+  Login is answered. It loses everything at once when the session ends,
+  when the administrator disconnects the client and when the server closes
+  its connections, whatever the session's own connection is doing (a read
+  already admitted finishes). A download it pages is continued on it alone,
+  and goes when the session loses the file or ends. While the file is
+  paused its reads wait, as the session's own do.
 - Its requests do not keep the session alive, and it is closed after 145 s
   of silence, as a connection without a session (6.2). At most nine
   connections join one session, since FileMaker Pro opens at most 10 to a
