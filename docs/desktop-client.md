@@ -2607,15 +2607,18 @@ The revision is the one the window read when it opened the file or after
 its last placement: a layout another client changed since is refused at
 Save Layout, not shown changed before.
 
-On a decoded layout, the canvas draws and picks objects on the front tab
-or slide of each control. It starts with the stored current tab, the
-stored default tab, or the first panel, in that order. The Objects list
-still includes inactive panels and their contents. Selecting one of those
+On a decoded layout, the canvas draws saved tab labels and the styled
+front tab panel even with nothing selected. Only the front tab or
+slide's contents draw and take canvas input. The canvas starts with the
+stored current tab, the stored default tab, or the first panel, in that
+order. The Objects list still includes inactive panels and their contents.
+Selecting one of those
 rows reveals its containing panels in this window. This is
 OpenMaker's editor navigation and makes no layout changes. Tab and slide
-navigation directly on the design surface, handoff of the last Browse
-panel, and FileMaker's box selection of an entire control across its panels
-are not implemented.
+navigation directly on the design surface and handoff of the last Browse
+panel are unavailable. The tab appearance was compared with FileMaker Pro's
+Apex Blue theme on a synthetic layout. Other themes are unverified. The
+canvas reads the stored label without evaluating label calculations.
 
 Manage Layouts opens from File > Manage > Layouts, Layouts > Manage Layouts
 and the Layout mode Manage button. Search, row selection, double-click,

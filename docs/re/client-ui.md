@@ -530,6 +530,12 @@ says a tab control keeps the previously displayed tab when entering Layout
 mode. The [slide control help](https://help.claris.com/en/pro-help/content/changing-slide-control.html)
 identifies the leftmost slide as the default.
 
+[O] In FileMaker Pro 26.1.1 Layout mode, the Apex Blue selection fixture
+shows both stored tab labels with nothing selected. The front tab shares
+its fill with the panel, and only that panel's child rectangle draws.
+See the private synthetic fixture capture for
+[#1156](https://github.com/OpenMaker-Dev/openmaker/issues/1156).
+
 **Unknowns:** whether selecting an object in the Objects pane switches its
 containing panel or changes the current selection. The [Objects pane
 help](https://help.claris.com/en/pro-help/content/working-with-layout-objects.html)
