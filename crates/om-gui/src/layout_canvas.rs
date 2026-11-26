@@ -1414,14 +1414,12 @@ fn draw(
             // documents it ("drag the Part tool ... to the layout"), or a
             // click on the layout with the tool chosen (OpenMaker's): Part
             // Definition opens. The point does not matter, as the parts it
-            // adds go at their kind's place in the order of parts.
+            // adds go at their kind's place in the order of parts. Also on
+            // a frozen canvas, where the window refuses it with the reason.
             let on_layout = pointer
                 .is_some_and(|point| surface.contains(point) && ui.clip_rect().contains(point));
             let dropped_tool = background.dnd_release_payload::<PartToolDrag>().is_some();
-            if selectable
-                && on_layout
-                && (dropped_tool || (tool == LayoutTool::Part && background.clicked()))
-            {
+            if on_layout && (dropped_tool || (tool == LayoutTool::Part && background.clicked())) {
                 *edges.tool = true;
             }
             let painter = ui.painter().clone();

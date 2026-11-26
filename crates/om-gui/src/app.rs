@@ -1360,13 +1360,24 @@ impl OpenMakerApp {
     /// Sends a change of the layout's parts from this window, holding its
     /// canvas until the host answers and the layout is read again
     /// (`LayoutWorkspace::hold_parts`).
+    /// A request the worker does not take holds nothing, and the dialog
+    /// that sent it stops waiting: no answer will come.
     fn send_parts(&mut self, ctx: &egui::Context, sent: PartsSent) {
-        self.w.layout_workspace.hold_parts(sent.clone());
-        let request = match sent {
-            PartsSent::Parts(change) => Request::SetLayoutParts(change),
-            PartsSent::Options(change) => Request::SetPartOptions(change),
+        let request = match &sent {
+            PartsSent::Parts(change) => Request::SetLayoutParts(change.clone()),
+            PartsSent::Options(change) => Request::SetPartOptions(*change),
         };
-        self.request(ctx, request);
+        if self.enqueue_request(ctx, request) {
+            self.w.layout_workspace.hold_parts(sent);
+            return;
+        }
+        let window = self.w.id;
+        if let Some(dialog) = self.part_setup.as_mut().filter(|d| d.window == window) {
+            match &sent {
+                PartsSent::Parts(change) => dialog.parts_answered(change, None),
+                PartsSent::Options(change) => dialog.answered(change, None),
+            };
+        }
     }
 
     /// After the host answers a change Part Setup or a part boundary sent:
@@ -7873,7 +7884,7 @@ impl OpenMakerApp {
                 let revision = result.as_ref().ok().map(|set| set.revision);
                 self.w.layout_workspace.parts_answered(
                     &PartsSent::Options(sent),
-                    layout_change_done(&result),
+                    layout_may_have_changed(&result),
                     revision,
                 );
                 let window = self.w.id;
@@ -7890,7 +7901,7 @@ impl OpenMakerApp {
                 let revision = result.as_ref().ok().map(|set| set.revision);
                 self.w.layout_workspace.parts_answered(
                     &PartsSent::Parts(sent.clone()),
-                    layout_change_done(&result),
+                    layout_may_have_changed(&result),
                     revision,
                 );
                 let window = self.w.id;
@@ -7980,6 +7991,17 @@ impl eframe::App for OpenMakerApp {
 /// answer (no code): the change is dropped and the layout read again,
 /// showing what the host stores. Another refusal keeps the change, to be
 /// changed.
+/// Whether the layout may have changed with a layout change's answer:
+/// saved, or refused because it changed meanwhile (306). Any other refusal
+/// wrote nothing (the host saves a change whole or not at all), so the
+/// layout is read again at the same revision.
+fn layout_may_have_changed<T>(result: &Result<T, DataError>) -> bool {
+    match result {
+        Ok(_) => true,
+        Err(err) => !err.lost && err.code == Some(om_data::layout_placement::CONFLICT),
+    }
+}
+
 fn layout_change_done<T>(result: &Result<T, DataError>) -> bool {
     match result {
         Ok(_) => true,
@@ -8007,6 +8029,36 @@ mod tests {
         }
         fn remove(&mut self) -> Result<(), DataError> {
             Ok(())
+        }
+    }
+
+    /// A parts change the host refuses without writing (no code, or a
+    /// code other than 306) leaves the layout at the revision the window
+    /// shows, so the canvas hold ends with the answer instead of waiting
+    /// for a new revision that never comes (#1048's review).
+    #[test]
+    fn a_parts_change_refused_without_writing_ends_the_canvas_hold() {
+        use om_data::layout_placement::{PartChange, PartsChange, CONFLICT};
+        let sent = PartsSent::Parts(PartsChange {
+            layout: 1,
+            expected: [1; 32],
+            change: PartChange::Add {
+                part_type: 1,
+                size: 110.0,
+            },
+        });
+        for (result, holds) in [
+            (Err(DataError::new("refused")), false),
+            (Err(DataError::with_code(3, "refused")), false),
+            (Err(DataError::connection_lost("gone")), false),
+            (Err(DataError::with_code(CONFLICT, "changed")), true),
+            (Ok(()), true),
+        ] {
+            let mut workspace = crate::content::LayoutWorkspace::default();
+            workspace.hold_parts(sent.clone());
+            let revision = result.as_ref().ok().map(|()| [2; 32]);
+            workspace.parts_answered(&sent, layout_may_have_changed(&result), revision);
+            assert_eq!(workspace.saving, holds, "{result:?}");
         }
     }
 

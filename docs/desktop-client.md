@@ -2633,8 +2633,9 @@ Both go with the operation `om-author`'s `change_parts` uses
 parts are keyed again and the objects below move with their parts. Part
 Setup shows the parts as saved, takes later changes at the layout's new
 revision, and every window of the file reads the layout again. Until the
-host has answered a change and the layout is read again, the window's
-canvas takes no edit and Part Setup cannot be opened anew; the dialog
+host has answered a change and, when the layout may have changed (saved, or
+refused because it changed meanwhile), the layout is read again, the
+window's canvas takes no edit and Part Setup cannot be opened anew; the dialog
 itself waits without closing, unless another window comes forward, which
 closes it as it closes Layout Setup. A change refused because the layout
 changed meanwhile closes it; opened again, it shows the layout as it is
@@ -2645,9 +2646,9 @@ layout, as Claris documents it (re/client-ui.md, "Part Setup"), or choosing
 the tool and clicking the layout, opens Part Definition alone, as Part
 Setup's Create opens it: the kinds of part the layout lacks offered (not
 sub-summaries), and OK adds the one chosen at its place in the order of
-parts, at Create's heights, with the same operation. The dialog closes with
-Cancel, or once the host has answered OK, and the tool goes back to
-Selection. Where the button is dropped does not matter: each kind of part
+parts, at Create's heights, with the same operation. While OK is with the
+host the dialog stays, taking no input; it closes with Cancel or with the
+host's answer, and the tool goes back to Selection. Where the button is dropped does not matter: each kind of part
 OpenMaker adds has one place. It is refused as Part Setup is (unsaved
 changes, a change still with the host), and with an alert when the layout
 has every kind of part OpenMaker adds. Not compared with FileMaker Pro: the

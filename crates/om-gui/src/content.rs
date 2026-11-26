@@ -1595,18 +1595,20 @@ impl LayoutWorkspace {
 
     /// The host answered `sent`, leaving the layout at `revision` when it
     /// saved it: when it is this window's held change, the hold ends now if
-    /// the layout is not read again (`rereads` false: refused, or the
-    /// connection is gone) or is where it was, else once it is read again.
+    /// the layout cannot have changed (`changed` false: refused without
+    /// writing, or the connection is gone) or is where it was, else once it
+    /// is read again at another revision. A refusal that wrote nothing is
+    /// read again at the revision the hold waits to leave, so it ends now.
     pub(crate) fn parts_answered(
         &mut self,
         sent: &PartsSent,
-        rereads: bool,
+        changed: bool,
         revision: Option<om_data::layout_placement::Revision>,
     ) {
         let Some(hold) = self.parts_hold.as_mut().filter(|h| h.sent == *sent) else {
             return;
         };
-        if rereads && revision != Some(sent.at().1) {
+        if changed && revision != Some(sent.at().1) {
             hold.answered = true;
         } else {
             self.parts_hold = None;
