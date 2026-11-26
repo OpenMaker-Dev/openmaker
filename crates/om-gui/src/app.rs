@@ -2898,6 +2898,11 @@ impl OpenMakerApp {
             self.w
                 .layout_workspace
                 .show_portal_setup(&ctx, self.w.calcs.schema().cloned(), own);
+            self.w.layout_workspace.show_web_viewer_setup(
+                &ctx,
+                self.w.calcs.schema().cloned(),
+                own,
+            );
             // A part boundary dragged with the Selection tool goes to the
             // host at once, as Part Setup's changes do.
             if let Some(resize) = self.w.layout_workspace.take_part_resize() {
@@ -6236,6 +6241,10 @@ impl OpenMakerApp {
             self.save_layout_portal(ctx, new_portal);
             return;
         }
+        if let Some(viewer) = self.w.layout_workspace.new_web_viewer().cloned() {
+            self.save_layout_web_viewer(ctx, viewer);
+            return;
+        }
         if let Some(new_text) = self.w.layout_workspace.new_text().cloned() {
             self.save_layout_text(ctx, new_text);
             return;
@@ -6431,6 +6440,44 @@ impl OpenMakerApp {
     /// Save Layout with a new portal: the records, rows and fields Portal
     /// Setup and Add Fields to Portal set, at the revision of the layout it
     /// was drawn on.
+    fn save_layout_web_viewer(
+        &mut self,
+        ctx: &egui::Context,
+        viewer: crate::layout_canvas::NewWebViewer,
+    ) {
+        let Some(setup) = viewer.setup.as_ref() else {
+            self.error = Some(
+                "Set the web viewer's address in Web Viewer Setup, then save the layout.".into(),
+            );
+            return;
+        };
+        let Some(expected) = viewer.revision else {
+            self.error = Some(
+                "This layout cannot be saved here: the window does not know which version of \
+                 it is shown."
+                    .into(),
+            );
+            return;
+        };
+        let Some(layout) = self.w.session.as_ref().and_then(|session| session.layout) else {
+            self.error = Some("The layout has not loaded yet; save it again when it has.".into());
+            return;
+        };
+        self.request_layout_save(
+            ctx,
+            Request::PlaceLayoutWebViewer(om_data::layout_placement::LayoutWebViewerPlacement {
+                layout,
+                viewer: om_data::layout_placement::WebViewerPlacement {
+                    frame: viewer.frame(),
+                    flags: setup.flags,
+                    formatted: setup.formatted.clone(),
+                    polish: setup.polish.clone(),
+                },
+                expected,
+            }),
+        );
+    }
+
     fn save_layout_portal(&mut self, ctx: &egui::Context, portal: crate::layout_canvas::NewPortal) {
         let Some(setup) = portal.setup.as_ref() else {
             self.error = Some(
@@ -7831,6 +7878,9 @@ impl OpenMakerApp {
             }
             Reply::LayoutButtonPlaced(result) => self.layout_object_placed(ctx, result.map(|_| ())),
             Reply::LayoutPortalPlaced(result) => self.layout_object_placed(ctx, result.map(|_| ())),
+            Reply::LayoutWebViewerPlaced(result) => {
+                self.layout_object_placed(ctx, result.map(|_| ()))
+            }
             Reply::LayoutTextPlaced(result) => self.layout_object_placed(ctx, result.map(|_| ())),
             Reply::ObjectsFramed(result) => self.objects_framed(ctx, result),
             Reply::LayoutWidthSet(result) => self.width_set(ctx, result),

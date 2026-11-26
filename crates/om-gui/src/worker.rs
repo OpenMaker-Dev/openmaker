@@ -115,6 +115,9 @@ pub(crate) enum Request {
     PlaceLayoutButton(om_data::layout_placement::LayoutButtonPlacement),
     /// Save Layout: place a portal (`DataProvider::place_layout_portal`).
     PlaceLayoutPortal(om_data::layout_placement::LayoutPortalPlacement),
+    /// Save Layout: place a web viewer
+    /// (`DataProvider::place_layout_web_viewer`).
+    PlaceLayoutWebViewer(om_data::layout_placement::LayoutWebViewerPlacement),
     /// Save Layout: place a text on its own
     /// (`DataProvider::place_layout_text`).
     PlaceLayoutText(om_data::layout_placement::LayoutTextPlacement),
@@ -459,6 +462,7 @@ pub(crate) enum Reply {
     LayoutTextSet(Result<om_data::layout_objects::FramedObjects, DataError>),
     LayoutButtonPlaced(Result<om_data::layout_placement::PlacedLayoutButton, DataError>),
     LayoutPortalPlaced(Result<om_data::layout_placement::PlacedLayoutPortal, DataError>),
+    LayoutWebViewerPlaced(Result<om_data::layout_placement::PlacedLayoutWebViewer, DataError>),
     LayoutTextPlaced(Result<om_data::layout_placement::PlacedLayoutText, DataError>),
     ObjectsFramed(Result<om_data::layout_objects::FramedObjects, DataError>),
     ObjectsDeleted(Result<om_data::layout_objects::DeletedObjects, DataError>),
@@ -633,6 +637,7 @@ impl Reply {
             Reply::LayoutTextSet(r) => r.as_ref().err(),
             Reply::LayoutButtonPlaced(r) => r.as_ref().err(),
             Reply::LayoutPortalPlaced(r) => r.as_ref().err(),
+            Reply::LayoutWebViewerPlaced(r) => r.as_ref().err(),
             Reply::LayoutTextPlaced(r) => r.as_ref().err(),
             Reply::ObjectsFramed(r) => r.as_ref().err(),
             Reply::ObjectsDeleted(r) => r.as_ref().err(),
@@ -1350,6 +1355,9 @@ fn answer(
         }
         Request::PlaceLayoutPortal(place) => {
             Reply::LayoutPortalPlaced(contain(provider, |p| p.place_layout_portal(place)))
+        }
+        Request::PlaceLayoutWebViewer(place) => {
+            Reply::LayoutWebViewerPlaced(contain(provider, |p| p.place_layout_web_viewer(place)))
         }
         Request::PlaceLayoutText(place) => {
             Reply::LayoutTextPlaced(contain(provider, |p| p.place_layout_text(place)))

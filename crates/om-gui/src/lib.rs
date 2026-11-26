@@ -79,6 +79,7 @@ mod theme;
 mod toolbar;
 mod value_lists;
 mod web_viewer;
+mod web_viewer_setup;
 mod widgets;
 mod worker;
 

@@ -616,6 +616,21 @@ SHA-256 of the archives: `IDD_PART_SETUP.nib`
 `IDD_PART_DEFINITION.nib`
 `a5068fd2b6fa7447f66a1950740445d0fdd9e16991de0710f588f64d17e68224`.
 
+## Web Viewer Setup
+
+[O, 2026-11-26, FileMaker Pro 26.1.1 for macOS, #896's run, the dialog's
+accessibility tree] For a viewer just drawn with the Web Viewer tool, the
+dialog opens on the template Google Maps (US), its five boxes (Address,
+City, State, Zip Code, Country) blank and the Web Address prefilled with
+the template's calculation. Choosing Custom Web Address keeps that
+calculation until it is replaced. The options, in order, with their
+defaults for a new viewer: Allow interaction with web viewer content (on),
+Display content in Find mode (off), Display progress bar (on), Display
+status messages (on), Automatically encode URL (on), Allow JavaScript to
+perform FileMaker scripts (off). Their storage is in layout-model.md 9.6
+and 10.19. Unknown: the dialog's frames and the template list's order
+(no nib or screenshot measured here).
+
 ## Portal Setup
 
 [O, 2026-11-14, static: the serialized strings and frames of FileMaker Pro
