@@ -799,18 +799,37 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
         };
         // The deepest page from the root whose choice of child is the one
         // the cursor holds.
-        let choice = |page: &Page| match bound {
-            Bound::Included(k) => pages.separators_below(page, k, true),
-            Bound::Excluded(k) => pages.separators_below(page, k, forward),
-            Bound::Unbounded => Ok(0),
+        let (key, or_equal) = match bound {
+            Bound::Included(k) => (k.as_slice(), true),
+            Bound::Excluded(k) => (k.as_slice(), forward),
+            Bound::Unbounded => return self.position(),
+        };
+        let choice = |page: &Page| pages.separators_below(page, key, or_equal);
+        // Whether separator `i` is on the bound's near side, as
+        // `separators_below` asks of each separator it compares.
+        let near = |page: &Page, i: usize| -> Result<bool> {
+            let order = pages.cmp_separator(page, i, key)?;
+            Ok(order == Ordering::Less || (or_equal && order == Ordering::Equal))
         };
         let levels = self.stack.len() - 1;
         let mut depth = 0;
         let mut changed = None;
         while depth < levels {
             let (page, c) = &self.stack[depth];
-            let want = choice(page)?;
-            if want != *c {
+            let (page, c) = (&**page, *c);
+            // On a page whose separators its bytes prove in order, `near`
+            // holds for a first run of them and not after it, and the
+            // search's answer is that run's length: child `c` exactly when
+            // separator `c` is near (or `c` is the first) and `c + 1` is not
+            // (or `c` is the last). Asked only where every separator is in
+            // the page, so that neither question can fail where the search
+            // would not; any other page is searched.
+            let keeps = page.separators_ordered()
+                && page.separators_inline()
+                && (c == 0 || near(page, c)?)
+                && (c + 1 == page.count() || !near(page, c + 1)?);
+            let want = if keeps { c } else { choice(page)? };
+            if want != c {
                 changed = Some(want);
                 break;
             }
