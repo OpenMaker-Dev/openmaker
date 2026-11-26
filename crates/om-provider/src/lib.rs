@@ -3851,18 +3851,19 @@ impl DataProvider for NativeProvider {
         let layout = self.decoded_layout(layout_id)?;
         if self.table_for_layout(&layout).is_err() {
             let table = self.read_table_for_layout(&layout)?.id;
-            if self.external.route(table).is_some() {
-                // Inside a script's transaction the reference would join
-                // the owner's part of it, whose cleanup after a refused
-                // copy is not settled: refused before anything is counted.
+            if let Some(route) = self.external.route(table) {
+                // Inside a script's transaction the reference is the
+                // owner's part of it, as the copy the owner holds there is
+                // (`write_routed_related`): kept by Commit Transaction,
+                // released by Revert Transaction. A copy refused before it
+                // is held gives it back at once (the window's
+                // `adjust_containers`), counted as given back before the
+                // release is sent (`adjust_table_container`), so that the
+                // revert cannot give it back again.
                 if delta > 0
                     && self.transaction_kind() == Some(transaction::TransactionKind::Script)
                 {
-                    return Err(DataError::with_code(
-                        3,
-                        "Duplicating a container of another file's table inside a script's \
-                         transaction is not supported.",
-                    ));
+                    self.join_owner_transaction(table, route)?;
                 }
                 return om_data::DataProvider::adjust_related_container(
                     self, table, reference, delta,

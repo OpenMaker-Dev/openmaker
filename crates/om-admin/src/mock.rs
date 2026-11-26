@@ -132,6 +132,7 @@ impl MockState {
             status,
             clients,
             encrypted: false,
+            read_only: None,
         };
         let file = |id: u32, name: &str, account: Option<&str>| ClientFile {
             id,

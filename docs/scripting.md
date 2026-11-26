@@ -334,7 +334,9 @@ values and stores the ordinary scalar values; the new record joins the
 caller window's found set and becomes current, as a local creation does.
 Duplicate Record copies a container reference too: the copy's reference is
 counted in the owning file's library, as a local duplicate counts it in its
-own. A copy that fails gives its references back; one whose answer is lost
+own. Inside a script's transaction the reference is the owning file's part
+of it, as the copy is: Commit Transaction keeps it and Revert Transaction
+gives it back. A copy that fails gives its references back; one whose answer is lost
 counts as given back, so that no later transaction's revert gives it back
 again. When the owner did not apply it, or the connection was lost in
 between, the member keeps one reference too many: its data is kept longer,

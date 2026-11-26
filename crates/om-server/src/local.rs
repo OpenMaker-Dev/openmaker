@@ -94,6 +94,10 @@ pub enum ReadOnly {
     NotWritable,
     /// The folder holding it does not allow the new copy a save writes.
     FolderNotWritable,
+    /// Whether a save may write it could not be checked (a permission
+    /// that could not be asked, `store::save_refused`): nothing is written
+    /// where it may be forbidden.
+    Unchecked,
     /// The file has other names (hard links), which a save would leave
     /// with the old contents.
     OtherNames,
@@ -123,6 +127,7 @@ impl std::fmt::Display for ReadOnly {
         f.write_str(match self {
             ReadOnly::NotWritable => "you may not change it",
             ReadOnly::FolderNotWritable => "its folder does not allow saving it",
+            ReadOnly::Unchecked => "whether it may be saved could not be checked",
             ReadOnly::OtherNames => "it has other names (hard links) a save would not update",
             ReadOnly::NoLocks => "it cannot be locked here, so other programs could change it",
             ReadOnly::CopyInTheWay => {
@@ -426,6 +431,11 @@ impl LocalHost {
             Some(match cause {
                 crate::store::ReadOnlyCause::Unwritable => ReadOnly::Unwritable,
                 crate::store::ReadOnlyCause::DeferredWork => ReadOnly::DeferredWork,
+                // A server's causes, which this host finds as it opens the
+                // file (`open_file`) and keeps itself; named here alike.
+                crate::store::ReadOnlyCause::NotWritable => ReadOnly::NotWritable,
+                crate::store::ReadOnlyCause::FolderNotWritable => ReadOnly::FolderNotWritable,
+                crate::store::ReadOnlyCause::Unchecked => ReadOnly::Unchecked,
                 // Opened so: the reason it was opened with, which is set.
                 crate::store::ReadOnlyCause::Opened | crate::store::ReadOnlyCause::StoreEngine => {
                     ReadOnly::NotWritable
@@ -890,36 +900,23 @@ fn open_file(path: &Path) -> Result<(File, Option<ReadOnly>), LocalHostError> {
         io::ErrorKind::NotFound => LocalHostError::Missing(path.to_path_buf()),
         _ => LocalHostError::Unreadable(e),
     };
+    // The two checks a server makes of a file it hosts
+    // (`store::save_refused`), with the handle this host keeps.
     match File::options().read(true).write(true).open(path) {
         Ok(file) => Ok((
             file,
-            (!folder_writable(path)).then_some(ReadOnly::FolderNotWritable),
+            match crate::anchored::folder_allows_new_entries(path) {
+                Ok(true) => None,
+                Ok(false) => Some(ReadOnly::FolderNotWritable),
+                // Never written where it may be forbidden.
+                Err(_) => Some(ReadOnly::Unchecked),
+            },
         )),
-        Err(e)
-            if matches!(
-                e.kind(),
-                io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
-            ) =>
-        {
-            File::open(path)
-                .map(|file| (file, Some(ReadOnly::NotWritable)))
-                .map_err(missing)
-        }
+        Err(e) if crate::store::refuses_writing(&e) => File::open(path)
+            .map(|file| (file, Some(ReadOnly::NotWritable)))
+            .map_err(missing),
         Err(e) => Err(missing(e)),
     }
-}
-
-#[cfg(unix)]
-fn folder_writable(path: &Path) -> bool {
-    path.parent()
-        .is_some_and(|dir| rustix::fs::access(dir, rustix::fs::Access::WRITE_OK).is_ok())
-}
-
-#[cfg(not(unix))]
-fn folder_writable(path: &Path) -> bool {
-    path.parent()
-        .and_then(|dir| std::fs::metadata(dir).ok())
-        .is_some_and(|m| !m.permissions().readonly())
 }
 
 #[cfg(all(test, unix))]

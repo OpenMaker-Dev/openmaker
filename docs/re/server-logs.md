@@ -20,6 +20,12 @@ logs, written in this format, are described in
   stand-ins: `server` for the server's 6-character host name, "Nightly" for
   a schedule, "Front Desk" for a user, `workstation` for a machine,
   192.0.2.x for addresses.
+- **The test server's `Event.log`, 2026-11-25.** FileMaker Server 26.0.3
+  on Ubuntu 24.04, a test server the maintainer set up for this work: a
+  copy of a starter file in the Databases folder, owned by the server's
+  user, opened with `fmsadmin open <id>` with mode 444 and with mode 664,
+  and the lines each open wrote (events 18, 184, 654, 655, section 4;
+  [#790](https://github.com/OpenMaker-Dev/openmaker/issues/790#issuecomment-7176757453)).
 - **FileMaker Server's message table.** `lib/libFMSLib.so` of the 26.0.3.309
   package holds a table of 801 messages in `.data.rel.ro`, entries of 64
   bytes from 0xce3d10 to 0xcf0510 (section 4). It is data read from the
@@ -176,10 +182,12 @@ Each entry of the table in `libFMSLib.so` is 64 bytes (obs):
   its processes, and smaller groups 10-12.
 - **Numbers.** 2 to 1300-odd, mostly even; no message is numbered 0 (obs).
 
-The messages for events OpenMaker Server also has, as the table gives them
-(level: E Error, W Warning, I Information). Seen in the lab server's lines:
-22, 94, 98, 126, 148, 150, 226, 228, 518, 520, 638, 644, 689 (obs); when
-FileMaker writes the others is not observed.
+The messages for events OpenMaker Server also has, and those around a
+database's opening that it does not, as the table gives them (level: E
+Error, W Warning, I Information). Seen in the lab server's lines: 22, 94,
+98, 126, 148, 150, 226, 228, 518, 520, 638, 644, 689 (obs); in the test
+server's: 18, 184, 654, 655 (obs, below); when FileMaker writes the others is
+not observed.
 
 | Number | Level | Category | Text |
 |---|---|---|---|
@@ -208,6 +216,8 @@ FileMaker writes the others is not observed.
 | 490 | I | 9 | `Database Server stopped.` |
 | 496 | W | 2 | `Client "%1" has been asked to disconnect. Message sent: %2` |
 | 627 | E | 1 | `Unable to open database "%1" (%2)` |
+| 654 | W | 1 (inf) | `Database "%1" cannot be shared; no account has the necessary extended privileges, and [fmapp] could not be added to the [Full Access] privilege set.` |
+| 655 | I | 1 (inf) | `Database "%1" was made shareable by adding the [fmapp] extended privilege to the [Full Access] privilege set.` |
 | 638 | I | 2 | `Client "%1" opening a connection from "%2" using "%3".` |
 | 644 | I | 8 | `Schedule "%1" completed; last scripting error (%2).` |
 | 661 | W | 2 | `SECURITY: Client "%1" authentication failed on database "%2" using "%3".` |
@@ -221,6 +231,25 @@ FileMaker writes the others is not observed.
 | 1017 | E | 1 | `SECURITY: Database "%1" cannot be opened because it is insecure. Require Password-Protected Databases is enabled.` (local-files.md 3.2) |
 | 1049 | E | 2 | `SECURITY: Client "%1" temporarily locked account "%3" on database "%2" because of too many failed attempts to log in.` |
 | 1216 | W | 8 | `Schedule "%1" was skipped. Try again in 30 seconds.` |
+
+When the test server wrote events 18, 184, 654 and 655, as it opened a
+copy of a starter file from the command line (obs, 2026-11-25):
+
+- **184** `Opened database "<name>".`: the file writable (mode 664). The
+  folder does not change it: the same file in a folder the server's user
+  may not write (another user's, mode 755) opened with 184 and status
+  `Normal` as well, its bytes unchanged after open and close (obs,
+  2026-11-26). A client's change to that file was not tried.
+- **18** `Opened database "<name>" read only.`: the server's user may not
+  write the file (mode 444). `fmsadmin list files -s` then shows it with
+  status `Normal`, and its bytes stay unchanged (the same SHA-256).
+- **655**, before 184: the file writable, and no account of it has the
+  `fmapp` extended privilege; the server writes the privilege into the
+  file's [Full Access] set as it opens it (its bytes change).
+- **654**, before 18: the same file with mode 444; the server cannot write
+  the privilege in, and opens the file read only and unshared (`fmapp` not
+  among its enabled extended privileges). A mode-444 copy that already has
+  it logs 18 alone and is shared.
 
 Script errors of Perform Script on Server are written by the script engine
 (`fmsased`, which names `Logs/scriptEvent.log`), not from this table; their
