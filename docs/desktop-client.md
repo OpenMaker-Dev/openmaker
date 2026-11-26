@@ -2457,7 +2457,9 @@ showing a library image, a field's label or a popover button; only a stored text
 named style and whether it has local overrides. Appearance shows known
 normal-state fill, border and text colors and the base font from Browse's
 style cascade. These properties are read-only. Autosizing, names and
-tooltips are unavailable. Layouts without geometry keep the generic field
+tooltips are unavailable. Data Formatting summarizes the decoded number,
+date, time or graphic format for a stored field whose type is known to the
+window. The summary is read-only. Layouts without geometry keep the generic field
 view, which is not inspectable as document objects; they cannot be edited.
 The revision is the one the window read when it opened the file or after
 its last placement: a layout another client changed since is refused at

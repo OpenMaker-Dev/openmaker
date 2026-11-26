@@ -7,7 +7,7 @@
 
 use egui::{vec2, Align, CornerRadius, RichText, Role, Sense, Stroke, Ui, WidgetInfo};
 use om_data::layout_objects::FIELD_CONTROLS;
-use om_data::ObjectGeom;
+use om_data::{FieldKind, ObjectGeom};
 
 use crate::icons::{self, Icon};
 use crate::layout_canvas::{FieldChoice, NewButton, NewField, NewText};
@@ -300,19 +300,22 @@ impl Inspector {
                                 show_appearance(ui, stored_object(session, object));
                             }
                             Tab::Data => {
+                                let name = object.and_then(|o| o.field_name.as_deref());
+                                let field = name.and_then(|name| {
+                                    session
+                                        .page
+                                        .as_ref()
+                                        .filter(|page| Some(page.key.layout_id) == session.layout)?
+                                        .data
+                                        .fields
+                                        .iter()
+                                        .find(|field| field.name == name)
+                                });
                                 section(ui, "Field", |ui| {
-                                    if let Some(name) = object.and_then(|o| o.field_name.as_deref())
-                                    {
+                                    if let Some(name) = name {
                                         ui.label("Display data from:");
                                         ui.label(RichText::new(name).strong());
-                                        if let Some(field) =
-                                            session.page.as_ref().and_then(|page| {
-                                                page.data
-                                                    .fields
-                                                    .iter()
-                                                    .find(|field| field.name == name)
-                                            })
-                                        {
+                                        if let Some(field) = field {
                                             ui.label(format!("Type: {:?}", field.kind));
                                         }
                                     } else if control.is_none() {
@@ -330,7 +333,11 @@ impl Inspector {
                                     ui.label("Behavior information is unavailable.");
                                 });
                                 section(ui, "Data Formatting", |ui| {
-                                    ui.label("Data formatting is unavailable.");
+                                    show_field_format(
+                                        ui,
+                                        field.map(|field| field.kind),
+                                        stored_object(session, object).map(|(_, object)| object),
+                                    );
                                 });
                             }
                         }
@@ -857,6 +864,109 @@ fn style_color(ui: &mut Ui, label: &str, color: om_layout::style::Color) {
     });
 }
 
+fn show_field_format(
+    ui: &mut Ui,
+    kind: Option<FieldKind>,
+    object: Option<&om_layout::object::LayoutObject>,
+) {
+    let (Some(kind), Some(object)) = (kind, object) else {
+        ui.label("Data formatting is unavailable.");
+        return;
+    };
+    if kind == FieldKind::Container {
+        if let Some(format) = object.graphic_format {
+            ui.label(if format.interactive() {
+                "Interactive content"
+            } else {
+                "Images"
+            });
+            match (format.shrink(), format.grow()) {
+                (true, true) => ui.label("Reduce or enlarge to fit"),
+                (true, false) => ui.label("Reduce to fit"),
+                (false, true) => ui.label("Enlarge to fit"),
+                (false, false) => ui.label("Maintain original size"),
+            };
+            if format.proportions() {
+                ui.label("Keep proportions");
+            }
+        } else {
+            ui.label("No stored graphic format");
+        }
+        return;
+    }
+    if kind == FieldKind::Text {
+        ui.label("Text field appearance is shown in the Appearance tab.");
+        return;
+    }
+    let Some(format) = &object.data_format else {
+        ui.label("No decoded data format");
+        return;
+    };
+    use om_layout::data_format::DateFormat;
+    let date = |date: &DateFormat| match date.format() {
+        0 => "Date as entered",
+        1 => "Custom date",
+        2 => "Numeric date with short year",
+        7 => "Numeric date with full year",
+        _ => "Unrecognized date format",
+    };
+    match kind {
+        FieldKind::Number => {
+            let number = &format.number;
+            if number.as_entered() {
+                ui.label("Number as entered");
+            } else if number.boolean() {
+                ui.label("Boolean text");
+            } else if number.general() {
+                ui.label("General number");
+            } else {
+                ui.label(if number.percent() {
+                    "Percent"
+                } else {
+                    "Decimal number"
+                });
+                if number.fixed_decimals() {
+                    ui.label(format!("Decimal places {}", number.decimal_places));
+                }
+                if number.show_symbol() && !number.percent() && !number.symbol.is_empty() {
+                    ui.label(format!("Symbol {}", number.symbol));
+                }
+            }
+        }
+        FieldKind::Date => {
+            ui.label(date(&format.date));
+        }
+        FieldKind::Time => {
+            ui.label(time_format_label(&format.time));
+        }
+        FieldKind::Timestamp => {
+            ui.label(date(&format.date));
+            ui.label(time_format_label(&format.time));
+        }
+        FieldKind::Text | FieldKind::Container => unreachable!("handled above"),
+    }
+}
+
+fn time_format_label(time: &om_layout::data_format::TimeFormat) -> &'static str {
+    if time.as_entered() {
+        "Time as entered"
+    } else if time.system_format() {
+        "System time format"
+    } else if time.show_hours() {
+        if time.clock_24h() {
+            "24-hour or elapsed time"
+        } else {
+            "12-hour time"
+        }
+    } else if time.show_minutes() {
+        "Elapsed minutes"
+    } else if time.show_seconds() {
+        "Elapsed seconds"
+    } else {
+        "No stored time components"
+    }
+}
+
 fn section(ui: &mut Ui, title: &str, contents: impl FnOnce(&mut Ui)) {
     egui::CollapsingHeader::new(RichText::new(title).strong())
         .default_open(true)
@@ -955,6 +1065,62 @@ mod tests {
         if let Some(path) = std::env::var_os("OM_INSPECTOR_APPEARANCE_SHOT") {
             app.render().unwrap().save(path).unwrap();
         }
+    }
+
+    #[test]
+    fn inspector_summarizes_a_stored_numeric_format() {
+        use super::{section, show_field_format, FieldKind};
+        use egui_kittest::{kittest::Queryable, Harness};
+        use om_layout::{data_format::DataFormat, object::LayoutObject};
+
+        let mut format = DataFormat::new_field();
+        format.number.flags = 0x080c;
+        format.number.decimal_places = 2;
+        let object = LayoutObject {
+            data_format: Some(format),
+            ..Default::default()
+        };
+        let harness = |show: bool| {
+            let object = object.clone();
+            Harness::builder()
+                .with_size(egui::vec2(crate::theme::INSPECTOR_WIDTH, 140.0))
+                .with_context_setup(crate::theme::install)
+                .renderer(crate::test_renderer::renderer())
+                .build_ui(move |ui| {
+                    section(ui, "Data Formatting", |ui| {
+                        show_field_format(ui, Some(FieldKind::Number), show.then_some(&object));
+                    });
+                })
+        };
+        let mut app = harness(true);
+        app.get_by_label("Decimal number");
+        app.get_by_label("Decimal places 2");
+        app.get_by_label("Symbol $");
+        if let Some(dir) = std::env::var_os("OM_INSPECTOR_FORMAT_SHOTS") {
+            let dir = std::path::PathBuf::from(dir);
+            app.render().unwrap().save(dir.join("after.png")).unwrap();
+            harness(false)
+                .render()
+                .unwrap()
+                .save(dir.join("before.png"))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn component_only_times_are_not_labeled_as_clocks() {
+        use super::time_format_label;
+        use om_layout::data_format::TimeFormat;
+
+        let mut time = TimeFormat {
+            flags: 0x82,
+            ..Default::default()
+        };
+        assert_eq!(time_format_label(&time), "Elapsed minutes");
+        time.flags = 0x84;
+        assert_eq!(time_format_label(&time), "Elapsed seconds");
+        time.flags = 0x80;
+        assert_eq!(time_format_label(&time), "No stored time components");
     }
 
     #[test]
