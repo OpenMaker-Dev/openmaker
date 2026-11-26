@@ -1304,6 +1304,21 @@ impl LayoutWorkspace {
         self.canvas.selection_count(session)
     }
 
+    pub(crate) fn select_all(&mut self, session: &Session) {
+        self.canvas.select_all(session);
+    }
+
+    pub(crate) fn nudge_selection(
+        &mut self,
+        session: &Session,
+        direction: crate::layout_canvas::NudgeDirection,
+    ) {
+        let before = self.canvas.checkpoint();
+        if self.canvas.nudge_selection(session, direction) {
+            self.canvas.record_command(before);
+        }
+    }
+
     /// How many selected objects Arrange's Align, Distribute and Resize To
     /// apply to (`CanvasState::arrangeable_count`).
     pub(crate) fn arrangeable_count(&self, session: &Session) -> usize {
@@ -1730,7 +1745,7 @@ pub(crate) fn layout(
         Option<&om_data::host::CalcSchema>,
     ),
     state: &mut LayoutWorkspace,
-    scroll: &mut crate::document::scroll::Scroll,
+    document: &mut crate::document::DocumentState,
 ) {
     let LayoutPanels { inspector, objects } = panels;
     state.canvas.synchronize(session);
@@ -1739,7 +1754,7 @@ pub(crate) fn layout(
     } else {
         state.canvas.checkpoint()
     };
-    scroll.begin_paint(session);
+    document.scroll.begin_paint(session);
     let full = ui.max_rect();
     let left_width = if objects {
         crate::layout_objects::WIDTH
@@ -1790,7 +1805,7 @@ pub(crate) fn layout(
         fields,
         &mut state.canvas,
         state.saving,
-        scroll,
+        document,
     );
     if inspector {
         let rect = Rect::from_min_max(pos2(canvas.right(), full.top()), full.max);
@@ -1838,6 +1853,7 @@ pub(crate) fn layout(
                 selected.as_ref(),
                 shown,
                 (editable, view.as_ref()),
+                state.canvas.selection_notice(),
             );
             if let (Some(object), Some(frame)) = (&selected, edit.frame) {
                 state
@@ -2002,12 +2018,15 @@ mod tests {
             date: false,
         }];
         let mut state = LayoutWorkspace::default();
-        let mut scroll = DocumentState::default().scroll;
+        let mut document = DocumentState::default();
+        document.zoom.set_percent(200);
         let ctx = egui::Context::default();
         // A drag between layout points; the layout's origin is right of the
         // 22-point part strip.
         let mut drag = |state: &mut LayoutWorkspace, from: egui::Pos2, to: egui::Pos2| {
-            let (from, to) = (from + egui::vec2(22.0, 0.0), to + egui::vec2(22.0, 0.0));
+            let on_screen =
+                |point: egui::Pos2| Pos2::ZERO + (point.to_vec2() + vec2(22.0, 0.0)) * 2.0;
+            let (from, to) = (on_screen(from), on_screen(to));
             let button = |pos, pressed| egui::Event::PointerButton {
                 pos,
                 button: egui::PointerButton::Primary,
@@ -2041,7 +2060,7 @@ mod tests {
                                 },
                                 (&fields, None),
                                 state,
-                                &mut scroll,
+                                &mut document,
                             );
                         });
                 });

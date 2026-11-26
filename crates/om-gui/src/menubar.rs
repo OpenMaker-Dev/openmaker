@@ -106,6 +106,8 @@ pub(crate) struct MenuContext<'a> {
     /// A draft or a redo branch can be discarded explicitly.
     pub layout_revert: bool,
     pub layout_history: (bool, bool),
+    /// The Layout mode Selection tool can take Edit > Select All.
+    pub layout_select_all: bool,
     /// Layout mode has an object selected that can be deleted (Edit >
     /// Clear).
     pub layout_delete: bool,
@@ -661,7 +663,17 @@ fn edit_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut V
         });
     }
     rows.separator();
-    if rows.item("Select All", command(CMD, Key::A), false, own) {
+    if context.mode == Mode::Layout {
+        if rows.keyed_item(
+            "select-all-layout-objects",
+            "Select All",
+            Some(shortcuts::SELECT_ALL),
+            false,
+            context.layout_select_all,
+        ) {
+            actions.push(Action::SelectAllLayoutObjects);
+        }
+    } else if rows.item("Select All", Some(shortcuts::SELECT_ALL), false, own) {
         actions.push(Action::EditField(EditCommand::SelectAll));
     }
     rows.separator();

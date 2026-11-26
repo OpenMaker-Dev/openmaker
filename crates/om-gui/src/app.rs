@@ -18,6 +18,7 @@ use crate::content;
 use crate::content::PartsSent;
 use crate::icons::{self, Icon};
 use crate::layout_bar::{self, LayoutBarContext};
+use crate::layout_canvas::NudgeDirection;
 use crate::layout_setup::{LayoutSetup, LayoutSetupAnswer};
 use crate::licensing::{LicenseAction, LicenseDialog, LicenseKey, LicenseOperation};
 use crate::manage_layouts::{ManageLayouts, ManageLayoutsResult};
@@ -252,6 +253,7 @@ pub(crate) mod shortcuts {
     pub const UNDO: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::Z);
     pub const REDO: KeyboardShortcut = KeyboardShortcut::new(CMD.plus(Modifiers::SHIFT), Key::Z);
     pub const MINIMIZE: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::M);
+    pub const SELECT_ALL: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::A);
     pub const ZOOM_IN: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::Plus);
     pub const ZOOM_IN_ALTERNATE: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::Equals);
     pub const ZOOM_OUT: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::Minus);
@@ -642,6 +644,10 @@ pub(crate) enum Action {
     SaveLayout,
     /// Layouts > Revert Layout: drop it.
     RevertLayout,
+    /// Edit > Select All in Layout mode changes the window's selection.
+    SelectAllLayoutObjects,
+    /// An arrow key moves the selection in the current layout draft.
+    NudgeLayoutObjects(NudgeDirection),
     /// Delete or Edit > Clear in Layout mode: delete the selected object,
     /// as a change Save Layout stores.
     DeleteLayoutObject,
@@ -1913,6 +1919,7 @@ impl OpenMakerApp {
             } else {
                 (false, false)
             },
+            layout_select_all: input && self.can_select_all_layout_objects(ctx),
             layout_delete: self.w.mode == Mode::Layout
                 && self.design_allowed()
                 && self.w.session.as_ref().is_some_and(|session| {
@@ -2381,7 +2388,7 @@ impl OpenMakerApp {
                                     self.w.calcs.schema().map(|schema| schema.as_ref()),
                                 ),
                                 &mut self.w.layout_workspace,
-                                &mut self.w.document.scroll,
+                                &mut self.w.document,
                             ),
                             Mode::Preview => crate::preview::show(
                                 ui,
@@ -3652,6 +3659,26 @@ impl OpenMakerApp {
         self.dialog_open() || self.host_message_shown()
     }
 
+    /// A text editor in the canvas, sidebar or Inspector keeps its keys.
+    fn layout_selection_session(&self, ctx: &egui::Context) -> Option<&Session> {
+        self.w.session.as_ref().filter(|session| {
+            self.w.mode == Mode::Layout
+                && matches!(session.geometry, crate::session::Geometry::Loaded(_))
+                && self.w.connection_lost.is_none()
+                && self.design_allowed()
+                && self.full_menus()
+                && !self.w.layout_workspace.saving
+                && !self.dialog_over_document()
+                && !self.script.busy()
+                && self.script.prompt.is_none()
+                && !ctx.text_edit_focused()
+        })
+    }
+
+    fn can_select_all_layout_objects(&self, ctx: &egui::Context) -> bool {
+        self.w.tool == LayoutTool::Selection && self.layout_selection_session(ctx).is_some()
+    }
+
     /// A dialog, alert or confirmation of the app's is open: the host's
     /// message waits for it ([`Self::host_message_shown`]).
     fn dialog_open(&self) -> bool {
@@ -3761,6 +3788,8 @@ impl OpenMakerApp {
                 .session
                 .as_ref()
                 .is_some_and(|session| self.w.layout_workspace.selection_count(session) > 0);
+        let layout_keys = !egui::Popup::is_any_open(ui.ctx())
+            && self.layout_selection_session(ui.ctx()).is_some();
         let mut commit = false;
         // Insert's shortcuts, into the field entered (the menu's own
         // availability: Editing only keeps them too).
@@ -3861,17 +3890,28 @@ impl OpenMakerApp {
             )) {
                 actions.push(Action::ScriptWorkspace);
             }
+            if self.w.mode == Mode::Layout
+                && input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::N))
+            {
+                actions.push(Action::NewLayout);
+            }
+            if let Some(layout) = shown_layout.filter(|_| self.w.mode == Mode::Layout) {
+                if input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::E)) {
+                    actions.push(Action::DeleteLayout(layout));
+                }
+            }
             if self.w.mode == Mode::Layout {
                 use crate::layout_canvas::DraftEdit;
 
-                // A key can make the next command available in this same
-                // batch (Delete then Undo, or Redo then Save). Check the
-                // draft when the actions run, in their original input order.
+                // Keys can share a frame. Route draft commands in input order
+                // so a nudge sees a preceding selection, Undo sees preceding
+                // edits, and Save sees the result.
+                let mut has_selection = object_selected;
                 input.events.retain(|event| {
                     let egui::Event::Key {
                         key,
-                        pressed: true,
                         modifiers,
+                        pressed: true,
                         ..
                     } = event
                     else {
@@ -3879,10 +3919,16 @@ impl OpenMakerApp {
                     };
                     let action = match key {
                         Key::S if modifiers.matches_exact(Modifiers::COMMAND) => Action::SaveLayout,
+                        _ if layout_keys
+                            && self.w.tool == LayoutTool::Selection
+                            && *key == shortcuts::SELECT_ALL.logical_key
+                            && modifiers.matches_exact(shortcuts::SELECT_ALL.modifiers) =>
+                        {
+                            has_selection = true;
+                            Action::SelectAllLayoutObjects
+                        }
                         Key::Delete | Key::Backspace
-                            if object_selected
-                                && !typing
-                                && modifiers.matches_exact(Modifiers::NONE) =>
+                            if has_selection && !typing && modifiers.is_none() =>
                         {
                             Action::DeleteLayoutObject
                         }
@@ -3898,21 +3944,21 @@ impl OpenMakerApp {
                         {
                             Action::EditLayoutDraft(DraftEdit::Undo)
                         }
+                        _ if layout_keys && has_selection && modifiers.is_none() => {
+                            let direction = match key {
+                                Key::ArrowLeft => NudgeDirection::Left,
+                                Key::ArrowRight => NudgeDirection::Right,
+                                Key::ArrowUp => NudgeDirection::Up,
+                                Key::ArrowDown => NudgeDirection::Down,
+                                _ => return true,
+                            };
+                            Action::NudgeLayoutObjects(direction)
+                        }
                         _ => return true,
                     };
                     actions.push(action);
                     false
                 });
-            }
-            if self.w.mode == Mode::Layout
-                && input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::N))
-            {
-                actions.push(Action::NewLayout);
-            }
-            if let Some(layout) = shown_layout.filter(|_| self.w.mode == Mode::Layout) {
-                if input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::E)) {
-                    actions.push(Action::DeleteLayout(layout));
-                }
             }
             if let Some(target) = field_target.as_ref().filter(|_| inserts) {
                 // The document may move focus in a later pass (including
@@ -4399,11 +4445,9 @@ impl OpenMakerApp {
     }
 
     /// Whether View's Zoom In, Zoom Out and Actual Size change the window's
-    /// zoom: a layout drawn in Browse's Form or List view, in Find mode
-    /// (which draws its requests as Form view does), or Preview, and Browse's
-    /// Table view, which draws the found set's grid whatever the layout,
-    /// unless Set Zoom Level locked the window's zoom. Layout mode and the
-    /// generic views are not zoomed yet (#36).
+    /// zoom: the drawn layout in Browse, Find, Preview or Layout mode, and
+    /// Browse's Table grid. Set Zoom Level can lock the window's zoom.
+    /// Generic views keep their normal scale (#36).
     fn zooms(&self) -> bool {
         if self.w.zoom_locked {
             return false;
@@ -4416,7 +4460,7 @@ impl OpenMakerApp {
             Mode::Browse => drawn || self.w.view == ViewMode::Table,
             Mode::Find => drawn && self.w.view != ViewMode::Table,
             Mode::Preview => drawn,
-            Mode::Layout => false,
+            Mode::Layout => matches!(session.geometry, crate::session::Geometry::Loaded(_)),
         }
     }
 
@@ -4673,6 +4717,18 @@ impl OpenMakerApp {
             return;
         }
         if action == Action::ExportRecords && !(self.can_export_records() && self.exports()) {
+            return;
+        }
+        // Keep a canvas drag (including a layout width or part handle)
+        // intact rather than interleave it with a separate draft edit.
+        if matches!(
+            action,
+            Action::NudgeLayoutObjects(_)
+                | Action::DeleteLayoutObject
+                | Action::Arrange(_)
+                | Action::EditLayoutDraft(_)
+        ) && ctx.dragged_id().is_some()
+        {
             return;
         }
         // Printing the account's set denies does nothing either.
@@ -5342,6 +5398,20 @@ impl OpenMakerApp {
                 self.w.layout_workspace.revert();
             }
             Action::RevertLayout => {}
+            Action::SelectAllLayoutObjects => {
+                if self.can_select_all_layout_objects(ctx) {
+                    let session = self.w.session.as_ref().expect("checked layout");
+                    self.w.layout_workspace.select_all(session);
+                    ctx.request_repaint();
+                }
+            }
+            Action::NudgeLayoutObjects(direction) => {
+                if self.layout_selection_session(ctx).is_some() {
+                    let session = self.w.session.as_ref().expect("checked layout");
+                    self.w.layout_workspace.nudge_selection(session, direction);
+                    ctx.request_repaint();
+                }
+            }
             Action::DeleteLayoutObject if self.w.mode == Mode::Layout => {
                 let Some(session) = &self.w.session else {
                     return;
@@ -7788,7 +7858,7 @@ mod tests {
     }
 
     #[test]
-    fn view_zoom_commands_and_shortcuts_only_scale_the_form_document() {
+    fn view_zoom_commands_and_shortcuts_scale_the_document() {
         let mut app = OpenMakerApp::with_license_store(
             Box::new(om_data::mock::MockProvider::new()),
             Box::new(NoLicense),
@@ -7850,12 +7920,29 @@ mod tests {
         assert_eq!(app.w.document.zoom.percent(), 150);
         assert_eq!(context.zoom_factor(), 1.0);
 
+        app.w.mode = Mode::Layout;
+        app.apply(&context, Action::ZoomIn);
+        assert_eq!(
+            app.w.document.zoom.percent(),
+            150,
+            "layout geometry is still loading"
+        );
+        app.w.session.as_mut().unwrap().geometry =
+            crate::session::Geometry::Loaded(om_data::LayoutGeometry::default());
+        app.apply(&context, Action::ZoomIn);
+        assert_eq!(app.w.document.zoom.percent(), 200);
+
         app.w.zoom_locked = true;
         for action in [Action::ZoomIn, Action::ZoomOut, Action::ActualSize] {
             app.apply(&context, action);
-            assert_eq!(app.w.document.zoom.percent(), 150);
+            assert_eq!(app.w.document.zoom.percent(), 200);
         }
         app.w.zoom_locked = false;
+        app.apply(&context, Action::ActualSize);
+        assert_eq!(app.w.document.zoom.percent(), 100);
+        app.apply(&context, Action::ZoomIn);
+        assert_eq!(app.w.document.zoom.percent(), 150);
+        app.w.mode = Mode::Browse;
 
         // List and Table view zoom too, and Find mode's layout.
         app.w.view = ViewMode::List;
@@ -9042,6 +9129,146 @@ mod tests {
         app.launch_after_close = Some((Launch::Hosts, app.w.file_id));
         app.on_script_event(&ctx, crate::scripting::ScriptEvent::Quit);
         assert!(app.launch_after_close.is_none());
+    }
+
+    #[test]
+    fn layout_selection_shortcuts_keep_text_focus_and_stage_moves_until_save() {
+        let mut app = OpenMakerApp::with_license_store(
+            Box::new(om_data::mock::MockProvider::new()),
+            Box::new(NoLicense),
+        );
+        app.w = window_with_records(1, &["Ada"]);
+        app.w.mode = Mode::Layout;
+        let session = app.w.session.as_mut().unwrap();
+        let old_frame = om_data::GeomRect {
+            left: 20.0,
+            top: 30.0,
+            right: 40.0,
+            bottom: 60.0,
+        };
+        session.geometry = crate::session::Geometry::Loaded(om_data::LayoutGeometry {
+            objects: vec![om_data::ObjectGeom {
+                key: 1,
+                movable: true,
+                rect: old_frame,
+                ..Default::default()
+            }],
+            revision: Some([1; 32]),
+            ..Default::default()
+        });
+        app.w.layout_workspace.stage_field(
+            session,
+            crate::layout_canvas::NewField {
+                left: 50.0,
+                top: 30.0,
+                width: 20.0,
+                height: 30.0,
+                field: None,
+                label: false,
+                control: 0,
+                value_list: None,
+                revision: Some([1; 32]),
+            },
+        );
+        let ctx = egui::Context::default();
+        let key = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let input = || egui::RawInput {
+            events: vec![
+                key(Key::A, Modifiers::COMMAND),
+                key(Key::ArrowRight, Modifiers::NONE),
+                key(Key::ArrowRight, Modifiers::NONE),
+                key(Key::ArrowUp, Modifiers::SHIFT),
+            ],
+            ..Default::default()
+        };
+        let mut text = String::from("Layout text");
+        let editor = Id::unique("layout-test-text");
+        let mut frame = |app: &mut OpenMakerApp, input, edit| {
+            ctx.run_ui(input, |ui| {
+                let mut actions = Vec::new();
+                app.shortcuts(ui, &mut actions);
+                if edit {
+                    ui.add(egui::TextEdit::singleline(&mut text).id(editor))
+                        .request_focus();
+                }
+                for action in actions {
+                    app.apply(ui.ctx(), action);
+                }
+            })
+            .drop_without_applying_deltas();
+        };
+        frame(&mut app, egui::RawInput::default(), true);
+        frame(&mut app, input(), true);
+        let session = app.w.session.as_ref().unwrap();
+        assert_eq!(app.w.layout_workspace.selection_count(session), 1);
+        assert!(app.w.layout_workspace.moved().frames.is_empty());
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 50.0);
+
+        ctx.memory_mut(|m| m.surrender_focus(editor));
+        frame(&mut app, input(), false);
+        let session = app.w.session.as_ref().unwrap();
+        assert_eq!(app.w.layout_workspace.selection_count(session), 2);
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 52.0);
+        assert_eq!(
+            app.w.layout_workspace.moved().frames[&1],
+            om_data::GeomRect {
+                left: 22.0,
+                right: 42.0,
+                ..old_frame
+            }
+        );
+        let undo = key(Key::Z, shortcuts::UNDO.modifiers);
+        let redo = key(Key::Z, shortcuts::REDO.modifiers);
+        frame(
+            &mut app,
+            egui::RawInput {
+                events: vec![undo.clone()],
+                ..Default::default()
+            },
+            false,
+        );
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 51.0);
+        assert_eq!(app.w.layout_workspace.moved().frames[&1].left, 21.0);
+        frame(
+            &mut app,
+            egui::RawInput {
+                events: vec![undo, redo.clone(), redo],
+                ..Default::default()
+            },
+            false,
+        );
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 52.0);
+        assert_eq!(app.w.layout_workspace.moved().frames[&1].left, 22.0);
+
+        app.apply(&ctx, Action::RevertLayout);
+        assert!(!app.w.layout_workspace.has_changes());
+        let save = egui::RawInput {
+            events: vec![
+                key(Key::A, Modifiers::COMMAND),
+                key(Key::ArrowRight, Modifiers::NONE),
+                key(Key::S, Modifiers::COMMAND),
+            ],
+            ..Default::default()
+        };
+        ctx.run_ui(save, |ui| {
+            let mut actions = Vec::new();
+            app.shortcuts(ui, &mut actions);
+            assert_eq!(
+                actions,
+                [
+                    Action::SelectAllLayoutObjects,
+                    Action::NudgeLayoutObjects(NudgeDirection::Right),
+                    Action::SaveLayout
+                ]
+            );
+        })
+        .drop_without_applying_deltas();
     }
 
     #[test]

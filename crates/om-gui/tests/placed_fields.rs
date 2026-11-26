@@ -798,7 +798,8 @@ fn save_layout(app: &mut common::App) {
     common::click(app, "Save Layout");
 }
 
-/// Save Layout stores the sidebar drop's full edit-box height (#315).
+/// A sidebar drop into the zoomed canvas stores its position in layout
+/// points and keeps the full edit-box height (#315).
 #[test]
 fn a_sidebar_field_drop_saves_a_44_point_edit_box() {
     let file = form_file();
@@ -814,9 +815,13 @@ fn a_sidebar_field_drop_saves_a_44_point_edit_box() {
     common::click(&mut app, "Objects");
     common::click(&mut app, "Fields");
     common::wait_for_label(&mut app, "Name");
+    for _ in 0..2 {
+        common::open_menu(&mut app, "View");
+        common::click(&mut app, "Zoom In");
+    }
     let source = app.get_by_label("Name").rect().center();
     let canvas = app.get_by_label("Layout canvas").rect();
-    drag(&mut app, source, canvas.min + egui::vec2(132.0, 72.0));
+    drag(&mut app, source, canvas.min + 2.0 * egui::vec2(132.0, 72.0));
     common::wait_for_label(&mut app, "New field Name");
     shot(&mut app, "sidebar-field-drop", "Name field draft");
     save_layout(&mut app);
@@ -834,6 +839,7 @@ fn a_sidebar_field_drop_saves_a_44_point_edit_box() {
         .iter()
         .find(|object| object.field_name.as_deref() == Some("Name"))
         .unwrap();
+    assert_eq!((field.rect.left, field.rect.top), (110.0, 72.0));
     assert_eq!(field.rect.height(), 44.0);
 }
 
@@ -1177,14 +1183,35 @@ fn a_stored_field_is_moved_and_resized_and_kept() {
         canvas_frame(&app, "Field: Count (object 1)"),
         [110.0, 20.0, 230.0, 42.0]
     );
-    // Again, then wider by its right handle, then 30 high in the Inspector.
-    drag(
+    // Again at 200%, then 30 layout points wider by its right handle.
+    shot(&mut app, "layout-zoom-100", "the canvas at Actual Size");
+    for _ in 0..2 {
+        common::open_menu(&mut app, "View");
+        common::click(&mut app, "Zoom In");
+    }
+    shot(
         &mut app,
-        origin + egui::vec2(170.0, 31.0),
-        origin + egui::vec2(210.0, 61.0),
+        "layout-zoom-200",
+        "the same canvas at 200 percent",
     );
+    let field = app.get_by_label("Field: Count (object 1)").rect();
+    assert!(app.query_by_label("Resize right").is_none());
+    // The box starts on empty canvas and crosses only part of the field.
+    // At 200% its press origin must be converted back to canvas points.
+    drag(&mut app, field.min - egui::vec2(12.0, 12.0), field.center());
+    app.get_by_label("Resize right");
+    shot(
+        &mut app,
+        "layout-box-selected-200",
+        "Count selected by a box at 200 percent",
+    );
+    let from = field.center();
+    drag(&mut app, from, from + egui::vec2(80.0, 60.0));
     let handle = app.get_by_label("Resize right").rect().center();
-    drag(&mut app, handle, handle + egui::vec2(30.0, 0.0));
+    drag(&mut app, handle, handle + egui::vec2(60.0, 0.0));
+    common::open_menu(&mut app, "View");
+    common::click(&mut app, "Actual Size");
+    // The Inspector still measures in layout points.
     // Move directly from one Inspector editor to the next without Return.
     app.get_by_label("Object Width").click();
     app.run_steps(3);
@@ -1477,6 +1504,9 @@ fn shift_selection_moves_and_deletes_saved_objects_and_field_drafts_together() {
     assert!(app.query_by_label("Field to Place").is_none());
     click_at(&mut app, egui::vec2(160.0, 91.0), true);
     app.get_by_label("2 objects selected");
+    common::open_menu(&mut app, "Edit");
+    common::click(&mut app, "Select All");
+    app.get_by_label("3 objects selected");
     click_at(&mut app, egui::vec2(330.0, 91.0), false);
     assert!(app.query_by_label("2 objects selected").is_none());
     click_at(&mut app, egui::vec2(440.0, 160.0), false);
@@ -1530,6 +1560,12 @@ fn shift_selection_moves_and_deletes_saved_objects_and_field_drafts_together() {
         origin + egui::vec2(160.0, 91.0),
         origin + egui::vec2(190.0, 101.0),
     );
+    app.key_press(egui::Key::ArrowRight);
+    app.run_steps(3);
+    assert_eq!(
+        canvas_frame(&app, "Field: Count (object 1)"),
+        [141.0, 30.0, 261.0, 52.0]
+    );
     save_layout(&mut app);
     common::wait_until(&mut app, "the mixed selection saved", |app| {
         assert!(app.state().error().is_none(), "{:?}", app.state().error());
@@ -1551,8 +1587,8 @@ fn shift_selection_moves_and_deletes_saved_objects_and_field_drafts_together() {
         .iter()
         .find(|o| o.field_name.as_deref() == Some("Name"))
         .unwrap();
-    assert_eq!((count.rect.left, count.rect.top), (140.0, 30.0));
-    assert_eq!((name.rect.left, name.rect.top), (140.0, 90.0));
+    assert_eq!((count.rect.left, count.rect.top), (141.0, 30.0));
+    assert_eq!((name.rect.left, name.rect.top), (141.0, 90.0));
     reader.close();
 }
 
@@ -2280,8 +2316,51 @@ fn dragging_the_layouts_right_edge_sets_its_width() {
     common::wait_until(&mut app, "the layout canvas", |app| {
         app.query_by_label("Field: Count (object 1)").is_some()
     });
+    let field = "Field: Count (object 1)";
+    common::click(&mut app, field);
+    let original_frame = canvas_frame(&app, field);
     let edge = app.get_by_label("Layout width").rect().center();
-    drag(&mut app, edge, edge - egui::vec2(100.0, 0.0));
+    let partial = edge - egui::vec2(50.0, 0.0);
+    let to = edge - egui::vec2(100.0, 0.0);
+    let width_pointer = |pos, pressed| egui::Event::PointerButton {
+        pos,
+        pressed,
+        button: egui::PointerButton::Primary,
+        modifiers: egui::Modifiers::NONE,
+    };
+    app.event(egui::Event::PointerMoved(edge));
+    app.event(width_pointer(edge, true));
+    app.step();
+    app.event(egui::Event::PointerMoved(partial));
+    // The handle draws the staged width on the frame after the move.
+    app.run_steps(2);
+    assert_ne!(app.get_by_label("Layout width").rect().center(), edge);
+    app.get_by_label("Resize right");
+    // Keys between two frames of this resize must not move or delete
+    // the selection, or split the width gesture into multiple undo steps.
+    app.key_press(egui::Key::ArrowRight);
+    app.key_press(egui::Key::Delete);
+    app.key_press(egui::Key::Backspace);
+    app.step();
+    assert_eq!(canvas_frame(&app, field), original_frame);
+    app.event(egui::Event::PointerMoved(to));
+    app.step();
+    app.event(width_pointer(to, false));
+    app.run_steps(3);
+    let resized_edge = app.get_by_label("Layout width").rect().center();
+    assert_eq!(resized_edge.x, edge.x - 100.0);
+    app.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    app.run_steps(3);
+    assert_eq!(app.get_by_label("Layout width").rect().center(), edge);
+    app.key_press_modifiers(
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        egui::Key::Z,
+    );
+    app.run_steps(3);
+    assert_eq!(
+        app.get_by_label("Layout width").rect().center(),
+        resized_edge
+    );
     shot(&mut app, "91-width", "the layout's right edge dragged in");
     save_layout(&mut app);
     common::wait_until(&mut app, "the saved width", |app| {
