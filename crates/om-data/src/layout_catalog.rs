@@ -1151,15 +1151,47 @@ pub fn plan_setup_with_margins(
 /// The view flags `f1` layout `layout` has: its member's, else its index
 /// entry's, as FileMaker keeps both ([`plan_setup`]).
 fn stored_flags(catalog: &OwnedNode, layout: u64) -> Option<u64> {
-    let key = uint_segment(layout);
-    let word = |path: &[&[u8]]| {
-        catalog
-            .at(path)
-            .and_then(|n| n.value.as_deref())
-            .and_then(be_uint)
+    layout_word(
+        catalog.at(&[&[MEMBERS], &uint_segment(layout)]),
+        catalog.child(&[INDEX]),
+        layout,
+        LayoutWord::ViewFlags,
+    )
+}
+
+/// A word Layout Setup reads and writes in both a layout's member and its
+/// index entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LayoutWord {
+    /// `f1`: the views, General and Printing options.
+    ViewFlags,
+    /// `f0`: the member flags, "Include in layout menus" among them
+    /// ([`MENU_HIDDEN`]).
+    MemberFlags,
+}
+
+/// Layout `layout`'s `word` as Layout Setup reads it: its member's
+/// (`[4, 5, L]`), else its entry's in the catalog's index `index`
+/// (`[4, 1]`, its entries `[4, 1, 7, L]`), by the one rule every reader
+/// uses (`om_layout::stored_layout_word`). FileMaker keeps both; a request
+/// built from the member alone would drop what only the entry holds when
+/// [`plan_setup`], the one writer, writes it to both (#977).
+pub fn layout_word(
+    member: Option<&OwnedNode>,
+    index: Option<&OwnedNode>,
+    layout: u64,
+    word: LayoutWord,
+) -> Option<u64> {
+    let key = match word {
+        LayoutWord::ViewFlags => VIEW_FLAGS,
+        LayoutWord::MemberFlags => KIND,
     };
-    word(&[&[MEMBERS], &key, &[VIEW_FLAGS]])
-        .or_else(|| word(&[&[INDEX], &[ENTRIES], &key, &[VIEW_FLAGS]]))
+    let own = member.and_then(|m| m.child(&[key]));
+    let entry = index.and_then(|i| i.at(&[&[ENTRIES], &uint_segment(layout), &[key]]));
+    om_layout::stored_layout_word(
+        own.and_then(|n| n.value.as_deref()),
+        entry.and_then(|n| n.value.as_deref()),
+    )
 }
 
 /// A layout's member and index after Layout Setup ([`plan_setup`]).
@@ -1203,12 +1235,9 @@ pub fn plan_setup(
             "The layout catalog's index has no entry for layout {layout}."
         ))
     })?;
-    let word = |node: &OwnedNode, k: u8| {
-        node.child(&[k])
-            .and_then(|n| n.value.as_deref())
-            .and_then(be_uint)
-    };
-    let kind = word(&entry, KIND).unwrap_or(0);
+    // As every reader takes it: the member's, else the entry's (#977).
+    let kind =
+        layout_word(Some(member), Some(&index), layout, LayoutWord::MemberFlags).unwrap_or(0);
     if kind & NOT_A_LAYOUT != 0 || member.child(&[DEFINITION]).is_none() {
         return Err(unsupported(
             "This member of the layout catalog is a folder or a separator; Layout Setup sets \

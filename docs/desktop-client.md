@@ -2167,24 +2167,32 @@ stored tab order.
   definitions and the existing tools for other objects.
 - **Selection.** Plain click selects one saved object or field draft;
   Shift-click adds/removes it from the selection, on the canvas or in
-  Objects. Blank canvas clicks clear selection. Dragging any selected
-  movable member moves the whole selection, including a mix of saved
+  Objects. Blank canvas clicks clear selection. With the Selection tool,
+  Edit > Select All (Cmd/Ctrl+A) selects every shown canvas object and
+  field draft. A box starting on blank layout space replaces the selection
+  with the objects it crosses. Hold Cmd on macOS or Ctrl elsewhere to
+  select only objects entirely inside. Both use the canvas's existing
+  flat object list, including nested entries it already shows. Draft
+  text, buttons and portals keep their existing editors. Tool-specific
+  selection and popover-scoped boxes are not implemented. Dragging any
+  selected movable member moves the whole selection, including a mix of saved
   objects and unsaved field drafts. Origins snap to whole points, keeping
   each object's size and the spacing between whole-point members; fractional
   stored origins are rounded before saving. A Shift-drag of an unselected
   member adds it rather than replacing the selection (OpenMaker's choice;
   native Shift-drag axis constraints are not measured). If any member
-  cannot move, the selection stays put and Inspector states why. Delete
-  and Edit > Clear validate the whole selection before staging deletions;
+  cannot move, the selection stays put and Inspector states why.
+  Unmodified arrow keys nudge the selection by one layout point, through
+  the same whole-point frame and draft checks as a drag. A focused text
+  editor keeps its keys. Delete and Edit > Clear validate the whole
+  selection before staging deletions;
   an unsupported member refuses the whole action, without deleting peers.
   These changes stay unsaved until Save; Revert/Discard clears additions,
   moves and deletions. Selection belongs to the exact shown layout revision.
   Multiple-object Inspector frame/binding/control edits and handle resizing
   are not supported: Inspector shows the selected count and asks for a
-  single selection. It never edits an arbitrary member. Box selection,
-  groups, Select All and other bulk-formatting operations are not added by
-  this slice. Native mixed locked-object and bulk Inspector behavior has
-  not been measured.
+  single selection. It never edits an arbitrary member. Native mixed
+  locked-object and bulk Inspector behavior has not been measured.
 - **Drawing and choosing.** Each drag on the canvas adds an independent
   field draft, in whole points, as a dashed box over the layout. The
   ordinary Field tool returns to Selection after the drag; double-clicking
@@ -2236,6 +2244,21 @@ objects are stored and unfinished work remains staged; Revert discards only
 that remaining work. An unknown outcome keeps the draft for the existing
 idempotent/revision checks rather than assuming it was saved. The checked
 revision/table identity is rebased only after a known successful reply.
+
+**Undo and Redo.** Edit > Undo and Redo (Ctrl/Cmd-Z and Shift-Ctrl/Cmd-Z)
+step through this window's unsaved changes. Each drag or arrow-key nudge
+is one step. History covers moves, resizes, Arrange, deletions, layout
+width, field controls,
+text edits and staged placements and their settings. A focused text
+editor keeps its own keyboard undo and redo. On leaving the editor, the
+completed edit becomes part of the draft history. A new draft edit drops
+the redo branch. OpenMaker keeps up to 32 steps and clears history if the
+draft exceeds its snapshot budget. Applying a step clears selection.
+Save Layout, Revert Layout, a changed layout revision and leaving the
+layout or mode end the history. Part boundaries, Part Setup and Layout
+Setup are immediate writes outside the draft. FileMaker Pro's precise
+menu labels, supported operations and history across Save are unmeasured
+([#902](https://github.com/OpenMaker-Dev/openmaker/issues/902)).
 
 OpenMaker chooses bindings and label/control options in Inspector rather
 than FileMaker's Specify Field dialog. The deferred layout-save workflow
@@ -2386,8 +2409,15 @@ the changes. A new field drawn meanwhile is placed after them, on the
 layout they made. Revert Layout drops them. While a layout has unsaved
 changes (moved or deleted objects or a new field), another layout, another mode and
 New Layout/Report are refused with an alert asking for Save Layout or
-Revert Layout. Saving them is OpenMaker's choice of UI (FileMaker Pro saves a layout's changes when the user leaves
-it or confirms), and so are the handles' size and the outline.
+Revert Layout. The desktop close controls check the affected drafts. A
+document window's close button checks that window, File > Close checks the
+file's windows, and Quit checks every open file. A layout save awaiting
+the host also keeps the affected windows open. After a connection drops,
+Revert Layout can still discard the local draft so the window can close.
+A script's Close Window step targeting another window can still discard
+its draft ([#978](https://github.com/OpenMaker-Dev/openmaker/issues/978)).
+Explicit saving, the handle sizes and the outline are OpenMaker's choices.
+FileMaker Pro saves layout changes when the user leaves or confirms them.
 
 **Arranging objects.** Arrange > Align (Left Edges, Vertical Centers,
 Right Edges, Top Edges, Horizontal Centers, Bottom Edges), Distribute

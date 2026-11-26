@@ -15,8 +15,8 @@
 //!
 //! The app menu also gets macOS's own Services, Hide, Hide Others and Show
 //! All, and the Help menu the system's search field.
-//! Enabled rows can install key equivalents. Editor and zoom shortcuts
-//! stay with the viewport so they follow its focus and event order.
+//! Enabled rows can install key equivalents. Editor, zoom and Save Layout
+//! shortcuts stay with the viewport so they follow its focus and event order.
 
 use std::collections::HashMap;
 
