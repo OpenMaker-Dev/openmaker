@@ -305,7 +305,7 @@ impl ServerHost {
         // index, or of the index built on demand (noted to be stored). A
         // read that fails is 802 ([`ServerHost::read`]).
         let built = crate::engine::Waiting::default();
-        let looked_up = self.read(|read| {
+        let looked_up = self.read_find(|read| {
             let keys: BTreeSet<Vec<u8>> = texts
                 .iter()
                 .flat_map(|text| read.derived.value_keys(&t, &f, data_type, text))
