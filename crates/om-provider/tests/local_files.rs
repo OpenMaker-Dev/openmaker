@@ -3157,6 +3157,103 @@ fn starter_fields_read_as_the_fields_tab_lists_them() {
 }
 
 #[test]
+fn local_new_record_keeps_utc_clock_samples_through_commit() {
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
+    use om_data::ScriptWrite;
+    use om_hbam::OwnedNode;
+
+    const CUSTOM: u64 = 40;
+    const DIRECT: u64 = 41;
+    let folder = Folder::new("utc-milliseconds-auto-entry");
+    let path = folder.file("Clocks.fmp12", PASSWORD, |root| {
+        let mut names = fixture::names();
+        names.add_custom_function(1, "UtcSample", 0);
+        root.put(
+            &[&[16], &[5], &[1], &[16]],
+            om_scripts::text_node(&[], "UtcSample"),
+        );
+        let body = om_formula::polish::encode(&om_formula::Expr::Get(
+            om_data::host::session::selector::CURRENT_TIME_UTC_MILLISECONDS,
+        ));
+        root.put(
+            &[&[16], &[5], &[1], &[35], &[6]],
+            OwnedNode::leaf(Vec::new(), body),
+        );
+        for (id, name, kind, formula) in [
+            (CUSTOM, "ViaFunction", 1, "UtcSample"),
+            (DIRECT, "Direct", 2, "Get ( CurrentTimeUTCMilliseconds )"),
+        ] {
+            fixture::add_field(root, TABLE, id, name, 1, kind, 0, 0x88, 0);
+            fixture::add_formula(root, &names, (TABLE, OCCURRENCE), id, 5, formula);
+        }
+    });
+    let mut provider = opened(&path);
+    let request = ScriptWrite {
+        layout: LAYOUT as u32,
+        ..Default::default()
+    };
+    let preview = provider.preview_new_record(&request).unwrap().unwrap();
+    let observed: Vec<_> = [CUSTOM, DIRECT]
+        .into_iter()
+        .map(|field| {
+            let value = preview.values[&field].clone().unwrap();
+            assert!(value.parse::<i64>().is_ok());
+            (field, value)
+        })
+        .collect();
+    // The next evaluation must not sample the current clock again.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let row = provider
+        .write_record(&ScriptWrite {
+            prepared: Some(preview.id),
+            cells: [(NAME, Some("Unrelated edit".into()))].into(),
+            ..request.clone()
+        })
+        .unwrap();
+
+    let fields = provider.records(request.layout, 0, 0).unwrap().fields;
+    let tracked = [(CUSTOM, "ViaFunction"), (DIRECT, "Direct")]
+        .map(|(id, name)| (id, fields.iter().position(|f| f.name == name).unwrap()));
+    provider.begin_record_commit().unwrap();
+    let held = provider.write_record(&request).unwrap();
+    let held_samples = tracked.map(|(id, index)| {
+        let value = held.values[index].clone().unwrap();
+        assert!(value.parse::<i64>().is_ok());
+        (id, value)
+    });
+    for name in ["First edit", "Second edit"] {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let edited = provider
+            .write_record(&ScriptWrite {
+                record: Some(held.id),
+                cells: [(NAME, Some(name.into()))].into(),
+                ..request.clone()
+            })
+            .unwrap();
+        for ((_, index), (_, value)) in tracked.iter().zip(&held_samples) {
+            assert_eq!(edited.values[*index].as_deref(), Some(value.as_str()));
+        }
+    }
+    provider.commit_record_session(false).unwrap();
+    provider.close();
+
+    let file = om_hbam::HbamFile::open(&path).unwrap();
+    let records = file.records(TABLE).unwrap();
+    for (record, samples) in [(row, observed.as_slice()), (held, held_samples.as_slice())] {
+        let stored = records
+            .iter()
+            .find(|stored| stored.id == record.id as u64)
+            .unwrap();
+        for (field, value) in samples {
+            assert_eq!(
+                stored.text(*field).transpose().unwrap().as_deref(),
+                Some(value.as_str())
+            );
+        }
+    }
+}
+
+#[test]
 fn unsupported_stored_record_position_does_not_reserve_a_serial() {
     use fixture::{LAYOUT, NAME, OCCURRENCE};
     use om_data::rules::{error, RecordNumber};

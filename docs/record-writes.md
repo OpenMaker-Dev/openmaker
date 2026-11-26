@@ -829,6 +829,16 @@ re-enters the default. These formulas require an ordinary local desktop
 file and one repetition. Browse typing and persistence across reopen
 remain separate. See [the native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1095).
 
+A local Text or Number calculated auto-enter may read
+`Get ( CurrentTimeUTCMilliseconds )` at New Record, including through a
+custom function. Each field takes its own samples and replays them
+through later edits and commit of a held creation. Applying the same
+sampling to duplicate, import and portal creations is inferred.
+Evaluating a clock-dependent rule again on an existing record, and
+clock reads in hosted writes, validation and stored calculations, are
+outside this support.
+[Native Browse check](https://github.com/OpenMaker-Dev/openmaker/issues/1055).
+
 A local Text auto-enter calculation can read a single-repetition plain
 Text global from another table in the same file, through an unrelated
 occurrence. The field is read from the session, independent of the

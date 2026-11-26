@@ -150,11 +150,12 @@ const RECORD_RULE_SELECTORS: [u8; 10] = [1, 2, 5, 16, 29, 31, 32, 63, 68, 101];
 /// auto-entered and validation formulas, which the writing client
 /// evaluates. A stored calculation, which a host recalculates with no
 /// operation, and a privilege set's record limit keep refusing them.
-const CONTEXT_SELECTORS: [u8; 4] = [
+const CONTEXT_SELECTORS: [u8; 5] = [
     selector::LAYOUT_NUMBER,
     selector::RECORD_NUMBER,
     selector::CURRENT_PRIVILEGE_SET_NAME,
     selector::CURRENT_HOST_TIMESTAMP,
+    selector::CURRENT_TIME_UTC_MILLISECONDS,
 ];
 
 /// Whether FileMaker leaves index language `language` untailored, so that
@@ -391,6 +392,42 @@ impl RecordNumber {
     }
 }
 
+/// The UTC millisecond samples a new record's formulas have drawn. Clones
+/// identify the same creation so a preview and its commit replay the
+/// calls in their field's evaluation order.
+#[derive(Clone, Debug, Default)]
+pub struct CreationUtcClock(Arc<Mutex<BTreeMap<u64, Vec<Value>>>>);
+
+impl PartialEq for CreationUtcClock {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for CreationUtcClock {}
+
+impl CreationUtcClock {
+    fn sample(&self, field: u64, call: usize) -> Result<Value, om_calc::CalcError> {
+        // A loop or recursion cannot keep growing the record's sample
+        // log. Refuse large sequences rather than replay a partial one.
+        const MAX_CLOCK_CALLS: usize = 64;
+        if call >= MAX_CLOCK_CALLS {
+            return Err(om_calc::CalcError::NOT_SUPPORTED);
+        }
+        let mut by_field = self
+            .0
+            .lock()
+            .map_err(|_| om_calc::CalcError::NOT_SUPPORTED)?;
+        let samples = by_field.entry(field).or_default();
+        if let Some(value) = samples.get(call) {
+            return Ok(value.clone());
+        }
+        let value = crate::host::session::utc_milliseconds()?;
+        samples.push(value.clone());
+        Ok(value)
+    }
+}
+
 /// How much the writer can establish about the order of local edits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WriteSequence {
@@ -457,6 +494,8 @@ pub struct WriteContext {
     /// `Get ( RecordNumber )` as the operation answers it. A stored
     /// calculation requires [`RecordNumber::LocalNewRecord`].
     pub record_number: Option<RecordNumber>,
+    /// The clock samples of a local New Record, retained by its preview.
+    pub creation_utc_clock: Option<CreationUtcClock>,
     /// The local file's `$$` variables for directly reading a Text
     /// auto-enter value. New Record's preview retains this snapshot.
     pub file_variables: Option<WriteFileVariables>,
@@ -808,6 +847,7 @@ pub(crate) struct Evaluation {
     related: Arc<RelatedRecords>,
     /// The session's global values ([`RecordEnvironment::globals`]).
     globals: Option<Arc<RecordValues>>,
+    creation_utc_clock: Option<CreationUtcClock>,
     other_globals: OtherGlobalValues,
     /// `Get ( RecordNumber )` ([`WriteContext::record_number`]).
     record_number: Option<RecordNumber>,
@@ -891,6 +931,7 @@ impl RecordEnvironment {
             .filter(|selector| match *selector {
                 selector::LAYOUT_NUMBER => context.layout == WriteLayout::Unknown,
                 selector::RECORD_NUMBER => context.record_number.is_none(),
+                selector::CURRENT_TIME_UTC_MILLISECONDS => context.creation_utc_clock.is_none(),
                 selector::CURRENT_PRIVILEGE_SET_NAME => context.privilege_set.is_none(),
                 _ => host_now.is_none(),
             })
@@ -925,6 +966,7 @@ impl RecordEnvironment {
                 .clone()
                 .unwrap_or_else(|| self.lookups.other_globals.clone()),
             record_number: context.record_number,
+            creation_utc_clock: context.creation_utc_clock.clone(),
             file_variables: context.file_variables.clone(),
             related_needs: self.related_needs.clone(),
             written: self.lookups.written,
@@ -2625,6 +2667,22 @@ impl RecordPlan {
                     &mut BTreeSet::new(),
                 )
                 .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
+                if context_selectors(&schema, &expression.formula.polish)
+                    .contains(&selector::CURRENT_TIME_UTC_MILLISECONDS)
+                    && !(local
+                        && own
+                        && !calculation
+                        && !field.auto_enters_global()
+                        && matches!(field.data_type, DataType::Text | DataType::Number))
+                {
+                    return Err(DataError::with_code(
+                        error::UNAVAILABLE,
+                        format!(
+                            "Field {}: Get ( CurrentTimeUTCMilliseconds ) requires local Text or Number auto-entry.",
+                            field.name
+                        ),
+                    ));
+                }
                 for dependency in &expression.dependencies {
                     let Some(referenced) = fields.get(dependency) else {
                         return Err(DataError::new(format!(
@@ -4838,6 +4896,12 @@ impl RecordPlan {
             }
         }
         let mut session = environment.session();
+        if mode != WriteMode::Create {
+            session.creation_utc_clock = None;
+            session
+                .unanswered
+                .insert(selector::CURRENT_TIME_UTC_MILLISECONDS);
+        }
         session.stored = existing.clone();
         // Each field's turn passes before the next: its value is final then,
         // unless it was left out, or a preview passed over it uncomputed.
@@ -5660,6 +5724,19 @@ impl RecordPlan {
             .map(|f| f as &dyn Fn() -> bool);
         host.limits = session.limits;
         host.file_context = session.file_context;
+        let call = std::cell::Cell::new(0);
+        let sample_clock = || {
+            let index = call.get();
+            call.set(index + 1);
+            session
+                .creation_utc_clock
+                .as_ref()
+                .ok_or(om_calc::CalcError::NOT_SUPPORTED)?
+                .sample(field, index)
+        };
+        if session.creation_utc_clock.is_some() {
+            host.creation_utc_sample = Some(&sample_clock);
+        }
         let (repetition, extend_fields) = match repetition {
             InRepetition::Validation(n) => (n, n > 1),
             InRepetition::Calculation(n) => (n, false),
@@ -6753,6 +6830,7 @@ fn selector_name(selector: u8) -> &'static str {
         selector::LAYOUT_NUMBER => "Get ( LayoutNumber )",
         selector::RECORD_NUMBER => "Get ( RecordNumber )",
         selector::CURRENT_PRIVILEGE_SET_NAME => "Get ( CurrentPrivilegeSetName )",
+        selector::CURRENT_TIME_UTC_MILLISECONDS => "Get ( CurrentTimeUTCMilliseconds )",
         _ => "Get ( CurrentHostTimestamp )",
     }
 }
@@ -8643,6 +8721,7 @@ mod tests {
             // A row typed after two related rows of an unsorted portal
             // (#1038).
             record_number: Some(RecordNumber::Window(3)),
+            creation_utc_clock: None,
             sequence: WriteSequence::Unmeasured,
             file_variables: None,
             other_globals: None,
