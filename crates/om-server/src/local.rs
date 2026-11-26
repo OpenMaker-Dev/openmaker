@@ -364,13 +364,17 @@ impl LocalHost {
 
     /// Answer every read of the file that goes through a view through the
     /// test view as well as the file engine's, and check every operation's
-    /// writes (`Server::checking_reads`). Only in debug builds.
+    /// writes (`Server::checking_reads`), the file's store copy made here.
+    /// Only in debug builds.
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn checking_reads(self) -> Self {
         if let Some(handle) = &self.handle {
             handle.shared.engine.check_reads();
             handle.shared.engine.check_writes();
+            for file in handle.shared.hosting.files() {
+                handle.shared.engine.prepare_store_copy(&file);
+            }
         }
         self
     }
