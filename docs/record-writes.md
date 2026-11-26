@@ -432,8 +432,8 @@ before the record commit writes it.
   and to the layout the write goes through. So is a new record of a layout
   of another file's table ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)):
   its write naming the preview, outside a transaction or held in one, stores
-  what the preview drew, with no layout of the owning file's. A related
-  record of such a layout has no preview, since its write is refused.
+  what the preview drew, with no layout of the owning file's. So is a
+  related record of another file's table on such a layout.
 - **The desktop window's use.** OnObjectSave when leaving a changed field
   by clicking the layout's background or using keyboard Commit
   (an ordinary commit, #1070), previews the window's begun rows before its
@@ -1075,7 +1075,10 @@ same way is inferred, not measured.
 
 **Related records of another file.** A portal row or related field of a
 table a related file owns, on a layout of the opened file's own table,
-is written by that file (`related_owner.rs`, #1000):
+is written by that file (`related_owner.rs`, #1000). So is a script's write
+to such a record from a layout of another file's table, whichever related
+file owns the record ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43));
+Browse there does not edit them yet:
 - **The owner writes.** The opened file's Browse edits, a script's Set
   Field into it (one through a relationship that allows creation creates
   the record, its match fields taking the current record's values) and

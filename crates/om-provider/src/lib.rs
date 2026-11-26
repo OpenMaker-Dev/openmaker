@@ -4142,19 +4142,15 @@ impl DataProvider for NativeProvider {
         let table = write.table.unwrap_or(layout_table);
         self.check_asset_write(write, table)?;
         if self.external.route(table).is_some() {
-            // A related record of another file's table on a layout of this
-            // file's table: that file writes it (related_owner.rs).
-            if table != layout_table && self.external.route(layout_table).is_none() {
+            // A related record of another file's table, on a layout of this
+            // file's table or of another file's table (#43): that file
+            // writes it (related_owner.rs).
+            if table != layout_table {
                 return self.write_routed_related(write, table);
             }
-            // Only the layout's own base table: an existing record, or a new
-            // one (New Record, Duplicate Record) created by the owner.
-            if table != layout_table {
-                return Err(DataError::with_code(
-                    3,
-                    "Related-file script writes support only records of the layout's base table.",
-                ));
-            }
+            // The layout's own base table, of another file: an existing
+            // record, or a new one (New Record, Duplicate Record) created by
+            // the owner.
             // Inside the window's record session, or a script's transaction,
             // the owner holds it as one of the transaction's parts, as it
             // holds a portal row of its table (related_owner.rs): op71 under
