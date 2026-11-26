@@ -62,7 +62,7 @@
 
 use super::*;
 use om_data::rules::HeldRecords;
-use om_data::rules::{Entry, RecordEnvironment, WriteContext, WriteMode};
+use om_data::rules::{Entry, RecordEnvironment, RecordNumber, WriteContext, WriteMode};
 use om_data::{NewRecordPreview, PendingRecord, PreparedId, ScriptWrite};
 
 use super::records::{CurrentSet, Origin};
@@ -198,7 +198,7 @@ pub(crate) struct Reuse {
 struct Operation {
     layout: Option<u32>,
     set: CurrentSet,
-    record_number: Option<u64>,
+    record_number: Option<RecordNumber>,
 }
 
 /// The fields of the window's unsaved records whose values may not be what
@@ -904,6 +904,7 @@ impl NativeProvider {
             single_field_step: false,
         };
         let context = self.origin_context(&plan, origin)?;
+        plan.check_creation_context(&context)?;
         let mut environment = self.rule_environment(table, &plan, context)?;
         let on_creation = plan
             .serials_for(WriteMode::Create, entry)

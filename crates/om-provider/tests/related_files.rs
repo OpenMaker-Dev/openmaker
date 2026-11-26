@@ -8208,7 +8208,7 @@ fn a_routed_row_carries_its_windows_record_number() {
     assert!(refused.message.contains(number), "{refused:?}");
     let written = provider
         .write_record(&om_data::ScriptWrite {
-            record_number: Some(3),
+            record_number: Some(om_data::rules::RecordNumber::Window(3)),
             ..row()
         })
         .unwrap();
@@ -8364,9 +8364,9 @@ fn a_previewed_portal_row_stores_the_values_its_preview_showed() {
     let schema = provider.calc_schema().unwrap().unwrap();
     let remote = schema.table_of(REMOTE).unwrap().id;
     let row = || related_write(Some(remote), None, &[(JOB_KEY, "7")]);
-    let named = |id, record_number| om_data::ScriptWrite {
+    let named = |id, record_number: Option<u64>| om_data::ScriptWrite {
         prepared: Some(id),
-        record_number,
+        record_number: record_number.map(om_data::rules::RecordNumber::Window),
         ..row()
     };
     let stored = |host: &Host, file: &str, id: i64| {
@@ -8475,7 +8475,7 @@ fn a_previewed_portal_row_stores_the_values_its_preview_showed() {
     // not given the preview's 3.
     let before = written();
     let numbered = om_data::ScriptWrite {
-        record_number: Some(3),
+        record_number: Some(om_data::rules::RecordNumber::Window(3)),
         ..row()
     };
     let numbered = provider.preview_new_record(&numbered).unwrap().unwrap();
@@ -8766,7 +8766,7 @@ fn a_new_record_of_another_files_layout_stores_the_values_its_preview_showed() {
     let new = |name: &str, record_number| om_data::ScriptWrite {
         layout,
         cells: [(NAME, Some(name.to_owned()))].into(),
-        record_number: Some(record_number),
+        record_number: Some(om_data::rules::RecordNumber::Window(record_number)),
         ..Default::default()
     };
     let named = |write: om_data::ScriptWrite, id| om_data::ScriptWrite {
