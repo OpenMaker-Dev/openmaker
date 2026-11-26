@@ -396,8 +396,6 @@ pub(crate) struct Shared {
     pub in_run: bool,
     /// Exit Application, Close File or Close Window on the last window.
     pub halt: bool,
-    /// Why the last host step failed, in words, for the alert.
-    pub failure: Option<String>,
     /// The last print or export step the set's options were checked for
     /// was refused for them: its alert is FileMaker's, not the error's
     /// (`WorkerHost::error_alert`). Each such step sets it, so an elevated
@@ -486,7 +484,6 @@ impl Shared {
             interrupted: false,
             in_run: false,
             halt: false,
-            failure: None,
             options_refused: false,
             clipboard: None,
             plugin: Default::default(),
@@ -514,6 +511,14 @@ impl Shared {
             }
             Request::UpdateRecord { .. } | Request::DeleteRecord { .. } => {
                 *self.file.cache.get_mut() = CalcData::default();
+            }
+            // The request goes to the window's file, which is current here.
+            Request::ShowWindow(id) => {
+                for window in std::iter::once(&mut self.file.window).chain(&mut self.file.others) {
+                    if window.id() == *id {
+                        window.state.hidden = false;
+                    }
+                }
             }
             _ => {}
         }
@@ -812,7 +817,7 @@ impl ScriptSession {
         s.firing.clear();
         s.interrupted = false;
         s.halt = false;
-        s.failure = None;
+        super::host::forget_failure();
         s.abort.store(false, Ordering::SeqCst);
         let message = if reverted {
             STOPPED.to_owned()

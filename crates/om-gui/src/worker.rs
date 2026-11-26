@@ -225,6 +225,10 @@ pub(crate) enum Request {
         layout_id: u32,
         record: Option<i64>,
     },
+    /// Window > Show Window showed this hidden window: the scripts'
+    /// windows show it too (`Shared::observe`), and say so
+    /// ([`Reply::WindowShown`]); the provider has nothing to do.
+    ShowWindow(u32),
     Close,
 }
 
@@ -592,6 +596,10 @@ pub(crate) enum Reply {
         report: Option<Vec<om_data::FileCommit>>,
     },
     Released,
+    /// [`Request::ShowWindow`]'s window is shown to the scripts: in the
+    /// order of their events, so that the window shows as they have it
+    /// even when one of them hid it while the request was on its way.
+    WindowShown(u32),
     Closed,
 }
 
@@ -655,7 +663,10 @@ impl Reply {
             Reply::Reconnected(result) => result.as_ref().as_ref().err(),
             Reply::Recreated(result) => result.as_ref().err(),
             // Each record's read carries its own error.
-            Reply::Rechecked { .. } | Reply::Released | Reply::SavedPosition { .. } => None,
+            Reply::Rechecked { .. }
+            | Reply::Released
+            | Reply::WindowShown(_)
+            | Reply::SavedPosition { .. } => None,
             Reply::SaveSettled { result, .. } => result.as_ref().err(),
             // A listing's failure is not the open file's.
             Reply::Files(_) | Reply::Script(_) | Reply::Closed => None,
@@ -862,6 +873,13 @@ impl Worker {
     /// Ask the running script to stop (Esc, Cmd-period).
     pub fn abort_script(&self) {
         self.abort.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether [`Self::abort_script`] was asked and the script has not
+    /// taken it yet.
+    #[cfg(test)]
+    pub(crate) fn abort_asked(&self) -> bool {
+        self.abort.load(Ordering::SeqCst)
     }
 
     /// Queue window `window`'s request. Requests run in order, one at a
@@ -1515,6 +1533,7 @@ fn answer(
             });
             Reply::Released
         }
+        Request::ShowWindow(id) => Reply::WindowShown(id),
         Request::ReleaseRecords(records) => {
             for (layout, record) in records {
                 let _ = contain(provider, |p| {

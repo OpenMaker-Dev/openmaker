@@ -8,7 +8,7 @@ use om_data::scripts::save_records::{self, Records};
 use om_data::{flag, ScriptStep};
 use om_layout::{LayoutObject, ObjectKind};
 
-use super::WorkerHost;
+use super::{forget_failure, note_failure, WorkerHost};
 use crate::report::{self, ReportError};
 use crate::scripting::{files, Answer, PdfDialog, Prompt};
 
@@ -180,12 +180,12 @@ fn well_formed_calculation(node: &om_data::runtime::OwnedNode) -> bool {
 
 impl WorkerHost<'_> {
     pub(super) fn report_error(&mut self, error: ReportError) -> HostError {
-        self.s.failure = Some(error.message);
+        note_failure(error.message);
         HostError::Error(ErrorCode(error.code))
     }
 
     pub(super) fn save_records_pdf(&mut self, call: &StepCall<'_>) -> HostResult {
-        self.s.failure = None;
+        forget_failure();
         let view = pdf_options(call.step).map_err(|e| self.report_error(e))?;
         if self.s.file.window.state.mode == Mode::Find {
             return Err(self.report_error(ReportError::unsupported(

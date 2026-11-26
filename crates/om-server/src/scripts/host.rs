@@ -779,8 +779,10 @@ impl ErrorLog {
             self.recent.pop_front();
         }
         self.recent.push_back(entry.clone());
+        // Names as `Debug` quotes them, so that a quote in one is escaped
+        // (error reports withhold quoted text: `crate::reporting`).
         let line = format!(
-            "{file:?}: script \"{}\" - step \"{}\" (line {}): {}",
+            "{file:?}: script {:?} - step {:?} (line {}): {}",
             entry.script, entry.step_name, entry.line, entry.code
         );
         match &mut self.repeated {

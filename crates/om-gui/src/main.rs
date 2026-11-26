@@ -1,5 +1,7 @@
 //! The OpenMaker desktop app. Set `OPENMAKER_PROVIDER` to choose the data
 //! provider (see [`om_gui::provider_from_env`]); the default connects natively.
+//! With `SENTRY_DSN` set, errors and panics are reported to Sentry
+//! (`om_server::reporting`).
 
 use std::process::ExitCode;
 
@@ -7,6 +9,16 @@ fn main() -> ExitCode {
     use_pdf_worker();
     // Before the provider or the window starts a thread.
     om_gui::prepare_web_viewers();
+    // Error reports, when SENTRY_DSN is set: their client starts threads,
+    // so only after the environment's last change. Their logger keeps the
+    // one `run` installs inside it.
+    let reporting = om_server::reporting::init("om-gui");
+    if reporting.is_some() {
+        om_gui::install_logger(
+            om_server::reporting::logger,
+            om_server::reporting::LOG_LEVEL,
+        );
+    }
     let provider = match om_gui::provider_from_env() {
         Ok(provider) => provider,
         Err(message) => {
@@ -18,6 +30,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("openmaker: {err}");
+            om_server::reporting::report_failure(&err);
             ExitCode::FAILURE
         }
     }
