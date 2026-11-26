@@ -58,8 +58,9 @@ use crate::api::{
     CreateLayoutParams, DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, EditParams,
     ErrorKind, FieldControlParams, FieldParams, FieldType, FrameParams, InspectParams,
     LayoutParams, LayoutSetupParams, LayoutWidthParams, ObjectFramesParams, OtherParams, Part,
-    PartOptionsParams, PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlacementParams,
-    RunScriptParams, ScriptParams, TextParams, ValueListParams, ValueListValuesParams, API_VERSION,
+    PartOptionsParams, PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlaceWebViewerParams,
+    PlacementParams, RunScriptParams, ScriptParams, TextParams, ValueListParams,
+    ValueListValuesParams, API_VERSION,
 };
 use crate::catalog::{self, CommandSpec, Grant, Needs};
 use crate::refs::{self, reference};
@@ -314,6 +315,7 @@ fn grant_availability(grant: Grant, authoring: &Authoring) -> Value {
         | Grant::FieldControls
         | Grant::PartOptions
         | Grant::TextEditing
+        | Grant::WebViewers
         | Grant::ValueLists => availability(authoring),
     }
 }
@@ -707,6 +709,7 @@ impl Service {
             Command::ArrangeObjects(params) => self.arrange_objects(params),
             Command::DeleteObjects(params) => self.delete_objects(params),
             Command::PlaceText(params) => self.place_text(params),
+            Command::PlaceWebViewer(params) => self.place_web_viewer(params),
             Command::PlacePortal(params) => self.place_portal(params),
             Command::DuplicateLayout(params) => self.duplicate_layout(params),
             Command::DeleteLayout(params) => self.delete_layout(params),
@@ -780,6 +783,7 @@ impl Service {
             Grant::FieldControls => opened.field_controls(),
             Grant::PartOptions => opened.part_options(),
             Grant::TextEditing => opened.text_editing(),
+            Grant::WebViewers => opened.web_viewer_placement(),
             Grant::ValueLists => opened.value_list_editing(),
         }
         .map_err(Self::read_error)
@@ -2428,6 +2432,146 @@ impl Service {
             "status": if placed.changed { "placed" } else { "already_applied" },
             "layout": layout_ref,
             "object": object,
+            "previous_revision": revision_text(&expected),
+            "revision": revision_text(&placed.revision),
+            "verified": verified,
+        }))
+    }
+
+    /// Place a web viewer on a layout's body (#896,
+    /// `layout_placement::plan_web_viewer`): its address compiled against
+    /// the file's names in the layout's occurrence, its options as
+    /// FileMaker Pro stores them, checked against the layout as stored,
+    /// sent, and read back over a new connection.
+    fn place_web_viewer(&mut self, params: &PlaceWebViewerParams) -> Result<Value, AuthorError> {
+        let expected = parse_revision(&params.expected_revision)?;
+        let mut setup = layout_placement::WebViewerSetup::DEFAULT;
+        for (name, on) in params.options.iter().flatten() {
+            let option = match name.as_str() {
+                "allow_interaction" => &mut setup.interaction,
+                "display_in_find_mode" => &mut setup.find_mode,
+                "display_progress_bar" => &mut setup.progress_bar,
+                "display_status_messages" => &mut setup.status_messages,
+                "encode_url" => &mut setup.encode_url,
+                "allow_javascript_scripts" => &mut setup.javascript,
+                other => {
+                    return Err(AuthorError::new(
+                        ErrorKind::InvalidRequest,
+                        format!(
+                            "Web Viewer Setup has no option {other:?}: allow_interaction, \
+                             display_in_find_mode, display_progress_bar, \
+                             display_status_messages, encode_url or allow_javascript_scripts."
+                        ),
+                    ))
+                }
+            };
+            *option = *on;
+        }
+        let flags = setup.flags().ok_or_else(|| {
+            AuthorError::new(
+                ErrorKind::Unsupported,
+                "OpenMaker does not write this combination of Web Viewer Setup's options yet: \
+                 what FileMaker Pro stores for it is not measured. The defaults, and \
+                 interaction, Find mode and JavaScript scripts on with the rest off (with or \
+                 without the progress bar), are written.",
+            )
+        })?;
+        let mut layout = self.load_layout(&LayoutParams {
+            layout: params.layout.clone(),
+            layout_name: params.layout_name.clone(),
+        })?;
+        let schema = layout
+            .opened
+            .calc_schema()
+            .map_err(Self::read_error)?
+            .ok_or_else(|| {
+                AuthorError::new(
+                    ErrorKind::Unsupported,
+                    "The file's names are not available, so the web address cannot be compiled.",
+                )
+            })?;
+        let (formatted, polish) =
+            layout_placement::compile_address(&params.address, &schema, layout.occurrence)
+                .map_err(placement_refusal)?;
+        let viewer = layout_placement::WebViewerPlacement {
+            frame: rect(&params.frame),
+            flags,
+            formatted,
+            polish,
+        };
+        let layout_id = layout.id;
+        let layout_ref = self.layout_ref(layout_id);
+        if expected != layout.revision {
+            // A lost answer's viewer may be there; the host decides.
+            if layout_placement::already_placed_web_viewer(&layout.member, &viewer).is_none() {
+                return Err(self.layout_conflict(&layout, &expected));
+            }
+        } else {
+            layout_placement::plan_web_viewer(&layout.member, &viewer)
+                .map_err(placement_refusal)?;
+        }
+        Self::require_grant(&mut layout.opened, &catalog::PLACE_WEB_VIEWER)?;
+        let placed = layout.opened.place_web_viewer(wire::PlaceWebViewer {
+            layout: layout_id,
+            expected,
+            frame: wire_frame(&viewer.frame),
+            flags: viewer.flags,
+            formatted: viewer.formatted.clone(),
+            polish: viewer.polish.clone(),
+        });
+        drop(layout);
+        let label = layout_ref.clone();
+        let placed = placed.map_err(|e| {
+            authoring_error(e, &label, |reason| {
+                AuthorError::new(
+                    ErrorKind::OutcomeUnknown,
+                    format!(
+                        "The web viewer was sent but no answer came back ({reason}), so it may \
+                         or may not have been placed. Get {layout_ref} again, or repeat the same \
+                         place_web_viewer: it reports already_applied if it is there."
+                    ),
+                )
+                .with_details(json!({ "previous_revision": revision_text(&expected) }))
+            })
+        })?;
+        let object = self.object_ref(layout_id, placed.field_object);
+        let verified = match self.load_layout(&LayoutParams {
+            layout: Some(layout_ref.clone()),
+            layout_name: None,
+        }) {
+            Ok(fresh) => {
+                let there = layout_placement::already_placed_web_viewer(&fresh.member, &viewer)
+                    == Some(placed.field_object);
+                if fresh.revision != placed.revision || !there {
+                    return Err(AuthorError::new(
+                        ErrorKind::VerificationFailed,
+                        format!(
+                            "The host reported the web viewer placed on {layout_ref}, but a new \
+                             connection reads another revision or does not find it on top."
+                        ),
+                    )
+                    .with_details(json!({
+                        "expected_revision": revision_text(&placed.revision),
+                        "found_revision": revision_text(&fresh.revision),
+                        "web_viewer_on_top": there,
+                    })));
+                }
+                json!({ "fresh_connection": true, "revision": revision_text(&fresh.revision) })
+            }
+            Err(e) => json!({
+                "fresh_connection": false,
+                "reason": format!(
+                    "The host reported the web viewer placed, but reading the layout back \
+                     failed: {}",
+                    e.message
+                ),
+            }),
+        };
+        Ok(json!({
+            "status": if placed.changed { "placed" } else { "already_applied" },
+            "layout": layout_ref,
+            "object": object,
+            "options": format!("{flags:#06x}"),
             "previous_revision": revision_text(&expected),
             "revision": revision_text(&placed.revision),
             "verified": verified,

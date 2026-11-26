@@ -49,12 +49,17 @@ use om_layout::{LayoutDef, LayoutObject, ObjectKind, ObjectStore, Part, PartKind
 
 mod parts;
 mod portal;
+mod web_viewer;
 pub use parts::{
     already_parts, part_rank, part_type_name, plan_parts, PartChange, PartsChange, ADDABLE_PARTS,
 };
 pub use portal::{
     already_placed_portal, plan_portal, portal_field_frames, theme_key, LayoutPortalPlacement,
     PlacedLayoutPortal, PlannedPortal, PortalPlacement, MAX_PORTAL_FIELDS, MAX_PORTAL_ROWS,
+};
+pub use web_viewer::{
+    already_placed_web_viewer, compile_address, plan_web_viewer, LayoutWebViewerPlacement,
+    PlacedLayoutWebViewer, PlannedWebViewer, WebViewerPlacement, WebViewerSetup, MAX_ADDRESS_BYTES,
 };
 
 /// Keys of a layout member `[4, 5, L]` (file-format.md 3, layout-model.md
@@ -1765,6 +1770,30 @@ fn on_body(member: &OwnedNode, frames: &[(&str, &Rect)]) -> Result<OnBody, Refus
     })
 }
 
+/// The key of a new entry in `member`'s tab order `15`: one past the
+/// greatest stored, so the stored order and its gaps stay
+/// (layout-model.md 10.5).
+fn next_tab_position(member: &OwnedNode) -> Result<[u8; 2], Refusal> {
+    let unsupported = |why: &str| Refusal::Unsupported(why.into());
+    let tab_order = member.child(&[TAB_ORDER]);
+    let bad_order = || unsupported("The layout's tab order is not one OpenMaker reads.");
+    if tab_order.is_some_and(|order| order.value.is_some()) {
+        return Err(bad_order());
+    }
+    let last = tab_order
+        .into_iter()
+        .flat_map(|order| &order.children)
+        .map(|entry| <[u8; 2]>::try_from(entry.segment.as_slice()).map(u16::from_be_bytes))
+        .try_fold(0u16, |last, position| {
+            position.map(|position| last.max(position))
+        })
+        .map_err(|_| bad_order())?;
+    let position = last
+        .checked_add(1)
+        .ok_or_else(|| unsupported("The layout's tab order is full."))?;
+    Ok(position.to_be_bytes())
+}
+
 /// The key of the first object a placement makes: after every key the
 /// layout uses, every key its part lists name and the last one it issued.
 fn first_new_key(member: &OwnedNode, objects: &ObjectStore) -> Result<u64, Refusal> {
@@ -1891,24 +1920,8 @@ fn plan_objects(
             }
             let (index_key, index_value) =
                 object_index_entry(placement.frame.top, placement.frame.left, sequence, key)?;
-            let tab_order = member.child(&[TAB_ORDER]);
-            let bad_order =
-                || unsupported("The layout's tab order is not one OpenMaker reads.".into());
-            if tab_order.is_some_and(|order| order.value.is_some()) {
-                return Err(bad_order());
-            }
-            let last = tab_order
-                .into_iter()
-                .flat_map(|order| &order.children)
-                .map(|entry| <[u8; 2]>::try_from(entry.segment.as_slice()).map(u16::from_be_bytes))
-                .try_fold(0u16, |last, position| {
-                    position.map(|position| last.max(position))
-                })
-                .map_err(|_| bad_order())?;
-            let position = last
-                .checked_add(1)
-                .ok_or_else(|| unsupported("The layout's tab order is full.".into()))?;
-            Some((index_key, index_value, sequence, position.to_be_bytes()))
+            let position = next_tab_position(member)?;
+            Some((index_key, index_value, sequence, position))
         }
         _ => None,
     };
@@ -2650,6 +2663,118 @@ mod tests {
 
     fn decoded(member: &OwnedNode) -> om_layout::Layout {
         decode(member).unwrap()
+    }
+
+    /// A web viewer (#896) gets the records FileMaker Pro 26.1.1 wrote for
+    /// its W2 viewer: the address `"https://example.com"` as the streams
+    /// Pro stored under `00 00` (context `01 00`), the data format `00 0a`,
+    /// no name; the body's list, the object index and the tab order end
+    /// with it, and the last key issued is its key. An address reading a
+    /// field adds that field's reference, valued `0d`. A retry finds it,
+    /// and options Pro was not seen to store are refused.
+    #[test]
+    fn a_web_viewer_gets_the_records_filemaker_pro_wrote() {
+        let unhex = |text: &str| -> Vec<u8> {
+            (0..text.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+                .collect()
+        };
+        let compile = |source: &str| {
+            let names = om_formula::NoNames;
+            let compiled = om_formula::compile(source, &om_formula::Context::new(&names)).unwrap();
+            (
+                om_formula::formatted::encode(&compiled.tokens),
+                om_formula::polish::encode(&compiled.expr),
+            )
+        };
+        let before = layout();
+        let (formatted, polish) = compile("\"https://example.com\"");
+        let pro = unhex("1313322e2e2a296075753f223b372a363f7439353700");
+        assert_eq!((&formatted, &polish), (&pro, &pro));
+        let viewer = WebViewerPlacement {
+            frame: rect(340.0, 60.0, 120.0, 60.0),
+            flags: 0x800d,
+            formatted,
+            polish,
+        };
+        let planned = plan_web_viewer(&before, &viewer).unwrap();
+        let key = planned.viewer;
+        let member = &planned.member;
+        let record = member.at(&[&[ATTRIBUTES], &serial::encode(key)]).unwrap();
+        let value = |path: &[&[u8]]| record.at(path).and_then(|n| n.value.clone());
+        assert_eq!(value(&[&[0, 0], &[5], &[4]]), Some(vec![1, 0]));
+        assert_eq!(value(&[&[0, 0], &[5], &[5]]), Some(pro.clone()));
+        assert_eq!(value(&[&[0, 0], &[5], &[6]]), Some(pro.clone()));
+        assert_eq!(value(&[&[FORMAT]]), Some(vec![0, 0x0a]));
+        assert!(record.child(&[NAME]).is_none());
+        let layout = decoded(member);
+        assert_eq!(layout.objects.root.last(), Some(&key));
+        let object = layout.objects.get(key).unwrap();
+        assert_eq!(object.web_viewer().map(|o| o.0), Some(0x800d));
+        assert_eq!(
+            part_list(
+                member
+                    .at(&[&[PARTS], &[2], &[PART_OBJECTS]])
+                    .and_then(|n| n.value.as_deref())
+                    .unwrap()
+            )
+            .unwrap(),
+            [1, 2, 3, key]
+        );
+        let sequence = tree_size(&stored_objects(&before).unwrap().1).unwrap();
+        let (index_key, index_value) = object_index_entry(60.0, 340.0, sequence, key).unwrap();
+        assert_eq!(
+            member
+                .at(&[&[OBJECT_INDEX], &index_key])
+                .and_then(|n| n.value.clone()),
+            Some(index_value.clone())
+        );
+        assert_eq!(
+            member
+                .at(&[&[TAB_ORDER], &[0, 1]])
+                .and_then(|n| n.value.clone()),
+            Some(index_value)
+        );
+        assert_eq!(last_issued(member).unwrap(), Some(key));
+        assert_eq!(already_placed_web_viewer(member, &viewer), Some(key));
+        assert_eq!(already_placed_web_viewer(&before, &viewer), None);
+
+        // A field the address reads: its reference, valued 0d.
+        let field = om_formula::Field {
+            flags: om_formula::Field::TABLE_PRESENT,
+            occurrence: om_formula::Key([&[3][..], &uint_segment(OCCURRENCE)].concat()),
+            field: om_formula::Key(vec![1, 7]),
+            repetition: 1,
+        };
+        let reads = WebViewerPlacement {
+            polish: om_formula::polish::encode(&om_formula::Expr::Field(field)),
+            formatted: Vec::new(),
+            ..viewer.clone()
+        };
+        let planned = plan_web_viewer(&before, &reads).unwrap();
+        assert_eq!(
+            planned
+                .member
+                .at(&[
+                    &[FIELD_INDEX],
+                    &uint_segment(OCCURRENCE),
+                    &[7],
+                    &serial::encode(planned.viewer)
+                ])
+                .and_then(|n| n.value.clone()),
+            Some(vec![0x0d])
+        );
+
+        let unmeasured = WebViewerPlacement {
+            flags: 0x800c,
+            ..viewer
+        };
+        assert!(matches!(
+            plan_web_viewer(&before, &unmeasured),
+            Err(Refusal::Unsupported(_))
+        ));
+        assert_eq!(WebViewerSetup::DEFAULT.flags(), Some(0x800d));
     }
 
     /// A button performing script 3 with the parameter "Report" (#226):

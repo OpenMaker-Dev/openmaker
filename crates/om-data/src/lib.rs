@@ -1866,6 +1866,23 @@ pub trait DataProvider: Send {
         ))
     }
 
+    /// Place a web viewer on a layout's body, as FileMaker Pro's Web Viewer
+    /// tool and Web Viewer Setup do ([`layout_placement::plan_web_viewer`],
+    /// #896), as [`DataProvider::place_layout_field`] places a field:
+    /// planned against the layout as stored, then saved by the host, which
+    /// checks the options, the address's fields, the account, the layout's
+    /// lock and the revision. A provider that cannot edit layouts refuses
+    /// (code 3).
+    fn place_layout_web_viewer(
+        &mut self,
+        _place: layout_placement::LayoutWebViewerPlacement,
+    ) -> Result<layout_placement::PlacedLayoutWebViewer, DataError> {
+        Err(DataError::with_code(
+            3,
+            "This provider cannot edit layouts.",
+        ))
+    }
+
     /// Place a portal on a layout's body, as FileMaker Pro's Portal tool,
     /// Portal Setup and Add Fields to Portal do
     /// ([`layout_placement::plan_portal`], authoring operation 21), as

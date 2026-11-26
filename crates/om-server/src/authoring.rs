@@ -76,13 +76,14 @@ use om_protocol::authoring::{
     legacy_content_revision, status, ChangeParts, CreateField, CreateLayout, Created, DeleteLayout,
     DeleteObjects, Deleted, Described, DuplicateLayout, FieldControl, Frame, Framed, LayoutCreated,
     LayoutSetup, LayoutWidth, Operation, PartOptions, PlaceButton, PlaceButtonStep, PlaceField,
-    PlacePortal, PlaceText, Placed, ReplaceScriptSteps, Replaced, Reply, Request, Revision,
-    SetObjectFrames, SetText, ValueListValues, MAX_DEFINITION_BYTES, MOD_ACCOUNT, MOD_COUNT,
-    MOD_TIME, MOD_USER, OP_CHANGE_PARTS, OP_CREATE_FIELD, OP_CREATE_LAYOUT, OP_DELETE_LAYOUT,
-    OP_DELETE_OBJECTS, OP_DESCRIBE_SECURITY, OP_DUPLICATE_LAYOUT, OP_FIELD_CONTROL,
-    OP_LAYOUT_SETUP, OP_LAYOUT_SETUP_MARGINS, OP_LAYOUT_WIDTH, OP_PART_OPTIONS, OP_PLACE_BUTTON,
-    OP_PLACE_BUTTON_STEP, OP_PLACE_FIELD, OP_PLACE_PORTAL, OP_PLACE_TEXT, OP_REPLACE_SCRIPT_STEPS,
-    OP_SAVE, OP_SET_OBJECT_FRAMES, OP_SET_TEXT, OP_VALUE_LIST_VALUES,
+    PlacePortal, PlaceText, PlaceWebViewer, Placed, ReplaceScriptSteps, Replaced, Reply, Request,
+    Revision, SetObjectFrames, SetText, ValueListValues, MAX_DEFINITION_BYTES, MOD_ACCOUNT,
+    MOD_COUNT, MOD_TIME, MOD_USER, OP_CHANGE_PARTS, OP_CREATE_FIELD, OP_CREATE_LAYOUT,
+    OP_DELETE_LAYOUT, OP_DELETE_OBJECTS, OP_DESCRIBE_SECURITY, OP_DUPLICATE_LAYOUT,
+    OP_FIELD_CONTROL, OP_LAYOUT_SETUP, OP_LAYOUT_SETUP_MARGINS, OP_LAYOUT_WIDTH, OP_PART_OPTIONS,
+    OP_PLACE_BUTTON, OP_PLACE_BUTTON_STEP, OP_PLACE_FIELD, OP_PLACE_PORTAL, OP_PLACE_TEXT,
+    OP_PLACE_WEB_VIEWER, OP_REPLACE_SCRIPT_STEPS, OP_SAVE, OP_SET_OBJECT_FRAMES, OP_SET_TEXT,
+    OP_VALUE_LIST_VALUES,
 };
 use om_protocol::PerformError;
 use om_scripts::{Script, ScriptKind};
@@ -198,6 +199,7 @@ pub(crate) fn perform(
         | Operation::SetText
         | Operation::ValueListValues
         | Operation::PlacePortal
+        | Operation::PlaceWebViewer
         | Operation::Save => authorized(caller, true),
     };
     let (file, signed_in) = match authorization {
@@ -242,6 +244,7 @@ pub(crate) fn perform(
                 | OP_SET_TEXT
                 | OP_VALUE_LIST_VALUES
                 | OP_PLACE_PORTAL
+                | OP_PLACE_WEB_VIEWER
                 | OP_SAVE,
             can_author: signed_in.privileges() == Privileges::FullAccess,
             max_definition_bytes: MAX_DEFINITION_BYTES as u32,
@@ -316,6 +319,7 @@ pub(crate) fn perform(
         Request::PlaceField(request) => author(DesignEdit::PlaceField(request))?,
         Request::PlaceText(request) => author(DesignEdit::PlaceText(request))?,
         Request::PlacePortal(request) => author(DesignEdit::PlacePortal(request))?,
+        Request::PlaceWebViewer(request) => author(DesignEdit::PlaceWebViewer(request))?,
         Request::CreateLayout(request) => author(DesignEdit::CreateLayout(request))?,
         Request::DuplicateLayout(request) => author(DesignEdit::DuplicateLayout(request))?,
         Request::DeleteLayout(request) => author(DesignEdit::DeleteLayout(request))?,
@@ -419,6 +423,7 @@ pub(crate) fn edit(
         DesignEdit::PlaceField(request) => place_field(ed, request),
         DesignEdit::PlaceText(request) => place_text(ed, request),
         DesignEdit::PlacePortal(request) => place_portal(ed, request),
+        DesignEdit::PlaceWebViewer(request) => place_web_viewer(ed, request),
         DesignEdit::CreateLayout(request) => create_layout(ed, request),
         DesignEdit::DuplicateLayout(request) => duplicate_layout(ed, request),
         DesignEdit::DeleteLayout(request) => delete_layout(ed, request),
@@ -2405,6 +2410,135 @@ fn place_text(ed: &mut Editor<'_, '_, '_>, request: &PlaceText) -> Reply {
     Reply::Placed(Placed {
         changed: true,
         field_object: planned.text_object,
+        label_object: 0,
+        revision,
+    })
+}
+
+/// A web viewer on a layout's body (#896): Web Viewer Setup's options, as
+/// FileMaker Pro stores the combinations measured, and a custom web
+/// address whose streams decode and whose fields are fields of this file's
+/// tables. The viewer gets one UUID `d8`, as Pro's had (no `d9`).
+fn place_web_viewer(ed: &mut Editor<'_, '_, '_>, request: &PlaceWebViewer) -> Reply {
+    let id = request.layout;
+    if ed.tx.is_read_only() {
+        return refused(
+            status::SAVE_FAILED[2],
+            format!("The file is open read-only; layout {id} is unchanged."),
+        );
+    }
+    let viewer = layout_placement::WebViewerPlacement {
+        frame: rect(&request.frame),
+        flags: request.flags,
+        formatted: request.formatted.clone(),
+        polish: request.polish.clone(),
+    };
+    // The address's fields: each of a table of this file.
+    let Ok(expr) = om_data::formula::polish::decode(&viewer.polish) else {
+        return refused(
+            status::INVALID,
+            "The web address is not a calculation this host reads.".to_owned(),
+        );
+    };
+    {
+        let derived = ed.tx.derived();
+        let catalog = derived.catalog();
+        for field in expr.field_references() {
+            let known =
+                field
+                    .occurrence
+                    .id()
+                    .zip(field.field.id())
+                    .is_some_and(|(occurrence, field)| {
+                        catalog
+                            .table_occurrences
+                            .iter()
+                            .find(|o| o.id == occurrence)
+                            .and_then(|o| o.base_table())
+                            .and_then(|table| catalog.table(table))
+                            .is_some_and(|table| table.field(field).is_some())
+                    });
+            if !known {
+                return refused(
+                    status::FIELD_MISSING,
+                    "The web address reads a field this file's tables do not have.".to_owned(),
+                );
+            }
+        }
+    }
+    let key = uint_segment(id);
+    let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
+    let Some(current) = ed
+        .node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
+        .map(Cow::into_owned)
+    else {
+        return refused(
+            status::LAYOUT_MISSING,
+            format!("The file has no layout {id}."),
+        );
+    };
+    let current_revision = layout_revision(&current);
+    let (expected, older) = expected_now(
+        &request.expected,
+        &current,
+        layout_revision,
+        legacy_catalog_revision,
+    );
+    if current_revision != expected {
+        // Placed by an earlier request whose answer was lost: nothing to do.
+        if let Some(placed) = layout_placement::already_placed_web_viewer(&current, &viewer) {
+            return Reply::Placed(Placed {
+                changed: false,
+                field_object: placed,
+                label_object: 0,
+                revision: answer(older, &current, layout_revision, legacy_catalog_revision),
+            });
+        }
+        return Reply::Refused {
+            status: status::CONFLICT,
+            message: format!("Layout {id} was changed since the revision the request was made to."),
+            current: Some(current_revision),
+        };
+    }
+    let planned = match layout_placement::plan_web_viewer(&current, &viewer) {
+        Ok(planned) => planned,
+        Err(refusal) => {
+            let code = match refusal {
+                layout_placement::Refusal::Invalid(_) => status::INVALID,
+                layout_placement::Refusal::Unsupported(_) => status::UNSUPPORTED,
+            };
+            return refused(code, refusal.to_string());
+        }
+    };
+    let locks = [(member_path.clone(), LOCK_EXCLUSIVE)];
+    if let Err(users) = ed.lock_all(&locks) {
+        return refused(
+            status::LAYOUT_IN_USE,
+            format!("Layout {id} is in use by {users}."),
+        );
+    }
+    let time = ed.time();
+    let mut member = planned.member;
+    if let Some(record) = member.at_mut(&[&[OBJECT_ATTRIBUTES], &serial::encode(planned.viewer)]) {
+        record.set_child(OwnedNode::leaf(vec![UNIQUE_ID], ed.uuid()));
+    }
+    let member = ed.stamped(member, &time);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
+    ed.write(member_path.clone(), Some(member));
+    let account = ed.account;
+    // The address itself stays out of the log.
+    ed.once_stored(
+        vec![member_path],
+        format!(
+            "a web viewer placed on layout {id} as object {} by {account}",
+            planned.viewer
+        ),
+        format!("web viewer not placed on layout {id}"),
+        format!("layout {id} is unchanged"),
+    );
+    Reply::Placed(Placed {
+        changed: true,
+        field_object: planned.viewer,
         label_object: 0,
         revision,
     })

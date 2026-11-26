@@ -161,6 +161,7 @@ and every response is one JSON object:
 | `create_layout` | `name`, `occurrence` or `occurrence_name` (the table occurrence it shows records of), optional `layout`/`layout_name` (whose theme and width it takes), `expected_revision` (inspect's `layouts_revision`, required) | `status` (`created`, `already_applied`), the `layout` (`ref`, `id`, `name`), the `occurrence`, `previous_revision`, `revision`, and `verified` from a new connection. [New layouts](#new-layouts) |
 | `duplicate_layout` | `layout`/`layout_name`, `expected_revision` (inspect's `layouts_revision`, required) | `status` (`created`, `already_applied`), the copy's `layout` (`ref`, `id`, `name`), the `source`, `previous_revision`, `revision`, and `verified` from a new connection. [Duplicating layouts](#duplicating-layouts) |
 | `place_portal` | `layout`/`layout_name`, `occurrence`/`occurrence_name` (related to the layout's), `field_names` (1 to 20 of that occurrence's table), `rows` (1 to 100), `frame` (`left`, `top`, `width`, `height` in points), `expected_revision` (get_layout's, required) | `status` (`placed`, `already_applied`), the `layout`, the `portal`'s and its `fields`' references, `previous_revision`, `revision`, and `verified` from a new connection. [Portals on layouts](#portals-on-layouts) |
+| `place_web_viewer` | `layout`/`layout_name`, `address` (calculation text), `options` (Web Viewer Setup's, by name, optional), `frame` (`left`, `top`, `width`, `height` in points), `expected_revision` (get_layout's, required) | `status` (`placed`, `already_applied`), the `layout`, the viewer's `object` reference, its `options` as stored, `previous_revision`, `revision`, and `verified` from a new connection. [Web viewers on layouts](#web-viewers-on-layouts) |
 | `change_parts` | `layout`/`layout_name`, `expected_revision` (get_layout's, required), `action` (`add`, `delete`, `resize`), `part` (get_layout's part `id`, for `delete` and `resize`), `kind` (for `add`: `title_header`, `header`, `leading_grand_summary`, `body`, `trailing_grand_summary`, `footer`, `title_footer`, `top_navigation`, `bottom_navigation`), `height` (whole points, for `add` and `resize`) | `status` (`changed`, `already_applied`), the `layout`, its `parts` read back, `previous_revision`, `revision`, and `verified` from a new connection. [Parts](#parts) |
 | `set_text` | `object` (get_layout's reference of a text or a field's label), `expected_revision` (get_layout's `revision`, required), `text` (one line of plain text) | `status` (`set`, `already_applied`), the `layout`, the `object`, the `text`, `previous_revision`, `revision`, and `verified` from a new connection. [Texts on layouts](#texts-on-layouts) |
 | `set_part_options` | `layout` or `layout_name`, `expected_revision` (get_layout's `revision`, required), `part` (a part's `id` from get_layout: a body or a sub-summary), `options` (`page_break_before`, `restart_page_numbers`, `break_across_pages`, `discard_remainder`, each `true` or `false`; others keep their state), `page_break_after` (1 to 32,767, 0 for none), `sorted_by` (a leading sub-summary's field, of the layout's own table, as `field:TABLE.FIELD@File`) | `status` (`set`, `already_applied`), the `layout`, the `part`, its `options` and `page_break_after`, `previous_revision`, `revision`, and `verified` from a new connection. [Part options](#part-options) |
@@ -580,6 +581,45 @@ repeated after a lost answer finds the same portal on top and reports
 Setup's other options (sorting, filtering, deletion, scroll bar,
 alternate rows) stay at Pro's defaults, and the desktop has no Portal
 tool yet.
+
+### Web viewers on layouts
+
+`place_web_viewer` puts a **web viewer** on a layout's body, on top of its
+objects, as FileMaker Pro's Web Viewer tool and Web Viewer Setup make one
+with a custom web address (operation 28, planned with
+`om_data::layout_placement::plan_web_viewer`; re/layout-model.md 10.19).
+- **The address** is calculation text, compiled against the file's names
+  (`om_data::layout_placement::compile_address`). Unqualified field names
+  are fields of the layout's table occurrence, and a field name stands
+  for that occurrence's field. A calculation that does not compile is
+  refused with FileMaker's message for its error.
+- **The options** are Web Viewer Setup's six check boxes, by name:
+  `allow_interaction`, `display_in_find_mode`, `display_progress_bar`,
+  `display_status_messages`, `encode_url` and `allow_javascript_scripts`.
+  Unnamed ones keep Pro's defaults for a new viewer (interaction, progress
+  bar, status messages and encoding on). Only the combinations Pro was
+  seen to store are written: the defaults (`0x800d`); interaction, Find
+  mode and JavaScript scripts on with the rest off (`0x80e3`); and that
+  with the progress bar on (`0x80e7`). Any other is refused before
+  anything is sent, as its bit `0x0080` is unmeasured
+  ([#896](https://github.com/OpenMaker-Dev/openmaker/issues/896)).
+- **What is written** are the records Pro wrote for its viewers: the
+  viewer object, its attribute record (the address under `00 00`, the
+  data format `00 0a`, one UUID `d8`), its entries at the end of the
+  body's list, in the object index and in the tab order, a field
+  reference of value `0d` for each field the address reads, the last key
+  issued, and the layout's stamp. Every stored object and key is kept.
+  The host checks that each field the address reads is a field of one of
+  the file's tables.
+- **Frame and retries.** Its frame follows `place_field`'s rules. A
+  request repeated after a lost answer finds the same viewer on top and
+  reports `already_applied`. Any other request at an old revision is a
+  `conflict`.
+
+Limits: templates (Google Maps and the others) are not offered, and a
+viewer's setup cannot be changed once it is placed. The desktop has no
+Web Viewer tool yet. That FileMaker Pro opens a file with a viewer placed
+this way is not yet checked.
 
 ### Moving objects
 
@@ -1999,8 +2039,9 @@ codec is `om_protocol::authoring`; the host side is `om-server`'s
   unavailable); of value lists, only a custom list's values change
   ([Value lists](#value-lists)). On layouts, only the operations above:
   new, duplicated and deleted Form layouts; placing edit boxes of the
-  layout's table, texts, and portals of related occurrences with fields
-  in their first row (buttons are placed by the desktop's Layout mode);
+  layout's table, texts, portals of related occurrences with fields in
+  their first row, and web viewers with a custom address (buttons are
+  placed by the desktop's Layout mode);
   moving, resizing and deleting top-level objects; a field's control (the
   styles in [Field controls](#field-controls)), a text's words, Layout
   Setup, the width, part options and adding, deleting and resizing

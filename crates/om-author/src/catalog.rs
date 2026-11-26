@@ -25,8 +25,8 @@ use crate::api::{
     CreateLayoutParams, DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, EditParams,
     ErrorKind, FieldControlParams, FieldParams, InspectParams, LayoutParams, LayoutSetupParams,
     LayoutWidthParams, NoParams, ObjectFramesParams, OtherParams, PartOptionsParams,
-    PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlacementParams, RunScriptParams,
-    ScriptParams, TextParams, ValueListParams, ValueListValuesParams, API_VERSION,
+    PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlaceWebViewerParams, PlacementParams,
+    RunScriptParams, ScriptParams, TextParams, ValueListParams, ValueListValuesParams, API_VERSION,
 };
 
 /// What a command can change.
@@ -100,6 +100,8 @@ pub enum Grant {
     PartOptions,
     /// A layout text's words.
     TextEditing,
+    /// Placing web viewers on layouts.
+    WebViewers,
 }
 
 /// One command.
@@ -182,6 +184,7 @@ impl CommandSpec {
                 Grant::FieldControls => "field_controls",
                 Grant::PartOptions => "part_options",
                 Grant::TextEditing => "text_editing",
+                Grant::WebViewers => "web_viewers",
                 Grant::ValueLists => "value_lists",
             });
         }
@@ -477,6 +480,27 @@ pub static PLACE_TEXT: CommandSpec = CommandSpec {
     operation: Some("place_text"),
     params: schema_for_type::<PlaceTextParams>,
     parse: |params| read(params).map(Command::PlaceText),
+};
+
+pub static PLACE_WEB_VIEWER: CommandSpec = CommandSpec {
+    id: "place_web_viewer",
+    cli: "place-web-viewer",
+    tool: "openmaker_place_web_viewer",
+    title: "Place a web viewer on a layout",
+    description: "Place a web viewer with a custom web address (calculation text, compiled \
+                  against the file's names in the layout's table occurrence) on a layout's \
+                  body, on top of its objects, as FileMaker Pro's Web Viewer tool and Web Viewer \
+                  Setup make one, if the layout is still at expected_revision (get_layout's \
+                  revision), then read the layout back over a new connection. Web Viewer \
+                  Setup's options default to FileMaker Pro's for a new viewer; only option \
+                  combinations FileMaker Pro was seen to store are written. The host allocates \
+                  the key and UUID; every stored object and key is kept. Repeating the same call \
+                  reports already_applied.",
+    effect: Effect::Authors,
+    needs: Needs::Grant(Grant::WebViewers),
+    operation: Some("place_web_viewer"),
+    params: schema_for_type::<PlaceWebViewerParams>,
+    parse: |params| read(params).map(Command::PlaceWebViewer),
 };
 
 pub static PLACE_PORTAL: CommandSpec = CommandSpec {
@@ -964,7 +988,7 @@ pub static SCRIPT_CALLS: CommandSpec = CommandSpec {
     parse: |params| read(params).map(Command::ScriptCalls),
 };
 
-pub static ALL: [&CommandSpec; 41] = [
+pub static ALL: [&CommandSpec; 42] = [
     &CAPABILITIES,
     &INSPECT,
     &GET_SCRIPT,
@@ -981,6 +1005,7 @@ pub static ALL: [&CommandSpec; 41] = [
     &DELETE_OBJECTS,
     &PLACE_TEXT,
     &PLACE_PORTAL,
+    &PLACE_WEB_VIEWER,
     &CREATE_LAYOUT,
     &DUPLICATE_LAYOUT,
     &DELETE_LAYOUT,
@@ -1076,6 +1101,8 @@ mod tests {
                            "expected_revision": "r"},
             "place_portal": {"layout_name": "L", "occurrence_name": "O", "field_names": ["F"],
                              "rows": 3, "frame": frame, "expected_revision": "r"},
+            "place_web_viewer": {"layout_name": "L", "address": "\"https://example.com\"",
+                                 "frame": frame, "expected_revision": "r"},
             "duplicate_layout": {"layout_name": "L", "expected_revision": "r"},
             "delete_layout": {"layout_name": "L", "expected_revision": "r"},
             "layout_setup": {"layout_name": "L", "expected_revision": "r", "views": ["form"]},
