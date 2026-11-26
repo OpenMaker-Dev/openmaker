@@ -1572,10 +1572,7 @@ impl ExternalFiles {
                 .table_occurrences
                 .iter()
                 .filter_map(|occurrence| {
-                    let Some((source, table)) = occurrence.reference().filter(|(id, _)| *id != 0)
-                    else {
-                        return None;
-                    };
+                    let (source, table) = occurrence.reference().filter(|(id, _)| *id != 0)?;
                     let variable = variables.entry(source).or_insert_with(|| {
                         match source_files(tree, source, None) {
                             SourcePaths::Variable(name) => Some(name),
