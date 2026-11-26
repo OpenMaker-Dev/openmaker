@@ -153,7 +153,9 @@ OpenMaker does the same with the window's record session
   instead.
 - **The commit** writes the record, and what was changed through it,
   together (op14, op70) and reads them back
-  (`DataProvider::commit_record_session`). The related files' records it
+  (`DataProvider::commit_record_session`). Committing a held new record
+  without further edits also reloads the window's page, so the next edit
+  uses the stored record version. The related files' records it
   wrote, a row of a related file's table typed into the record's portal
   among them, are committed in their files before this file's (#1119).
   Each file takes part in its own way. A related file on this file's
@@ -781,6 +783,25 @@ but for a lookup's, which would write into it: a stray `0x80`
 (auto-entry.md) leaves the table writable. A stored calculation's unknown
 bits keep it read-only.
 
+A local table accepts ordinary record writes to its other fields when a
+Container awaits transfer to embedded storage. This covers a
+single-repetition field marked `0x6000` (external Open storage) and a
+24-repetition field marked `0x4000` (external Secure storage). OpenMaker
+keeps the definition and payload references and returns error 3 on a
+write to the container itself. Other storage words, repetition counts
+and hosted use remain outside this support.
+[Open storage comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1060)
+[Secure storage comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1083)
+
+In a local file, a replacing 24-repetition Text auto-enter calculation
+can read the filename of the same occurrence's 24-repetition Container.
+With the measured formula and option word, a new empty record has no
+filename cells, and editing an existing source changes only its matching
+repetition. OpenMaker refuses direct writes into the calculated Text and
+creation with a nonempty source. The deferred-transfer refusal still
+applies to source containers awaiting a transfer.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39)
+
 In a local file, ordinary New Record applies a constant, a calculation
 that reads no fields, or a creation serial to a supported
 single-repetition global Text field. A calculation with replacement off
@@ -807,6 +828,16 @@ With replacement off, either operation preserves nonempty text. Clearing
 re-enters the default. These formulas require an ordinary local desktop
 file and one repetition. Browse typing and persistence across reopen
 remain separate. See [the native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1095).
+
+A local Text auto-enter calculation can read a single-repetition plain
+Text global from another table in the same file, through an unrelated
+occurrence. The field is read from the session, independent of the
+table's records. A held new record keeps the value read at creation. A
+formula that reads a missing or styled session value refuses the write.
+FileMaker Pro 26.1.1 copied the value at New Record, including with zero
+source rows.
+[Claris global-field documentation](https://help.claris.com/en/pro-help/content/global-fields.html)
+and [the timing check](https://github.com/OpenMaker-Dev/openmaker/issues/1051).
 
 Local desktop files can auto-enter Creation Time into a single-repetition
 Text field when the file and the desktop's configured system time format

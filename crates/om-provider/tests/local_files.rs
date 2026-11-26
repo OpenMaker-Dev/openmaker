@@ -1237,6 +1237,8 @@ fn name_of(provider: &mut dyn DataProvider, layout: u32, id: i64) -> Option<Stri
 fn a_variable_source_opens_on_first_read_and_keeps_its_file() {
     use om_data::calc::{eval::Variables, Value};
     use om_data::host::CalcNeed;
+    use om_hbam::slot::uint_segment;
+    use om_layout::{encode, Rect};
 
     let folder = Folder::new("variable-source");
     let root_path = folder.file("Root.fmp12", PASSWORD, |root| {
@@ -1247,6 +1249,26 @@ fn a_variable_source_opens_on_first_read_and_keeps_its_file() {
             "Peer",
             &[("", "", "$$RelatedPath")],
         );
+        let layout_key = uint_segment(fixture::LAYOUT);
+        let path = [&[4][..], &[5], &layout_key, &[7]];
+        let store = root
+            .at(&path)
+            .and_then(|node| node.value.as_deref())
+            .unwrap_or_default();
+        let field = encode::field_object(
+            420,
+            &Rect {
+                left: 20.0,
+                top: 20.0,
+                right: 120.0,
+                bottom: 38.0,
+                ..Default::default()
+            },
+            om_data::layout_placement::serial_value(PEER_ROWS).unwrap(),
+            om_data::layout_placement::serial_value(fixture::NAME).unwrap(),
+        );
+        let store = encode::append_to_store(store, &[420], &[field]);
+        root.put(&path, om_hbam::OwnedNode::leaf(Vec::new(), store));
     });
     folder.file("First.fmp12", PASSWORD, |_| {});
     folder.file("Second.fmp12", PASSWORD, |_| {});
@@ -1256,6 +1278,23 @@ fn a_variable_source_opens_on_first_read_and_keeps_its_file() {
     assert!(root.calc_schema().unwrap().unwrap().is_pending(PEER_ROWS));
     assert!(root.related_file_warnings().is_empty());
     assert!(!root.references_peer("First").unwrap());
+
+    root.record_capabilities_for_layout(fixture::LAYOUT as u32, true)
+        .unwrap();
+    assert!(root.related_file_warnings().is_empty());
+    assert!(root
+        .render_script_layout(fixture::LAYOUT as u32)
+        .unwrap()
+        .is_some());
+    assert!(root.related_file_warnings().is_empty());
+    assert!(root
+        .render_layout(fixture::LAYOUT as u32)
+        .unwrap()
+        .is_some());
+    assert!(root
+        .related_file_warnings()
+        .iter()
+        .any(|warning| warning.contains("$$RelatedPath")));
 
     let mut variables = Variables::new();
     variables.set("$$RelatedPath", 1, Value::text("file:First.fmp12"));
@@ -3659,6 +3698,62 @@ fn option_formulas_read_the_sessions_global_value() {
     check(&mut provider, "y").unwrap();
     assert_eq!(stamp(&mut provider).2.as_deref(), Some("y"));
     provider.close();
+}
+
+#[test]
+fn a_held_new_record_keeps_its_other_table_global_from_creation() {
+    use fixture::{LAYOUT, NAME, NOTES, OCCURRENCE};
+
+    const MARKER: u64 = 40;
+    const STAMP: u64 = 41;
+    const SETTINGS: u64 = 0xd0_0048;
+    let folder = Folder::new("held-other-global");
+    let path = folder.file("Requests.fmp12", PASSWORD, |root| {
+        let mut names = fixture::names();
+        names.add_occurrence(SETTINGS, "Settings", NOTES);
+        names.add_field(NOTES, MARKER, "Marker");
+        fixture::add_occurrence(root, SETTINGS, "Settings", NOTES);
+        fixture::add_field(root, NOTES, MARKER, "Marker", 1, 1, 0, 0x10000, 0);
+        fixture::add_field(root, TABLE, STAMP, "Stamp", 1, 1, 0, 0x8, 0);
+        fixture::add_formula(
+            root,
+            &names,
+            (TABLE, OCCURRENCE),
+            STAMP,
+            5,
+            "Settings::Marker",
+        );
+    });
+    let mut provider = opened(&path);
+    let layout = LAYOUT as u32;
+    let fields = provider.records(layout, 0, 0).unwrap().fields;
+    let stamp = fields.iter().position(|f| f.name == "Stamp").unwrap();
+    provider.set_global(NOTES, MARKER, 1, "alpha").unwrap();
+    provider.begin_record_commit().unwrap();
+    let created = provider
+        .write_record(&om_data::ScriptWrite {
+            layout,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(created.values[stamp].as_deref(), Some("alpha"));
+
+    provider.set_global(NOTES, MARKER, 1, "beta").unwrap();
+    let edited = provider
+        .write_record(&om_data::ScriptWrite {
+            layout,
+            record: Some(created.id),
+            cells: [(NAME, Some("Note".into()))].into(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(edited.values[stamp].as_deref(), Some("alpha"));
+    provider.commit_record_session(false).unwrap();
+    provider.close();
+
+    let mut reopened = opened(&path);
+    let saved = reopened.record_by_id(layout, created.id).unwrap();
+    assert_eq!(text(&saved, created.id, "Stamp"), Some("alpha"));
 }
 
 /// A row imported inside a transaction and then edited there is computed

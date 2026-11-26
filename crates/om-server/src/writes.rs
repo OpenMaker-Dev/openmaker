@@ -88,6 +88,10 @@ pub const MAX_QUEUED_BYTES: usize = 0x20_0000;
 pub(crate) const UNAVAILABLE: u32 = 3;
 /// [`UNAVAILABLE`] as a lock reply's status, which is a u16.
 pub(crate) const LOCK_UNAVAILABLE: u16 = 3;
+/// FileMaker error 6, "File is read-only": what a server script's step
+/// that would change a file hosted read-only answers (script-runtime.md
+/// 13.28).
+pub(crate) const FILE_READ_ONLY: u32 = 6;
 
 /// One applied change, to notify other clients of.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -407,15 +411,18 @@ pub(crate) fn get_serial(req: &GetSerial, file: &str, tx: &mut Transaction<'_>) 
 /// ([`crate::engine::SetNextSerial`]): replace a field's next serial value
 /// within a commit, which the engine saves before it counts and takes back
 /// when it cannot, as a record commit. 102 for a table without the field,
-/// which changes nothing; 3 on a file hosted read-only, before anything is
-/// written or a commit begun, so no save is tried and none fails.
+/// which changes nothing; 6, "File is read-only", on a file hosted
+/// read-only, as the script host answers when the file was read-only
+/// before the step (inferred for this step: FileMaker Server's answer is
+/// unmeasured), before anything is written or a commit begun, so no save
+/// is tried and none fails.
 pub(crate) fn set_next_serial(
     op: SetNextSerial,
     file: &str,
     tx: &mut Transaction<'_>,
 ) -> Result<(), u32> {
     if tx.is_read_only() {
-        return Err(UNAVAILABLE);
+        return Err(FILE_READ_ONLY);
     }
     let SetNextSerial {
         table,
