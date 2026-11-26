@@ -10,7 +10,8 @@
 //! that child window, so the window clips it to the document's visible part.
 //! Views are incognito (no cookies or storage written to disk) and have no
 //! developer tools; they open no other windows, download nothing, and go
-//! only to http, https, data, blob, file and about URLs.
+//! only to http, https, data, blob, file and about URLs. The bridge's
+//! messages are bounded on this thread, as they arrive ([`MessageBudget`]).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -20,7 +21,7 @@ use std::time::Duration;
 
 use gtk::glib;
 use gtk::prelude::*;
-use javascriptcore::ValueExt as _;
+use javascriptcore::{ContextExt as _, ValueExt as _};
 use webkit2gtk::{UserContentManagerExt as _, WebViewExt as _};
 use wry::dpi::{PhysicalPosition, PhysicalSize};
 use wry::{WebView, WebViewBuilder, WebViewBuilderExtUnix, WebViewExtUnix};
@@ -32,7 +33,8 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
 use super::{
-    allowed, Backend, Event, Geometry, NativeParent, Navigation, Unavailable, ViewSpec, BRIDGE,
+    allowed, Backend, Event, Geometry, MessageBudget, NativeParent, Navigation, Unavailable,
+    ViewSpec, BRIDGE, MAX_MESSAGE,
 };
 
 enum Command {
@@ -67,6 +69,8 @@ enum Command {
 pub(crate) struct GtkBackend {
     commands: Sender<Command>,
     events: Receiver<Event>,
+    /// Bridge messages the GTK thread sent and the app has not polled.
+    budget: MessageBudget,
 }
 
 /// WebKitGTK's DMA-BUF renderer shows blank pages on X servers without
@@ -137,12 +141,18 @@ impl GtkBackend {
         let (event_tx, events) = channel();
         let (ready_tx, ready_rx) = channel();
         let ctx = ctx.clone();
+        let budget = MessageBudget::default();
+        let taken = budget.clone();
         std::thread::Builder::new()
             .name("openmaker-web-viewers".into())
-            .spawn(move || run(ctx, command_rx, event_tx, ready_tx))
+            .spawn(move || run(ctx, command_rx, event_tx, taken, ready_tx))
             .map_err(|_| Unavailable::Platform)?;
         match ready_rx.recv_timeout(START_TIMEOUT) {
-            Ok(true) => Ok(GtkBackend { commands, events }),
+            Ok(true) => Ok(GtkBackend {
+                commands,
+                events,
+                budget,
+            }),
             _ => Err(Unavailable::Platform),
         }
     }
@@ -188,7 +198,13 @@ impl Backend for GtkBackend {
     }
 
     fn poll(&mut self) -> Vec<Event> {
-        self.events.try_iter().collect()
+        let events: Vec<Event> = self.events.try_iter().collect();
+        for event in &events {
+            if let Event::Message { body, .. } = event {
+                self.budget.release(body);
+            }
+        }
+        events
     }
 }
 
@@ -196,6 +212,7 @@ impl Backend for GtkBackend {
 struct State {
     commands: Receiver<Command>,
     events: Events,
+    budget: MessageBudget,
     display: gdkx11::X11Display,
     x11: Rc<RustConnection>,
     views: HashMap<u64, Hosted>,
@@ -255,6 +272,7 @@ fn run(
     ctx: egui::Context,
     commands: Receiver<Command>,
     sender: Sender<Event>,
+    budget: MessageBudget,
     ready: Sender<bool>,
 ) {
     // The views are children of X11 windows: GDK must use X11 too, also in
@@ -274,6 +292,7 @@ fn run(
         *state.borrow_mut() = Some(State {
             commands,
             events: Events { sender, ctx },
+            budget,
             display,
             x11: Rc::new(x11),
             views: HashMap::new(),
@@ -554,12 +573,16 @@ impl State {
             let manager = page
                 .user_content_manager()
                 .ok_or_else(|| "the page has no content manager".to_owned())?;
+            // WebKit has already copied the message into this process; only
+            // text the bridge could have posted, within the budget, goes
+            // further.
+            let budget = self.budget.clone();
             manager.connect_script_message_received(Some(HANDLER), move |_, message| {
-                if let Some(value) = message.js_value() {
-                    messages.send(Event::Message {
-                        view,
-                        body: value.to_str().into(),
-                    });
+                let Some(body) = message.js_value().as_ref().and_then(bridge_text) else {
+                    return;
+                };
+                if budget.admit(&body) {
+                    messages.send(Event::Message { view, body });
                 }
             });
             if !manager.register_script_message_handler(HANDLER) {
@@ -635,10 +658,69 @@ fn place(x11: &RustConnection, hosted: &mut Hosted, geometry: Geometry, visible:
     }
 }
 
+/// The text of a message a page posted to the bridge's handler, if it can
+/// be a bridge message: a string of ASCII without a NUL, which is all the
+/// bridge posts (`encodeURIComponent`'s output), no longer than
+/// [`MAX_MESSAGE`]. Its length is read before it is copied out, so one too
+/// long is not copied; one JavaScriptCore cannot convert (an unpaired
+/// surrogate) is `None`.
+fn bridge_text(value: &javascriptcore::Value) -> Option<String> {
+    if !value.is_string() {
+        return None;
+    }
+    let units = utf16_length(value).filter(|&units| units <= MAX_MESSAGE)?;
+    // As bytes, the string's whole length, where a C string would stop at
+    // a NUL. Their number first, so that no more than the limit is read;
+    // ASCII has as many bytes as units. A raw NUL is never the bridge's,
+    // which encodes one as `%00`.
+    let bytes = value.to_string_as_bytes()?;
+    if bytes.len() != units || !bytes.is_ascii() || bytes.contains(&0) {
+        return None;
+    }
+    std::str::from_utf8(&bytes).ok().map(str::to_owned)
+}
+
+/// A JavaScript string's length in UTF-16 code units, which is at most its
+/// length in UTF-8 bytes, read in JavaScript without copying the string.
+fn utf16_length(value: &javascriptcore::Value) -> Option<usize> {
+    let length = value
+        .context()?
+        .evaluate("(function (text) { return text.length; })")?;
+    let units = length
+        .function_callv(std::slice::from_ref(value))?
+        .to_double();
+    (units.is_finite() && units >= 0.0).then_some(units as usize)
+}
+
 fn clamp_i16(v: i32) -> i16 {
     v.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
 
 fn clamp_u16(v: i32) -> u16 {
     v.clamp(1, i32::from(u16::MAX)) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use javascriptcore::ContextExt as _;
+
+    /// What a page posts reaches the app only as text the bridge could have
+    /// posted, and nothing it posts makes the handler panic (a panic in a
+    /// GTK callback aborts the app).
+    #[test]
+    fn only_text_the_bridge_could_post_is_taken_from_a_page() {
+        let context = javascriptcore::Context::new();
+        let text = |code: &str| super::bridge_text(&context.evaluate(code).expect("evaluates"));
+        let message = "openmaker-perform-script&s=a&p=%C3%A9%00&o=0";
+        assert_eq!(text(&format!("'{message}'")).as_deref(), Some(message));
+        // An unpaired surrogate, which JavaScriptCore may fail to convert,
+        // other text that is not ASCII, a raw NUL, and what is not text.
+        assert_eq!(text("'openmaker-perform-script&s=a\\uD800&p=&o=0'"), None);
+        assert_eq!(text("'openmaker-perform-script&s=\\u00e9&p=&o=0'"), None);
+        assert_eq!(text("'openmaker-perform-script&s=a&p=b\\u0000c&o=0'"), None);
+        assert_eq!(text("42"), None);
+        // Longer than a message may be, by its length alone.
+        let long = format!("'x'.repeat({})", super::MAX_MESSAGE + 1);
+        assert_eq!(text(&long), None);
+    }
 }
