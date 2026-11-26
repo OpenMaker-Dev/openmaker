@@ -13,6 +13,10 @@ use super::*;
 struct Recorded {
     commands: Vec<String>,
     events: Vec<Event>,
+    frames: Vec<PageFrame>,
+    unavailable: bool,
+    /// Commands the backend cannot send (too long for its page host).
+    refused: bool,
     started: usize,
 }
 
@@ -24,6 +28,8 @@ fn number(parent: NativeParent) -> u64 {
         NativeParent::X11(window) => window,
         #[cfg(all(feature = "web-viewer", target_os = "macos"))]
         NativeParent::AppKit(number) => number.unsigned_abs() as u64,
+        #[cfg(all(feature = "web-viewer", target_os = "linux"))]
+        NativeParent::Composited => 0,
     }
 }
 
@@ -46,17 +52,19 @@ impl Backend for Recording {
             geometry.frame, geometry.content
         ));
     }
-    fn navigate(&mut self, view: u64, _generation: u64, navigation: Navigation) {
-        self.0
-            .borrow_mut()
+    fn navigate(&mut self, view: u64, _generation: u64, navigation: Navigation) -> bool {
+        let mut recorded = self.0.borrow_mut();
+        recorded
             .commands
             .push(format!("navigate {view} {navigation:?}"));
+        !recorded.refused
     }
-    fn evaluate(&mut self, view: u64, call: u64, script: String) {
-        self.0
-            .borrow_mut()
+    fn evaluate(&mut self, view: u64, call: u64, script: String) -> bool {
+        let mut recorded = self.0.borrow_mut();
+        recorded
             .commands
             .push(format!("evaluate {view} {call} {script}"));
+        !recorded.refused
     }
     fn destroy(&mut self, view: u64) {
         self.0.borrow_mut().commands.push(format!("destroy {view}"));
@@ -70,6 +78,18 @@ impl Backend for Recording {
     }
     fn poll(&mut self) -> Vec<Event> {
         std::mem::take(&mut self.0.borrow_mut().events)
+    }
+    fn frames(&mut self) -> Vec<PageFrame> {
+        std::mem::take(&mut self.0.borrow_mut().frames)
+    }
+    fn available(&mut self) -> bool {
+        !self.0.borrow().unavailable
+    }
+    fn input(&mut self, view: u64, input: PageInput) {
+        self.0
+            .borrow_mut()
+            .commands
+            .push(format!("input {view} {input:?}"));
     }
 }
 
@@ -106,6 +126,8 @@ fn placement(address: Option<&str>) -> Placement {
         record: None,
         current: true,
         zoom: 1.0,
+        input: Vec::new(),
+        hovered: false,
     }
 }
 
@@ -261,6 +283,101 @@ fn a_view_follows_its_object_until_the_object_is_no_longer_painted() {
     viewers.reconcile(&ctx, &moved);
     assert_eq!(commands(&recorded), ["destroy 3"]);
     assert_eq!(viewers.len(), 0);
+}
+
+/// A painted page (`composited`) gets the pointer's input Browse noted over
+/// it and hears the pointer leave; a press on it keeps the keyboard there,
+/// and a press elsewhere in the window takes it back.
+#[test]
+fn a_painted_page_gets_the_pointer_input_over_it() {
+    let (mut viewers, recorded) = viewers();
+    let ctx = egui::Context::default();
+    let page = placement(Some("about:blank"));
+    viewers.reconcile(&ctx, &frame(std::slice::from_ref(&page), &[]));
+    commands(&recorded);
+    let press = PageInput::Button {
+        x: 5.0,
+        y: 6.0,
+        button: 0,
+        pressed: true,
+    };
+    let over = Placement {
+        hovered: true,
+        input: vec![press],
+        ..page.clone()
+    };
+    let mut pressed = frame(std::slice::from_ref(&over), &[]);
+    pressed.pressed = true;
+    viewers.reconcile(&ctx, &pressed);
+    assert_eq!(commands(&recorded), [format!("input 1 {press:?}")]);
+    let mut elsewhere = frame(std::slice::from_ref(&page), &[]);
+    elsewhere.pressed = true;
+    viewers.reconcile(&ctx, &elsewhere);
+    assert_eq!(
+        commands(&recorded),
+        ["input 1 Leave", "release focus to 4194305"]
+    );
+}
+
+/// Once the backend can no longer draw pages (the Wayland backend's page
+/// host ended), Set Web Viewer and Perform JavaScript fail as unavailable
+/// commands, error 3, rather than seem to work; so does a Set Web Viewer
+/// the backend could not send (an address too long for the page host).
+#[test]
+fn steps_on_a_backend_that_ended_fail_as_unavailable() {
+    let (mut viewers, recorded) = viewers();
+    let ctx = egui::Context::default();
+    viewers.reconcile(&ctx, &frame(&[placement(Some("about:blank"))], &[]));
+    recorded.borrow_mut().unavailable = true;
+    viewers.command(1, &window(), set_url("https://example.com/"));
+    viewers.command(2, &window(), perform("show", &[]));
+    let answers: Vec<Outcome> = viewers.poll();
+    assert_eq!(
+        answers,
+        [1, 2].map(|prompt| Outcome::Answer {
+            prompt,
+            result: Err(UNAVAILABLE),
+        })
+    );
+    {
+        let mut recorded = recorded.borrow_mut();
+        recorded.unavailable = false;
+        recorded.refused = true;
+    }
+    viewers.command(3, &window(), set_url("https://example.com/"));
+    let answers: Vec<Outcome> = viewers.poll();
+    assert_eq!(
+        answers,
+        [Outcome::Answer {
+            prompt: 3,
+            result: Err(UNAVAILABLE),
+        }]
+    );
+}
+
+/// A painted page's newest frame is what Browse paints, until its view
+/// fails (its browser went away): then nothing of it is painted.
+#[test]
+fn a_painted_page_that_fails_is_no_longer_painted() {
+    let (mut viewers, recorded) = viewers();
+    let ctx = egui::Context::default();
+    let page = placement(Some("about:blank"));
+    viewers.reconcile(&ctx, &frame(std::slice::from_ref(&page), &[]));
+    recorded.borrow_mut().frames.push(PageFrame {
+        view: 1,
+        size: [2, 2],
+        rgba: vec![255; 16],
+    });
+    viewers.frames(&ctx);
+    let painted = |viewers: &WebViewers| viewers.pages(1, UUID, 3, 5, Some(9)).len();
+    assert_eq!(painted(&viewers), 1);
+    recorded.borrow_mut().events.push(Event::Failed {
+        view: 1,
+        generation: 0,
+        reason: "the page host ended".into(),
+    });
+    viewers.poll();
+    assert_eq!(painted(&viewers), 0);
 }
 
 #[test]

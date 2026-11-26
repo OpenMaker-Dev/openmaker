@@ -504,7 +504,8 @@ impl Clients {
         }
     }
 
-    /// Connection `id` closed file `file` (an op62 Unlock of its root).
+    /// Connection `id` closed file `file` (an op62 Unlock of its root), or
+    /// let go of it as its session ended.
     pub(crate) fn closed(&self, id: u32, file: u32) {
         if let Some(entry) = self.entries().get_mut(&id) {
             entry.files.remove(&file);

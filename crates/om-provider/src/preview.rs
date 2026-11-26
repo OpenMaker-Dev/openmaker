@@ -652,14 +652,16 @@ impl NativeProvider {
         if self.external.route(table).is_some() {
             return Ok(None);
         }
-        let affected: BTreeSet<_> = if write.cells.is_empty() {
-            BTreeSet::new()
-        } else {
-            self.table_plan(table)?
-                .1
-                .replacing_groups_assigned(&write.cells)
-                .collect()
-        };
+        let mut affected = BTreeSet::new();
+        let mut proposed_self = BTreeSet::new();
+        if !write.cells.is_empty() {
+            let (_, plan) = self.table_plan(table)?;
+            affected.extend(plan.replacing_groups_assigned(&write.cells));
+            proposed_self.extend(write.cells.keys().copied().filter(|cell| {
+                !write.typed.contains(cell) && plan.auto_enters_proposed_self(*cell)
+            }));
+            affected.extend(&proposed_self);
+        }
         let unavailable = || {
             (!affected.is_empty()).then(|| om_data::PendingValues {
                 unknown: affected.clone(),
@@ -717,10 +719,15 @@ impl NativeProvider {
             }
         }
         let unavailable = affected.intersection(&unknown).copied().collect();
+        proposed_self.retain(|cell| !unknown.contains(cell));
+        for cell in &proposed_self {
+            values.entry(*cell).or_insert(None);
+        }
         Ok(Some(om_data::PendingValues {
             values,
             unknown,
             unavailable,
+            proposed_self,
         }))
     }
 

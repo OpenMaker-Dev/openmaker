@@ -1048,7 +1048,7 @@ impl Runtime {
                         self.variables(host, &name).set(&name, rep, value)
                     }
                     DialogTarget::Field(field) => {
-                        if let Err(e) = host.set_field(field, value) {
+                        if let Err(e) = host.set_dialog_field(field, value) {
                             return Exec::from_host(Err(e));
                         }
                     }

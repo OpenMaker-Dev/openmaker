@@ -770,6 +770,11 @@ impl LayoutObject {
         ObjectKind::from_type(self.object_type)
     }
 
+    /// Whether the layout object has FileMaker's design-time lock flag.
+    pub fn is_locked(&self) -> bool {
+        self.flags & 0x2 != 0
+    }
+
     /// The measured Show navigation dots option (layout-model.md §5.3).
     /// Leave the type-specific data intact for the layout writer.
     pub fn shows_slide_dots(&self) -> bool {

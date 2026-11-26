@@ -2180,6 +2180,20 @@ Inferred paint order per object [I]: outer box shadow, background layers,
 border (or border image), inner shadow, `inner_border` component, content
 (text, icon, image), then child objects.
 
+[O, FileMaker Pro 26.1.1 on macOS] On solid square rectangles and
+buttons, an opaque outer shadow at horizontal +6 pt, vertical +3 pt, blur
+4 pt and spread 2 pt extends about 0 pt left, 2-2.5 pt up, 11-11.25 pt
+right and 8-8.4 pt down beyond the visible border. The inset shadow is
+clipped at the inside edge of the border to layout-point precision, below
+the button text and glyph. The two effects can be enabled together.
+The matching outer rectangle property is 122 with one field-19 shadow
+of type 1, inset 0, alpha 1 and the four lengths in points. [Native
+measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1034#issuecomment-7202993034)
+
+[I] The outer extents fit an offset rectangle expanded by the spread,
+with the blur extending about one blur distance beyond that edge.
+The samples do not identify FileMaker's exact blur kernel.
+
 ### 9.3 Graphics backends
 
 | | Mac | Windows |
@@ -2254,7 +2268,8 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
 - Browse evaluates the address on the current record in Form view and on
   each row's record in List view, and shows it in a native view (wry): on
   Linux a WebKitGTK view whose X11 window is a child of its window's own X11
-  window, on macOS a WKWebView in a clipping view of its window's content
+  window, or, with the Wayland backend, a page Browse paints itself (below),
+  on macOS a WKWebView in a clipping view of its window's content
   view (below). The view lies at the
   object's rectangle, clipped to the document's scroll area
   and zoomed with it; the view hides while egui draws anything over it
@@ -2346,7 +2361,58 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   so as to leave the desktop alone), and `tests/web_viewer_windows_native.rs`
   reads a second window's List rows' colors from the system's
   `screencapture`.
-- On Linux the views can only be children of X11 windows, so a build with
+- With `OPENMAKER_WEB_VIEWER_BACKEND=wayland` (opt-in for now,
+  `web_viewer/wayland.rs`), a Linux build keeps its windows where winit
+  puts them (Wayland on a Wayland session), and no view is a window:
+  - **The page host.** WebKitGTK runs in `om-gui-webview`, a process of its
+    own beside the program (or `OPENMAKER_WEB_VIEWER_HOST`), which takes
+    the app's commands and sends its events as JSON lines on its stdin and
+    stdout. Its only display is a Wayland compositor of the app's own
+    (smithay, `web_viewer/wayland/display.rs`) with no screen, reached
+    through a socket in a private directory that goes once the host has
+    connected. Each view is a window there, titled with its id and sized to
+    the object in points. The display's `wl_output` scale is the app's
+    pixels per point rounded up (GTK 3 has whole scales only, so at 1.5 a
+    page is drawn at 2 and scaled down), and the host gets no `GDK_SCALE`
+    ([#1086](https://github.com/OpenMaker-Dev/openmaker/issues/1086)).
+  - **Frames.** The display offers no DMA-BUF, so WebKitGTK sends its pages
+    in shared memory (its web process still renders them on the GPU). The
+    display reads each buffer through its pool's file rather than mapping
+    it, which needs no `unsafe` code, and only once the sizes the buffer
+    declares fit: sides no larger than the app's largest texture, and what
+    reading and converting it take within 256 MiB beside the other views'
+    frames waiting for the app. Each view keeps only its newest frame: the
+    one waiting goes before its replacement is read.
+  - **Painting.** Browse paints each view's newest frame as a texture in its
+    object's place among the layout's objects. Objects stacked above a web
+    viewer, menus, popovers and dialogs draw over the page, where the X11
+    backend's views hide instead. A window needs no native window of its own
+    for its pages.
+  - **Input.** The pointer's moves, buttons and wheel over an interactive
+    viewer go to the page; nothing egui draws above it gets them. A press
+    gives the page the keyboard's focus, and scrolling over the page scrolls
+    it, not the layout. Keys, input methods, the page's menus and pop-ups
+    (shown nowhere yet, and closed by the next press), its cursor shapes and
+    the clipboard do not reach it yet.
+  - **The host is another process.** Both ways are bounded. A command
+    line longer than 16 MiB (a page's address, a function's parameters) is
+    refused as it is written, and that load or call fails; the Set Web
+    Viewer or Perform JavaScript in Web Viewer that asked for it fails with
+    error 3 [I, OpenMaker's choice; FileMaker unmeasured]. A view whose
+    first address was refused is made, empty, by its next load. Commands
+    wait in a queue bounded by number and bytes, and the host holds one at
+    a time. Its event lines are bounded too, and its events are checked as
+    any page's are. A host that ends fails its views, as a native view
+    whose browser went away does. Set Web Viewer and Perform JavaScript in
+    Web Viewer then fail with error 3 [I, OpenMaker's choice; FileMaker's
+    error for a web viewer whose engine ended is unmeasured].
+
+  Its design, and how the alternatives were set aside, is
+  [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323)'s study.
+  `tests/web_viewer_composited.rs` runs it in the real app under Xvfb: a
+  page painted in its object with no child window, a text object above
+  the viewer drawn over it, and a real click reaching the page's bridge.
+- On Linux the X11 backend's views can only be children of X11 windows, so a build with
   the feature puts its windows on winit's X11 backend whenever an X server
   answers at startup (`om_gui::native_options`). On a Wayland session, where
   winit would otherwise choose Wayland, that is XWayland, and no environment

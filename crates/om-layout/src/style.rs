@@ -6,6 +6,9 @@ use crate::wire::{push_varints, Error, Fields, Merged, RawField, RawValue, Resul
 
 /// FileMaker stores object rotation in the local style (layout-model.md 3).
 pub(crate) const ROTATION: i32 = 613;
+const BOX_SHADOW: i32 = 122;
+// There is no need to allocate an unbounded resolved shadow list from a file.
+const MAX_BOX_SHADOWS: usize = 16;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Color {
@@ -74,6 +77,42 @@ impl Length {
             }
         }
         Ok(out)
+    }
+}
+
+/// One entry of a stored `BoxShadow` list (Style.proto, layout-model.md 6.6).
+/// The containing property still holds the original bytes in `other`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BoxShadow {
+    pub kind: i32,
+    pub inset: bool,
+    pub color: Option<Color>,
+    pub offset: [Option<Length>; 2],
+    pub blur: Option<Length>,
+    pub spread: Option<Length>,
+}
+
+impl BoxShadow {
+    fn decode(buf: &[u8]) -> Result<Self> {
+        let mut shadow = Self::default();
+        let mut color = Merged::default();
+        let mut lengths: [Merged<'_>; 4] = std::array::from_fn(|_| Merged::default());
+        for field in Fields::new(buf, "BoxShadow") {
+            let field = field?;
+            match (field.number, field.value) {
+                (1, Value::Varint(v)) => shadow.kind = v as i32,
+                (2, Value::Varint(v)) => shadow.inset = v != 0,
+                (3, Value::Bytes(v)) => color.push(v),
+                (4..=7, Value::Bytes(v)) => lengths[(field.number - 4) as usize].push(v),
+                _ => {}
+            }
+        }
+        shadow.color = color.decode(Color::decode)?;
+        let [x, y, blur, spread] = lengths.map(|length| length.decode(Length::decode));
+        shadow.offset = [x?, y?];
+        shadow.blur = blur?;
+        shadow.spread = spread?;
+        Ok(shadow)
     }
 }
 
@@ -156,6 +195,23 @@ impl Property {
         let x = coord.x.as_ref()?.points()?;
         let y = coord.y.as_ref()?.points()?;
         (x == y).then_some(x)
+    }
+
+    /// Style.proto field 19. Keep the source bytes for unchanged writes.
+    fn box_shadows(&self) -> Vec<BoxShadow> {
+        let mut shadows = Vec::new();
+        for field in &self.other {
+            if let (19, RawValue::Bytes(bytes)) = (field.number, &field.value) {
+                if shadows.len() == MAX_BOX_SHADOWS {
+                    return Vec::new();
+                }
+                let Ok(shadow) = BoxShadow::decode(bytes) else {
+                    return Vec::new();
+                };
+                shadows.push(shadow);
+            }
+        }
+        shadows
     }
 }
 
@@ -365,6 +421,9 @@ pub struct ResolvedStyle {
     pub border_color: [Option<Color>; 4],
     pub border_style: [Option<i32>; 4],
     pub border_radius: Option<f64>,
+    /// None leaves the property unset. An explicitly empty list overrides
+    /// the previous style's shadows.
+    pub box_shadows: Option<Vec<BoxShadow>>,
 }
 
 impl ResolvedStyle {
@@ -390,7 +449,8 @@ impl ResolvedStyle {
             text_align,
             text_transform,
             vertical_align,
-            border_radius
+            border_radius,
+            box_shadows
         );
         for i in 0..4 {
             if other.padding[i].is_some() {
@@ -568,6 +628,7 @@ pub fn resolve_style(
         border_color: std::array::from_fn(|i| p(20 + i as i32).and_then(|p| p.color)),
         border_style: std::array::from_fn(|i| p(24 + i as i32).and_then(|p| p.int)),
         border_radius: p(35).and_then(Property::radius_points),
+        box_shadows: p(BOX_SHADOW).map(Property::box_shadows),
     }
 }
 
@@ -704,6 +765,52 @@ mod tests {
             styles: Some(styles(1, state, vec![prop(65, value)])),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn resolves_box_shadow_from_its_stored_property() {
+        let mut payload = vec![0x08, 1, 0x10, 0, 0x1a, 20];
+        for (tag, value) in [(0x0d, 1.0_f32), (0x15, 0.0), (0x1d, 0.0), (0x25, 1.0)] {
+            payload.push(tag);
+            payload.extend(value.to_le_bytes());
+        }
+        for (tag, value) in [(0x22, 6.0_f64), (0x2a, 3.0), (0x32, 4.0), (0x3a, 2.0)] {
+            payload.extend([tag, 13, 0x09]);
+            payload.extend(value.to_le_bytes());
+            payload.extend([0x10, 6, 0x18, 0]);
+        }
+        let mut encoded = vec![0x08, 122, 0x9a, 0x01, payload.len() as u8];
+        encoded.extend(&payload);
+        let property = Property::decode(&encoded).unwrap();
+        assert_eq!(
+            property.other,
+            [RawField {
+                number: 19,
+                value: RawValue::Bytes(payload)
+            }]
+        );
+        let object = ObjectStyle {
+            object_type_id: 61,
+            local_styles: Some(styles(1, 1, vec![property])),
+            ..Default::default()
+        };
+        let resolved = resolve_style(Some(&object), 61, None, &ThemeStyles::default(), 1, 1);
+        let boxes = resolved.box_shadows.unwrap();
+        let [shadow] = boxes.as_slice() else {
+            panic!("expected one shadow");
+        };
+        assert_eq!(shadow.kind, 1);
+        assert!(!shadow.inset);
+        assert_eq!(shadow.color.unwrap().alpha, 1.0);
+        assert_eq!(
+            shadow
+                .offset
+                .each_ref()
+                .map(|length| length.as_ref().and_then(Length::points)),
+            [Some(6.0), Some(3.0)]
+        );
+        assert_eq!(shadow.blur.as_ref().and_then(Length::points), Some(4.0));
+        assert_eq!(shadow.spread.as_ref().and_then(Length::points), Some(2.0));
     }
 
     #[test]

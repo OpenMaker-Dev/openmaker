@@ -106,6 +106,10 @@ pub(crate) struct PartSetup {
     creating: Option<Option<i32>>,
     /// A part added or deleted is with the host.
     waiting_parts: Option<PartsChange>,
+    /// Opened by the Part tool: Part Definition alone, without Part
+    /// Setup's list. It stays, taking no input, while its OK is with the
+    /// host, and closes with Cancel or once the host has answered.
+    alone: bool,
 }
 
 /// Why a control is shown but not offered.
@@ -146,7 +150,27 @@ impl PartSetup {
             waiting: None,
             creating: None,
             waiting_parts: None,
+            alone: false,
         }
+    }
+
+    /// This dialog as the Part tool opens it: Part Definition alone, the
+    /// kinds of part Create adds that the layout lacks offered. Refused,
+    /// with the reason, when the layout has them all (OpenMaker adds no
+    /// sub-summaries, which FileMaker Pro adds any number of).
+    pub(crate) fn creating_alone(mut self) -> Result<Self, &'static str> {
+        if !ADDABLE_PARTS.iter().any(|&t| self.creatable(t)) {
+            return Err("The layout has every kind of part OpenMaker adds.");
+        }
+        // The first kind offered is chosen, as FileMaker Pro 26.1.1's
+        // Insert > Part chose Title Header (re/client-ui.md, "Part Setup").
+        let first = TYPES
+            .iter()
+            .find(|(_, types, _)| types.len() == 1 && self.creatable(types[0]))
+            .map(|(_, types, _)| types[0]);
+        self.creating = Some(first);
+        self.alone = true;
+        Ok(self)
     }
 
     /// The host's answer to `sent`, a part added or deleted: saved, the
@@ -163,6 +187,10 @@ impl PartSetup {
             return false;
         }
         self.waiting_parts = None;
+        if self.alone {
+            // Part Definition alone closes with the answer.
+            self.creating = None;
+        }
         let Some(revision) = revision else {
             return true;
         };
@@ -233,6 +261,10 @@ impl PartSetup {
     pub(crate) fn show(&mut self, ctx: &egui::Context) -> PartSetupAnswer {
         if self.creating.is_some() {
             return self.show_create(ctx);
+        }
+        if self.alone {
+            // Part Definition was the whole dialog, and has been answered.
+            return PartSetupAnswer::Done;
         }
         if self.definition.is_some() {
             return self.show_definition(ctx);
@@ -396,12 +428,16 @@ impl PartSetup {
             .iter()
             .map(|(_, types, _)| types.len() == 1 && self.creatable(types[0]))
             .collect();
+        let waiting = self.waiting_parts.is_some();
         let escaped = dialog(
             ctx,
             "part_create",
             "Part Definition",
             vec2(458.0, 449.0),
             |ui, at| {
+                if waiting {
+                    ui.disable();
+                }
                 let place = |ui: &mut egui::Ui, rect: Rect, add: &mut dyn FnMut(&mut egui::Ui)| {
                     ui.scope_builder(UiBuilder::new().max_rect(rect), add);
                 };
@@ -458,9 +494,13 @@ impl PartSetup {
         );
         if let PartSetupAnswer::Parts(change) = &answer {
             self.waiting_parts = Some(change.clone());
-            close = true;
+            // Alone, it waits for the answer (`parts_answered`); over Part
+            // Setup, the list waits.
+            close = !self.alone;
         }
-        if close || escaped {
+        if waiting {
+            // Not closed while its OK is with the host.
+        } else if close || escaped {
             self.creating = None;
         } else {
             self.creating = Some(pick);
