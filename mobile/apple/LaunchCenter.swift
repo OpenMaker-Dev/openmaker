@@ -175,7 +175,7 @@ struct LaunchCenter: View {
     .overlay { if busy { ProgressView().padding().background(.regularMaterial, in: Capsule()) } }
     .disabled(busy)
     .onAppear {
-      keepLastHost()
+      keepFormerHosts()
       reload()
     }
     .onChange(of: phase) { if $0 == .active { reload() } }
@@ -440,11 +440,8 @@ struct LaunchCenter: View {
 
   private func key(_ host: SavedHost) -> String { authority(host.address, host.port) }
 
-  /// Save `pem` as the certificate authority trusted for one host and port
-  /// only; an empty one removes it. They are kept by the address as typed.
-  private func trust(_ address: String, _ port: UInt16, _ pem: String) {
-    var saved = authorities
-    saved[authority(address, port)] = pem.isEmpty ? nil : pem
+  /// Certificate authorities are kept by the address as typed.
+  private func storeAuthorities(_ saved: [String: String]) {
     certificates = (try? JSONEncoder().encode(saved)) ?? Data()
   }
 
@@ -455,13 +452,27 @@ struct LaunchCenter: View {
   }
 
   /// Before the Hosts tab kept a list it had one host form, whose address
-  /// and port were kept as typed: a host they still describe is the list's
-  /// first.
-  private func keepLastHost() {
+  /// and port were kept as typed, and it kept the certificate authorities
+  /// it was told to trust: a host the form still describes is the list's
+  /// first, followed by those hosts.
+  private func keepFormerHosts() {
     guard hostsData == nil else { return }
+    var list: [SavedHost] = []
     let last = (lastHost ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    let checked = last.isEmpty ? nil : try? checkHost(address: last, port: lastPort ?? "5003", certificate: "")
-    storeHosts(checked.map { [SavedHost(address: $0.address, port: $0.port)] } ?? [])
+    if !last.isEmpty, let checked = try? checkHost(address: last, port: lastPort ?? "5003", certificate: "") {
+      list.append(SavedHost(address: checked.address, port: checked.port))
+    }
+    let trusted = authorities.keys.compactMap { endpoint -> SavedHost? in
+      guard let colon = endpoint.lastIndex(of: ":"), colon > endpoint.startIndex,
+        let port = UInt16(endpoint[endpoint.index(after: colon)...]), port > 0
+      else { return nil }
+      return SavedHost(address: String(endpoint[..<colon]), port: port)
+    }
+    for host in trusted.sorted(by: { $0.location.localizedStandardCompare($1.location) == .orderedAscending })
+    where !list.contains(where: { $0.isHost(host) }) {
+      list.append(host)
+    }
+    storeHosts(list)
   }
 
   /// Edit Host, with the certificate authority trusted for the host.
@@ -474,9 +485,12 @@ struct LaunchCenter: View {
   /// Save the host Add Host or Edit Host describes, checked as the
   /// desktop's Add Host checks one, or throw what to fix. The host goes in
   /// the place of the one it replaces, else of the one at its address and
-  /// port, which is not listed twice; a host moved to another address or
-  /// port takes its certificate authority along. A host whose page is
-  /// shown stays shown, at its new address.
+  /// port in any case, which is not listed twice; the entries it replaces
+  /// no longer trust anything at their own address. Edit Host shows the
+  /// certificate authority it edits, so an empty one removes it; Add Host
+  /// shows none, so with an empty one a certificate authority already
+  /// trusted for the host is kept. A host whose page is shown stays shown,
+  /// at its new address.
   private func saveHost(_ edit: HostEdit) throws {
     let checked = try checkHost(
       address: edit.address, port: edit.port,
@@ -484,25 +498,32 @@ struct LaunchCenter: View {
     let host = SavedHost(
       address: checked.address, port: checked.port,
       name: edit.name.trimmingCharacters(in: .whitespacesAndNewlines))
-    var list = hosts
-    let replaced = edit.replaces.flatMap { old in list.firstIndex { $0.isHost(old) } }
-    let at: Int
-    if let index = replaced ?? list.firstIndex(where: { $0.isHost(host) }) {
-      at = index
-      list[at] = host
-    } else {
-      at = list.count
-      list.append(host)
+    let list = hosts
+    let at =
+      edit.replaces.flatMap { old in list.firstIndex { $0.isHost(old) } }
+      ?? list.firstIndex { $0.isHost(host) }
+    let replaced =
+      list.indices.filter { $0 == at || list[$0].isHost(host) }.map { list[$0] }
+      + (edit.replaces.map { [$0] } ?? [])
+    var updated = list.indices.compactMap { index -> SavedHost? in
+      index == at ? host : list[index].isHost(host) ? nil : list[index]
     }
-    storeHosts(list.indices.filter { $0 == at || !list[$0].isHost(host) }.map { list[$0] })
-    if let old = edit.replaces, old.address != host.address || old.port != host.port {
-      trust(old.address, old.port, "")
+    if at == nil { updated.append(host) }
+    var saved = authorities
+    let pem =
+      edit.replaces == nil && checked.certificate.isEmpty
+      ? ([host] + replaced).lazy.compactMap { saved[key($0)] }.first ?? ""
+      : checked.certificate
+    for old in replaced where old.address != host.address || old.port != host.port {
+      saved[key(old)] = nil
     }
-    trust(host.address, host.port, checked.certificate)
+    saved[key(host)] = pem.isEmpty ? nil : pem
+    storeHosts(updated)
+    storeAuthorities(saved)
     hostEdit = nil
     // Its files are listed again: the address, port or certificate
     // authority they were listed with may have changed.
-    if let old = edit.replaces { listings[key(old)] = nil }
+    for old in replaced { listings[key(old)] = nil }
     listings[key(host)] = nil
     if let shown = hostPath.last, edit.replaces?.isHost(shown) == true || shown.isHost(host) {
       Task { await listHost(host) }
@@ -510,10 +531,17 @@ struct LaunchCenter: View {
     }
   }
 
+  /// Remove `host` from the list, with the certificate authorities trusted
+  /// for it.
   private func removeHost(_ host: SavedHost) {
+    let removed = hosts.filter { $0.isHost(host) }
+    var saved = authorities
+    for old in removed + [host] {
+      saved[key(old)] = nil
+      listings[key(old)] = nil
+    }
     storeHosts(hosts.filter { !$0.isHost(host) })
-    trust(host.address, host.port, "")
-    listings[key(host)] = nil
+    storeAuthorities(saved)
     if hostPath.contains(where: { $0.isHost(host) }) { hostPath = [] }
   }
 

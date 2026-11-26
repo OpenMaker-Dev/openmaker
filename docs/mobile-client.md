@@ -28,11 +28,14 @@ desktop. What FileMaker Go does is in [go-client.md](re/go-client.md).
   them again; Open by Name opens a file it does not list (`.fmp12` may be
   left out). Swiping a host (iOS), or its menu or a long press, edits or
   removes it; removing forgets only the saved entry and its certificate
-  authority. The one host the Hosts tab kept before it had a list becomes
-  the list's first. Local hosts (Bonjour) are not listed. A private
+  authority. Before the Hosts tab had a list it kept one host and the
+  certificate authorities it was given: that host and those hosts make
+  up the list. Local hosts (Bonjour) are not listed. A private
   certificate authority (PEM) can be saved for a host and port; it is
-  used for that host only. The certificate is verified as the desktop
-  client verifies it.
+  used for that host only. Edit Host shows it, so clearing it there
+  removes it; Add Host keeps one already saved for the host unless
+  another is entered. The certificate is verified as the desktop client
+  verifies it.
 - **Favorites** and **Recent** keep references to local and hosted files;
   opening one signs in again. Rows can be removed, and a local file
   deleted after a confirmation.
