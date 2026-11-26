@@ -16,8 +16,12 @@ use std::time::{Duration, Instant};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::WebPkiServerVerifier;
-use rustls::crypto::{ring, verify_tls12_signature, verify_tls13_signature, CryptoProvider};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls::crypto::{
+    ring, verify_tls12_signature, verify_tls13_signature, CryptoProvider, WebPkiSupportedAlgorithms,
+};
+use rustls::pki_types::{
+    CertificateDer, PrivateKeyDer, ServerName, SubjectPublicKeyInfoDer, UnixTime,
+};
 use rustls::sign::{CertifiedKey, SingleCertAndKey};
 use rustls::{
     CertificateError, ClientConfig, ClientConnection, DigitallySignedStruct, RootCertStore,
@@ -99,12 +103,14 @@ impl ServerCertVerifier for AcceptServerCert {
 
 /// Verifies a server's certificate against the trusted roots, and else
 /// accepts one whose SHA-256 fingerprint the user permitted for this host:
-/// its handshake signature is then checked with the key read from the
-/// certificate itself (`cert`), which also reads X.509 version 1. It keeps
-/// what it decided for the transport. One per connection.
+/// its handshake signature is then checked as rustls checks one for the
+/// TLS version, with the public key read from the certificate itself
+/// (`cert`, which also reads X.509 version 1). It keeps what it decided for
+/// the transport. One per connection.
 #[derive(Debug)]
 struct HostVerifier {
     roots: Arc<WebPkiServerVerifier>,
+    algorithms: WebPkiSupportedAlgorithms,
     permitted: Vec<[u8; 32]>,
     decision: Mutex<Option<Decision>>,
 }
@@ -137,23 +143,57 @@ impl HostVerifier {
     }
 
     /// A permitted certificate's handshake signature, checked with its own
-    /// key.
+    /// public key under rustls's rules for the version: in TLS 1.3 the one
+    /// algorithm the scheme names, in TLS 1.2 each it may stand for.
     fn permitted_signature(
+        &self,
+        tls13: bool,
         message: &[u8],
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        let parsed = cert::parse(cert).ok_or(rustls::Error::InvalidCertificate(
-            CertificateError::BadEncoding,
-        ))?;
-        if parsed.key.verify(dss.scheme, message, dss.signature()) {
+        let bad = rustls::Error::InvalidCertificate;
+        let spki = SubjectPublicKeyInfoDer::from(
+            cert::parse(cert)
+                .ok_or(bad(CertificateError::BadEncoding))?
+                .spki,
+        );
+        if tls13 {
+            return rustls::crypto::verify_tls13_signature_with_raw_key(
+                message,
+                &spki,
+                dss,
+                &self.algorithms,
+            );
+        }
+        let key = webpki::RawPublicKeyEntity::try_from(&spki)
+            .map_err(|_| bad(CertificateError::BadEncoding))?;
+        let candidates = self
+            .algorithms
+            .mapping
+            .iter()
+            .find(|(scheme, _)| *scheme == dss.scheme)
+            .map(|(_, algorithms)| *algorithms)
+            .ok_or(rustls::Error::PeerMisbehaved(
+                rustls::PeerMisbehaved::SignedHandshakeWithUnadvertisedSigScheme,
+            ))?;
+        if candidates.iter().any(|algorithm| {
+            key.verify_signature(*algorithm, message, dss.signature())
+                .is_ok()
+        }) {
             Ok(HandshakeSignatureValid::assertion())
         } else {
-            Err(rustls::Error::InvalidCertificate(
-                CertificateError::BadSignature,
-            ))
+            Err(bad(CertificateError::BadSignature))
         }
     }
+}
+
+/// Whether a certificate's public key reads as one whose signatures can be
+/// checked: only such a certificate can be permitted.
+fn has_usable_key(parsed: Option<&cert::Certificate<'_>>) -> bool {
+    parsed.is_some_and(|c| {
+        webpki::RawPublicKeyEntity::try_from(&SubjectPublicKeyInfoDer::from(c.spki)).is_ok()
+    })
 }
 
 impl ServerCertVerifier for HostVerifier {
@@ -180,10 +220,16 @@ impl ServerCertVerifier for HostVerifier {
         };
         let fingerprint = cert::sha256(end_entity);
         let parsed = cert::parse(end_entity);
-        if parsed.is_some() && self.permitted.contains(&fingerprint) {
+        // A certificate whose key cannot be read cannot be checked once
+        // permitted either: it fails as it is, and nothing asks about it.
+        if !has_usable_key(parsed.as_ref()) {
+            return Err(error);
+        }
+        if self.permitted.contains(&fingerprint) {
             self.decide(Decision::Permitted);
             return Ok(ServerCertVerified::assertion());
         }
+        // Not one permitted: changed if another was.
         self.decide(Decision::Refused(Box::new(unverified(
             &error,
             fingerprint,
@@ -200,7 +246,7 @@ impl ServerCertVerifier for HostVerifier {
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
         if self.accepted_permitted(cert) {
-            return Self::permitted_signature(message, cert, dss);
+            return self.permitted_signature(false, message, cert, dss);
         }
         self.roots.verify_tls12_signature(message, cert, dss)
     }
@@ -212,7 +258,7 @@ impl ServerCertVerifier for HostVerifier {
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
         if self.accepted_permitted(cert) {
-            return Self::permitted_signature(message, cert, dss);
+            return self.permitted_signature(true, message, cert, dss);
         }
         self.roots.verify_tls13_signature(message, cert, dss)
     }
@@ -534,6 +580,7 @@ impl Transport {
             .map_err(|e| TransportError::Pem(e.to_string()))?;
         let verifier = Arc::new(HostVerifier {
             roots,
+            algorithms: provider.signature_verification_algorithms,
             permitted: permitted.to_vec(),
             decision: Mutex::new(None),
         });

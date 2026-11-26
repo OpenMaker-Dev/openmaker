@@ -55,7 +55,14 @@ fun GoApp(model: GoViewModel) {
         )
     }
     // Above the sign-in, whose open met the host.
-    model.trustPrompt?.let { prompt -> TrustDialog(prompt.untrusted, onPermit = model::permit, onDontConnect = model::dontConnect) }
+    model.trustPrompt?.let { prompt ->
+        // Bound to the prompt shown: a newer one is not answered by it.
+        TrustDialog(
+            prompt.untrusted,
+            onPermit = { always -> model.permit(prompt, always) },
+            onDontConnect = { model.dontConnect(prompt) },
+        )
+    }
     if (model.settings) {
         SettingsDialog(
             model.licenseSaved,

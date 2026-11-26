@@ -38,6 +38,8 @@ struct UntrustedHost: Identifiable {
   var issuer: String
   var valid: String
   var fingerprint: String
+  /// What met it, done again once its certificate is permitted.
+  var retry: (() -> Void)?
 }
 
 /// The question about a host whose certificate could not be verified: why,
@@ -200,8 +202,6 @@ struct LaunchCenter: View {
   @State private var connectedOnce: [String: String] = [:]
   /// The host whose certificate a listing could not verify, asked about.
   @State private var askingTrust: UntrustedHost?
-  /// What to do again once that certificate is permitted.
-  @State private var afterTrust: (() -> Void)?
   /// The host whose files the Hosts tab shows, if any.
   @State private var hostPath: [SavedHost] = []
   /// Each host's file list, by its address (as typed) and port, while the
@@ -271,9 +271,9 @@ struct LaunchCenter: View {
     }
     .modifier(
       TrustAlert(asking: $askingTrust) { host, always in
+        // The host the alert shows, and what met it.
         permit(host, always: always)
-        afterTrust?()
-        afterTrust = nil
+        host.retry?()
       })
     .alert("Open by Name", isPresented: present($namingFile), presenting: namingFile) { host in
       TextField("File name", text: $typedFileName)
@@ -609,13 +609,15 @@ struct LaunchCenter: View {
   /// Connect (this time), or with `always` Always Permit: the certificate
   /// asked about is accepted for its host.
   private func permit(_ host: UntrustedHost, always: Bool) {
+    let once = hostKey(address: host.host, port: host.port)
     if always {
       var all = permits
       unpermit(host.host, host.port, in: &all)
       all[authority(host.host, host.port)] = host.fingerprint
       storePermits(all)
+      connectedOnce[once] = nil
     } else {
-      connectedOnce[hostKey(address: host.host, port: host.port)] = host.fingerprint
+      connectedOnce[once] = host.fingerprint
     }
   }
 
@@ -630,14 +632,15 @@ struct LaunchCenter: View {
 
   /// A host as the engine connects to it: with every certificate
   /// authority saved for it (`connectCertificate`, which throws when they
-  /// cannot all be used) and the certificate permitted for it.
+  /// cannot all be used), and the certificate permitted for it, the one
+  /// permitted with Connect in this run first (a newer certificate than
+  /// one saved with Always Permit).
   private func endpoint(_ address: String, _ port: UInt16) throws -> Host {
-    let once = connectedOnce[hostKey(address: address, port: port)] ?? ""
-    let always = permitted(address, port)
+    let once = connectedOnce[hostKey(address: address, port: port)]
     return Host(
       address: address, port: port,
       certificate: try connectCertificate(certificates: authorities, address: address, port: port),
-      permitted: always.isEmpty ? once : always)
+      permitted: once ?? permitted(address, port))
   }
 
   /// Save Add Host or Edit Host's `edit` by the engine's rules
@@ -682,6 +685,7 @@ struct LaunchCenter: View {
     var all = permits
     for old in hosts.filter({ $0.isHost(host) }) + [host] {
       unpermit(old.address, old.port, in: &all)
+      connectedOnce[old.id] = nil
       listings[key(old)] = nil
     }
     let result = removeHost(
@@ -712,8 +716,8 @@ struct LaunchCenter: View {
     guard case .pending(asked)? = listings[id] else { return }
     listings[id] = listing
     // Asked about, and listed again if permitted.
-    if let untrusted {
-      afterTrust = { Task { await listHost(host) } }
+    if var untrusted {
+      untrusted.retry = { Task { await listHost(host) } }
       askingTrust = untrusted
     }
   }

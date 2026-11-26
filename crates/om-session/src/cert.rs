@@ -43,6 +43,9 @@ pub struct Certificate<'a> {
     /// When the certificate becomes valid and when it expires, if the
     /// validity reads as two times ([`Time::describe`]).
     pub validity: Option<(Time<'a>, Time<'a>)>,
+    /// The whole DER `SubjectPublicKeyInfo`, as a TLS library verifies a
+    /// raw public key's signatures.
+    pub spki: &'a [u8],
 }
 
 /// A certificate time: a DER `UTCTime` or `GeneralizedTime` as written.
@@ -111,7 +114,9 @@ pub fn parse(der: &[u8]) -> Option<Certificate<'_>> {
     let (issuer, rest) = expect(rest, SEQUENCE)?;
     let (validity, rest) = expect(rest, SEQUENCE)?;
     let (subject, rest) = expect(rest, SEQUENCE)?;
-    let (spki, _) = expect(rest, SEQUENCE)?;
+    let spki_der = rest;
+    let (spki, after) = expect(rest, SEQUENCE)?;
+    let spki_der = &spki_der[..spki_der.len() - after.len()];
     let validity = (|| {
         let (from_tag, from, rest) = tlv(validity)?;
         let (until_tag, until, _) = tlv(rest)?;
@@ -151,6 +156,7 @@ pub fn parse(der: &[u8]) -> Option<Certificate<'_>> {
         issuer,
         subject,
         validity,
+        spki: spki_der,
     })
 }
 

@@ -5061,6 +5061,7 @@ dependencies = [
  "ring",
  "rustls",
  "rustls-pemfile",
+ "rustls-webpki",
  "webpki-roots 1.0.11",
 ]
 

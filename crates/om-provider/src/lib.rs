@@ -2955,6 +2955,7 @@ impl NativeProvider {
             .with_keepalive(self.keepalive)
             .with_related_on_demand(self.related_on_demand);
         peer.ca_scope = self.ca_scope.clone();
+        peer.permits = self.permits.clone();
         peer.close_requests = self.close_requests.clone();
         peer.desktop = self.desktop.clone();
         peer.local_hosts = self.local_hosts.clone();
@@ -3056,6 +3057,7 @@ impl NativeProvider {
             .with_keepalive(self.keepalive)
             .with_related_on_demand(self.related_on_demand);
         peer.ca_scope = self.ca_scope.clone();
+        peer.permits = self.permits.clone();
         peer.close_requests = self.close_requests.clone();
         peer.desktop = self.desktop.clone();
         peer.login_refusals = refusals.clone();

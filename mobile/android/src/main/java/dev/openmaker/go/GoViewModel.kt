@@ -11,6 +11,7 @@ import dev.openmaker.go.engine.Document
 import dev.openmaker.go.engine.GoException
 import dev.openmaker.go.engine.Host
 import dev.openmaker.go.engine.HostChange
+import dev.openmaker.go.engine.hostKey
 import dev.openmaker.go.engine.Input
 import dev.openmaker.go.engine.SignIn
 import dev.openmaker.go.engine.Source
@@ -91,8 +92,8 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
     var hostEditor by mutableStateOf<HostEditor?>(null)
     var trustPrompt by mutableStateOf<TrustPrompt?>(null)
         private set
-    /** Certificates permitted with Connect, for as long as the app runs, by host (lowercase) and port. */
-    private val connectedOnce = mutableMapOf<Pair<String, Int>, String>()
+    /** Certificates permitted with Connect, for as long as the app runs, by host ([hostKey]). */
+    private val connectedOnce = mutableMapOf<String, String>()
     var working by mutableStateOf(false)
         private set
     var message by mutableStateOf<String?>(null)
@@ -148,12 +149,18 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun host(entry: Entry) = endpoint(entry.host, entry.port)
 
+    /**
+     * A host as the engine connects to it: with the certificate authorities
+     * trusted for it, and the certificate permitted for it, the one
+     * permitted with Connect in this run first (a newer certificate than
+     * one saved with Always Permit).
+     */
     private fun endpoint(address: String, port: Int) =
         Host(
             address,
             port.toUShort(),
             library.connectCertificate(address, port),
-            library.permitted(address, port).ifEmpty { connectedOnce[address.lowercase() to port].orEmpty() },
+            connectedOnce[hostKey(address, port.toUShort())] ?: library.permitted(address, port),
         )
 
     /** Ask about a host whose certificate could not be verified, and do [retry] again if it is permitted. */
@@ -161,20 +168,28 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
         trustPrompt = TrustPrompt(untrusted, retry)
     }
 
-    /** Connect (this time), or with [always] Always Permit: the certificate asked about is accepted for its host. */
-    fun permit(always: Boolean) {
-        val prompt = trustPrompt ?: return
+    /**
+     * Connect (this time), or with [always] Always Permit: the certificate
+     * [prompt] asked about is accepted for its host. Only the prompt shown
+     * now is answered.
+     */
+    fun permit(prompt: TrustPrompt, always: Boolean) {
+        if (trustPrompt !== prompt) return
         trustPrompt = null
         val untrusted = prompt.untrusted
-        val port = untrusted.port.toInt()
-        if (always) library.permit(untrusted.host, port, untrusted.fingerprint)
-        else connectedOnce[untrusted.host.lowercase() to port] = untrusted.fingerprint
+        val key = hostKey(untrusted.host, untrusted.port)
+        if (always) {
+            library.permit(untrusted.host, untrusted.port.toInt(), untrusted.fingerprint)
+            connectedOnce.remove(key)
+        } else {
+            connectedOnce[key] = untrusted.fingerprint
+        }
         prompt.retry()
     }
 
     /** Don't Connect. */
-    fun dontConnect() {
-        trustPrompt = null
+    fun dontConnect(prompt: TrustPrompt) {
+        if (trustPrompt === prompt) trustPrompt = null
     }
 
     /** Forget the certificate permitted for the host Edit Host edits. */
@@ -182,7 +197,7 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
         val editor = hostEditor ?: return
         val host = editor.replaces ?: return
         library.forgetPermitted(host.address, host.port)
-        connectedOnce.remove(host.address.lowercase() to host.port)
+        connectedOnce.remove(host.key)
         forgetListing(host)
         hostEditor = editor.copy(permitted = "")
     }
@@ -231,6 +246,8 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
                 hostEditor = editor.copy(error = error.goMessage())
                 return
             }
+        // Nor does a certificate permitted with Connect stay with an address or port the host left.
+        editor.replaces?.takeUnless { it.isHost(host) }?.let { connectedOnce.remove(it.key) }
         hosts = library.hosts
         hostEditor = null
         // Its files are listed again: the address, port or certificate
@@ -244,6 +261,7 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
 
     fun removeHost(host: SavedHost) {
         library.removeHost(host)
+        connectedOnce.remove(host.key)
         hosts = library.hosts
         forgetListing(host)
         if (hostPage?.isHost(host) == true) hostPage = null
