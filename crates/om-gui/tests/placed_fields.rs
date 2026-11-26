@@ -1828,6 +1828,11 @@ fn layout_setup_renames_the_layout_and_sets_its_views_and_options() {
     // replaces it.
     app.run_steps(2);
     assert!(common::text_field(&app, "Layout Name").is_focused());
+    let alert_option = "Show alerts when field isn't modifiable or no records are present";
+    assert_eq!(
+        app.get_by_label(alert_option).accesskit_node().toggled(),
+        Some(egui::accesskit::Toggled::False),
+    );
     shot(&mut app, "80-opened", "Layout Setup as it opens");
     app.input_mut()
         .events
@@ -1837,6 +1842,7 @@ fn layout_setup_renames_the_layout_and_sets_its_views_and_options() {
     // (re/layout-model.md 10.11).
     common::click(&mut app, "Enable Quick Find");
     common::click(&mut app, "Show current record indicator in List View");
+    common::click(&mut app, alert_option);
     shot(&mut app, "81-general", "Layout Setup's General tab");
     common::click(&mut app, "Views");
     common::click(&mut app, "List View");
@@ -1859,13 +1865,22 @@ fn layout_setup_renames_the_layout_and_sets_its_views_and_options() {
     });
     let mut reader = hosted.opened();
     let member = reader.layout_member(fixture::LAYOUT).unwrap().unwrap();
+    let index = reader.layout_index().unwrap().unwrap();
     reader.close();
     assert_eq!(
         om_data::layout_catalog::member_name(&member).as_deref(),
         Some("Task Board")
     );
-    let flags = member.child(&[0xf1]).and_then(|n| n.value.clone());
-    assert_eq!(flags, Some(0x00f3_8849_u64.to_be_bytes().to_vec()));
+    let entry = index
+        .child(&[7])
+        .unwrap()
+        .child(&uint_segment(fixture::LAYOUT))
+        .unwrap();
+    let expected = 0x00f3_a849_u64.to_be_bytes();
+    for node in [&member, entry] {
+        let flags = node.child(&[0xf1]).and_then(|n| n.value.as_deref());
+        assert_eq!(flags, Some(expected.as_slice()));
+    }
     let def = om_data::layout_placement::definition(&member).unwrap();
     let margins = def.custom_margins.unwrap();
     assert_eq!(
