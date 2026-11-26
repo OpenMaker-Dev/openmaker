@@ -6,9 +6,14 @@ Legal, Tabloid, A3/A4/A5, custom width/height in points (72 points = one inch), 
 portrait/landscape. Custom dimensions are the unrotated sheet, 1–200 inches on each
 axis. Landscape swaps the axes once. A layout prints within its stored fixed margins
 when Layout Setup's "Use fixed page margins" is checked, and otherwise within
-the printer's margins, 18 / 40 / 18 / 18 points (top, bottom, left, right), for
-every paper ([portable PDF](portable-pdf.md#supported-layout-and-output-contract), #609).
-Page Setup does not edit margins or layout metadata. A paper choice can leave a
+OpenMaker's printer margins, 18 / 40 / 18 / 18 points (top, bottom, left,
+right) for every paper ([portable PDF](portable-pdf.md#supported-layout-and-output-contract), #609).
+FileMaker Pro for macOS with Any Printer uses a 41-point bottom margin
+on A4 and 18 points on A3, A5 and Tabloid in the measured setups
+([file format](re/file-format.md) 3.8).
+Page Setup does not edit margins or layout metadata; a layout's fixed
+page margins are Layout Setup's (Printing tab; [desktop
+client](desktop-client.md), "Layout Setup"). A paper choice can leave a
 layout wider than the printable width, which then prints what fits
 ([wide layouts](portable-pdf.md#wide-layouts)); a part taller than the printable
 height refuses output.
@@ -28,8 +33,12 @@ they print at. The printer's margins scale with the page, so they stay
 ([#871](https://github.com/OpenMaker-Dev/openmaker/issues/871)): the 1%–1000%
 bounds are OpenMaker's (FileMaker Pro's are unmeasured; Claris documents scale
 only as a macOS Page Setup option), and so are a layout's fixed page margins
-scaling with the page and how Preview shows a scaled page; FileMaker's
-Preview and PDF output at a scale were not compared.
+scaling with the page and how Preview shows a scaled page;
+FileMaker's Preview was not compared. FileMaker Pro's Save Records as
+PDF differs: it writes the page in layout points, the sheet divided by
+the scale (1584 x 1224 for US Letter landscape at 50%), with no scaling
+in the content ([#954](https://github.com/OpenMaker-Dev/openmaker/issues/954),
+[file format](re/file-format.md) 3.8).
 
 Accepted paper settings belong to the open **file session**, apply to every
 layout and window of that file, and are inherited by new windows. Other files,
@@ -54,11 +63,14 @@ the current layout. None of the starter solutions stores one.
 Nothing is written back: there is **no local disk persistence** and no write to
 the hosted file, so a Page Setup accepted in OpenMaker is lost when the file
 closes, and the file keeps the setup it had. Once accepted, the preference
-overrides layout orientation for every layout. This differs from native
-FileMaker, which saves the choice in the file. What FileMaker accepts at
-`[2, 87]`, and how FileMaker Pro writes it to a hosted file, are unknown
-([#876](https://github.com/OpenMaker-Dev/openmaker/issues/876)), so OpenMaker
-writes nothing there yet.
+overrides layout orientation for every layout. In the hosted FileMaker
+Pro 26.1.1 macOS test, File > Page Setup OK sent no write, and reopening
+restored the original setup. The run did not check the accepted setup
+again before closing. In the local controls, FileMaker Pro wrote the
+setup at each Page Setup OK
+([file format](re/file-format.md) 3.8, [#876](https://github.com/OpenMaker-Dev/openmaker/issues/876)).
+OpenMaker local persistence is tracked in
+[#112](https://github.com/OpenMaker-Dev/openmaker/issues/112).
 
 ## Script step 42
 

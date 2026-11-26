@@ -11,7 +11,7 @@ use om_author::api::{
     self, ApplyParams, ChangePartsParams, CreateFieldParams, CreateLayoutParams,
     DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, EditParams, FieldControlParams,
     FieldParams, FieldType, FrameParams, InspectParams, LabelParams, LayoutParams,
-    LayoutSetupParams, LayoutWidthParams, ObjectFrameParams, ObjectFramesParams, Part,
+    LayoutSetupParams, LayoutWidthParams, ObjectFrameParams, ObjectFramesParams, PageMargins, Part,
     PartOptionsParams, PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlacementParams,
     RunScriptParams, ScriptParams, TextParams,
 };
@@ -72,10 +72,11 @@ commands (each prints one JSON response):
                                      then read it back
   layout-setup LAYOUT --expected-revision REV [--name NAME]
       [--views form,list,table] [--default-view VIEW] [--in-menus yes|no]
-      [--options OPTION=on|off,...]
+      [--options OPTION=on|off,...] [--fixed-margins yes|no]
+      [--page-margins TOP,BOTTOM,LEFT,RIGHT]
                                      set a layout's name, views, General
-                                     options and menu inclusion as Layout
-                                     Setup does
+                                     options, menu inclusion and fixed
+                                     page margins as Layout Setup does
   set-field-control OBJECT --expected-revision REV --control CONTROL
       [--value-list REF]             show a field object with another control
   set-text OBJECT --expected-revision REV --text TEXT
@@ -238,6 +239,8 @@ struct Args {
     views: Option<String>,
     default_view: Option<String>,
     in_menus: Option<String>,
+    fixed_margins: Option<String>,
+    page_margins: Option<String>,
     options: Option<String>,
     width: Option<String>,
     control: Option<String>,
@@ -296,6 +299,8 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
             "--views" => args.views = Some(value(&arg)?),
             "--default-view" => args.default_view = Some(value(&arg)?),
             "--in-menus" => args.in_menus = Some(value(&arg)?),
+            "--fixed-margins" => args.fixed_margins = Some(value(&arg)?),
+            "--page-margins" => args.page_margins = Some(value(&arg)?),
             "--options" => args.options = Some(value(&arg)?),
             "--width" => args.width = Some(value(&arg)?),
             "--control" => args.control = Some(value(&arg)?),
@@ -662,6 +667,31 @@ fn command(name: &str, args: &Args) -> Result<Command, String> {
                 Some(_) => return Err("--in-menus takes yes or no.".into()),
             },
             options: on_off(&args.options)?,
+            fixed_page_margins: match args.fixed_margins.as_deref() {
+                None => None,
+                Some("yes") => Some(true),
+                Some("no") => Some(false),
+                Some(_) => return Err("--fixed-margins takes yes or no.".into()),
+            },
+            page_margins: match args.page_margins.as_deref() {
+                None => None,
+                Some(margins) => {
+                    let sides: Vec<f64> = margins
+                        .split(',')
+                        .map(|side| side.trim().parse())
+                        .collect::<Result<_, _>>()
+                        .map_err(|_| "--page-margins takes top,bottom,left,right in points.")?;
+                    let [top, bottom, left, right] = sides[..] else {
+                        return Err("--page-margins takes top,bottom,left,right in points.".into());
+                    };
+                    Some(PageMargins {
+                        top,
+                        bottom,
+                        left,
+                        right,
+                    })
+                }
+            },
         }),
         "change_parts" => Command::ChangeParts(ChangePartsParams {
             layout: args.layout.clone(),

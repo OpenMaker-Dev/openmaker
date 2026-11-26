@@ -3461,7 +3461,7 @@ impl Service {
     /// (`om_data::layout_catalog::plan_setup`) through the host's authoring
     /// extension, then read the layout back over a new connection.
     fn layout_setup(&mut self, params: &LayoutSetupParams) -> Result<Value, AuthorError> {
-        use layout_catalog::{general, views, MENU_HIDDEN};
+        use layout_catalog::{general, printing, views, MENU_HIDDEN};
         let expected = parse_revision(&params.expected_revision)?;
         let layout = self.load_layout(&LayoutParams {
             layout: params.layout.clone(),
@@ -3516,6 +3516,30 @@ impl Service {
                 flags &= !bit;
             }
         }
+        if let Some(fixed) = params.fixed_page_margins {
+            if fixed {
+                flags |= printing::FIXED_PAGE_MARGINS;
+            } else {
+                flags &= !printing::FIXED_PAGE_MARGINS;
+            }
+        }
+        // A layout that stores no margins gets 36 points with "Use fixed
+        // page margins", as the desktop's dialog shows them and every new
+        // layout stores them: the host refuses the box without margins.
+        let none_stored = layout_placement::definition(&layout.member)
+            .is_ok_and(|def| def.custom_margins.is_none());
+        let margins = params
+            .page_margins
+            .map(|m| (m.top, m.left, m.bottom, m.right))
+            .or((params.fixed_page_margins == Some(true) && none_stored)
+                .then_some((36.0, 36.0, 36.0, 36.0)))
+            .map(|(top, left, bottom, right)| om_layout::Rect {
+                top,
+                left,
+                bottom,
+                right,
+                ..Default::default()
+            });
         let hidden = params
             .include_in_layout_menus
             .map_or(word(&layout.member, 0xf0) & MENU_HIDDEN != 0, |include| {
@@ -3532,12 +3556,15 @@ impl Service {
         };
         let mut opened = layout.opened;
         Self::require_grant(&mut opened, &catalog::LAYOUT_SETUP)?;
+        // With margins, operation 23: the setup and the margins in one
+        // commit.
         let set = opened.layout_setup_on_host(wire::LayoutSetup {
             expected,
             layout: layout.id,
             name: name.clone(),
             flags,
             hidden,
+            margins: margins.as_ref().map(|m| [m.top, m.left, m.bottom, m.right]),
         });
         drop(opened);
         let label = layout_ref.clone();
@@ -3567,7 +3594,13 @@ impl Service {
                     word(&fresh.member, 0xf1),
                     word(&fresh.member, 0xf0) & MENU_HIDDEN != 0,
                 );
-                if fresh.revision != set.revision || read != (Some(name.clone()), flags, hidden) {
+                let margins_read = margins
+                    .as_ref()
+                    .is_none_or(|m| layout_placement::already_margins(&fresh.member, m));
+                if fresh.revision != set.revision
+                    || read != (Some(name.clone()), flags, hidden)
+                    || !margins_read
+                {
                     return Err(AuthorError::new(
                         ErrorKind::VerificationFailed,
                         format!(
@@ -3616,6 +3649,10 @@ impl Service {
                 .iter()
                 .map(|(option, _, bit, set_on)| ((*option).to_owned(), json!((flags & bit != 0) == *set_on)))
                 .collect::<serde_json::Map<_, _>>(),
+            "fixed_page_margins": flags & printing::FIXED_PAGE_MARGINS != 0,
+            "page_margins": margins.map(|m| json!({
+                "top": m.top, "bottom": m.bottom, "left": m.left, "right": m.right,
+            })),
             "previous_revision": revision_text(&expected),
             "revision": revision_text(&set.revision),
             "verified": verified,
@@ -4019,6 +4056,12 @@ impl Service {
             "table": layout.table.map(|t| reference("table", t, &file)),
             "width": def.base_width,
             "responsive": def.layout_client_type == 2,
+            // Layout Setup > Printing: the layout prints within its page
+            // margins only with fixed_page_margins.
+            "fixed_page_margins": def.flags & layout_catalog::printing::FIXED_PAGE_MARGINS != 0,
+            "page_margins": def.custom_margins.as_ref().map(|m| json!({
+                "top": m.top, "bottom": m.bottom, "left": m.left, "right": m.right,
+            })),
             "parts": parts,
             "objects": objects,
             "root_stack": stack,

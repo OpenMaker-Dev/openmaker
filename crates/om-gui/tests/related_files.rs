@@ -726,6 +726,8 @@ fn an_imported_layout_edits_commits_corrects_and_reverts_on_the_peer() {
         0x19,
         "Length ( Self ) <= 20",
     );
+    // Its Count repeats twice (#43).
+    fixture::set_field_repetitions(&mut child, TABLE, fixture::COUNT, 2);
     let host = related::Host::new(
         "gui-imported-layout",
         vec![("Root.fmp12", root), ("Related.fmp12", child)],
@@ -837,6 +839,13 @@ fn an_imported_layout_edits_commits_corrects_and_reverts_on_the_peer() {
         a.state().error().is_some() || (a.state().is_settled() && !common::editing(a))
     });
     assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    // A repeating field of the peer's table is edited there too (#43).
+    replace(&mut app, "Count", "12");
+    common::save_record(&mut app);
+    common::wait_until(&mut app, "repeating peer field saved", |a| {
+        a.state().error().is_some() || (a.state().is_settled() && !common::editing(a))
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
     common::open_menu(&mut app, "Scripts");
     common::click(&mut app, "Edit peer");
     common::wait_until(&mut app, "root caller script saved peer", |a| {
@@ -913,6 +922,8 @@ fn an_imported_layout_edits_commits_corrects_and_reverts_on_the_peer() {
         .collect();
     assert_eq!(stored.len(), 3, "{stored:?}");
     assert_eq!(stored[2], (3, Some("Short new".to_owned())));
+    let count = page.fields.iter().position(|f| f.name == "Count").unwrap();
+    assert_eq!(page.records[0].values[count].as_deref(), Some("12"));
 }
 
 #[test]
@@ -1226,6 +1237,20 @@ fn imported_layout_new_and_duplicate_menus_and_scripts_create_on_the_peer() {
                     report("$e"),
                 ],
             ),
+            fixture::script(
+                5,
+                "Duplicate and commit",
+                vec![
+                    fixture::on(86, true),
+                    fixture::on(223, false),
+                    fixture::go_to_record(1),
+                    ScriptStep::new(205),
+                    ScriptStep::new(8),
+                    fixture::set_variable("$e", "Get ( LastError )"),
+                    ScriptStep::new(206),
+                    report("$e & \"/\" & Get ( LastError )"),
+                ],
+            ),
         ],
         true,
     );
@@ -1485,31 +1510,87 @@ fn imported_layout_new_and_duplicate_menus_and_scripts_create_on_the_peer() {
     assert_eq!(count(om_protocol::Opcode::HostCommit), commits);
     assert_eq!(count(om_protocol::Opcode::HostCreateRecord), reserved + 1);
 
+    // The script's report, whatever record it ends on.
+    let report_of = |app: &mut common::App, script: &str| -> String {
+        common::open_menu(app, "Scripts");
+        common::click(app, script);
+        let by = egui_kittest::kittest::By::new().label_contains("|Root|Notes|");
+        common::wait_until(app, "the script's report", |a| {
+            a.query_all(by.clone()).next().is_some()
+        });
+        let shown = app
+            .query_all(by)
+            .next()
+            .unwrap()
+            .accesskit_node()
+            .value()
+            .unwrap_or_default();
+        common::click(app, "OK");
+        common::wait_until(app, "script ended", |a| {
+            !a.state().script_running() && a.state().is_settled()
+        });
+        shown
+    };
+    // The reference counts sent since the `from`th: file and delta.
+    let deltas = |from: usize| -> Vec<(String, i32)> {
+        host.captures
+            .with_opcode(om_protocol::Opcode::AdjustReferenceCount)
+            .into_iter()
+            .skip(from)
+            .map(|(file, tx)| {
+                let adjust =
+                    om_protocol::container::parse_adjust_reference_count_request(&tx).unwrap();
+                (file, adjust.delta)
+            })
+            .collect()
+    };
+    let to_related = |delta: i32| ("Related.fmp12".to_owned(), delta);
+
     // Inside a script's transaction a copy of the record holding the
-    // container is refused (3) before its reference is counted: the
-    // owner's part of the transaction would hold it, and its cleanup after
-    // a refused copy is not settled.
+    // container is held in the related file's part of it, its reference
+    // counted there (#43). Revert Transaction gives the reference back:
+    // nothing is stored and no commit is sent.
     let adjusted = count(om_protocol::Opcode::AdjustReferenceCount);
-    common::open_menu(&mut app, "Scripts");
-    common::click(&mut app, "Duplicate in transaction");
-    let by = egui_kittest::kittest::By::new().label_contains("|Root|Notes|");
-    common::wait_until(&mut app, "the duplicate's report", |a| {
-        a.query_all(by.clone()).next().is_some()
-    });
-    let shown = app
-        .query_all(by)
-        .next()
-        .unwrap()
-        .accesskit_node()
-        .value()
-        .unwrap_or_default();
-    assert!(shown.starts_with("3|Root|Notes|"), "{shown}");
-    common::click(&mut app, "OK");
-    common::wait_until(&mut app, "script ended", |a| {
-        !a.state().script_running() && a.state().is_settled()
-    });
-    assert_eq!(count(om_protocol::Opcode::AdjustReferenceCount), adjusted);
+    let shown = report_of(&mut app, "Duplicate in transaction");
+    assert!(
+        shown.starts_with("0|Root|Notes|") && shown.ends_with("|7|7"),
+        "{shown}"
+    );
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    assert_eq!(deltas(adjusted), [to_related(1), to_related(-1)]);
     assert_eq!(stored("Related.fmp12"), peer);
+    assert_eq!(count(om_protocol::Opcode::HostCommit), commits);
+
+    // Committed, the copy is stored holding the same library member, and
+    // its reference is kept.
+    let adjusted = count(om_protocol::Opcode::AdjustReferenceCount);
+    let shown = report_of(&mut app, "Duplicate and commit");
+    assert!(
+        shown.starts_with("0/0|Root|Notes|") && shown.ends_with("|8|8"),
+        "{shown}"
+    );
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    assert_eq!(deltas(adjusted), [to_related(1)]);
+    let after = stored("Related.fmp12");
+    assert_eq!(after.len(), peer.len() + 1, "{after:?}");
+    assert_eq!(after[..peer.len()], peer[..]);
+    let copy = after.last().unwrap();
+    // Its auto-entered Entered entered again on the copy (#473).
+    assert_eq!(
+        (copy.1.as_str(), copy.2.as_str()),
+        ("PEER ROW", "PEER ROW|Related")
+    );
+    let page = host.open("Related.fmp12").records(1, 0, 10).unwrap();
+    let photo = page.fields.iter().position(|f| f.name == "Photo").unwrap();
+    let photo_of = |id: i64| {
+        page.records
+            .iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.values[photo].clone())
+            .unwrap_or_default()
+    };
+    assert!(!photo_of(1).is_empty());
+    assert_eq!(photo_of(copy.0), photo_of(1));
 }
 
 #[test]
@@ -2634,6 +2715,173 @@ fn set_field_creates_and_edits_another_files_related_record() {
         rows("Other.fmp12"),
         [row("Write tests", ""), row("Ship", ""), row("Both", "9")]
     );
+}
+
+/// Set Field into a third file's related field from Root's layout of
+/// another file's table (#43). On the layout "Notes" of Remote Tasks
+/// (Related's Tasks), the relationship from Remote Tasks::Job to Other
+/// Tasks::Job creates Other's records. The first commit creates the related
+/// record in Other with Related's key and the next edits it, each read back
+/// after its commit, and a script's
+/// transaction holding the layout's own record (Related's) and the related
+/// one commits both files.
+#[test]
+fn set_field_from_another_files_layout_writes_a_third_files_related_record() {
+    use fixture::NAME;
+    use om_data::DataProvider;
+    use om_scripts::ScriptStep;
+    const REMOTE: u64 = 0xd0_0040;
+    const OTHER: u64 = 0xd0_0041;
+    /// The related files' key, a number field.
+    const JOB: u64 = 30;
+    let mut show = ScriptStep::new(87);
+    show.set_text(0, Some("OK"));
+    show.set_calculation(
+        1,
+        Some(&fixture::calc("\"result:\" & $a & \"|\" & $b & \"|\" & $c")),
+    );
+    // `$v` set to the last step's error and Other Tasks::Name as stored.
+    let mut names = fixture::names();
+    names.add_occurrence(REMOTE, "Remote Tasks", TABLE);
+    names.add_occurrence(OTHER, "Other Tasks", TABLE);
+    let read_back = |variable: &str| {
+        let mut cx = om_formula::Context::new(&names);
+        cx.occurrence = Some(REMOTE);
+        let read =
+            om_formula::compile("Get ( LastError ) & \"/\" & Other Tasks::Name", &cx).unwrap();
+        let mut step = ScriptStep::new(141);
+        step.set_text(0, Some(variable));
+        step.set_calculation(
+            1,
+            Some(&om_scripts::Calculation::new(
+                Some(om_formula::formatted::encode(&read.tokens)),
+                om_formula::polish::encode(&read.expr),
+            )),
+        );
+        step
+    };
+    let script = fixture::script(
+        1,
+        "Write from the peer layout",
+        vec![
+            fixture::on(86, true),
+            fixture::set_field_in(OTHER, NAME, "\"Made\""),
+            ScriptStep::new(75),
+            read_back("$a"),
+            fixture::set_field_in(OTHER, NAME, "\"Edited\""),
+            ScriptStep::new(75),
+            read_back("$b"),
+            ScriptStep::new(205),
+            fixture::set_field_in(REMOTE, NAME, "\"Peer\""),
+            fixture::set_field_in(OTHER, NAME, "\"Held\""),
+            ScriptStep::new(206),
+            fixture::set_variable("$c", "Get ( LastError )"),
+            show,
+        ],
+    );
+    let mut root = fixture::tree(&[script], true);
+    related::reference(&mut root, (REMOTE, "Remote Tasks"), 1, "Related");
+    related::reference(&mut root, (OTHER, "Other Tasks"), 2, "Other");
+    // Root's layout "Notes" shows Remote Tasks.
+    let mut alias = om_hbam::serial::decode(&uint_segment(REMOTE)).unwrap();
+    let mut definition = vec![0x10];
+    loop {
+        let byte = (alias & 0x7f) as u8;
+        alias >>= 7;
+        definition.push(if alias == 0 { byte } else { byte | 0x80 });
+        if alias == 0 {
+            break;
+        }
+    }
+    root.put(&[&[4], &[5], &[2], &[2]], OwnedNode::leaf([], definition));
+    // Remote Tasks::Job = Other Tasks::Job, creating Other's records.
+    fixture::add_relationship(&mut root, 9, (REMOTE, JOB), 0, (OTHER, JOB));
+    let unsorted = om_scripts::specs::SortSpec {
+        keep_sorted: false,
+        blanks_last: false,
+        fields: Vec::new(),
+    };
+    root.put(
+        &[&[3], &[0xfb], &[5], &[9], &[2]],
+        OwnedNode::leaf(
+            Vec::new(),
+            [
+                related::key(REMOTE),
+                related::key(OTHER),
+                unsorted.encode(),
+                unsorted.encode(),
+                0x10u32.to_be_bytes().to_vec(),
+            ]
+            .concat(),
+        ),
+    );
+    let keyed = |job: Option<&str>| {
+        let mut file = fixture::tree(&[], true);
+        fixture::add_field(&mut file, TABLE, JOB, "Job", 1, 2, 0, 0, 0);
+        if let Some(job) = job {
+            file.put(
+                &[
+                    &uint_segment(TABLE),
+                    &[5],
+                    &om_hbam::serial::encode(1),
+                    &uint_segment(JOB),
+                ],
+                om_scripts::text_node(&[], job),
+            );
+        }
+        file
+    };
+    let host = related::Host::new(
+        "gui-peer-layout-related-writes",
+        vec![
+            ("Root.fmp12", root),
+            ("Related.fmp12", keyed(Some("9"))),
+            ("Other.fmp12", keyed(None)),
+        ],
+    );
+    let mut app = common::harness(Box::new(host.provider()));
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
+    common::fill(&mut app, "Password", PASSWORD);
+    common::click(&mut app, "Open");
+    common::wait_until(&mut app, "root loaded", |a| a.state().is_settled());
+    common::select_layout(&mut app, "Notes");
+    common::wait_until(&mut app, "peer layout loaded", |a| a.state().is_settled());
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Write from the peer layout");
+    common::wait_for_label(&mut app, "result:0/Made|0/Edited|0");
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "script ended", |a| {
+        !a.state().script_running() && a.state().is_settled()
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+
+    let rows = |file: &str| -> Vec<(String, String)> {
+        let mut provider = host.open(file);
+        let page = provider.records(fixture::LAYOUT as u32, 0, 100).unwrap();
+        let at = |name: &str| page.fields.iter().position(|f| f.name == name).unwrap();
+        let rows = page
+            .records
+            .iter()
+            .map(|record| {
+                let text = |name| record.values[at(name)].clone().unwrap_or_default();
+                (text("Name"), text("Job"))
+            })
+            .collect();
+        provider.close();
+        rows
+    };
+    let row = |name: &str, job: &str| (name.to_owned(), job.to_owned());
+    assert_eq!(
+        rows("Other.fmp12"),
+        [row("Write tests", ""), row("Ship", ""), row("Held", "9")]
+    );
+    assert_eq!(rows("Related.fmp12"), [row("Peer", "9"), row("Ship", "")]);
 }
 
 /// The three-file portal save acceptance fixture (#1006, #892): files Root,

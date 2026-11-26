@@ -123,6 +123,13 @@ impl Engine {
         }
     }
 
+    /// Make the store copy of `file` the test view compares its reads on
+    /// ([`EngineRef::prepare_store_copy`]).
+    #[cfg(debug_assertions)]
+    pub(crate) fn prepare_store_copy(&self, file: &Hosted) {
+        self.as_ref().prepare_store_copy(file);
+    }
+
     /// Check each operation's writes through its transaction
     /// (`Server::checking_reads`): the file engine's alone, as the store
     /// engine writes nothing.
@@ -242,6 +249,19 @@ impl<'e> EngineRef<'e> {
         }
     }
 
+    /// Whether the engine saves a hosted file by writing the file it was
+    /// loaded from: the file engine does, a new copy renamed over it; the
+    /// store engine never writes its source (docs/server-storage.md 11).
+    /// Where it does not, a source the server's user may not write is no
+    /// reason to hold the file read-only, and nothing at the save's copy
+    /// name is in its way (`hosting::load_file`).
+    pub fn saves_to_source(self) -> bool {
+        match self {
+            EngineRef::File(engine) => engine.saves_to_source(),
+            EngineRef::Store(engine) => engine.saves_to_source(),
+        }
+    }
+
     /// Hold `file` read-only for `cause` from now on; on the store engine,
     /// which takes no changes, every file is already.
     pub(crate) fn hold_read_only(self, file: &Hosted, cause: ReadOnlyCause) {
@@ -255,6 +275,27 @@ impl<'e> EngineRef<'e> {
     pub(crate) fn loaded_from(self, file: &Hosted, on_disk: Option<FileId>) {
         if let EngineRef::File(engine) = self {
             engine.loaded_from(file, on_disk);
+        }
+    }
+
+    /// Make the store copy of `file`, hosted and not yet read, that the
+    /// test view compares its reads on (`engine::copies`, `Switch::prepare`):
+    /// the file engine's alone, and only when its reads go through the test
+    /// view.
+    #[cfg(debug_assertions)]
+    pub(crate) fn prepare_store_copy(self, file: &Hosted) {
+        if let EngineRef::File(engine) = self {
+            engine.prepare_store_copy(file);
+        }
+    }
+
+    /// Let go of the store copies the test view made of `file`'s load,
+    /// whose close completed (`engine::copies`, `Switch::release`): the
+    /// file engine's alone.
+    #[cfg(debug_assertions)]
+    pub(crate) fn release_store_copies(self, file: &Hosted) {
+        if let EngineRef::File(engine) = self {
+            engine.release_store_copies(file);
         }
     }
 
