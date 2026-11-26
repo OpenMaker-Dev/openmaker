@@ -795,8 +795,8 @@ and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
 A local Text auto-enter calculation can read a single-repetition plain
 Text global from another table in the same file, through an unrelated
 occurrence. The field is read from the session, independent of the
-table's records. A missing session read refuses the write. The native
-New Record and storage check remains open.
+table's records. A missing session read refuses the write. FileMaker Pro
+26.1.1 copied the value at New Record, including with zero source rows.
 [Claris global-field documentation](https://help.claris.com/en/pro-help/content/global-fields.html)
 and [the timing check](https://github.com/OpenMaker-Dev/openmaker/issues/1051).
 
