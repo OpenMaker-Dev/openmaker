@@ -7690,10 +7690,10 @@ mod tests {
         let mut checks = formulas.clone();
         checks.push((24, FIELD_VALIDATION, "Get ( RecordNumber ) > 0"));
         let validated = plan_of(&validated, &checks, &[]).unwrap();
-        let validate = |record_number| {
+        let validate = |record_number: Option<u64>| {
             let environment = RecordEnvironment {
                 context: WriteContext {
-                    record_number,
+                    record_number: record_number.map(RecordNumber::Window),
                     ..known.clone()
                 },
                 ..environment()
