@@ -395,6 +395,9 @@ pub enum RecordNumber {
     /// Ordinary local New Record in a sorted found set. The held row
     /// follows the current row before any later re-sort.
     LocalSortedNewRecord { position: u64, after: u64 },
+    /// Local Set Field created the first match of a direct unsorted
+    /// relationship from a global Text key.
+    LocalFirstRelated,
 }
 
 impl RecordNumber {
@@ -402,6 +405,7 @@ impl RecordNumber {
         match self {
             Self::Window(number) | Self::LocalNewRecord(number) => number,
             Self::LocalSortedNewRecord { position, .. } => position,
+            Self::LocalFirstRelated => 1,
         }
     }
 }
@@ -4052,6 +4056,28 @@ impl RecordPlan {
             context.record_number,
             Some(RecordNumber::LocalSortedNewRecord { .. })
         );
+        let first_related = context.record_number == Some(RecordNumber::LocalFirstRelated)
+            && context.sequence == WriteSequence::Local;
+        if first_related {
+            for field in self.fields.values() {
+                let reads_position = |expression: &Expression| {
+                    context_selectors(&self.schema, &expression.formula.polish)
+                        .contains(&selector::RECORD_NUMBER)
+                };
+                if field.formulas().any(reads_position)
+                    && (!field.stored_calculation()
+                        || field.validation.as_ref().is_some_and(reads_position))
+                {
+                    return Err(DataError::with_code(
+                        error::UNAVAILABLE,
+                        format!(
+                            "Field {}: a first related position is supported only in a stored Number calculation.",
+                            field.name
+                        ),
+                    ));
+                }
+            }
+        }
         if !entry.skip_auto_enter && (!unsorted || context.sequence == WriteSequence::Unmeasured) {
             if let Some((result, _, _, _)) = self
                 .grouped_self_joins
@@ -4098,11 +4124,14 @@ impl RecordPlan {
                 .map(|expression| (field, expression))
         }) {
             let reason = if !sorted
+                && !(first_related
+                    && field.options.options == 0x0008_0000
+                    && field.options.validation_options == 0)
                 && matches!(
                     expression.formula.polish,
                     Expr::Get(selector::RECORD_NUMBER)
                 ) {
-                "a stored record number requires ordinary New Record in a local window with a known insertion position."
+                "a stored record number requires a supported local creation with a known position."
             } else if expression.stored_evaluate.is_some() {
                 "a stored Evaluate requires ordinary New Record in an unsorted local window."
             } else {
@@ -9171,7 +9200,18 @@ mod tests {
             .prepare(WriteMode::Create, &BTreeMap::new(), &changes, &at_creation)
             .unwrap();
         assert_eq!(decoded(&created, 23).as_deref(), Some("3"));
-        for number in [None, Some(RecordNumber::Window(3))] {
+        at_creation.context.record_number = Some(RecordNumber::LocalFirstRelated);
+        at_creation.context.sequence = WriteSequence::Local;
+        let related = plan
+            .prepare(WriteMode::Create, &BTreeMap::new(), &changes, &at_creation)
+            .unwrap();
+        assert_eq!(decoded(&related, 23).as_deref(), Some("1"));
+        at_creation.context.sequence = WriteSequence::Unmeasured;
+        for number in [
+            None,
+            Some(RecordNumber::Window(3)),
+            Some(RecordNumber::LocalFirstRelated),
+        ] {
             at_creation.context.record_number = number;
             let error = plan
                 .prepare(WriteMode::Create, &BTreeMap::new(), &changes, &at_creation)

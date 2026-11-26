@@ -847,6 +847,19 @@ Unmeasured [U]:
 - New Record from FileMaker Pro's menu or toolbar (inferred above, not
   run).
 
+**Stored Number calculation on a related create** [O: FileMaker Pro
+26.1.1, local macOS file,
+[#1011](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7204449570)].
+Parent's global Text key matched Child's stored Text key in one unsorted
+equality relationship with creation enabled. The key had no matches.
+Set Field on a non-key Child field made one related row and exposed its
+stored `Get ( RecordNumber )` value, 1, immediately. Commit and reopen
+kept 1, including with the parent at position 2 and the child table
+already containing two unrelated records. A separate sorted Child window
+did not change the answer. The calculation was unindexed (option word
+`0x00080000`). Each step returned 0 without an alert. Other relationship
+shapes, portal creation and hosted writes were not measured here.
+
 ## Serial numbers
 
 Option `0x2` generates a serial number when the record is created, `0x200`

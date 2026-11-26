@@ -2284,3 +2284,124 @@ fn a_committed_untouched_new_record_can_be_edited_in_its_window() {
     });
     assert!(stored("Edited"), "the next edit must reach the stored row");
 }
+
+/// Set Field through a global match key creates the first child, whose
+/// stored position is visible before Commit and is written with that row.
+#[test]
+fn local_related_position_is_visible_before_commit() {
+    use fixture::{BODY, NAME, NOTES, NOTES_OCCURRENCE, OCCURRENCE, TABLE, TASK};
+    use om_hbam::{HbamFile, OwnedNode};
+    use om_scripts::{flag, Calculation, FieldSpec, ScriptStep, StoredKey};
+
+    const POSITION: u64 = 3;
+    let mut names = fixture::calculated_names();
+    names.add_field(NOTES, POSITION, "Position");
+    let calc = |text| {
+        let mut context = om_formula::Context::new(&names);
+        context.occurrence = Some(OCCURRENCE);
+        let compiled = om_formula::compile(text, &context).unwrap();
+        Calculation::new(
+            Some(om_formula::formatted::encode(&compiled.tokens)),
+            om_formula::polish::encode(&compiled.expr),
+        )
+    };
+    let mut related = ScriptStep::new(76);
+    related.set_field_spec(
+        0,
+        Some(FieldSpec::new(
+            StoredKey::from_id(NOTES_OCCURRENCE).unwrap(),
+            StoredKey::from_id(BODY).unwrap(),
+            1,
+        )),
+    );
+    related.set_calculation(0, Some(&calc("\"linked\"")));
+    let mut pending = show("\"\"");
+    pending.set_calculation(
+        1,
+        Some(&calc(
+            "Get ( LastError ) & \"|\" & Count ( Notes::Task ) & \"|\" & Notes::Position",
+        )),
+    );
+    let mut commit = ScriptStep::new(75);
+    commit.flags |= flag::NO_INTERACT;
+    let mut report = show("\"\"");
+    report.set_calculation(
+        1,
+        Some(&calc("Get ( LastError ) & \"|\" & Notes::Position")),
+    );
+    let script = fixture::script(
+        1,
+        "Create first match",
+        vec![
+            fixture::on(86, true),
+            fixture::set_field(NAME, "\"fresh key\""),
+            related,
+            pending,
+            commit,
+            report,
+        ],
+    );
+    let mut root = fixture::tree(&[script], true);
+    fixture::add_local_accounts(&mut root);
+    add_name_field(&mut root);
+    fixture::add_calculated(&mut root);
+    fixture::set_field_options(&mut root, TABLE, NAME, 0x10000);
+    let relationship: &[&[u8]] = &[&[3], &[0xfb], &[5], &[1], &[2]];
+    let mut definition = root.at(relationship).unwrap().value.clone().unwrap();
+    let flags = definition.len() - 4;
+    definition[flags..].copy_from_slice(&0x10u32.to_be_bytes());
+    root.put(relationship, OwnedNode::leaf(Vec::new(), definition));
+    fixture::add_field(&mut root, NOTES, POSITION, "Position", 2, 2, 0, 0x80000, 0);
+    fixture::add_formula(
+        &mut root,
+        &names,
+        (NOTES, NOTES_OCCURRENCE),
+        POSITION,
+        5,
+        "Get ( RecordNumber )",
+    );
+    let folder = Folder::new("related-position");
+    fixture::write_tree(&folder.file(), &root);
+    let mut app = app();
+    common::open_menu(&mut app, "File");
+    common::click(&mut app, "Open...");
+    choose(&mut app, &folder.file());
+    sign_in(&mut app, fixture::PASSWORD);
+    wait_open(&mut app);
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Create first match");
+    common::wait_for_label(&mut app, "0|1|1");
+    let before_commit = HbamFile::open(folder.file()).unwrap();
+    assert!(before_commit
+        .records(NOTES)
+        .unwrap()
+        .iter()
+        .all(|row| { row.text(BODY).transpose().unwrap().as_deref() != Some("linked") }));
+    drop(before_commit);
+    common::click(&mut app, "OK");
+    common::wait_for_label(&mut app, "0|1");
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "the script to finish", |app| {
+        !app.state().script_running()
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    common::open_menu(&mut app, "File");
+    common::click(&mut app, "Close");
+    common::wait_until(&mut app, "the local file to close", |a| {
+        !a.state().is_open()
+    });
+    let file = HbamFile::open(folder.file()).unwrap();
+    let rows = file.records(NOTES).unwrap();
+    let child = rows
+        .iter()
+        .find(|row| row.text(BODY).transpose().unwrap().as_deref() == Some("linked"))
+        .unwrap();
+    assert_eq!(
+        child.text(TASK).transpose().unwrap().as_deref(),
+        Some("fresh key")
+    );
+    assert_eq!(
+        child.text(POSITION).transpose().unwrap().as_deref(),
+        Some("1")
+    );
+}

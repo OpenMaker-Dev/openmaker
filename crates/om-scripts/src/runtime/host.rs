@@ -1068,6 +1068,10 @@ pub trait Fields {
     fn set_field(&mut self, _field: FieldRef, _value: Value) -> HostResult {
         Err(HostError::Unsupported)
     }
+    /// Assign a Show Custom Dialog input, with no Set Field step origin.
+    fn set_dialog_field(&mut self, field: FieldRef, value: Value) -> HostResult {
+        self.set_field(field, value)
+    }
     /// Set Field By Name (147): `Table::Field`, as calculated.
     fn set_field_by_name(&mut self, _name: &str, _value: Value) -> HostResult {
         Err(HostError::Unsupported)
