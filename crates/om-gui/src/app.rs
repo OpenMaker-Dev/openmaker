@@ -18,6 +18,7 @@ use crate::content;
 use crate::content::PartsSent;
 use crate::icons::{self, Icon};
 use crate::layout_bar::{self, LayoutBarContext};
+use crate::layout_canvas::NudgeDirection;
 use crate::layout_setup::{LayoutSetup, LayoutSetupAnswer};
 use crate::licensing::{LicenseAction, LicenseDialog, LicenseKey, LicenseOperation};
 use crate::manage_layouts::{ManageLayouts, ManageLayoutsResult};
@@ -250,6 +251,7 @@ pub(crate) mod shortcuts {
     pub const PRINT: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::P);
     pub const CLOSE: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::W);
     pub const MINIMIZE: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::M);
+    pub const SELECT_ALL: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::A);
     pub const ZOOM_IN: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::Plus);
     pub const ZOOM_IN_ALTERNATE: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::Equals);
     pub const ZOOM_OUT: KeyboardShortcut = KeyboardShortcut::new(CMD, Key::Minus);
@@ -537,6 +539,10 @@ pub(crate) enum Action {
     /// after OnWindowClose (and OnLastWindowClose for the file's last
     /// window, which closes the file).
     CloseWindow,
+    /// A file close's window action held by a trigger or record commit.
+    ContinueCloseWindow(u64),
+    /// The file close's Commit Record held by OnRecordCommit.
+    ContinueCloseCommit(u64),
     SelectLayout(u32),
     GoToRecord(u64),
     GoToPage(u64),
@@ -639,6 +645,10 @@ pub(crate) enum Action {
     SaveLayout,
     /// Layouts > Revert Layout: drop it.
     RevertLayout,
+    /// Edit > Select All in Layout mode changes the window's selection.
+    SelectAllLayoutObjects,
+    /// An arrow key moves the selection in the current layout draft.
+    NudgeLayoutObjects(NudgeDirection),
     /// Delete or Edit > Clear in Layout mode: delete the selected object,
     /// as a change Save Layout stores.
     DeleteLayoutObject,
@@ -713,6 +723,17 @@ pub(crate) enum UnsavedRow {
 }
 
 impl Action {
+    fn is_close_window(&self) -> bool {
+        matches!(self, Self::CloseWindow | Self::ContinueCloseWindow(_))
+    }
+
+    fn close_id(&self) -> Option<u64> {
+        match self {
+            Self::ContinueCloseWindow(id) | Self::ContinueCloseCommit(id) => Some(*id),
+            _ => None,
+        }
+    }
+
     /// The action as it goes on after waiting (for field exit triggers or
     /// a save): a portal click must find its row again.
     pub(crate) fn held(self) -> Action {
@@ -735,13 +756,14 @@ impl Action {
 
     /// Whether the window can still do this once the connection to the
     /// host is lost: close (the file closes window by window), quit,
-    /// dismiss, bring another window to the front, and change only how it
-    /// looks.
+    /// dismiss, bring another window to the front, discard local layout
+    /// edits, and change only how the window looks.
     fn works_offline(&self) -> bool {
         matches!(
             self,
             Action::CloseFile
                 | Action::CloseWindow
+                | Action::ContinueCloseWindow(_)
                 | Action::ShowHosts
                 | Action::OpenNetworkFile(_)
                 | Action::EditHost(_)
@@ -758,6 +780,7 @@ impl Action {
                 | Action::DismissHostMessage
                 | Action::CloseDisconnectedFile(_)
                 | Action::DiscardEntryCandidates
+                | Action::RevertLayout
                 | Action::ZoomIn
                 | Action::ZoomOut
                 | Action::ActualSize
@@ -910,6 +933,7 @@ impl Opening {
 /// File > Close or Quit closing the front file, one window at a time.
 #[derive(Clone, Debug, PartialEq)]
 struct Closing {
+    id: u64,
     file: u64,
     /// The file's windows when the close began, closed in turn whichever
     /// window comes to the front meanwhile
@@ -1006,6 +1030,7 @@ pub struct OpenMakerApp {
     /// File > Close or Quit under way: each window that closes closes the
     /// next, until a trigger or a save stops it.
     closing: Option<Closing>,
+    next_close_id: u64,
     /// Every window closed for Quit: the root viewport may close now.
     quit_ready: bool,
     /// Quit waits from then for the provider to handle the files' Closes,
@@ -1150,6 +1175,7 @@ impl OpenMakerApp {
             host_message_since: None,
             worker_stopped: false,
             closing: None,
+            next_close_id: 1,
             quit_ready: false,
             quit_waiting: None,
             title: APP_TITLE.to_owned(),
@@ -1364,7 +1390,7 @@ impl OpenMakerApp {
     /// Whether Layout mode holds changes not saved yet, or sent with Save
     /// Layout and not answered.
     pub fn layout_unsaved(&self) -> bool {
-        self.w.layout_workspace.has_changes() || self.w.layout_workspace.saving
+        self.w.layout_unsaved()
     }
 
     /// The document window's title (`Get ( WindowName )`).
@@ -1879,6 +1905,7 @@ impl OpenMakerApp {
             layout_edit: self.w.mode == Mode::Layout
                 && self.w.layout_workspace.has_changes()
                 && !self.w.layout_workspace.saving,
+            layout_select_all: input && self.can_select_all_layout_objects(ctx),
             layout_delete: self.w.mode == Mode::Layout
                 && self.design_allowed()
                 && self.w.session.as_ref().is_some_and(|session| {
@@ -3394,14 +3421,17 @@ impl OpenMakerApp {
     }
 
     /// A File > Close (or, with `quit`, a Quit) of the front file.
-    fn closing_front(&self, quit: bool) -> Closing {
+    fn closing_front(&mut self, quit: bool) -> Closing {
         self.closing_of(self.w.file_id, quit)
     }
 
     /// A File > Close (or, with `quit`, a Quit) of `file`, with the windows
     /// it has now.
-    fn closing_of(&self, file: u64, quit: bool) -> Closing {
+    fn closing_of(&mut self, file: u64, quit: bool) -> Closing {
+        let id = self.next_close_id;
+        self.next_close_id = id.wrapping_add(1);
         Closing {
+            id,
             file,
             windows: self
                 .docs()
@@ -3410,6 +3440,59 @@ impl OpenMakerApp {
                 .collect(),
             quit,
             quiet: false,
+        }
+    }
+
+    /// Check every window the close can discard. A continued close checks
+    /// again because another window can acquire a draft while it waits.
+    fn close_has_unsaved_layouts(&self, action: &Action) -> bool {
+        let file = match action {
+            Action::Quit => None,
+            Action::CloseFile => Some(self.w.file_id),
+            Action::CloseWindow => match self.closing.as_ref().filter(|c| c.file == self.w.file_id)
+            {
+                Some(closing) if closing.quit => None,
+                Some(closing) => Some(closing.file),
+                None => return self.w.layout_unsaved(),
+            },
+            _ => return false,
+        };
+        self.docs().any(|doc| {
+            doc.session.is_some()
+                && file.is_none_or(|file| doc.file_id == file)
+                && doc.layout_unsaved()
+        })
+    }
+
+    fn close_is_current(&self, id: u64) -> bool {
+        self.closing.as_ref().is_some_and(|close| close.id == id)
+    }
+
+    fn commit_is_for_close(&self, id: u64) -> bool {
+        self.w.deferred_action.as_ref().and_then(Action::close_id) == Some(id)
+    }
+
+    fn cancel_close(&mut self, id: Option<u64>) {
+        if id.is_some_and(|id| self.close_is_current(id)) {
+            self.closing = None;
+        }
+    }
+
+    /// Keep a file close's scope when this window waits on a trigger or a
+    /// record save. If the close stops or another file close replaces it,
+    /// the saved action cannot go on as a standalone window close.
+    fn scoped_close_action(&self, action: Action) -> Action {
+        match (&action, self.closing.as_ref()) {
+            (Action::CloseWindow, Some(close)) if close.file == self.w.file_id => {
+                Action::ContinueCloseWindow(close.id)
+            }
+            (Action::CommitRecord, _) => self
+                .w
+                .deferred_action
+                .as_ref()
+                .and_then(Action::close_id)
+                .map_or(action, Action::ContinueCloseCommit),
+            _ => action,
         }
     }
 
@@ -3527,9 +3610,7 @@ impl OpenMakerApp {
             return;
         }
         if front.is_some() {
-            let layout_unsaved =
-                open().any(|doc| doc.layout_workspace.has_changes() || doc.layout_workspace.saving);
-            if layout_unsaved {
+            if open().any(windows::Doc::layout_unsaved) {
                 self.error = Some(LAYOUT_UNSAVED.into());
                 return;
             }
@@ -3616,6 +3697,26 @@ impl OpenMakerApp {
     /// A dialog or alert over the document has the keyboard.
     fn dialog_over_document(&self) -> bool {
         self.dialog_open() || self.host_message_shown()
+    }
+
+    /// A text editor in the canvas, sidebar or Inspector keeps its keys.
+    fn layout_selection_session(&self, ctx: &egui::Context) -> Option<&Session> {
+        self.w.session.as_ref().filter(|session| {
+            self.w.mode == Mode::Layout
+                && matches!(session.geometry, crate::session::Geometry::Loaded(_))
+                && self.w.connection_lost.is_none()
+                && self.design_allowed()
+                && self.full_menus()
+                && !self.w.layout_workspace.saving
+                && !self.dialog_over_document()
+                && !self.script.busy()
+                && self.script.prompt.is_none()
+                && !ctx.text_edit_focused()
+        })
+    }
+
+    fn can_select_all_layout_objects(&self, ctx: &egui::Context) -> bool {
+        self.w.tool == LayoutTool::Selection && self.layout_selection_session(ctx).is_some()
     }
 
     /// A dialog, alert or confirmation of the app's is open: the host's
@@ -3726,6 +3827,8 @@ impl OpenMakerApp {
                 .session
                 .as_ref()
                 .is_some_and(|session| self.w.layout_workspace.selection_count(session) > 0);
+        let layout_keys = !egui::Popup::is_any_open(ui.ctx())
+            && self.layout_selection_session(ui.ctx()).is_some();
         let mut commit = false;
         // Insert's shortcuts, into the field entered (the menu's own
         // availability: Editing only keeps them too).
@@ -3827,12 +3930,6 @@ impl OpenMakerApp {
                 actions.push(Action::ScriptWorkspace);
             }
             if self.w.mode == Mode::Layout
-                && self.w.layout_workspace.has_changes()
-                && input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::S))
-            {
-                actions.push(Action::SaveLayout);
-            }
-            if self.w.mode == Mode::Layout
                 && input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::N))
             {
                 actions.push(Action::NewLayout);
@@ -3841,6 +3938,53 @@ impl OpenMakerApp {
                 if input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::E)) {
                     actions.push(Action::DeleteLayout(layout));
                 }
+            }
+            if self.w.mode == Mode::Layout {
+                // Keys can share a frame. A nudge uses a preceding Select
+                // All, and Save includes any preceding nudges.
+                let mut can_nudge = object_selected;
+                let mut can_save = self.w.layout_workspace.has_changes();
+                input.events.retain(|event| {
+                    let egui::Event::Key {
+                        key,
+                        modifiers,
+                        pressed: true,
+                        ..
+                    } = event
+                    else {
+                        return true;
+                    };
+                    if can_save && *key == Key::S && modifiers.matches_logically(Modifiers::COMMAND)
+                    {
+                        actions.push(Action::SaveLayout);
+                        return false;
+                    }
+                    if !layout_keys {
+                        return true;
+                    }
+                    let select_all = shortcuts::SELECT_ALL;
+                    if self.w.tool == LayoutTool::Selection
+                        && *key == select_all.logical_key
+                        && modifiers.matches_exact(select_all.modifiers)
+                    {
+                        actions.push(Action::SelectAllLayoutObjects);
+                        can_nudge = true;
+                        return false;
+                    }
+                    if !modifiers.is_none() || !can_nudge {
+                        return true;
+                    }
+                    let direction = match key {
+                        Key::ArrowLeft => NudgeDirection::Left,
+                        Key::ArrowRight => NudgeDirection::Right,
+                        Key::ArrowUp => NudgeDirection::Up,
+                        Key::ArrowDown => NudgeDirection::Down,
+                        _ => return true,
+                    };
+                    actions.push(Action::NudgeLayoutObjects(direction));
+                    can_save = true;
+                    false
+                });
             }
             if object_selected
                 && !typing
@@ -4567,6 +4711,18 @@ impl OpenMakerApp {
 
     fn apply(&mut self, ctx: &egui::Context, action: Action) {
         let action = match action {
+            Action::ContinueCloseCommit(id) => {
+                if !self.close_is_current(id) || !self.commit_is_for_close(id) {
+                    return;
+                }
+                Action::CommitRecord
+            }
+            Action::ContinueCloseWindow(id) => {
+                if !self.close_is_current(id) {
+                    return;
+                }
+                Action::CloseWindow
+            }
             Action::FieldMenuStep(step, flags, target) => {
                 if self.dialog_over_document() || self.field_menu_target(ctx) != *target {
                     return;
@@ -4575,6 +4731,18 @@ impl OpenMakerApp {
             }
             action => action,
         };
+        if self.close_has_unsaved_layouts(&action) {
+            self.error = Some(LAYOUT_UNSAVED.into());
+            // A new close request must not turn an earlier deferred file
+            // close into a standalone window close. Keep the closing scope
+            // until its saved or trigger-approved action reaches this check.
+            if matches!(action, Action::CloseFile | Action::CloseWindow)
+                && (self.script.bypass || !self.close_waits())
+            {
+                self.closing = self.closing.take().filter(|c| c.file != self.w.file_id);
+            }
+            return;
+        }
         // A window's card closes before it (Claris: closing a card's
         // parent first closes the card); closing the file or quitting
         // goes on to the parent once the card has closed.
@@ -4689,13 +4857,16 @@ impl OpenMakerApp {
             // triggers: the save it leads to does not run it again.
             self.script.bypass = approved && Self::commits_first(&action);
             // A portal click finds its row again after the save.
-            self.w.deferred_action = Some(action.held());
+            self.w.deferred_action = Some(self.scoped_close_action(action.held()));
             self.apply(ctx, Action::CommitRecord);
             self.script.bypass = false;
             return;
         }
         match action {
-            Action::MenuFieldExit(_) | Action::FieldMenuStep(..) => {
+            Action::MenuFieldExit(_)
+            | Action::FieldMenuStep(..)
+            | Action::ContinueCloseWindow(_)
+            | Action::ContinueCloseCommit(_) => {
                 unreachable!("resolved before dispatch")
             }
             #[cfg(target_os = "macos")]
@@ -5263,6 +5434,20 @@ impl OpenMakerApp {
                 self.w.layout_workspace.drop_words();
             }
             Action::RevertLayout => {}
+            Action::SelectAllLayoutObjects => {
+                if self.can_select_all_layout_objects(ctx) {
+                    let session = self.w.session.as_ref().expect("checked layout");
+                    self.w.layout_workspace.select_all(session);
+                    ctx.request_repaint();
+                }
+            }
+            Action::NudgeLayoutObjects(direction) => {
+                if self.layout_selection_session(ctx).is_some() {
+                    let session = self.w.session.as_ref().expect("checked layout");
+                    self.w.layout_workspace.nudge_selection(session, direction);
+                    ctx.request_repaint();
+                }
+            }
             Action::DeleteLayoutObject if self.w.mode == Mode::Layout => {
                 let Some(session) = &self.w.session else {
                     return;
@@ -7220,9 +7405,9 @@ impl OpenMakerApp {
                     Err(err) => {
                         // The action the save held goes; closing the file
                         // stops with this window open.
-                        self.w.deferred_action = None;
+                        let deferred = self.w.deferred_action.take();
                         self.w.document.cancel_pending_focus();
-                        self.closing = None;
+                        self.cancel_close(deferred.as_ref().and_then(Action::close_id));
                         if !self.recheck_refused_save(ctx, layout_id, record_id, &err) {
                             self.fail(&err);
                         }
@@ -8705,7 +8890,9 @@ mod tests {
     #[test]
     fn file_close_goes_through_the_windows_it_began_with_and_stops_at_new_ones() {
         let ctx = egui::Context::default();
-        let close = || scripts::Held::Action(Action::CloseWindow, 1);
+        let close = |app: &OpenMakerApp| {
+            scripts::Held::Action(app.scoped_close_action(Action::CloseWindow), 1)
+        };
         let mut app = two_record_windows();
         app.w.file_id = 1;
         app.windows[0].file_id = 1;
@@ -8715,6 +8902,7 @@ mod tests {
         // As a trigger leaves it: File > Close began with windows 1 and 2,
         // and file 2's window, which the trigger opened, is in front.
         app.closing = Some(Closing {
+            id: 0,
             file: 1,
             windows: vec![1, 2],
             quit: false,
@@ -8734,6 +8922,7 @@ mod tests {
             app.w.file_id = 1;
             app.windows[0].file_id = 1;
             app.closing = Some(Closing {
+                id: 0,
                 file: 1,
                 windows: vec![1],
                 quit: false,
@@ -8763,7 +8952,7 @@ mod tests {
             width: None,
             height: None,
         });
-        app.resume_held(&ctx, 1, close(), true, None);
+        app.resume_held(&ctx, 1, close(&app), true, None);
         assert_eq!(app.window_ids(), [1, 4, 2]);
         assert!(app.closing.is_none());
 
@@ -8775,7 +8964,7 @@ mod tests {
             app.windows[0].file_id = app.w.file_id;
             app.closing = Some(app.closing_front(false));
             app.remove_window(1);
-            app.resume_held(&ctx, 1, close(), proceed, None);
+            app.resume_held(&ctx, 1, close(&app), proceed, None);
             assert_eq!(app.w.session.is_none(), proceed, "proceed {proceed}");
             assert!(app.closing.is_none(), "proceed {proceed}");
         }
@@ -8796,6 +8985,7 @@ mod tests {
         app.w.file_id = 2;
         app.windows[0].file_id = 1;
         let closing = Closing {
+            id: 0,
             file: 1,
             windows: vec![2],
             quit: false,
@@ -8846,6 +9036,171 @@ mod tests {
             assert!(app.docs().all(|doc| doc.session.is_none()), "{how}");
             assert!(app.quit_ready || app.quit_waiting.is_some(), "{how}");
         }
+    }
+
+    #[test]
+    fn layout_close_protects_drafts_in_affected_windows() {
+        let ctx = egui::Context::default();
+        let mut app = two_record_windows();
+        app.w.file_id = 1;
+        let draft = &mut app.windows[0];
+        draft.file_id = 1;
+        draft.mode = Mode::Layout;
+        draft.layout_workspace.stage_field(
+            draft.session.as_ref().unwrap(),
+            crate::layout_canvas::NewField {
+                left: 20.0,
+                top: 30.0,
+                width: 100.0,
+                height: 22.0,
+                field: None,
+                label: false,
+                control: 0,
+                value_list: None,
+                revision: None,
+            },
+        );
+        app.apply(&ctx, Action::CloseFile);
+        assert_eq!(app.error.as_deref(), Some(LAYOUT_UNSAVED));
+        assert_eq!(app.window_ids(), [1, 2]);
+
+        // Quit checks other files, including hidden windows, before closing
+        // the clean front file. Closing that file alone is still allowed.
+        app.windows[0].file_id = 2;
+        app.windows[0].hidden = true;
+        app.error = None;
+        app.apply(&ctx, Action::Quit);
+        assert_eq!(app.error.as_deref(), Some(LAYOUT_UNSAVED));
+        assert_eq!(app.docs().filter(|doc| doc.session.is_some()).count(), 2);
+        app.error = None;
+        app.apply(&ctx, Action::CloseFile);
+        assert!(app.error.is_none());
+        assert_eq!(app.docs().filter(|doc| doc.session.is_some()).count(), 1);
+
+        app.with_window(2, |app| app.apply(&ctx, Action::CloseWindow));
+        assert_eq!(app.error.as_deref(), Some(LAYOUT_UNSAVED));
+        assert!(app.docs().any(|doc| doc.id == 2 && doc.layout_unsaved()));
+    }
+
+    #[test]
+    fn reverting_a_disconnected_layout_draft_allows_close() {
+        let ctx = egui::Context::default();
+        let mut app = OpenMakerApp::new(Box::new(om_data::mock::MockProvider::new()));
+        app.w = window_with_records(1, &["Ada"]);
+        app.w.mode = Mode::Layout;
+        app.w.layout_workspace.stage_field(
+            app.w.session.as_ref().unwrap(),
+            crate::layout_canvas::NewField {
+                left: 20.0,
+                top: 30.0,
+                width: 100.0,
+                height: 22.0,
+                field: None,
+                label: false,
+                control: 0,
+                value_list: None,
+                revision: None,
+            },
+        );
+        app.lose_connection(&DataError::new("Connection lost"));
+        assert!(app.w.connection_lost.is_some());
+        app.apply(&ctx, Action::CloseWindow);
+        assert_eq!(app.error.as_deref(), Some(LAYOUT_UNSAVED));
+        assert!(app.w.session.is_some() && app.layout_unsaved());
+
+        app.apply(&ctx, Action::DismissAlert);
+        app.apply(&ctx, Action::RevertLayout);
+        assert!(!app.layout_unsaved());
+        app.apply(&ctx, Action::CloseWindow);
+        assert!(app.w.session.is_none());
+        assert!(app.error.is_none());
+    }
+
+    #[test]
+    fn layout_close_rechecks_the_file_after_a_deferred_commit() {
+        let ctx = egui::Context::default();
+        for repeat in [Action::CloseFile, Action::CloseWindow] {
+            let mut app = two_record_windows();
+            app.windows[0].file_id = app.w.file_id;
+            app.closing = Some(app.closing_front(false));
+            app.w.deferred_action = Some(app.scoped_close_action(Action::CloseWindow));
+            app.w.document.pending = true;
+            app.windows[0].layout_workspace.saving = true;
+
+            app.with_window(2, |app| app.apply(&ctx, repeat));
+            assert_eq!(app.error.as_deref(), Some(LAYOUT_UNSAVED));
+            assert!(app.closing.is_some());
+
+            app.w.document.pending = false;
+            let deferred = app.w.deferred_action.take().unwrap();
+            app.resume_saved_action(&ctx, deferred);
+            assert_eq!(app.window_ids(), [1, 2]);
+            assert!(app.closing.is_none());
+            assert!(app.windows[0].layout_workspace.saving);
+        }
+    }
+
+    #[test]
+    fn layout_close_continuation_does_not_outlive_its_file_close() {
+        let ctx = egui::Context::default();
+        let mut app = two_record_windows();
+        app.w.file_id = 1;
+        app.windows[0].file_id = 1;
+        let mut other = window_with_records(3, &["Zed"]);
+        other.file_id = 2;
+        app.windows.push(other);
+
+        app.closing = Some(app.closing_front(false));
+        let deferred = app.scoped_close_action(Action::CloseWindow);
+        app.w.deferred_action = Some(deferred.clone());
+        let held_commit = app.scoped_close_action(Action::CommitRecord);
+        app.w.document.pending = true;
+        app.windows[0].layout_workspace.saving = true;
+        app.with_window(3, |app| app.apply(&ctx, Action::CloseFile));
+        assert_eq!(app.window_ids(), [1, 2]);
+        assert!(app.closing.is_none());
+
+        app.w.document.pending = false;
+        app.resume_saved_action(&ctx, deferred.clone());
+        assert_eq!(app.window_ids(), [1, 2]);
+        assert!(app.windows[0].layout_workspace.saving);
+
+        // Another close of the original file cannot adopt that action,
+        // including while its own close trigger is still running.
+        app.windows[0].layout_workspace.saving = false;
+        let replacement = app.closing_front(false);
+        app.closing = Some(replacement.clone());
+        app.script.running = true;
+        app.resume_saved_action(&ctx, deferred.clone());
+        assert_eq!(app.window_ids(), [1, 2]);
+        assert_eq!(app.closing.as_ref(), Some(&replacement));
+
+        let replacement_action = Action::ContinueCloseWindow(replacement.id);
+        app.w.deferred_action = Some(replacement_action.clone());
+        app.resume_held(&ctx, 1, scripts::Held::Action(held_commit, 1), false, None);
+        assert_eq!(app.closing.as_ref(), Some(&replacement));
+        assert_eq!(app.w.deferred_action, Some(replacement_action));
+
+        // An old save's refusal cannot cancel the replacement either.
+        let refuse_save = |app: &mut OpenMakerApp, deferred| {
+            app.w.deferred_action = Some(deferred);
+            app.on_response(
+                &ctx,
+                worker::Response {
+                    epoch: app.epoch,
+                    window: app.w.id,
+                    reply: Reply::Updated {
+                        layout_id: 1,
+                        record_id: 1,
+                        result: Err(DataError::new("refused")),
+                    },
+                },
+            );
+        };
+        refuse_save(&mut app, deferred);
+        assert_eq!(app.closing, Some(replacement.clone()));
+        refuse_save(&mut app, Action::ContinueCloseWindow(replacement.id));
+        assert!(app.closing.is_none());
     }
 
     /// While a script runs or pauses, Escape on the app's alert (a pause's
@@ -8927,7 +9282,6 @@ mod tests {
     /// runs with no close under way, Quit waits for it.
     #[test]
     fn quit_waits_for_a_pending_close_and_a_running_script() {
-        let close = || scripts::Held::Action(Action::CloseWindow, 1);
         for (how, close_box, proceed) in [
             ("menu, veto", false, false),
             ("close box, veto", true, false),
@@ -8937,6 +9291,7 @@ mod tests {
             let mut app = two_record_windows();
             app.windows[0].file_id = app.w.file_id;
             app.closing = Some(app.closing_front(false));
+            let close = scripts::Held::Action(app.scoped_close_action(Action::CloseWindow), 1);
             app.script.running = true;
             if close_box {
                 let mut input = egui::RawInput::default();
@@ -8955,10 +9310,11 @@ mod tests {
             assert!(app.closing.as_ref().is_some_and(|c| c.quit), "{how}");
             // The trigger ends.
             app.script.running = false;
-            app.resume_held(&ctx, 1, close(), proceed, None);
+            app.resume_held(&ctx, 1, close, proceed, None);
             let quit = app.quit_ready || app.quit_waiting.is_some();
             assert_eq!(quit, proceed, "{how}");
             assert_eq!(app.w.session.is_none(), proceed, "{how}");
+            assert!(app.closing.is_none(), "{how}");
         }
 
         let ctx = egui::Context::default();
@@ -8979,6 +9335,123 @@ mod tests {
         app.launch_after_close = Some((Launch::Hosts, app.w.file_id));
         app.on_script_event(&ctx, crate::scripting::ScriptEvent::Quit);
         assert!(app.launch_after_close.is_none());
+    }
+
+    #[test]
+    fn layout_selection_shortcuts_keep_text_focus_and_stage_moves_until_save() {
+        let mut app = OpenMakerApp::with_license_store(
+            Box::new(om_data::mock::MockProvider::new()),
+            Box::new(NoLicense),
+        );
+        app.w = window_with_records(1, &["Ada"]);
+        app.w.mode = Mode::Layout;
+        let session = app.w.session.as_mut().unwrap();
+        let old_frame = om_data::GeomRect {
+            left: 20.0,
+            top: 30.0,
+            right: 40.0,
+            bottom: 60.0,
+        };
+        session.geometry = crate::session::Geometry::Loaded(om_data::LayoutGeometry {
+            objects: vec![om_data::ObjectGeom {
+                key: 1,
+                movable: true,
+                rect: old_frame,
+                ..Default::default()
+            }],
+            revision: Some([1; 32]),
+            ..Default::default()
+        });
+        app.w.layout_workspace.stage_field(
+            session,
+            crate::layout_canvas::NewField {
+                left: 50.0,
+                top: 30.0,
+                width: 20.0,
+                height: 30.0,
+                field: None,
+                label: false,
+                control: 0,
+                value_list: None,
+                revision: Some([1; 32]),
+            },
+        );
+        let ctx = egui::Context::default();
+        let key = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let input = || egui::RawInput {
+            events: vec![
+                key(Key::A, Modifiers::COMMAND),
+                key(Key::ArrowRight, Modifiers::NONE),
+                key(Key::ArrowRight, Modifiers::NONE),
+                key(Key::ArrowUp, Modifiers::SHIFT),
+            ],
+            ..Default::default()
+        };
+        let mut text = String::from("Layout text");
+        let editor = Id::unique("layout-test-text");
+        let mut frame = |app: &mut OpenMakerApp, input, edit| {
+            ctx.run_ui(input, |ui| {
+                let mut actions = Vec::new();
+                app.shortcuts(ui, &mut actions);
+                if edit {
+                    ui.add(egui::TextEdit::singleline(&mut text).id(editor))
+                        .request_focus();
+                }
+                for action in actions {
+                    app.apply(ui.ctx(), action);
+                }
+            })
+            .drop_without_applying_deltas();
+        };
+        frame(&mut app, egui::RawInput::default(), true);
+        frame(&mut app, input(), true);
+        let session = app.w.session.as_ref().unwrap();
+        assert_eq!(app.w.layout_workspace.selection_count(session), 1);
+        assert!(app.w.layout_workspace.moved().frames.is_empty());
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 50.0);
+
+        ctx.memory_mut(|m| m.surrender_focus(editor));
+        frame(&mut app, input(), false);
+        let session = app.w.session.as_ref().unwrap();
+        assert_eq!(app.w.layout_workspace.selection_count(session), 2);
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 52.0);
+        assert_eq!(
+            app.w.layout_workspace.moved().frames[&1],
+            om_data::GeomRect {
+                left: 22.0,
+                right: 42.0,
+                ..old_frame
+            }
+        );
+        app.apply(&ctx, Action::RevertLayout);
+        assert!(!app.w.layout_workspace.has_changes());
+        let save = egui::RawInput {
+            events: vec![
+                key(Key::A, Modifiers::COMMAND),
+                key(Key::ArrowRight, Modifiers::NONE),
+                key(Key::S, Modifiers::COMMAND),
+            ],
+            ..Default::default()
+        };
+        ctx.run_ui(save, |ui| {
+            let mut actions = Vec::new();
+            app.shortcuts(ui, &mut actions);
+            assert_eq!(
+                actions,
+                [
+                    Action::SelectAllLayoutObjects,
+                    Action::NudgeLayoutObjects(NudgeDirection::Right),
+                    Action::SaveLayout
+                ]
+            );
+        })
+        .drop_without_applying_deltas();
     }
 
     #[test]
