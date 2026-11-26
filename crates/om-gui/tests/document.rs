@@ -37,6 +37,7 @@ struct DocumentProvider {
     given_next_keys: bool,
     show_field_alerts: bool,
     grouped_given: bool,
+    tab_panel_in_order: bool,
     replacement: Option<Arc<AtomicBool>>,
     list: bool,
     /// The card is [`web_viewer_card`].
@@ -67,6 +68,7 @@ impl DocumentProvider {
             given_next_keys: false,
             show_field_alerts: false,
             grouped_given: false,
+            tab_panel_in_order: false,
             replacement: None,
             list: false,
             web_viewer: false,
@@ -310,6 +312,16 @@ impl DataProvider for DocumentProvider {
             return Ok(None);
         }
         let mut document = layout_fixture(self.design_edges);
+        if self.tab_panel_in_order {
+            document
+                .layout
+                .objects
+                .objects
+                .iter_mut()
+                .find(|object| object.id == 30)
+                .unwrap()
+                .tab_order = 1;
+        }
         if self.show_field_alerts {
             document.layout.def.as_mut().unwrap().flags |=
                 om_data::layout_catalog::general::SHOW_FIELD_ALERTS;
@@ -1080,6 +1092,39 @@ fn blank_canvas_commits_but_changing_fields_keeps_the_record_draft() {
     app.run_steps(2);
     let moved = family(&app) - before;
     assert!((moved - 30.0).abs() < 2.0, "Family's header moved {moved}");
+}
+
+#[test]
+fn an_excluded_field_tabs_to_the_front_panel_and_keeps_its_draft() {
+    let mut provider = DocumentProvider::new(false);
+    provider.writable = true;
+    provider.tab_panel_in_order = true;
+    let mut app = open_provider(provider);
+
+    replace(&mut app, "Given", "Ann");
+    app.key_press(egui::Key::Tab);
+    app.run_steps(3);
+    assert!(app.get_by_role_and_label(Role::Tab, "Summary").is_focused());
+    assert!(common::unsaved(&app));
+
+    app.event(egui::Event::Text("Lee".into()));
+    app.run_steps(2);
+    app.key_press(egui::Key::Tab);
+    app.run_steps(3);
+    assert!(app.get_by_role_and_label(Role::Tab, "Summary").is_focused());
+    assert_eq!(
+        common::text_field(&app, "Given").value().as_deref(),
+        Some("Ann")
+    );
+    assert_eq!(
+        common::text_field(&app, "Family").value().as_deref(),
+        Some("Mason")
+    );
+    assert!(common::unsaved(&app));
+
+    click_blank_canvas(&mut app);
+    common::wait_for_label(&mut app, "Contact: Ann Mason");
+    assert!(!common::unsaved(&app));
 }
 
 /// Insert > Current User Name puts the user name at the insertion point of

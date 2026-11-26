@@ -1392,12 +1392,12 @@ layout with none of them in its tab order, the first field drawn takes
 it. Table view focuses its first column (FileMaker's choice there is
 unmeasured).
 
-**Tab.** In Form and List view, Tab and Shift-Tab move the focus to the
-next or previous field object of the current record in the layout's
-stored tab order, by place and then paint order, as New Record picks the
-first field. That holds whatever the field's control is: an edit box,
-drop-down list, pop-up menu, or checkbox or radio button set. In Find
-mode they move the same way through the request's criteria, and wrap, as
+**Tab.** In Form and List view, Tab and Shift-Tab move the focus through
+the current record's field objects and the active panels of tab controls
+in the layout's stored tab order, by place and then paint order. Fields
+include edit boxes, drop-down lists, pop-up menus, and checkbox and radio
+button sets. A field's pending draft stays open when Tab focuses a panel.
+In Find mode they move through the request's criteria and wrap, as
 FileMaker Pro does on the Tasks starter (client-ui.md, "Tab in Browse");
 a criterion entered has its insertion point after its text. In Table view
 they move across the current record's cells in column order and wrap
@@ -1414,7 +1414,7 @@ in Browse"):
   typing replaces it (Pro on Meetings' Date, #964;
   `FieldObject::tab_selects_content`); that the control decides, not
   the date or an auto-entered value, is inferred;
-- Tab from the last field of the order goes to the first, and Shift-Tab
+- Tab from the last stop of the order goes to the first, and Shift-Tab
   from the first to the last;
 - in List view Tab stays on the current record;
 - with a pop-up menu's list open, Tab does nothing;
@@ -1430,15 +1430,14 @@ Inferred, unmeasured in Pro:
 - a row the portal shows only in part scrolls into view when Tab enters
   it;
 - a drop-down list's open list keeps Tab as a pop-up menu's does;
-- from a field outside the order, or with no widget focused, Tab goes to
-  the first field and Shift-Tab to the last;
+- with no widget focused, Tab goes to the first stop and Shift-Tab to
+  the last;
 - Tab with Ctrl, Alt or Command is not taken.
 
 **Limits of Tab:**
-- **Stops Pro has that OpenMaker passes over:** the front tab panel
-  itself, web viewers, buttons and container fields ([#253](https://github.com/OpenMaker-Dev/openmaker/issues/253)). On Contact
-  Details OpenMaker's cycle is Title, First Name, Last Name, Job Title,
-  Company and Website, where Pro's has 11 stops.
+- **Stops Pro has that OpenMaker passes over:** web viewers, buttons,
+  container fields and tab controls in portal rows.
+  [Open parity work](https://github.com/OpenMaker-Dev/openmaker/issues/253).
 - **Hidden tab panels:** fields on them are passed over, as in Pro.
 - **Table view's columns** are its stops, in their order. A calculation
   column, or one the account may not see, is passed over; a cell the
