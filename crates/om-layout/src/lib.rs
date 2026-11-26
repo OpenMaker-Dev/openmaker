@@ -165,11 +165,8 @@ impl Layout {
         // `[4, 1, 7, L]`, read when the member has none, by the same rule as
         // the host's Layout Setup (`stored_layout_word`): a dialog started
         // from 0 would drop what only the entry holds (#977).
-        let bytes_at = |node: Option<&om_hbam::Node<'_>>| node.and_then(|n| n.assembled());
-        let (member, entry) = (
-            bytes_at(node.get(0xf1)),
-            bytes_at(tree.at(&[4, 1, 7, id, 0xf1])),
-        );
+        let member = node.get(0xf1).and_then(|n| n.assembled());
+        let entry = tree.at(&[4, 1, 7, id, 0xf1]).and_then(|n| n.assembled());
         if let Some(flags) = stored_layout_word(member.as_deref(), entry.as_deref()) {
             if let Some(def) = &mut layout.def {
                 def.flags = flags;
