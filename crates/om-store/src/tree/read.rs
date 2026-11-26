@@ -1203,9 +1203,7 @@ impl<'t, 's, S: PageStore + ?Sized> Children<'t, 's, S> {
             }
         };
         let child_key = child_key.as_slice();
-        let segment = key::decode(&child_key[self.prefix.len()..])
-            .and_then(|mut s| s.pop())
-            .unwrap_or_default();
+        let segment = key::decode_last(&child_key[self.prefix.len()..]).unwrap_or_default();
         self.bound = if forward {
             Bound::Included(key::subtree_end(child_key).unwrap_or_default())
         } else {
