@@ -45,11 +45,11 @@ pub(crate) struct LayoutSetup {
     views: [bool; 3],
     default: usize,
     /// The Printing tab: "Use fixed page margins", and the margins shown,
-    /// top, bottom, left and right in points, as stored
-    /// (`LayoutDef.customMargins`).
+    /// top, bottom, left and right in points, and as stored
+    /// (`LayoutDef.customMargins`), if they are.
     fixed: bool,
     margins: [f64; 4],
-    stored_margins: [f64; 4],
+    stored_margins: Option<[f64; 4]>,
     /// "Print in N columns" as stored, shown, not offered.
     columns: (bool, u32),
     tab: usize,
@@ -78,12 +78,13 @@ impl LayoutSetup {
         in_menus: bool,
     ) -> Self {
         let (flags, menu_set) = (def.flags, def.menu_set_key);
-        // A layout without stored margins shows FileMaker's 36 points, which
-        // every starter layout stores [O, layout-model.md 4.1].
+        // A layout without stored margins shows 36 points, which every
+        // starter layout and every new one stores [O, layout-model.md 4.1];
+        // with the box checked they are stored, so it prints within them.
         let stored_margins = def
             .custom_margins
             .as_ref()
-            .map_or([36.0; 4], |m| [m.top, m.bottom, m.left, m.right]);
+            .map(|m| [m.top, m.bottom, m.left, m.right]);
         let views = VIEW_OFF.map(|bit| flags & bit == 0);
         let default = if flags & views::DEFAULT_TABLE != 0 {
             2
@@ -108,7 +109,7 @@ impl LayoutSetup {
             views,
             default,
             fixed: flags & printing::FIXED_PAGE_MARGINS != 0,
-            margins: stored_margins,
+            margins: stored_margins.unwrap_or([36.0; 4]),
             stored_margins,
             columns: (flags & COLUMNS != 0, def.print_column_count.max(1)),
             tab: 0,
@@ -339,10 +340,15 @@ impl LayoutSetup {
 
 impl LayoutSetup {
     /// The fixed page margins to set: the ones shown, when they differ
-    /// from the stored ones; `None` leaves the layout's as they are.
+    /// from the stored ones, or when none are stored and the layout is to
+    /// print within them; `None` leaves the layout's as they are.
     fn changed_margins(&self) -> Option<om_layout::Rect> {
         let [top, bottom, left, right] = self.margins;
-        (self.margins != self.stored_margins).then_some(om_layout::Rect {
+        let changed = match self.stored_margins {
+            Some(stored) => stored != self.margins,
+            None => self.fixed,
+        };
+        changed.then_some(om_layout::Rect {
             top,
             left,
             bottom,
@@ -404,6 +410,9 @@ impl LayoutSetup {
                 });
             });
             let mut value = shown[side];
+            // Leaving a field reparses the two decimals it shows (28.35
+            // for a centimeter's 28.3465), which is no edit.
+            let displayed: f64 = format!("{value:.2}").parse().unwrap_or(value);
             place(ui, content(field_x, top - 3.0, 60.0, 22.0), &mut |ui| {
                 let field = ui.add_enabled(
                     self.fixed,
@@ -413,7 +422,7 @@ impl LayoutSetup {
                         .max_decimals(2),
                 );
                 widgets::accessible_label(ui, field.id, label.trim_end_matches(':'));
-                if self.fixed && field.changed() {
+                if self.fixed && field.changed() && value != displayed && value != shown[side] {
                     self.margins[side] = value;
                 }
             });
