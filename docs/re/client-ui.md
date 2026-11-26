@@ -753,9 +753,10 @@ closed file, drop points from 2× screenshots, to about half a point]
   Nor did a drop about 22 points below the List's Footer or one about 50
   points below the Form's Body add a part.
 
-Unknown: the distance from a boundary at which Pro refuses with the alert,
-whether a drop at a boundary ever inserts a part between two others, the
-farthest drop below the parts that adds one, how the drop point is rounded,
+Unknown ([#1182](https://github.com/OpenMaker-Dev/openmaker/issues/1182)):
+the distance from a boundary at which Pro refuses with the alert, whether a
+drop at a boundary ever inserts a part between two others, the farthest
+drop below the parts that adds one, how the drop point is rounded,
 the order among several sub-summaries, other themes, and whether a click
 with the tool does anything.
 

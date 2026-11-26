@@ -2753,13 +2753,15 @@ now.
 **The Part tool and Insert > Part.** Dragging the status toolbar's Part
 Tool button onto the layout, as Claris documents it (re/client-ui.md, "Part
 Setup"), or choosing the tool and clicking the layout (OpenMaker's choice),
-works as FileMaker Pro 26.1.1's tool did (re/client-ui.md, "The Part
-tool"). Dropped below the layout's last part, it opens Part Definition
-alone, offering the kinds of part that may follow the last part and the
-layout lacks, the first of them chosen; OK adds the one chosen after the
-last part, from the layout's bottom down to the drop point, rounded to
-whole points. Dropped within the parts, it adds none and says "This part
-cannot be positioned here." Insert > Part... opens Part Definition alone
+follows what FileMaker Pro 26.1.1's tool was seen to do (re/client-ui.md,
+"The Part tool"), with the differences listed below. Dropped up to 25
+points below the layout's last part, it opens Part Definition alone,
+offering the kinds of part that may follow the last part and the layout
+lacks, the first of them chosen; OK adds the one chosen after the last
+part, from the layout's bottom down to the drop point, rounded to whole
+points. Dropped anywhere else across the layout's width, within the parts
+or farther below, it adds none and says "This part cannot be positioned
+here." Insert > Part... opens Part Definition alone
 offering every kind of part the layout lacks, the first of them chosen
 (from Pro's Insert > Part choosing Title Header on a layout with a top
 navigation part and a body; Pro's choice elsewhere is unmeasured), and OK
@@ -2775,13 +2777,16 @@ Limits, against Pro's tool:
   kind offered, as it adds no sub-summaries.
 - Pro said "This part cannot be positioned here." at some boundaries
   within the parts and otherwise ignored the drop, by a rule not measured,
-  so OpenMaker says it for every drop within the parts. Nor does OpenMaker
+  so OpenMaker says it for every drop it refuses. Nor does OpenMaker
   insert a part between two others with the tool; whether Pro does is not
   measured.
-- Pro added no part for a drop about 22 points below a List layout's last
-  part or about 50 below a Form's. OpenMaker adds one for any drop below the
-  parts (its canvas reaches 48 points below them, or to the window's
-  bottom).
+- Pro added a part 25 points below a Form's Body but none 50 points below
+  it, nor about 22 below a List's Footer. OpenMaker adds one up to 25
+  points below the parts, the farthest Pro was seen to, so it still adds
+  one where Pro ignored the List drop. Pro's limit is not known
+  ([#1182](https://github.com/OpenMaker-Dev/openmaker/issues/1182)).
+- Parts stored out of FileMaker's order, or with a height that is not a
+  number, are refused, as the part would not go after the last one.
 - A drop beside the layout, outside its width, does nothing; Pro's was
   not tried.
 

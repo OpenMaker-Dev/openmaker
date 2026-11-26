@@ -122,6 +122,12 @@ pub(crate) struct PartSetup {
 /// part (re/client-ui.md, "The Part tool").
 const CANNOT_POSITION: &str = "This part cannot be positioned here.";
 
+/// The farthest below the layout's last part the Part tool adds a part:
+/// the farthest FileMaker Pro 26.1.1 was seen to add one (25 points below a
+/// Form's Body). It added none 50 points below that Body, nor about 22
+/// below a List's Footer, so its own limit is not known.
+const MAX_DROP_HEIGHT: f64 = 25.0;
+
 /// Why a control is shown but not offered.
 const NOT_YET: &str = "OpenMaker does not change this yet.";
 
@@ -178,13 +184,19 @@ impl PartSetup {
     pub(crate) fn creating_alone(mut self, dropped_at: Option<f64>) -> Result<Self, &'static str> {
         if let Some(y) = dropped_at {
             let bottom: f64 = self.parts.iter().map(|p| p.height).sum();
+            // Not a number when a stored height is not one: refused.
             let height = (y - bottom).round();
-            let last = match self.parts.last() {
-                Some(part) => Some(part_rank(part.part_type).ok_or(CANNOT_POSITION)?),
-                None => None,
+            // The host puts a new part before the first part ranked after
+            // it, which is after the last part only when the parts are in
+            // FileMaker's order.
+            let ranks: Option<Vec<u8>> =
+                self.parts.iter().map(|p| part_rank(p.part_type)).collect();
+            let Some(ranks) = ranks.filter(|ranks| ranks.is_sorted()) else {
+                return Err(CANNOT_POSITION);
             };
+            let last = ranks.last().copied();
             // Nothing goes after a Bottom Navigation part.
-            if height < 1.0 || last == part_rank(13) {
+            if !(1.0..=MAX_DROP_HEIGHT).contains(&height) || last == part_rank(13) {
                 return Err(CANNOT_POSITION);
             }
             self.dropped = Some((height, last));
@@ -817,4 +829,53 @@ pub(crate) fn dialog(
             add(ui, &at);
         })
         .should_close()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dialog(parts: &[(i32, f64)]) -> PartSetup {
+        let rows = parts
+            .iter()
+            .enumerate()
+            .map(|(i, &(part_type, height))| PartRow {
+                id: i as u64 + 1,
+                part_type,
+                flags: 0,
+                page_break_after: 0,
+                height,
+                sorted_by: None,
+                objects: 0,
+            })
+            .collect();
+        PartSetup::new(1, (1, [0; 32]), (1, 1), Vec::new(), rows)
+    }
+
+    /// The Part tool adds a part only below the last part, at most
+    /// `MAX_DROP_HEIGHT` below, and only where the host appends it: not on
+    /// a stored height that is not a number, which no answer would match,
+    /// nor on parts out of FileMaker's order, where the host would put it
+    /// above others.
+    #[test]
+    fn the_part_tool_adds_a_part_only_after_the_last_one() {
+        let footer = [(4, 240.0), (7, 22.0)];
+        let opened = dialog(&footer).creating_alone(Some(279.0)).ok().unwrap();
+        assert_eq!(opened.dropped, Some((17.0, part_rank(7))));
+        assert_eq!(opened.creating, Some(Some(8)), "Title Footer chosen");
+        for at in [100.0, 262.0, 262.0 + 26.0] {
+            assert_eq!(
+                dialog(&footer).creating_alone(Some(at)).err(),
+                Some(CANNOT_POSITION),
+                "{at}"
+            );
+        }
+        for parts in [[(4, f64::NAN), (7, 22.0)], [(7, 22.0), (4, 240.0)]] {
+            assert_eq!(
+                dialog(&parts).creating_alone(Some(279.0)).err(),
+                Some(CANNOT_POSITION),
+                "{parts:?}"
+            );
+        }
+    }
 }
