@@ -8,8 +8,10 @@
 //! and the Printing tab's fixed page margins (with them, operation 23: one
 //! commit).
 //! The General tab's pop-ups and Reset Quick Find show the layout's values,
-//! not offered, and so do the Printing tab's columns and Facing Pages; the
-//! Script Triggers tab is not offered yet.
+//! not offered, and so does the Printing tab's "Print in N columns". Its
+//! column order and Facing Pages are not offered and show no state:
+//! where FileMaker stores them is unknown (#948). The Script Triggers tab
+//! is not offered yet.
 
 use egui::{vec2, Align2, CornerRadius, Id, Rect, Stroke, StrokeKind, UiBuilder};
 use om_data::layout_catalog::{general, printing, views, LayoutSetupChange, MAX_NAME_CHARS};
@@ -63,6 +65,9 @@ const VIEW_OFF: [u64; 3] = [views::FORM_OFF, views::LIST_OFF, views::TABLE_OFF];
 const VIEW_NAMES: [&str; 3] = ["Form View", "List View", "Table View"];
 /// Why an option is shown but not offered.
 const NOT_YET: &str = "OpenMaker does not change this option yet.";
+/// Why a Printing option shows no state: where FileMaker stores it is
+/// unknown (#948).
+const NOT_READ: &str = "OpenMaker does not read or change this option yet.";
 
 impl LayoutSetup {
     /// The dialog for `layout` of window `window`, named `name`, with the
@@ -388,10 +393,11 @@ impl LayoutSetup {
         place(ui, content(187.0, 56.0, 62.0, 17.0), &mut |ui| {
             ui.label("columns");
         });
+        // Not read: neither shows as chosen (#948).
         for (label, x, width) in [("Across first", 121.0, 113.0), ("Down first", 279.0, 101.0)] {
             place(ui, content(x, 96.0, width, 18.0), &mut |ui| {
                 ui.add_enabled(false, egui::RadioButton::new(false, label))
-                    .on_disabled_hover_text(NOT_YET);
+                    .on_disabled_hover_text(NOT_READ);
             });
         }
         let columns = self.columns.0;
@@ -452,10 +458,14 @@ impl LayoutSetup {
                 ui.label("pt");
             });
         }
+        // Not read: shown neither on nor off (#948).
         let mut facing = false;
         place(ui, content(292.0, 237.0, 106.0, 18.0), &mut |ui| {
-            ui.add_enabled(false, egui::Checkbox::new(&mut facing, "Facing Pages"))
-                .on_disabled_hover_text(NOT_YET);
+            ui.add_enabled(
+                false,
+                egui::Checkbox::new(&mut facing, "Facing Pages").indeterminate(true),
+            )
+            .on_disabled_hover_text(NOT_READ);
         });
     }
 }

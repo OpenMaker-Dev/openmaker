@@ -1108,19 +1108,16 @@ pub fn plan_setup_with_margins(
 ) -> Result<SetUp, Refusal> {
     let mut set = plan_setup(catalog, layout, name, flags, hidden)?;
     let Some(margins) = margins else {
-        // "Use fixed page margins" on a layout that stores none would print
-        // within the printer's (`om_layout::paper`): the margins come with
-        // it.
+        // "Use fixed page margins" on a layout that stores no margins would
+        // print within the printer's (`om_layout::paper`): the margins come
+        // with it, unless the definition holds readable ones. The flags it
+        // had are [`plan_setup`]'s, the member's or else the entry's.
         let turned_on = flags & printing::FIXED_PAGE_MARGINS != 0
-            && catalog
-                .at(&[&[MEMBERS], &uint_segment(layout)])
-                .and_then(|member| member.child(&[VIEW_FLAGS]))
-                .and_then(|n| n.value.as_deref())
-                .and_then(be_uint)
-                .is_some_and(|stored| stored & printing::FIXED_PAGE_MARGINS == 0);
-        let none_stored = crate::layout_placement::definition(&set.member)
-            .is_ok_and(|def| def.custom_margins.is_none());
-        if turned_on && none_stored {
+            && stored_flags(catalog, layout)
+                .is_none_or(|stored| stored & printing::FIXED_PAGE_MARGINS == 0);
+        let margins_stored = crate::layout_placement::definition(&set.member)
+            .is_ok_and(|def| def.custom_margins.is_some());
+        if turned_on && !margins_stored {
             return Err(Refusal::Invalid(
                 "This layout stores no fixed page margins: give them with \"Use fixed page \
                  margins\"."
@@ -1149,6 +1146,20 @@ pub fn plan_setup_with_margins(
     set.changes.extend(planned.changes);
     set.changed = true;
     Ok(set)
+}
+
+/// The view flags `f1` layout `layout` has: its member's, else its index
+/// entry's, as FileMaker keeps both ([`plan_setup`]).
+fn stored_flags(catalog: &OwnedNode, layout: u64) -> Option<u64> {
+    let key = uint_segment(layout);
+    let word = |path: &[&[u8]]| {
+        catalog
+            .at(path)
+            .and_then(|n| n.value.as_deref())
+            .and_then(be_uint)
+    };
+    word(&[&[MEMBERS], &key, &[VIEW_FLAGS]])
+        .or_else(|| word(&[&[INDEX], &[ENTRIES], &key, &[VIEW_FLAGS]]))
 }
 
 /// A layout's member and index after Layout Setup ([`plan_setup`]).
@@ -1205,8 +1216,7 @@ pub fn plan_setup(
                 .into(),
         ));
     }
-    let stored = word(member, VIEW_FLAGS)
-        .or_else(|| word(&entry, VIEW_FLAGS))
+    let stored = stored_flags(catalog, layout)
         .ok_or_else(|| unsupported(format!("Layout {layout} has no readable view flags.")))?;
     if (stored ^ flags) & !(views::ALL | general::ALL | printing::ALL) != 0 {
         return Err(unsupported(
@@ -1623,6 +1633,25 @@ mod tests {
         );
         assert!(matches!(only_box(&bare, fixed), Err(Refusal::Invalid(_))));
         assert!(plan(&bare, "Contact Details", fixed).unwrap().changed);
+        // The same with the flags it had only in its index entry, which
+        // Layout Setup reads when the member has none.
+        let mut entry_only = bare.clone();
+        entry_only.remove(&[&[MEMBERS], &[3], &[VIEW_FLAGS]]);
+        entry_only.put(
+            &[&[INDEX], &[ENTRIES], &[3], &[VIEW_FLAGS]],
+            OwnedNode::leaf(Vec::new(), 0x10f3_080d_u64.to_be_bytes().to_vec()),
+        );
+        assert!(matches!(
+            only_box(&entry_only, fixed),
+            Err(Refusal::Invalid(_))
+        ));
+        // And with a definition that does not read: no margins are known.
+        let mut unread = catalog.clone();
+        unread.put(
+            &[&[MEMBERS], &[3], &[DEFINITION]],
+            OwnedNode::leaf(Vec::new(), vec![0x0a, 0xff]),
+        );
+        assert!(matches!(only_box(&unread, fixed), Err(Refusal::Invalid(_))));
     }
 
     /// Layout Setup renames Contact Details in its member, entry and name

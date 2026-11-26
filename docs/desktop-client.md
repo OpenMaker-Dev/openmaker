@@ -2528,9 +2528,12 @@ they are not offered and show the printer's, 18 / 40 / 18 / 18, as Pro's
 do (re/layout-model.md 4.2). On a layout printing in columns neither the
 box nor the margins are offered: Pro works the columns' width out from
 them, which OpenMaker does not. The General
-tab's Show records from and Menu Set, and the Printing tab's columns and
-Facing Pages, show the layout's values and are not offered, nor are Reset
-Quick Find, the Script Triggers tab or Manage Layouts' Edit. It is refused while the layout has unsaved
+tab's Show records from and Menu Set, and the Printing tab's "Print in N
+columns", show the layout's values and are not offered. The column order
+and Facing Pages are not offered and show no state, since where FileMaker
+stores them is unknown
+([#948](https://github.com/OpenMaker-Dev/openmaker/issues/948)). Nor are
+Reset Quick Find, the Script Triggers tab or Manage Layouts' Edit offered. It is refused while the layout has unsaved
 changes, as New and Duplicate Layout are.
 
 **Part Setup.** Layouts > Part Setup... (Layout mode, design access) opens
