@@ -305,23 +305,25 @@ fn a_client_commit_that_cannot_be_saved_changes_nothing() {
             vec![OwnedNode::leaf(uint_segment(NAME), Vec::new())],
         )
     };
-    let commit = |client: &mut om_session::Session, name: &str| {
-        let path: [&[u8]; 3] = [&table, &[5], &serial::encode(1)];
+    let path: [&[u8]; 3] = [&table, &[5], &serial::encode(1)];
+    let lock = |client: &mut om_session::Session, txn: u32| {
         assert!(matches!(
-            client.lock(&path, 0x31, true).unwrap(),
+            client.lock(&path, txn, true).unwrap(),
             write::LockReply::Granted { .. }
         ));
-        client.upload_records(&table, vec![record(name)]).unwrap();
-        let committed = client.commit_records(&table, vec![changed()], 0x31);
-        client.kill_all_locks(0x31).unwrap();
-        committed
     };
 
     // op70 fails with a system exception, never its done page (its reply
     // has no status, 3.4); the record keeps its values in memory and on
     // disk, and the client can still release its lock.
     let blocked = BlockedSaves::new(&file);
-    let error = commit(&mut client, "Not saved").unwrap_err();
+    lock(&mut client, 0x31);
+    client
+        .upload_records(&table, vec![record("Not saved")])
+        .unwrap();
+    let error = client
+        .commit_records(&table, vec![changed()], 0x31)
+        .unwrap_err();
     assert!(error.to_string().contains("SystemException"), "{error}");
     let records = records_of(&mut client, TABLE);
     assert_eq!(cell(&records, 1, NAME), Some("Write tests"));
@@ -329,11 +331,218 @@ fn a_client_commit_that_cannot_be_saved_changes_nothing() {
     drop(blocked);
     assert_eq!(on_disk(&file, 1, NAME).as_deref(), Some("Write tests"));
 
-    // Once saves work, the same commit applies.
-    commit(&mut client, "Saved").unwrap();
+    // The failed save took the staged record. The same op70 sent again
+    // without its upload is refused, not answered done with nothing stored
+    // (#839 of github.com/OpenMaker-Dev/openmaker).
+    let error = client
+        .commit_records(&table, vec![changed()], 0x31)
+        .unwrap_err();
+    assert!(error.to_string().contains("SystemException"), "{error}");
+    assert_eq!(on_disk(&file, 1, NAME).as_deref(), Some("Write tests"));
+
+    // Uploaded again, the same commit applies.
+    client
+        .upload_records(&table, vec![record("Saved")])
+        .unwrap();
+    client
+        .commit_records(&table, vec![changed()], 0x31)
+        .unwrap();
+    client.kill_all_locks(0x31).unwrap();
     let records = records_of(&mut client, TABLE);
     assert_eq!(cell(&records, 1, NAME), Some("Saved"));
     assert_eq!(on_disk(&file, 1, NAME).as_deref(), Some("Saved"));
+    client.disconnect().unwrap();
+}
+
+/// A commit naming a record with nothing staged is refused only when a
+/// failed commit of its transaction took the record's upload (#839 of
+/// github.com/OpenMaker-Dev/openmaker); any other is answered done, with
+/// nothing stored, as before: a record never uploaded, one whose
+/// transaction was given up since (op65), one another transaction's failed
+/// commit took, and one the transaction has deleted since. An op62 forgets
+/// nothing, of the same transaction or another, the record locked or not;
+/// uploaded again, the record commits.
+#[test]
+fn only_a_commit_whose_upload_a_failed_save_took_is_refused_without_it() {
+    let file = TempFile::new("save-op70-lost", &[], true);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "op70-lost");
+    let table = uint_segment(TABLE);
+    let path: [&[u8]; 3] = [&table, &[5], &serial::encode(1)];
+    let changed = || {
+        OwnedNode::list(
+            serial::encode(1),
+            vec![OwnedNode::leaf(uint_segment(NAME), Vec::new())],
+        )
+    };
+    // Record 1 locked `locks` times for `txn`, uploaded and committed while
+    // saves fail.
+    let fail = |client: &mut om_session::Session, txn: u32, locks: usize| {
+        let blocked = BlockedSaves::new(&file);
+        for _ in 0..locks {
+            assert!(matches!(
+                client.lock(&path, txn, true).unwrap(),
+                write::LockReply::Granted { .. }
+            ));
+        }
+        let record = OwnedNode::list(
+            serial::encode(1),
+            vec![
+                OwnedNode::leaf(uint_segment(NAME), om_scsu::encode_scsu("Lost")),
+                OwnedNode::leaf(vec![0xfc], vec![0x01, 0x01]),
+            ],
+        );
+        client.upload_records(&table, vec![record]).unwrap();
+        let error = client
+            .commit_records(&table, vec![changed()], txn)
+            .unwrap_err();
+        assert!(error.to_string().contains("SystemException"), "{error}");
+        drop(blocked);
+    };
+    let unchanged = |file: &TempFile| {
+        assert_eq!(on_disk(file, 1, NAME).as_deref(), Some("Write tests"));
+    };
+
+    // Never uploaded: done, nothing stored.
+    assert!(matches!(
+        client.lock(&path, 0x41, true).unwrap(),
+        write::LockReply::Granted { .. }
+    ));
+    client
+        .commit_records(&table, vec![changed()], 0x41)
+        .unwrap();
+    client.kill_all_locks(0x41).unwrap();
+    unchanged(&file);
+
+    // After the failed save, its lock released with op62: still refused.
+    // Its transaction given up with op65: done.
+    fail(&mut client, 0x42, 1);
+    client.unlock(&path, 0x42, write::LOCK_WRITE, 0).unwrap();
+    let error = client
+        .commit_records(&table, vec![changed()], 0x42)
+        .expect_err("refused after its transaction's only op62");
+    assert!(error.to_string().contains("SystemException"), "{error}");
+    client.kill_all_locks(0x42).unwrap();
+    client
+        .commit_records(&table, vec![changed()], 0x42)
+        .unwrap();
+    unchanged(&file);
+
+    // Another transaction's commit of the record: done; the failed one's
+    // own, sent again, refused.
+    fail(&mut client, 0x44, 1);
+    client
+        .commit_records(&table, vec![changed()], 0x45)
+        .unwrap();
+    let error = client
+        .commit_records(&table, vec![changed()], 0x44)
+        .unwrap_err();
+    assert!(error.to_string().contains("SystemException"), "{error}");
+    client.kill_all_locks(0x44).unwrap();
+    unchanged(&file);
+
+    // Locked twice: after one op62, an op62 of another transaction, and
+    // the second op62, the resend is still refused each time.
+    fail(&mut client, 0x46, 2);
+    client.unlock(&path, 0x46, write::LOCK_WRITE, 0).unwrap();
+    let error = client
+        .commit_records(&table, vec![changed()], 0x46)
+        .expect_err("refused after one op62 of a lock taken twice");
+    assert!(error.to_string().contains("SystemException"), "{error}");
+    client.unlock(&path, 0x47, write::LOCK_WRITE, 0).unwrap();
+    let error = client
+        .commit_records(&table, vec![changed()], 0x46)
+        .expect_err("refused after another transaction's op62");
+    assert!(error.to_string().contains("SystemException"), "{error}");
+    client.unlock(&path, 0x46, write::LOCK_WRITE, 0).unwrap();
+    let error = client
+        .commit_records(&table, vec![changed()], 0x46)
+        .expect_err("refused after the last op62 of a lock taken twice");
+    assert!(error.to_string().contains("SystemException"), "{error}");
+    client.kill_all_locks(0x46).unwrap();
+    unchanged(&file);
+
+    // Never locked: an op70 stores an edit of a record it did not lock, and
+    // an op62 of its transaction, which releases nothing, still leaves the
+    // resend refused. Uploaded again, the same commit applies.
+    fail(&mut client, 0x49, 0);
+    client.unlock(&path, 0x49, write::LOCK_WRITE, 0).unwrap();
+    let error = client
+        .commit_records(&table, vec![changed()], 0x49)
+        .expect_err("refused after an op62 that released nothing");
+    assert!(error.to_string().contains("SystemException"), "{error}");
+    let again = OwnedNode::list(
+        serial::encode(1),
+        vec![
+            OwnedNode::leaf(uint_segment(NAME), om_scsu::encode_scsu("Again")),
+            OwnedNode::leaf(vec![0xfc], vec![0x01, 0x01]),
+        ],
+    );
+    client.upload_records(&table, vec![again]).unwrap();
+    client
+        .commit_records(&table, vec![changed()], 0x49)
+        .unwrap();
+    client.kill_all_locks(0x49).unwrap();
+    assert_eq!(on_disk(&file, 1, NAME).as_deref(), Some("Again"));
+
+    // Deleted by a saved commit of the transaction: a later bare commit of
+    // the record in it is done (the record is gone, nothing is stored).
+    fail(&mut client, 0x48, 1);
+    client
+        .commit_records(
+            &table,
+            vec![OwnedNode::leaf(serial::encode(1), vec![0x03])],
+            0x48,
+        )
+        .unwrap();
+    client
+        .commit_records(&table, vec![changed()], 0x48)
+        .unwrap();
+    client.kill_all_locks(0x48).unwrap();
+    assert_eq!(on_disk(&file, 1, NAME), None);
+    client.disconnect().unwrap();
+}
+
+/// A commit naming a new record with nothing uploaded for it is refused
+/// whole: done would say a record was made that nothing made, and a
+/// staged edit in the same commit would be stored without it (#839 of
+/// github.com/OpenMaker-Dev/openmaker; OpenMaker's choice, what FileMaker
+/// Server answers is unmeasured).
+#[test]
+fn a_new_record_named_with_nothing_uploaded_refuses_the_commit() {
+    let file = TempFile::new("save-op70-new", &[], true);
+    let port = server::start(&file);
+    let (mut client, _) = server::logged_in(port, "op70-new");
+    let table = uint_segment(TABLE);
+    let created = client.create_record(&table, 0x51).unwrap();
+    assert_eq!(created.status, 0);
+    let new = created.record.last().unwrap().clone();
+    let path: [&[u8]; 3] = [&table, &[5], &serial::encode(1)];
+    assert!(matches!(
+        client.lock(&path, 0x51, true).unwrap(),
+        write::LockReply::Granted { .. }
+    ));
+    let edit = OwnedNode::list(
+        serial::encode(1),
+        vec![
+            OwnedNode::leaf(uint_segment(NAME), om_scsu::encode_scsu("Edited")),
+            OwnedNode::leaf(vec![0xfc], vec![0x01, 0x01]),
+        ],
+    );
+    client.upload_records(&table, vec![edit]).unwrap();
+    let entries = vec![
+        OwnedNode::list(
+            serial::encode(1),
+            vec![OwnedNode::leaf(uint_segment(NAME), Vec::new())],
+        ),
+        OwnedNode::leaf(new.clone(), vec![0x01]),
+    ];
+    let error = client.commit_records(&table, entries, 0x51).unwrap_err();
+    assert!(error.to_string().contains("SystemException"), "{error}");
+    client.kill_all_locks(0x51).unwrap();
+    assert_eq!(on_disk(&file, 1, NAME).as_deref(), Some("Write tests"));
+    let id = serial::decode(&new).unwrap();
+    assert_eq!(on_disk(&file, id, NAME), None);
     client.disconnect().unwrap();
 }
 

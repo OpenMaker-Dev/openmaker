@@ -19,6 +19,8 @@
 //! field values; it does not send protocol requests or write records.
 //! Refusals carry the FileMaker error a script step reports
 //! ([`DataError::code`]).
+mod global_text_self;
+pub use global_text_self::global_text_assignment;
 pub mod recalc;
 pub mod schema;
 mod typing;
@@ -37,6 +39,7 @@ use om_formula::{DecodeErrorKind, Expr, Formula, Key, Opcode};
 use om_hbam::catalog::{DataType, Field, FieldKind};
 use om_hbam::{EntryVariable, FieldOptions, KeyTree, Node, Table};
 
+use self::global_text_self::GlobalTextSelf;
 use crate::containers::{self, MemberInfo};
 use crate::meta::{ValueList, ValueSource};
 
@@ -147,11 +150,12 @@ const RECORD_RULE_SELECTORS: [u8; 10] = [1, 2, 5, 16, 29, 31, 32, 63, 68, 101];
 /// auto-entered and validation formulas, which the writing client
 /// evaluates. A stored calculation, which a host recalculates with no
 /// operation, and a privilege set's record limit keep refusing them.
-const CONTEXT_SELECTORS: [u8; 4] = [
+const CONTEXT_SELECTORS: [u8; 5] = [
     selector::LAYOUT_NUMBER,
     selector::RECORD_NUMBER,
     selector::CURRENT_PRIVILEGE_SET_NAME,
     selector::CURRENT_HOST_TIMESTAMP,
+    selector::CURRENT_TIME_UTC_MILLISECONDS,
 ];
 
 /// Whether FileMaker leaves index language `language` untailored, so that
@@ -303,6 +307,9 @@ pub struct Entry<'a> {
     /// where an auto-entered value would replace an existing one (oracle
     /// x02).
     pub keep_written: bool,
+    /// Import mappings keep their assigned value even for a replacing
+    /// Number auto-entry formula that reads its proposed value with Self.
+    pub imported: bool,
     /// Cells this import maps when `changes` also contains earlier staged
     /// values. By default all cells in `changes` are explicitly set.
     pub mapped_cells: Option<&'a BTreeSet<u64>>,
@@ -316,6 +323,7 @@ impl Entry<'_> {
             skip_data_entry_validation,
             skip_auto_enter,
             keep_written: false,
+            imported: false,
             mapped_cells: None,
         }
     }
@@ -331,6 +339,7 @@ impl Entry<'_> {
             skip_data_entry_validation: true,
             skip_auto_enter: !auto_enter,
             keep_written: true,
+            imported: true,
             mapped_cells: None,
         }
     }
@@ -339,6 +348,15 @@ impl Entry<'_> {
     /// as written ([`Entry::keep_written`]).
     fn keeps(&self, changes: &BTreeMap<u64, Option<String>>, cell: u64) -> bool {
         self.keep_written && self.sets(changes, cell)
+    }
+
+    fn keeps_calculated(
+        &self,
+        changes: &BTreeMap<u64, Option<String>>,
+        cell: u64,
+        auto_enter_self: bool,
+    ) -> bool {
+        self.keeps(changes, cell) && (!auto_enter_self || self.imported)
     }
 
     fn sets(&self, changes: &BTreeMap<u64, Option<String>>, cell: u64) -> bool {
@@ -385,6 +403,42 @@ impl RecordNumber {
             Self::Window(number) | Self::LocalNewRecord(number) => number,
             Self::LocalSortedNewRecord { position, .. } => position,
         }
+    }
+}
+
+/// The UTC millisecond samples a new record's formulas have drawn. Clones
+/// identify the same creation so a preview and its commit replay the
+/// calls in their field's evaluation order.
+#[derive(Clone, Debug, Default)]
+pub struct CreationUtcClock(Arc<Mutex<BTreeMap<u64, Vec<Value>>>>);
+
+impl PartialEq for CreationUtcClock {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for CreationUtcClock {}
+
+impl CreationUtcClock {
+    fn sample(&self, field: u64, call: usize) -> Result<Value, om_calc::CalcError> {
+        // A loop or recursion cannot keep growing the record's sample
+        // log. Refuse large sequences rather than replay a partial one.
+        const MAX_CLOCK_CALLS: usize = 64;
+        if call >= MAX_CLOCK_CALLS {
+            return Err(om_calc::CalcError::NOT_SUPPORTED);
+        }
+        let mut by_field = self
+            .0
+            .lock()
+            .map_err(|_| om_calc::CalcError::NOT_SUPPORTED)?;
+        let samples = by_field.entry(field).or_default();
+        if let Some(value) = samples.get(call) {
+            return Ok(value.clone());
+        }
+        let value = crate::host::session::utc_milliseconds()?;
+        samples.push(value.clone());
+        Ok(value)
     }
 }
 
@@ -454,6 +508,8 @@ pub struct WriteContext {
     /// `Get ( RecordNumber )` as the operation answers it. A stored
     /// calculation requires [`RecordNumber::LocalNewRecord`].
     pub record_number: Option<RecordNumber>,
+    /// The clock samples of a local New Record, retained by its preview.
+    pub creation_utc_clock: Option<CreationUtcClock>,
     /// The local file's `$$` variables for directly reading a Text
     /// auto-enter value. New Record's preview retains this snapshot.
     pub file_variables: Option<WriteFileVariables>,
@@ -805,6 +861,7 @@ pub(crate) struct Evaluation {
     related: Arc<RelatedRecords>,
     /// The session's global values ([`RecordEnvironment::globals`]).
     globals: Option<Arc<RecordValues>>,
+    creation_utc_clock: Option<CreationUtcClock>,
     other_globals: OtherGlobalValues,
     /// `Get ( RecordNumber )` ([`WriteContext::record_number`]).
     record_number: Option<RecordNumber>,
@@ -888,6 +945,7 @@ impl RecordEnvironment {
             .filter(|selector| match *selector {
                 selector::LAYOUT_NUMBER => context.layout == WriteLayout::Unknown,
                 selector::RECORD_NUMBER => context.record_number.is_none(),
+                selector::CURRENT_TIME_UTC_MILLISECONDS => context.creation_utc_clock.is_none(),
                 selector::CURRENT_PRIVILEGE_SET_NAME => context.privilege_set.is_none(),
                 _ => host_now.is_none(),
             })
@@ -922,6 +980,7 @@ impl RecordEnvironment {
                 .clone()
                 .unwrap_or_else(|| self.lookups.other_globals.clone()),
             record_number: context.record_number,
+            creation_utc_clock: context.creation_utc_clock.clone(),
             file_variables: context.file_variables.clone(),
             related_needs: self.related_needs.clone(),
             written: self.lookups.written,
@@ -1059,6 +1118,13 @@ pub struct RecordPlan {
     schema: Arc<CalcSchema>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AutoEntrySelf {
+    Unused,
+    ProposedNumber,
+    Unsupported,
+}
+
 struct PlannedField {
     name: String,
     options: FieldOptions,
@@ -1066,6 +1132,10 @@ struct PlannedField {
     editable: bool,
     /// A stored calculation or an auto-enter calculation.
     expression: Option<Expression>,
+    /// How this formula uses the field's proposed value.
+    auto_enter_self: AutoEntrySelf,
+    /// This local global's auto-entry reads Self.
+    global_text_self: GlobalTextSelf,
     /// Creation Date supplies the value on create. The calculation's
     /// dependencies identify updates with an unmeasured result.
     creation_date_with_calculation: bool,
@@ -1913,6 +1983,9 @@ struct Computed {
 struct Expression {
     formula: Arc<Formula>,
     dependencies: BTreeSet<u64>,
+    /// A stored Evaluate reads the fields in its compiled expression but
+    /// only recalculates in response to its explicit trigger fields.
+    evaluate_triggers: Option<BTreeSet<u64>>,
     /// The fields of other occurrences it reads, (occurrence, field): an
     /// auto-entered or validation formula's related fields, read through
     /// one relationship from its context on its first record, or on every
@@ -2017,8 +2090,8 @@ impl RecordPlan {
 
     /// The desktop's provider handles the session-global side of New
     /// Record explicitly; the other planner callers only write rows.
-    /// `local` permits a stored Number to use the local creation position
-    /// and a Text creation-time field to use the measured desktop clock format.
+    /// `local` permits the stored calculations that need a desktop file
+    /// and Text creation time in its measured system format.
     pub fn from_desktop_file_schema(
         table: &Table,
         tree: &KeyTree<'_>,
@@ -2229,7 +2302,20 @@ impl RecordPlan {
                     .and_then(|node| node.get(6))
                     .and_then(|n| n.assembled())
                     .ok_or_else(|| error("calculation code is missing."))?;
-                parse_formula(&code, &context, usage).map_err(|e| error(&e))
+                let polish = decode_rule_code(&code).map_err(|e| error(&e))?;
+                if matches!(usage, FormulaUse::LocalStoredText)
+                    && matches!(&polish, Expr::Evaluate { args, .. } if args.len() > 1)
+                {
+                    return parse_literal_evaluate(polish, &context, table, &schema).map_err(
+                        |reason| {
+                            DataError::with_code(
+                                error::UNAVAILABLE,
+                                format!("Field {}: {reason}", field.name),
+                            )
+                        },
+                    );
+                }
+                analyze_rule(polish, &context, usage).map_err(|e| error(&e))
             };
             let computed = (kind == FieldKind::Calculation && !unstored) || auto_calculation;
             let expression = if computed {
@@ -2244,6 +2330,8 @@ impl RecordPlan {
                     FormulaUse::Options
                 } else if field.data_type == DataType::Number {
                     FormulaUse::StoredNumber
+                } else if local && field.data_type == DataType::Text {
+                    FormulaUse::LocalStoredText
                 } else {
                     FormulaUse::RecordOnly
                 };
@@ -2277,6 +2365,51 @@ impl RecordPlan {
                 Some(formula)
             } else {
                 None
+            };
+            let mut auto_enter_self = AutoEntrySelf::Unused;
+            if let Some(formula) = expression.as_ref().filter(|_| !global) {
+                let mut uses_self = false;
+                let mut other_inputs = false;
+                walk(&formula.formula.polish, &mut |node| match node {
+                    Expr::Call {
+                        op: om_formula::Opcode::SELF,
+                        ..
+                    } => uses_self = true,
+                    Expr::Get(_) | Expr::Variable(_) | Expr::CustomCall { .. } => {
+                        other_inputs = true
+                    }
+                    _ => {}
+                });
+                let options = options.options & !(INDEX_OPTIONS | BOOKKEEPING_OPTIONS);
+                if uses_self {
+                    let measured = local
+                        && kind == FieldKind::Normal
+                        && field.data_type == DataType::Number
+                        && matches!(options, 0x08 | 0x88)
+                        && formula.dependencies.is_empty()
+                        && formula.related.is_empty()
+                        && !other_inputs;
+                    auto_enter_self = if measured {
+                        AutoEntrySelf::ProposedNumber
+                    } else {
+                        AutoEntrySelf::Unsupported
+                    };
+                }
+            }
+            let global_text_self = if auto_enters_global {
+                expression
+                    .as_ref()
+                    .map(|formula| {
+                        global_text_self::classify(
+                            &def,
+                            Some(&options),
+                            &formula.formula.polish,
+                            local,
+                        )
+                    })
+                    .unwrap_or_default()
+            } else {
+                GlobalTextSelf::Unused
             };
             let validation = if options.validation_options & VALIDATE_BY_CALCULATION != 0 {
                 Some(formula_at(FIELD_VALIDATION, FormulaUse::Options)?)
@@ -2442,6 +2575,8 @@ impl RecordPlan {
                     data_type: field.data_type,
                     editable,
                     expression,
+                    auto_enter_self,
+                    global_text_self,
                     creation_date_with_calculation,
                     constant,
                     validation,
@@ -2646,6 +2781,22 @@ impl RecordPlan {
                     &mut BTreeSet::new(),
                 )
                 .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
+                if context_selectors(&schema, &expression.formula.polish)
+                    .contains(&selector::CURRENT_TIME_UTC_MILLISECONDS)
+                    && !(local
+                        && own
+                        && !calculation
+                        && !field.auto_enters_global()
+                        && matches!(field.data_type, DataType::Text | DataType::Number))
+                {
+                    return Err(DataError::with_code(
+                        error::UNAVAILABLE,
+                        format!(
+                            "Field {}: Get ( CurrentTimeUTCMilliseconds ) requires local Text or Number auto-entry.",
+                            field.name
+                        ),
+                    ));
+                }
                 for dependency in &expression.dependencies {
                     let Some(referenced) = fields.get(dependency) else {
                         return Err(DataError::new(format!(
@@ -2818,7 +2969,8 @@ impl RecordPlan {
             if !field.auto_enters_global() {
                 continue;
             }
-            let nonempty = globals.get(id, 1).is_some_and(|value| !value.is_empty());
+            let existing = globals.get(id, 1);
+            let nonempty = existing.is_some_and(|value| !value.is_empty());
             if nonempty && !allow_nonempty {
                 return Err(DataError::with_code(
                     error::UNAVAILABLE,
@@ -2836,9 +2988,25 @@ impl RecordPlan {
                 if nonempty && !field.options.calculation_replaces_existing() {
                     continue;
                 }
-                let value = self
-                    .evaluate_repetition(id, 1, expression, &row, &session, &mut remaining)
-                    .map_err(RunError::into_error)?;
+                let value = match field.global_text_self {
+                    GlobalTextSelf::Supported if allow_nonempty => self
+                        .run(
+                            id,
+                            expression,
+                            &row,
+                            &session,
+                            Some(existing.cloned().unwrap_or_else(|| Value::text(""))),
+                            Some(ValueType::Text),
+                            InRepetition::Calculation(1),
+                            &mut remaining,
+                        )
+                        .map(|(_, text)| text),
+                    GlobalTextSelf::Unused => {
+                        self.evaluate_repetition(id, 1, expression, &row, &session, &mut remaining)
+                    }
+                    _ => return Err(global_text_self::unavailable(&field.name)),
+                }
+                .map_err(RunError::into_error)?;
                 values.insert((id, 1), value);
             }
         }
@@ -2959,9 +3127,12 @@ impl RecordPlan {
                 .as_ref()
                 .is_some_and(|lookup| self.fires(*id, lookup, mode, &dirty, changes, entry));
             let expression = field.expression.as_ref().is_some_and(|expression| {
-                (field.stored_calculation() || !entry.skip_auto_enter && !entry.keeps(changes, *id))
+                let uses_self = field.auto_enter_self != AutoEntrySelf::Unused;
+                let keeps = entry.keeps_calculated(changes, *id, uses_self);
+                (field.stored_calculation() || !entry.skip_auto_enter && !keeps)
                     && (mode == WriteMode::Create
                         || assigned_groups.contains(id)
+                        || uses_self && changes.contains_key(id)
                         || expression.dependencies.iter().any(|d| dirty.contains(d)))
                     && (field.stored_calculation()
                         || field.options.calculation_replaces_existing()
@@ -3687,6 +3858,7 @@ impl RecordPlan {
                 polish: Expr::Field(om_formula::Field::new(occurrence, id, true)),
             }),
             dependencies: BTreeSet::from([id]),
+            evaluate_triggers: None,
             related: BTreeSet::new(),
             other_globals: BTreeSet::new(),
             whole: BTreeSet::new(),
@@ -3800,30 +3972,58 @@ impl RecordPlan {
             })
     }
 
-    /// Reject an unsupported stored record position before a create or
-    /// preview reserves an ID or a serial number.
-    pub fn check_creation_context(&self, context: &WriteContext) -> Result<(), DataError> {
-        if matches!(
-            context.record_number,
-            Some(RecordNumber::LocalNewRecord(_) | RecordNumber::LocalSortedNewRecord { .. })
-        ) {
-            return Ok(());
-        }
+    /// Reject stored calculations or Self evaluation outside their measured
+    /// creation contexts before a create or preview reserves IDs or serials.
+    pub fn check_creation_context(
+        &self,
+        context: &WriteContext,
+        entry: Entry,
+    ) -> Result<(), DataError> {
+        let unsorted = matches!(context.record_number, Some(RecordNumber::LocalNewRecord(_)));
         if let Some(field) = self.fields.values().find(|field| {
-            field.stored_calculation()
-                && field.expression.as_ref().is_some_and(|expression| {
-                    matches!(
-                        expression.formula.polish,
-                        Expr::Get(selector::RECORD_NUMBER)
-                    )
-                })
+            (!entry.skip_auto_enter || field.stored_calculation())
+                && match field.auto_enter_self {
+                    AutoEntrySelf::Unused => false,
+                    AutoEntrySelf::ProposedNumber => !unsorted,
+                    AutoEntrySelf::Unsupported => true,
+                }
         }) {
             return Err(DataError::with_code(
                 error::UNAVAILABLE,
                 format!(
-                    "Field {}: a stored record number requires ordinary New Record in a local window with a known insertion position.",
+                    "Field {}: Self requires a supported formula and unsorted local New Record.",
                     field.name
                 ),
+            ));
+        }
+        if unsorted {
+            return Ok(());
+        }
+        let local_position = matches!(
+            context.record_number,
+            Some(RecordNumber::LocalSortedNewRecord { .. })
+        );
+        for (field, expression) in self.fields.values().filter_map(|field| {
+            field
+                .expression
+                .as_ref()
+                .filter(|_| field.stored_calculation())
+                .map(|expression| (field, expression))
+        }) {
+            let reason = if !local_position
+                && matches!(
+                    expression.formula.polish,
+                    Expr::Get(selector::RECORD_NUMBER)
+                ) {
+                "a stored record number requires ordinary New Record in a local window with a known insertion position."
+            } else if expression.evaluate_triggers.is_some() {
+                "a stored Evaluate requires ordinary New Record in an unsorted local window."
+            } else {
+                continue;
+            };
+            return Err(DataError::with_code(
+                error::UNAVAILABLE,
+                format!("Field {}: {reason}", field.name),
             ));
         }
         Ok(())
@@ -4795,7 +4995,7 @@ impl RecordPlan {
         preview: Option<&BTreeSet<u64>>,
     ) -> Result<Computed, DataError> {
         if mode == WriteMode::Create {
-            self.check_creation_context(&environment.context)?;
+            self.check_creation_context(&environment.context, entry)?;
         }
         let validate = preview.is_none();
         let mut deferred = BTreeSet::new();
@@ -4898,6 +5098,12 @@ impl RecordPlan {
             }
         }
         let mut session = environment.session();
+        if mode != WriteMode::Create {
+            session.creation_utc_clock = None;
+            session
+                .unanswered
+                .insert(selector::CURRENT_TIME_UTC_MILLISECONDS);
+        }
         session.stored = existing.clone();
         // Each field's turn passes before the next: its value is final then,
         // unless it was left out, or a preview passed over it uncomputed.
@@ -4970,8 +5176,9 @@ impl RecordPlan {
                 continue;
             };
             let combined_create = field.creation_date_with_calculation && mode == WriteMode::Create;
-            if !field.stored_calculation()
-                && (entry.skip_auto_enter || (entry.keeps(changes, *id) && !combined_create))
+            let uses_self = field.auto_enter_self != AutoEntrySelf::Unused;
+            let keeps = entry.keeps_calculated(changes, *id, uses_self);
+            if !field.stored_calculation() && (entry.skip_auto_enter || (keeps && !combined_create))
             {
                 continue;
             }
@@ -4999,10 +5206,18 @@ impl RecordPlan {
                 .dependencies
                 .iter()
                 .any(|id| deferred.contains(id));
-            let should_evaluate = mode == WriteMode::Create
-                || assigned_groups.contains(id)
-                || depends_on_deferred
-                || expression.dependencies.iter().any(|id| dirty.contains(id));
+            let should_evaluate = match &expression.evaluate_triggers {
+                Some(triggers) => triggers
+                    .iter()
+                    .any(|id| dirty.contains(id) || deferred.contains(id)),
+                None => {
+                    mode == WriteMode::Create
+                        || assigned_groups.contains(id)
+                        || depends_on_deferred
+                        || uses_self && changes.contains_key(id)
+                        || expression.dependencies.iter().any(|id| dirty.contains(id))
+                }
+            };
             let can_replace = field.stored_calculation()
                 || field.options.calculation_replaces_existing()
                 || row.get(id).map_or(true, String::is_empty);
@@ -5035,6 +5250,12 @@ impl RecordPlan {
                 deferred.insert(*id);
                 continue;
             }
+            if field.auto_enter_self == AutoEntrySelf::Unsupported {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!("Field {}: unsupported auto-entry using Self.", field.name),
+                ));
+            }
             if field.creation_date_with_calculation {
                 if !validate {
                     deferred.insert(*id);
@@ -5051,6 +5272,27 @@ impl RecordPlan {
             let globals = self.session_globals(*id, expression, &session)?;
             let mut remaining = session.calculation_budget();
             let result = (|| {
+                if field.options.options & ALWAYS_EVALUATE == 0
+                    && expression
+                        .evaluate_triggers
+                        .as_ref()
+                        .is_some_and(|triggers| {
+                            let empty = |id| row.get(id).is_none_or(String::is_empty);
+                            triggers.iter().all(empty)
+                                && expression
+                                    .dependencies
+                                    .difference(triggers)
+                                    .any(|id| !empty(id))
+                        })
+                {
+                    return Err(RunError::Unread(DataError::with_code(
+                        error::UNAVAILABLE,
+                        format!(
+                            "Field {}: evaluating with all listed fields empty and an unlisted field filled is unsupported.",
+                            field.name
+                        ),
+                    )));
+                }
                 if field.options.options & ALWAYS_EVALUATE == 0
                     && self.all_inputs_empty(
                         expression,
@@ -5740,6 +5982,19 @@ impl RecordPlan {
             .map(|f| f as &dyn Fn() -> bool);
         host.limits = session.limits;
         host.file_context = session.file_context;
+        let call = std::cell::Cell::new(0);
+        let sample_clock = || {
+            let index = call.get();
+            call.set(index + 1);
+            session
+                .creation_utc_clock
+                .as_ref()
+                .ok_or(om_calc::CalcError::NOT_SUPPORTED)?
+                .sample(field, index)
+        };
+        if session.creation_utc_clock.is_some() {
+            host.creation_utc_sample = Some(&sample_clock);
+        }
         let (repetition, extend_fields) = match repetition {
             InRepetition::Validation(n) => (n, n > 1),
             InRepetition::Calculation(n) => (n, false),
@@ -5928,17 +6183,29 @@ impl RecordPlan {
             .table(self.table)
             .and_then(|t| t.fields.get(&id));
         let result_type = def.map(|d| d.value_type);
+        let self_value = self.auto_enters_proposed_self(id).then(|| {
+            let cx = Ctx::new(&self.schema.locale, session.today());
+            let proposed = row.get(&id).map_or("", String::as_str);
+            stored_value(proposed, ValueType::Number, &cx)
+        });
         let repetition = InRepetition::Calculation(repetition);
         self.run(
             id,
             expression,
             row,
             session,
-            None,
+            self_value,
             result_type,
             repetition,
             remaining,
         )
+    }
+
+    /// Whether a new-record preview may replace the supplied value of this cell.
+    pub fn auto_enters_proposed_self(&self, cell: u64) -> bool {
+        self.fields
+            .get(&cell)
+            .is_some_and(|field| field.auto_enter_self == AutoEntrySelf::ProposedNumber)
     }
 
     /// Whether repetition `repetition` of field `id` passes its validation
@@ -6833,6 +7100,7 @@ fn selector_name(selector: u8) -> &'static str {
         selector::LAYOUT_NUMBER => "Get ( LayoutNumber )",
         selector::RECORD_NUMBER => "Get ( RecordNumber )",
         selector::CURRENT_PRIVILEGE_SET_NAME => "Get ( CurrentPrivilegeSetName )",
+        selector::CURRENT_TIME_UTC_MILLISECONDS => "Get ( CurrentTimeUTCMilliseconds )",
         _ => "Get ( CurrentHostTimestamp )",
     }
 }
@@ -7015,6 +7283,9 @@ enum FormulaUse {
     /// At creation, a stored Number calculation can capture the record's
     /// position (auto-entry.md, "Get ( RecordNumber )").
     StoredNumber,
+    /// A local stored Text calculation can use a literal Evaluate with
+    /// explicit triggers (auto-entry.md, "Stored Evaluate").
+    LocalStoredText,
     /// An auto-entered or validation formula can read related fields and
     /// the operation's [`CONTEXT_SELECTORS`].
     Options,
@@ -7030,6 +7301,10 @@ fn parse_recomputed(code: &[u8], context: &[u8]) -> Result<Expression, String> {
 
 /// Decode a formula with the field reads and selectors its caller can answer.
 fn parse_formula(code: &[u8], context: &[u8], usage: FormulaUse) -> Result<Expression, String> {
+    analyze_rule(decode_rule_code(code)?, context, usage)
+}
+
+fn decode_rule_code(code: &[u8]) -> Result<Expr, String> {
     if code.len() > MAX_CODE {
         return Err("calculation is too large.".into());
     }
@@ -7039,7 +7314,7 @@ fn parse_formula(code: &[u8], context: &[u8], usage: FormulaUse) -> Result<Expre
         depth: MAX_DEPTH,
         nodes: MAX_NODES,
     };
-    let polish = om_formula::polish::decode_with(code, limits).map_err(|e| match e.kind {
+    om_formula::polish::decode_with(code, limits).map_err(|e| match e.kind {
         DecodeErrorKind::Malformed("nesting depth" | "too many nodes") => {
             "calculation complexity exceeds the supported limit.".to_owned()
         }
@@ -7047,7 +7322,10 @@ fn parse_formula(code: &[u8], context: &[u8], usage: FormulaUse) -> Result<Expre
         DecodeErrorKind::TrailingBytes => "unsupported trailing calculation data.".to_owned(),
         DecodeErrorKind::InvalidOpcode(op) => format!("unsupported calculation opcode {op:#04x}."),
         _ => format!("invalid calculation: {e}."),
-    })?;
+    })
+}
+
+fn analyze_rule(polish: Expr, context: &[u8], usage: FormulaUse) -> Result<Expression, String> {
     let related_reads = matches!(usage, FormulaUse::Options);
     let window_reads = related_reads
         || matches!(
@@ -7145,6 +7423,7 @@ fn parse_formula(code: &[u8], context: &[u8], usage: FormulaUse) -> Result<Expre
             polish,
         }),
         dependencies,
+        evaluate_triggers: None,
         related,
         other_globals: BTreeSet::new(),
         whole,
@@ -7158,6 +7437,89 @@ fn parse_formula(code: &[u8], context: &[u8], usage: FormulaUse) -> Result<Expre
 enum GroupedAutoEntry {
     Keep,
     Replace,
+}
+
+/// Compile the measured local stored Evaluate form once. Its second
+/// argument declares triggers independently of the fields in its text.
+fn parse_literal_evaluate(
+    polish: Expr,
+    context: &[u8],
+    table: &Table,
+    schema: &CalcSchema,
+) -> Result<Expression, String> {
+    let Expr::Evaluate {
+        args,
+        need_field_ref: 0,
+    } = polish
+    else {
+        return Err("unsupported stored Evaluate form.".into());
+    };
+    let [Expr::Text(text), triggers @ ..] = args.as_slice() else {
+        return Err("a stored Evaluate requires literal expression text.".into());
+    };
+    if text.style.is_some() || triggers.is_empty() {
+        return Err("a stored Evaluate requires plain text and explicit trigger fields.".into());
+    }
+    let occurrence = Key(context.to_vec())
+        .id()
+        .and_then(|id| schema.occurrence(id))
+        .filter(|occurrence| occurrence.table == table.id)
+        .ok_or("a stored Evaluate requires a local context occurrence.")?;
+    let text_field = |reference: &om_formula::Field| {
+        if reference.occurrence.0 != context || reference.repetition != 1 {
+            return None;
+        }
+        let field = table.field(reference.field.id()?)?;
+        let options = field.decoded_options()?;
+        (field.kind == FieldKind::Normal
+            && field.data_type == DataType::Text
+            && options.options & GLOBAL == 0
+            && options.max_repetitions == 1)
+            .then_some(field.id)
+    };
+    let triggers = triggers
+        .iter()
+        .map(|trigger| match trigger {
+            Expr::Field(field) | Expr::FieldRef(field) => text_field(field),
+            _ => None,
+        })
+        .collect::<Option<BTreeSet<_>>>()
+        .ok_or("a stored Evaluate trigger must be a local single-repetition Text field.")?;
+
+    let mut names = om_formula::NameTable::default();
+    names.add_occurrence(occurrence.id, &occurrence.name, table.id);
+    for field in &table.fields {
+        names.add_field(table.id, field.id, &field.name);
+    }
+    let mut parse_context = om_formula::Context::new(&names);
+    parse_context.occurrence = Some(occurrence.id);
+    let compiled = om_formula::compile(&text.value, &parse_context)
+        .map_err(|_| "cannot compile a stored Evaluate expression.")?;
+    let space = om_formula::Decimal::parse_literal("32").map(om_formula::Number::Decimal);
+    let mut remaining = MAX_NODES;
+    let mut nodes = vec![&compiled.expr];
+    while let Some(expr) = nodes.pop() {
+        if remaining == 0 {
+            return Err("stored Evaluate expression exceeds the supported limit.".into());
+        }
+        remaining -= 1;
+        match expr {
+            Expr::Field(reference) if text_field(reference).is_some() => {}
+            Expr::Text(text) if text.style.is_none() => {}
+            Expr::Call { op, args } if *op == om_formula::Opcode::CONCAT => nodes.extend(args),
+            Expr::Call { op, args }
+                if op.name() == Some("Char")
+                    && matches!(args.as_slice(), [Expr::Number(number)] if Some(number) == space.as_ref()) =>
+                {}
+            _ => return Err("unsupported expression in a stored Evaluate text join.".into()),
+        }
+    }
+    let mut expression = analyze_rule(compiled.expr, context, FormulaUse::RecordOnly)?;
+    if !triggers.is_subset(&expression.dependencies) {
+        return Err("a stored Evaluate trigger must be read by its expression.".into());
+    }
+    expression.evaluate_triggers = Some(triggers);
+    Ok(expression)
 }
 
 struct RelatedWriteHop {
@@ -8738,6 +9100,7 @@ mod tests {
             // A row typed after two related rows of an unsorted portal
             // (#1038).
             record_number: Some(RecordNumber::Window(3)),
+            creation_utc_clock: None,
             sequence: WriteSequence::Unmeasured,
             file_variables: None,
             other_globals: None,
@@ -8881,6 +9244,136 @@ mod tests {
         let filled = create(&plan, &[(1, "a")]).unwrap();
         assert_eq!(decoded(&filled, 20).as_deref(), Some("xa"));
         assert_eq!(decoded(&filled, 21).as_deref(), Some("ya"));
+    }
+
+    #[test]
+    fn a_local_number_auto_entry_reads_the_proposed_self() {
+        let table = Table {
+            id: 0x8002,
+            name: "Items".into(),
+            fields: vec![
+                field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(20, FieldKind::Normal, DataType::Number, 0, 0x88, 0),
+                field(21, FieldKind::Normal, DataType::Number, 0, 0x08, 0),
+            ],
+        };
+        let formula = "If ( IsEmpty ( Self ) ; 0 ; Self + 1 )";
+        let formulas = [(20, 5, formula), (21, 5, formula)];
+        let hosted = plan_with(&table, &formulas, &[], Vec::new(), false).unwrap();
+        let plan = plan_of(&table, &formulas, &[]).unwrap();
+        let entry = Entry::script(false, false);
+        let held_create = Entry {
+            keep_written: true,
+            ..entry
+        };
+        let env = RecordEnvironment {
+            context: WriteContext {
+                record_number: Some(RecordNumber::LocalNewRecord(1)),
+                ..WriteContext::default()
+            },
+            ..environment()
+        };
+        let empty = BTreeMap::new();
+        let create = plan
+            .compute(
+                WriteMode::Create,
+                &empty,
+                &BTreeMap::new(),
+                &env,
+                held_create,
+            )
+            .unwrap();
+        assert_eq!(
+            create,
+            BTreeMap::from([(20, Some("0".into())), (21, Some("0".into()))])
+        );
+        let propose = BTreeMap::from([(20, Some("25".into())), (21, Some("25".into()))]);
+        let values = plan
+            .compute(WriteMode::Create, &empty, &propose, &env, held_create)
+            .unwrap();
+        assert_eq!(
+            values,
+            BTreeMap::from([(20, Some("26".into())), (21, Some("25".into()))])
+        );
+        let row = BTreeMap::from([(20, "7".into()), (21, "8".into())]);
+        let updated = plan
+            .compute(WriteMode::Update, &row, &propose, &env, entry)
+            .unwrap();
+        assert_eq!(updated, values);
+        let cleared = plan
+            .compute(
+                WriteMode::Update,
+                &row,
+                &BTreeMap::from([(20, None), (21, None)]),
+                &env,
+                entry,
+            )
+            .unwrap();
+        assert_eq!(cleared, create);
+        let note = BTreeMap::from([(1, Some("unrelated".into()))]);
+        assert_eq!(
+            plan.compute(WriteMode::Update, &row, &note, &env, entry)
+                .unwrap(),
+            note
+        );
+        let unmeasured = RecordEnvironment {
+            context: WriteContext {
+                record_number: Some(RecordNumber::Window(1)),
+                ..WriteContext::default()
+            },
+            ..environment()
+        };
+        for (plan, env, entry) in [
+            (&plan, &unmeasured, held_create),
+            (&hosted, &env, held_create),
+            (&plan, &unmeasured, Entry::import(true)),
+        ] {
+            assert_eq!(
+                plan.compute(WriteMode::Create, &empty, &propose, env, entry)
+                    .unwrap_err()
+                    .code,
+                Some(error::UNAVAILABLE)
+            );
+        }
+        assert_eq!(
+            plan.compute(
+                WriteMode::Create,
+                &empty,
+                &propose,
+                &unmeasured,
+                Entry::import(false)
+            )
+            .unwrap(),
+            propose
+        );
+
+        let text_table = Table {
+            fields: vec![
+                field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(20, FieldKind::Normal, DataType::Text, 0, 0x88, 0),
+            ],
+            ..table
+        };
+        let unmeasured_self = plan_of(&text_table, &[(20, 5, "Trim ( Self )")], &[]).unwrap();
+        assert_eq!(
+            unmeasured_self
+                .compute(WriteMode::Update, &row, &note, &env, entry)
+                .unwrap(),
+            note
+        );
+        assert_eq!(
+            unmeasured_self
+                .compute(
+                    WriteMode::Update,
+                    &row,
+                    &BTreeMap::from([(20, Some(" proposed ".into()))]),
+                    &env,
+                    entry
+                )
+                .unwrap_err()
+                .code,
+            Some(error::UNAVAILABLE)
+        );
     }
 
     #[test]
@@ -9755,6 +10248,130 @@ mod tests {
             )
             .unwrap();
         assert!(!updated.values.contains_key(&23));
+    }
+
+    #[test]
+    fn stored_literal_evaluate_recalculates_only_for_a_listed_field() {
+        const OCCURRENCE: u64 = 0xd0_0002;
+        let table = Table {
+            id: 0x8002,
+            name: "People".into(),
+            fields: [
+                (1, "Given", FieldKind::Normal, 0),
+                (2, "Family", FieldKind::Normal, 0),
+                (3, "Note", FieldKind::Normal, 0),
+                (4, "Display", FieldKind::Calculation, 0x80000),
+            ]
+            .into_iter()
+            .map(|(id, name, kind, flags)| {
+                let mut field = field(id, kind, DataType::Text, 0, flags, 0);
+                field.name = name.into();
+                field
+            })
+            .collect(),
+        };
+        let mut file = CalcSchema::new("Example", Locale::en_us());
+        file.add_occurrence(OCCURRENCE, "People", table.id);
+        let code_for = |first| {
+            let formula = Expr::Evaluate {
+                args: vec![
+                    first,
+                    Expr::Field(om_formula::Field::new(OCCURRENCE, 1, false)),
+                    Expr::Field(om_formula::Field::new(OCCURRENCE, 2, false)),
+                ],
+                need_field_ref: 0,
+            };
+            om_formula::polish::encode(&formula)
+        };
+        fn tree_for(code: &[u8]) -> KeyTree<'_> {
+            let mut tree = KeyTree::default();
+            let prefix = [
+                KeySegment(&[0x80, 2]),
+                KeySegment(&[3]),
+                KeySegment(&[5]),
+                KeySegment(&[4]),
+                KeySegment(&[5]),
+            ];
+            for (key, value) in [(&[4][..], CONTEXT), (&[6][..], code)] {
+                let mut path = prefix.to_vec();
+                path.push(KeySegment(key));
+                tree.insert(&path, om_hbam::slot::ChunkKind::Leaf, Some(value))
+                    .unwrap();
+            }
+            tree
+        }
+        let literal = Expr::Text(om_formula::Text {
+            value: "Given & Char ( 32 ) & Family & Char ( 32 ) & Note".into(),
+            style: None,
+        });
+        let code = code_for(literal);
+        let tree = tree_for(&code);
+        let plan = RecordPlan::from_desktop_file_schema(&table, &tree, &file, true).unwrap();
+        let mut environment = environment();
+        assert_eq!(
+            plan.check_creation_context(&environment.context, Entry::default())
+                .unwrap_err()
+                .code,
+            Some(error::UNAVAILABLE),
+        );
+        environment.context.record_number = Some(RecordNumber::LocalSortedNewRecord {
+            position: 2,
+            after: 1,
+        });
+        assert_eq!(
+            plan.check_creation_context(&environment.context, Entry::default())
+                .unwrap_err()
+                .code,
+            Some(error::UNAVAILABLE),
+        );
+        environment.context.record_number = Some(RecordNumber::LocalNewRecord(1));
+        let blank = BTreeMap::new();
+        let created = plan
+            .prepare(WriteMode::Create, &blank, &BTreeMap::new(), &environment)
+            .unwrap();
+        assert!(decoded(&created, 4).is_none());
+
+        let existing =
+            BTreeMap::from([(1, "Pat".into()), (2, "Lee".into()), (4, "Pat Lee ".into())]);
+        let edited = plan
+            .prepare(
+                WriteMode::Update,
+                &existing,
+                &BTreeMap::from([(3, Some("edited".into()))]),
+                &environment,
+            )
+            .unwrap();
+        assert_eq!(edited.changed_fields, [3]);
+
+        let mut existing = existing;
+        existing.insert(3, "edited".into());
+        let recomputed = plan
+            .prepare(
+                WriteMode::Update,
+                &existing,
+                &BTreeMap::from([(2, Some("Kim".into()))]),
+                &environment,
+            )
+            .unwrap();
+        assert_eq!(decoded(&recomputed, 4).as_deref(), Some("Pat Kim edited"));
+        let cleared = plan
+            .prepare(
+                WriteMode::Update,
+                &existing,
+                &BTreeMap::from([(1, None), (2, None)]),
+                &environment,
+            )
+            .err()
+            .unwrap();
+        assert_eq!(cleared.code, Some(error::UNAVAILABLE));
+
+        assert!(RecordPlan::from_file_schema(&table, &tree, &file).is_err());
+        let dynamic_code = code_for(Expr::Field(om_formula::Field::new(OCCURRENCE, 3, false)));
+        let dynamic = tree_for(&dynamic_code);
+        let error = RecordPlan::from_desktop_file_schema(&table, &dynamic, &file, true)
+            .err()
+            .unwrap();
+        assert_eq!(error.code, Some(error::UNAVAILABLE));
     }
 
     /// The two lookups FileMaker Pro 26.0.3 saved and ran (auto-entry.md,

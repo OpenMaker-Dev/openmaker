@@ -181,6 +181,8 @@ impl Stamp {
 pub(crate) struct Created {
     pub(crate) stamp: Stamp,
     pub(crate) values: BTreeMap<u64, Option<String>>,
+    /// Computed cells whose proposal may differ from what the record shows.
+    pub(crate) proposed_self: BTreeSet<u64>,
 }
 
 /// What a write reuses of its preview: the serial numbers taken when the
@@ -730,6 +732,7 @@ impl NativeProvider {
             Some(transaction) => Entry {
                 script: true,
                 keep_written: create,
+                imported: false,
                 skip_data_entry_validation: transaction.skips_validation(),
                 skip_auto_enter: transaction.skips_auto_enter(),
                 mapped_cells: None,
@@ -889,6 +892,7 @@ impl NativeProvider {
             Some(transaction) => Entry {
                 script: true,
                 keep_written: true,
+                imported: false,
                 skip_data_entry_validation: transaction.skips_validation(),
                 skip_auto_enter: transaction.skips_auto_enter(),
                 mapped_cells: None,
@@ -906,7 +910,7 @@ impl NativeProvider {
             single_field_step: false,
         };
         let context = self.origin_context(&plan, origin)?;
-        plan.check_creation_context(&context)?;
+        plan.check_creation_context(&context, entry)?;
         let mut environment = self.rule_environment(table, &plan, context)?;
         let on_creation = plan
             .serials_for(WriteMode::Create, entry)
@@ -1101,9 +1105,15 @@ impl NativeProvider {
         let none = |_, _, _| false;
         let reads = (&fields, &none as om_data::rules::UnknownValue<'_>);
         let values = self.preview_record(plan, (entry, false), &given, &environment, reads)?;
+        let proposed_self = values
+            .keys()
+            .copied()
+            .filter(|cell| plan.auto_enters_proposed_self(*cell))
+            .collect();
         Ok(Created {
             stamp: Stamp::of(&environment),
             values,
+            proposed_self,
         })
     }
 

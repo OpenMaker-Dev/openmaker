@@ -1648,6 +1648,16 @@ file. No CSS or font asset is copied into the implementation.
 | text transform (75) | 1 none (`fill-low-shadow-inverted-edit:placeholder`); 3 uppercase (`uppercase-secondary-text`, `separator-uppercase-highlight-buttonbar`) | 2 capitalize, 4 lowercase inferred; no such rule in the inspected installed theme CSS |
 | text vertical align (611) | 0 top (`field`, `small_valigned_top_editbox`); 1 center (`button`, `small_center_aligned_text`); 2 bottom (`small_bottom_aligned_text`, `medium_valigned_btmright_editbox`) | These are zero-based, unlike text-align |
 
+[O, FileMaker Pro 26.1.1] Browse draws no line on a Text object's edge
+when its resolved border style is unset, even with a set width and
+color. A Text object with only its top edge enabled retained red and
+1-point width on all four sides. Only the top had a resolved style
+(solid, 5), and only the top drew. Removing that last style left all
+edges invisible and the Inspector showed None, with the width and color
+still present. A control with all four styles set to solid drew all four
+edges. Other object kinds and modes were not checked.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1091#issuecomment-7191245927)
+
 [O] Where a field's text sits when its style stores no vertical align (611).
 None of the 156 field objects of the six English starters resolves 611 from
 the object, the layout or the theme, components 1 and 3. Their themes carry it
@@ -2029,6 +2039,13 @@ template carries copies of `com.filemaker.theme.universal_touch` and
   and right-to-left text (`direction`, `unicode-bidi`) are part of the model [O].
 - ICU 76 is bundled (Windows `icu*76.dll`, imported by Support) [O].
 
+[O, FileMaker Pro 26.1.1] At Actual Size, a 104 × 22 pt Text object
+using Helvetica Neue 16 pt displays the complete label `Top edge only`.
+A 102 × 22 pt control with the same style displays `All four edges`.
+Both fit on one line. The point sizes and family come from the same
+closed synthetic layout.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1104)
+
 ### 8.1 Stored character-style masks
 
 [O, FileMaker Pro 26.0.3 Mac Support] `CharacterStyle::Read` (0x1f7fdc)
@@ -2056,6 +2073,24 @@ the default style; those slots must not become explicit text overrides.
 A set face-mask bit can explicitly turn a face off. A run that changes only
 bold must inherit the default italic setting; a color-only run must inherit
 the layout's font and point size. Unknown bits and extension bytes remain raw.
+
+### 8.2 Styled merge values
+
+[O, FileMaker Pro 26.1.1, local synthetic file] Browse preserves the
+stored formatting of literal text on either side of an inserted layout
+symbol or merge field. A uniformly styled reference passes its style to
+the replacement. Where the opening delimiters, reference name and
+closing delimiters each had a different color, the entire replacement
+used the opening delimiter's color. Treating other attributes within a
+mixed reference the same way is inferred from this test. In the saved
+split examples, the opening delimiter and name shared a run. The closing
+delimiter kept its separate color through reopening. An empty field
+removed just the replacement, and the suffix kept its styling and line.
+A long field retained its style. Both lines of a two-line field used
+the replacement's style, and the suffix kept its own style on the second
+line. Different paragraph spacing and merge-variable styling were not
+measured.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1030)
 
 ## 9. Rendering stack
 

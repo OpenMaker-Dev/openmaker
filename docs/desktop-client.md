@@ -77,8 +77,8 @@ own chrome uses are in [design.md](design.md). Related notes:
   Linux and Windows.
 - The UI font is the bundled Inter (OFL), a cross-platform stand-in for the
   system font with similar metrics. Layout text uses the fonts the host
-  sends; on macOS, System Arial is used when the file asks for it and it is
-  installed, with a bundled open font as the fallback.
+  sends. On macOS, a document's Arial or Helvetica Neue selection uses the
+  installed family when available, with a bundled open font as the fallback.
 
 ## Opening files
 
@@ -621,6 +621,16 @@ from the current record page. Stored anchors resize objects within their
 containers. Record changes keep the user's selected panels. Browse shows no
 authoring part tabs or object kind captions.
 
+- Text objects in Browse draw an edge only when its style resolves to a
+  line. A width and color alone leave the edge hidden.
+- Styled layout labels keep the stored formatting of literal text around
+  a merge symbol or field. The replacement takes the styling at its
+  opening delimiter. OpenMaker also applies this rule to merge variables
+  and paragraph runs (layout-model.md 8.2).
+- Date fields, merge fields and date symbols in Browse can show the
+  fixed named month and weekday presets in month-first English (see
+  data-format.md). OpenMaker takes names from the file's locale for
+  those presets. Short System Date is still displayed as entered.
 - A text, number, date, time or timestamp value stored with character
   styles (a chunked value beside a style subtree `ff`, calc-values.md
   implementation notes) shows its text; a nested form the provider cannot
