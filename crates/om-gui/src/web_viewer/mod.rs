@@ -44,6 +44,60 @@ const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// The most bytes of one `FileMaker.PerformScript` message a page may send.
 const MAX_MESSAGE: usize = 16 * 1024 * 1024;
 
+/// The most bridge message bytes that may wait for the app at once, each
+/// message counted as at least [`MESSAGE_COST`], and the most messages.
+const MESSAGE_BUDGET: usize = 2 * MAX_MESSAGE;
+const MESSAGE_COST: usize = 1024;
+const MESSAGE_ENTRIES: usize = 256;
+
+/// The bridge messages a backend has taken from its pages and the app has
+/// not polled yet, within [`MESSAGE_BUDGET`] and [`MESSAGE_ENTRIES`]. The
+/// thread that hears the pages admits a message, the app's thread releases
+/// it when it polls; neither waits for the other. Clones share the count.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(
+    not(all(feature = "web-viewer", any(target_os = "linux", target_os = "macos"))),
+    allow(dead_code, reason = "only a native backend takes messages")
+)]
+pub(crate) struct MessageBudget {
+    bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    entries: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[cfg_attr(
+    not(all(feature = "web-viewer", any(target_os = "linux", target_os = "macos"))),
+    allow(dead_code, reason = "only a native backend takes messages")
+)]
+impl MessageBudget {
+    /// Whether to keep a message a page posted, counting it if so: it must
+    /// be no longer than [`MAX_MESSAGE`], fit in what is left, and be well
+    /// formed. Room is taken before the message is read, so a page that
+    /// floods a full budget costs no parsing.
+    pub fn admit(&self, body: &str) -> bool {
+        use std::sync::atomic::Ordering;
+        if body.len() > MAX_MESSAGE {
+            return false;
+        }
+        let cost = body.len().max(MESSAGE_COST);
+        let bytes = self.bytes.fetch_add(cost, Ordering::SeqCst) + cost;
+        let entries = self.entries.fetch_add(1, Ordering::SeqCst) + 1;
+        if bytes <= MESSAGE_BUDGET && entries <= MESSAGE_ENTRIES && parse_message(body).is_some() {
+            return true;
+        }
+        self.release(body);
+        false
+    }
+
+    /// A message [`MessageBudget::admit`] kept no longer waits: the app
+    /// polled it, or it could not be sent.
+    pub fn release(&self, body: &str) {
+        use std::sync::atomic::Ordering;
+        self.bytes
+            .fetch_sub(body.len().max(MESSAGE_COST), Ordering::SeqCst);
+        self.entries.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// A web viewer Browse painted this frame, in the window's points.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Placement {
@@ -117,7 +171,13 @@ pub(crate) struct Geometry {
 
 impl Geometry {
     fn of(rect: egui::Rect, visible: egui::Rect, pixels_per_point: f32, zoom: f32) -> Self {
-        let px = |v: f32| (v * pixels_per_point).round() as i32;
+        // A file's object bounds are not bounded: within 2^24 pixels of the
+        // window, no difference below overflows (a NaN gives 0).
+        let px = |v: f32| {
+            (v * pixels_per_point)
+                .round()
+                .clamp(-16_777_216.0, 16_777_216.0) as i32
+        };
         let shown = rect.intersect(visible);
         let (left, top) = (px(shown.min.x), px(shown.min.y));
         let (width, height) = (
@@ -139,6 +199,23 @@ impl Geometry {
     fn is_empty(&self) -> bool {
         self.frame[2] <= 0 || self.frame[3] <= 0
     }
+
+    /// Whether a native view can be this large: X11 sizes and places a
+    /// window in 16 bits, so a page more than 32,767 pixels across or
+    /// down (a file's bounds can be anything) gets no view.
+    fn fits(&self) -> bool {
+        self.content[2] <= MAX_PAGE_PIXELS && self.content[3] <= MAX_PAGE_PIXELS
+    }
+}
+
+/// The largest page a native view shows, across or down, in pixels
+/// ([`Geometry::fits`]).
+const MAX_PAGE_PIXELS: i32 = i16::MAX as i32;
+
+/// Whether a web viewer at `rect` (window points) can have a native view
+/// ([`Geometry::fits`]): painting shows a note in place of one too large.
+pub(crate) fn fits(rect: egui::Rect, pixels_per_point: f32) -> bool {
+    Geometry::of(rect, rect, pixels_per_point, 1.0).fits()
 }
 
 /// What a native view is created with.
@@ -240,8 +317,8 @@ pub(crate) enum Unavailable {
     /// backend.
     Build,
     /// The window's viewport has no native window of its own that is known
-    /// (an embedded viewport, or one whose X11 window was not found:
-    /// `viewports.rs`).
+    /// (one whose X11 or AppKit window was not found: `viewports.rs`). An
+    /// embedded viewport has the root's.
     Window,
     /// The backend could not start (no X11 display, a Wayland session).
     Platform,
@@ -517,6 +594,10 @@ impl WebViewers {
                 frame.pixels_per_point,
                 placement.zoom,
             );
+            // Not seen: a view it had goes.
+            if !geometry.fits() {
+                continue;
+            }
             let shown = placement.rect.intersect(placement.visible);
             let covered = frame.covered.iter().any(|c| c.intersects(shown));
             let visible = !geometry.is_empty() && !covered;
@@ -942,17 +1023,27 @@ pub(crate) fn allowed(url: &str) -> bool {
 )]
 pub(crate) const MESSAGE_URL: &str = "openmaker-message:";
 
-/// The `FileMaker` object a page gets when its web viewer allows
-/// JavaScript to perform FileMaker scripts. Its functions post the script
-/// name, parameter and option (each `encodeURIComponent`d, `&`-separated)
-/// to the view's `openmaker` message handler; nothing comes back to the
-/// page. macOS has a bridge of its own (`appkit.rs`).
+/// The `FileMaker` object a page gets in its main frame when its web
+/// viewer allows JavaScript to perform FileMaker scripts, on Linux. Its
+/// functions put the script name, parameter and option (each
+/// `encodeURIComponent`d, `&`-separated) in an event on an element that
+/// only it and [`BRIDGE_POSTER`] hold; nothing comes back to the page.
+/// macOS has a bridge of its own (`appkit.rs`).
 #[cfg_attr(
     not(all(feature = "web-viewer", target_os = "linux")),
     allow(dead_code, reason = "only the WebKitGTK backend injects it")
 )]
 pub(crate) const BRIDGE: &str = r#"(function () {
+  // The element shared with the poster: whichever of the two runs first
+  // (both run as the document starts, before the page's own scripts)
+  // leaves it for the other, which takes it out of the document.
+  var root = document.documentElement, link = root && root.lastChild;
+  if (!root) { return; }
+  if (link && link.localName === "openmaker-bridge") { link.remove(); }
+  else { link = document.createElement("openmaker-bridge"); root.appendChild(link); }
   if (window.FileMaker) { return; }
+  // Taken now, so that a page replacing them later does not cut it off.
+  var send = EventTarget.prototype.dispatchEvent.bind(link), Message = CustomEvent;
   function text(value, fallback) {
     return value === undefined || value === null ? fallback : String(value);
   }
@@ -960,7 +1051,7 @@ pub(crate) const BRIDGE: &str = r#"(function () {
     var body = "openmaker-perform-script&s=" + encodeURIComponent(text(script, "")) +
       "&p=" + encodeURIComponent(text(parameter, "")) +
       "&o=" + encodeURIComponent(text(option, "0"));
-    window.webkit.messageHandlers.openmaker.postMessage(body);
+    send(new Message("openmaker-post", { detail: body }));
   }
   var fileMaker = Object.freeze({
     PerformScript: function (script, parameter) { post(script, parameter, "0"); },
@@ -970,6 +1061,27 @@ pub(crate) const BRIDGE: &str = r#"(function () {
   });
   Object.defineProperty(window, "FileMaker", {
     value: fileMaker, writable: false, configurable: false, enumerable: true
+  });
+})();"#;
+
+/// The other half of the Linux bridge, in the page's main frame too, but in
+/// a script world of OpenMaker's own, the only world that has the view's
+/// `openmaker` message handler: no script of the page, or of another
+/// site's frame in it, runs there. It posts what [`BRIDGE`]'s element
+/// hears, taking the element as [`BRIDGE`] does.
+#[cfg_attr(
+    not(all(feature = "web-viewer", target_os = "linux")),
+    allow(dead_code, reason = "only the WebKitGTK backend injects it")
+)]
+pub(crate) const BRIDGE_POSTER: &str = r#"(function () {
+  var root = document.documentElement, link = root && root.lastChild;
+  if (!root) { return; }
+  if (link && link.localName === "openmaker-bridge") { link.remove(); }
+  else { link = document.createElement("openmaker-bridge"); root.appendChild(link); }
+  link.addEventListener("openmaker-post", function (event) {
+    if (typeof event.detail === "string") {
+      window.webkit.messageHandlers.openmaker.postMessage(event.detail);
+    }
   });
 })();"#;
 

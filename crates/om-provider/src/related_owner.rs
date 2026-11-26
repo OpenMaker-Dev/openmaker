@@ -328,7 +328,7 @@ impl NativeProvider {
                 DataError::with_code(3, "The owning table definition is unavailable.")
             })?;
             let planned =
-                om_data::rules::RecordPlan::from_desktop_file_schema(&table, &tree, &file);
+                om_data::rules::RecordPlan::from_desktop_file_schema(&table, &tree, &file, false);
             let reads: Vec<u64> = match &planned {
                 Ok(_) => Vec::new(),
                 Err(_) => crate::calc::rule_reads(&file, &table, &tree)
@@ -1991,6 +1991,7 @@ fn routed_write(
         set: CurrentSet::Account,
         record_number: write.record_number,
         prepared: write.prepared,
+        single_field_step: false,
     };
     match plan {
         Some(plan) => {

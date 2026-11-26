@@ -1327,6 +1327,7 @@ fn imported_layout_rules_check_custom_function_record_context_before_writes() {
                 privilege_set: None,
                 record_number: None,
                 prepared: None,
+                single_field_step: false,
             };
             assert!(provider.write_record(&write).is_err());
             let error = provider.create_record(2, Default::default()).unwrap_err();
@@ -1430,6 +1431,7 @@ fn imported_layout_edits_commit_on_the_owner_and_return_fresh_calculations() {
         privilege_set: None,
         record_number: None,
         prepared: None,
+        single_field_step: false,
     };
     let edited = provider.write_record(&write).unwrap();
     assert_eq!(value(&edited, "Count"), "41");
@@ -1747,6 +1749,7 @@ fn imported_layout_creation_uses_the_owner_engine_and_caller_found_set() {
         privilege_set: None,
         record_number: None,
         prepared: None,
+        single_field_step: false,
     };
 
     // New Record from the menu inside a script's transaction is refused
@@ -2211,6 +2214,7 @@ fn a_held_related_file_record_and_its_part_stay_with_their_window() {
             privilege_set: None,
             record_number: None,
             prepared: None,
+            single_field_step: false,
         })
         .unwrap();
     assert_eq!(ids(&mut provider), [&shown[..], &[held.id]].concat());
@@ -2293,6 +2297,7 @@ fn writes_checked_against_a_related_files_value_list_are_refused_first() {
         privilege_set: None,
         record_number: None,
         prepared: None,
+        single_field_step: false,
     };
     assert_eq!(
         provider.check_entry(TABLE, CODE, "Ship").unwrap_err().code,
@@ -8203,7 +8208,7 @@ fn a_routed_row_carries_its_windows_record_number() {
     assert!(refused.message.contains(number), "{refused:?}");
     let written = provider
         .write_record(&om_data::ScriptWrite {
-            record_number: Some(3),
+            record_number: Some(om_data::rules::RecordNumber::Window(3)),
             ..row()
         })
         .unwrap();
@@ -8359,9 +8364,9 @@ fn a_previewed_portal_row_stores_the_values_its_preview_showed() {
     let schema = provider.calc_schema().unwrap().unwrap();
     let remote = schema.table_of(REMOTE).unwrap().id;
     let row = || related_write(Some(remote), None, &[(JOB_KEY, "7")]);
-    let named = |id, record_number| om_data::ScriptWrite {
+    let named = |id, record_number: Option<u64>| om_data::ScriptWrite {
         prepared: Some(id),
-        record_number,
+        record_number: record_number.map(om_data::rules::RecordNumber::Window),
         ..row()
     };
     let stored = |host: &Host, file: &str, id: i64| {
@@ -8470,7 +8475,7 @@ fn a_previewed_portal_row_stores_the_values_its_preview_showed() {
     // not given the preview's 3.
     let before = written();
     let numbered = om_data::ScriptWrite {
-        record_number: Some(3),
+        record_number: Some(om_data::rules::RecordNumber::Window(3)),
         ..row()
     };
     let numbered = provider.preview_new_record(&numbered).unwrap().unwrap();
@@ -8761,7 +8766,7 @@ fn a_new_record_of_another_files_layout_stores_the_values_its_preview_showed() {
     let new = |name: &str, record_number| om_data::ScriptWrite {
         layout,
         cells: [(NAME, Some(name.to_owned()))].into(),
-        record_number: Some(record_number),
+        record_number: Some(om_data::rules::RecordNumber::Window(record_number)),
         ..Default::default()
     };
     let named = |write: om_data::ScriptWrite, id| om_data::ScriptWrite {
@@ -9493,6 +9498,7 @@ fn create_through_related(provider: &mut NativeProvider) -> Result<Option<String
             privilege_set: None,
             record_number: None,
             prepared: None,
+            single_field_step: false,
         })
         .map_err(|e| e.message)?;
     let page = provider.records(layout, 0, 10).unwrap();

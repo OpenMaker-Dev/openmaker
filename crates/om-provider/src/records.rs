@@ -4,8 +4,8 @@
 
 use super::*;
 use om_data::rules::{
-    error, Entry, RecordEnvironment, RecordPlan, Serial, WriteContext, WriteLayout, WriteMode,
-    Written,
+    error, Entry, RecordEnvironment, RecordNumber, RecordPlan, Serial, WriteContext, WriteLayout,
+    WriteMode, WriteSequence, Written,
 };
 use om_data::FieldChanges;
 use om_hbam::{Cell, OwnedNode};
@@ -546,13 +546,22 @@ impl NativeProvider {
             self.open_rule_files(table, tree)?;
         }
         let file = self.plan_schema()?;
+        let local = self.plans_local_record_positions();
         match tree {
-            Some(tree) => RecordPlan::from_desktop_file_schema(table, tree, &file),
+            Some(tree) => RecordPlan::from_desktop_file_schema(table, tree, &file, local),
             None => {
                 let tree = download_tree(&self.schema_downloads)?;
-                RecordPlan::from_desktop_file_schema(table, &tree, &file)
+                RecordPlan::from_desktop_file_schema(table, &tree, &file, local)
             }
         }
+    }
+
+    /// Stored record positions are measured only in an ordinary local
+    /// desktop window of the file that owns the table.
+    pub(super) fn plans_local_record_positions(&self) -> bool {
+        !cfg!(any(target_os = "ios", target_os = "android"))
+            && self.local.is_some()
+            && self.routed_plan.is_none()
     }
 
     /// The schema this file's records are planned over: its calculation
@@ -858,6 +867,12 @@ impl NativeProvider {
         use om_data::host::session::selector;
         let reads = plan.context_reads();
         let mut context = WriteContext::default();
+        if layout.is_some() && self.local.is_some() {
+            context.sequence = WriteSequence::Local;
+        }
+        if self.local.is_some() && plan.reads_auto_entry_file_variables() {
+            context.file_variables = Some(self.external.file_variables());
+        }
         if let Some(layout) = layout.filter(|_| reads.contains(&selector::LAYOUT_NUMBER)) {
             context.layout = self.layout_number(layout)?;
         }
@@ -894,6 +909,9 @@ impl NativeProvider {
         }
         let mut context = self.write_context(plan, origin.layout, origin.set)?;
         context.record_number = origin.record_number;
+        if origin.single_field_step && context.sequence == WriteSequence::Local {
+            context.sequence = WriteSequence::SingleLocalFieldStep;
+        }
         Ok(context)
     }
 
@@ -2609,11 +2627,14 @@ pub(crate) struct Origin {
     /// The written record's `Get ( RecordNumber )` in that window
     /// (`ScriptWrite::record_number`, #1038), the same in the file a
     /// routed write reaches.
-    pub record_number: Option<u64>,
+    pub record_number: Option<RecordNumber>,
     /// The preview of the new record the write creates
     /// (`ScriptWrite::prepared`, preview.rs): its context, serial numbers,
     /// clock and UUID are the write's.
     pub prepared: Option<om_data::PreparedId>,
+    /// The window proved a single field-setting step, with no other
+    /// staged edits to the record.
+    pub single_field_step: bool,
 }
 
 /// Whose privilege set a write's formulas read as current

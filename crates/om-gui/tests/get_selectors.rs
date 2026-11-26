@@ -695,6 +695,76 @@ fn the_window_answers_from_the_desktop_area_and_its_toolbar() {
     );
 }
 
+#[test]
+fn toolbar_lock_controls_the_menu_shortcut_and_status_area_state() {
+    use egui_kittest::kittest::{NodeT as _, Queryable};
+
+    let script_with_toolbar = |id, name, visibility, lock| {
+        let mut bar = with_value(step(29), visibility);
+        if lock {
+            bar.flags |= flag::LOCK;
+        }
+        script(
+            id,
+            name,
+            with_report(vec![
+                set_variable("$$r", "\"\""),
+                bar,
+                probe(&["Get ( LastError )", "Get ( StatusAreaState )"]),
+            ]),
+        )
+    };
+    let (mut app, state) = open(vec![
+        script_with_toolbar(250, "Lock shown", 1, true),
+        script_with_toolbar(251, "Lock hidden", 2, true),
+        script_with_toolbar(252, "Unlock shown", 1, false),
+        script_with_toolbar(253, "Hide unlocked", 2, false),
+    ]);
+    let shortcut = |app: &mut common::App| {
+        app.key_press_modifiers(
+            egui::Modifiers::COMMAND.plus(egui::Modifiers::ALT),
+            egui::Key::S,
+        );
+        app.run_steps(2);
+    };
+    let shots = std::env::var_os("OM_TOOLBAR_LOCK_SHOTS");
+    for (script, value, shown, locked) in [
+        ("Hide unlocked", "0", false, false),
+        ("Lock hidden", "3", false, true),
+        ("Unlock shown", "1", true, false),
+        ("Lock shown", "2", true, true),
+    ] {
+        assert_eq!(answers(&mut app, &state, script), [["0", value]]);
+        common::open_menu(&mut app, "View");
+        assert_eq!(
+            app.get_by_label("Status Toolbar")
+                .accesskit_node()
+                .is_disabled(),
+            locked
+        );
+        if let Some(dir) = &shots {
+            app.set_render_cursor(false);
+            app.render()
+                .unwrap()
+                .save(std::path::Path::new(dir).join(format!("state-{value}.png")))
+                .unwrap();
+        }
+        app.key_press(egui::Key::Escape);
+        app.run_steps(2);
+        if locked {
+            shortcut(&mut app);
+        }
+        assert_eq!(app.query_by_label("Edit Layout").is_some(), shown);
+        assert_eq!(app.query_by_label("Total (Unsorted)").is_some(), shown);
+    }
+    assert_eq!(answers(&mut app, &state, "Unlock shown"), [["0", "1"]]);
+    common::open_menu(&mut app, "View");
+    common::click(&mut app, "Status Toolbar");
+    assert!(app.query_by_label("Edit Layout").is_none());
+    shortcut(&mut app);
+    app.get_by_label("Edit Layout");
+}
+
 /// Adjust Window [Resize to Fit] gives the content area the layout's width
 /// and the bottom of its lowest part at the window's zoom, and keeps the
 /// window's top left (Claris, Adjust Window; script-steps.md: inferred).

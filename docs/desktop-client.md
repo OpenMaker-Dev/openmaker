@@ -37,6 +37,14 @@ own chrome uses are in [design.md](design.md). Related notes:
   to the front. Elsewhere, and in the GUI tests, which run without a native
   window, the menu bar is drawn inside each window. The window title is the
   platform's own.
+- Show/Hide Toolbars changes the status toolbar and layout bar together.
+  Lock disables View > Status Toolbar and its shortcut in the current
+  window until a script changes the lock. `Get ( StatusAreaState )` returns
+  1 for shown, 0 for hidden, 2 for shown and locked, and 3 for hidden and
+  locked. New windows inherit the current toolbar state, which is
+  unmeasured in FileMaker. OpenMaker keeps the outer frame size when the
+  bars change. The measured FileMaker Pro window changes its outer
+  height ([#1064](https://github.com/OpenMaker-Dev/openmaker/issues/1064)).
 - The Window menu's New Window runs the step. Show Window lists every open
   file's windows but cards, front first, a hidden one in parentheses, and
   scrolls when they do not fit; choosing one brings it to the front, shown
@@ -924,6 +932,31 @@ compared. Limits:
 - The last column takes what is left of the window, at least 80 points, and
   dragging its edge does not resize it.
 - The record-number column scrolls away with the others.
+
+**Table view's parts.** On a layout OpenMaker draws, Table view shows the
+top navigation, header, footer and bottom navigation parts that the
+layout's Table View Properties include, with their objects, around the
+grid ([#306](https://github.com/OpenMaker-Dev/openmaker/issues/306)).
+The options' bits and FileMaker Pro 26.1.1's placement of the parts are
+measured ([layout-model.md](re/layout-model.md) 4.2,
+[#927](https://github.com/OpenMaker-Dev/openmaker/issues/927)), and
+OpenMaker places them the same way: the top navigation and header parts
+above the column headings, the footer and bottom navigation parts below
+the rows, stacked at the window's bottom however few the rows. They do
+not scroll sideways with the columns. Their fields show the current
+record, and a web viewer in one of them shows one page that follows the
+current record, as in a List's header and footer. Limits:
+- **Zoom:** the parts zoom with the table. Pro keeps the navigation
+  parts at 100% ([#981](https://github.com/OpenMaker-Dev/openmaker/issues/981)).
+- **Tab:** Tab goes through the table's cells as it does without the
+  parts; from a part's field that has the keyboard it goes to the first
+  cell (Shift-Tab: the last). New Record's first field is the table's.
+  Whether Pro's Tab reaches the parts' fields is unmeasured.
+- **Unmeasured in Pro:** the pages of web viewers in the parts, and how
+  the header's, footer's and bottom navigation part's objects behave when
+  the table scrolls sideways.
+- **Find mode:** Table view in Find mode still draws its criteria grid
+  without the parts.
 
 **Limits.** List view shows no sub-summary parts, with a note saying why,
 when their groups cannot be read: a break field of another table, a summary
@@ -2124,20 +2157,29 @@ apply. The dialog has not been compared with FileMaker Pro's.
 
 Layout mode uses the provider's `LayoutGeometry` at the window zoom.
 When the decoded layout is available, the canvas uses its stored
-background, part colors, text, shapes, fields, button labels and
-standalone library images. These use Browse's static paint routines in
-their normal style,
-at the current draft frames. Merge text shows its stored markers and
-fields show their design names. The editor draws this artwork without
-evaluating record calculations or running document actions. Pasteboard
-objects, unsupported objects and geometry-only providers still use
-outlines and captions. Button icons, panel visibility and design-time
-web viewer placeholders are separate work ([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
+background, part colors, text, shapes, fields, button labels, button
+library icons and standalone library images. These use Browse's static
+paint routines in their normal style at the current draft frames. Button
+icons and labels use the saved placement. Merge text shows its stored
+markers and fields show their design names. The editor draws this artwork
+without evaluating record calculations or running document actions. If an icon
+cannot be resolved, a labeled button keeps its full-width label and an
+image-only button uses the canvas's outline and caption.
+Pasteboard objects, unsupported objects and geometry-only providers still
+use outlines and captions. Design-time web viewer placeholders are tracked
+in [#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019).
 The scrollable canvas, part tabs, objects and selection handles scale
 together. Placement, movement, resizing and the Inspector use the original
 layout points at every zoom. The toolbar, Objects pane and Inspector keep
 their size. The wheel and scroll bars scroll the canvas at every zoom.
 Touch drag to scroll is available at Actual Size.
+
+Objects that cross the layout edge retain their full outline, with artwork
+clipped to the layout. Borderless fields and text have a faint editing
+boundary. FileMaker's boundary display options have not been compared.
+Contents of closed popovers still appear on the canvas
+([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
+
 The Objects pane is 220 pt wide, lists the layout's objects front to back,
 filters by kind or known field name, and selects and reveals the matching
 canvas object. Inspector tabs are interactive; Position shows real bounds
@@ -2519,6 +2561,16 @@ document objects; they cannot be edited.
 The revision is the one the window read when it opened the file or after
 its last placement: a layout another client changed since is refused at
 Save Layout, not shown changed before.
+
+On a decoded layout, the canvas draws and picks objects on the front tab
+or slide of each control. It starts with the stored current tab, the
+stored default tab, or the first panel, in that order. The Objects list
+still includes inactive panels and their contents. Selecting one of those
+rows reveals its containing panels in this window. This is
+OpenMaker's editor navigation and makes no layout changes. Tab and slide
+navigation directly on the design surface, handoff of the last Browse
+panel, and FileMaker's box selection of an entire control across its panels
+are not implemented.
 
 Manage Layouts opens from File > Manage > Layouts, Layouts > Manage Layouts
 and the Layout mode Manage button. Search, row selection, double-click,
