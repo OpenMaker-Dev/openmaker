@@ -8800,14 +8800,16 @@ mod tests {
     #[test]
     fn escape_on_an_alert_during_a_script_dismisses_the_alert() {
         let key = |key: Key, repeat: bool, modifiers: Modifiers| egui::RawInput {
-            events: vec![egui::Event::Key {
-                key,
-                physical_key: None,
-                pressed: true,
-                repeat,
-                modifiers,
-            }],
-            modifiers,
+            events: vec![
+                egui::Event::ModifiersChanged(modifiers),
+                egui::Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat,
+                    modifiers,
+                },
+            ],
             ..Default::default()
         };
         let alert = || Some("The layout menus of \"Peer\" could not be read.".to_owned());
