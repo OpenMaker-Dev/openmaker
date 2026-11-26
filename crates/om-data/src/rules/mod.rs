@@ -2567,28 +2567,43 @@ impl RecordPlan {
                     .and_then(Result::ok)
                     .map(CustomMessage::Text)
             };
-            fields.insert(
-                field.id,
-                PlannedField {
-                    name: field.name.clone(),
-                    options,
-                    data_type: field.data_type,
-                    editable,
-                    expression,
-                    auto_enter_self,
-                    global_text_self,
-                    creation_date_with_calculation,
-                    constant,
-                    validation,
-                    message,
-                    range,
-                    list,
-                    serial,
-                    lookup,
-                    unkeyed_index,
-                    furigana,
-                },
-            );
+            let planned = PlannedField {
+                name: field.name.clone(),
+                options,
+                data_type: field.data_type,
+                editable,
+                expression,
+                auto_enter_self,
+                global_text_self,
+                creation_date_with_calculation,
+                constant,
+                validation,
+                message,
+                range,
+                list,
+                serial,
+                lookup,
+                unkeyed_index,
+                furigana,
+            };
+            // The rule evaluator otherwise sees an empty script-variable
+            // map and can turn a missing input into a plausible saved value.
+            if auto_calculation
+                && !(local && planned.auto_entry_file_variable().is_some())
+                && planned
+                    .expression
+                    .as_ref()
+                    .is_some_and(|expression| reads_script_variable(&expression.formula.polish))
+            {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: script variables in this auto-enter calculation are unsupported.",
+                        field.name
+                    ),
+                ));
+            }
+            fields.insert(field.id, planned);
         }
         // A lookup follows the file's relationships from its own table.
         let looked_up: Vec<u64> = fields
@@ -7207,6 +7222,18 @@ fn walk(expr: &Expr, f: &mut dyn FnMut(&Expr)) {
     }
 }
 
+fn reads_script_variable(expr: &Expr) -> bool {
+    match expr {
+        Expr::Variable(_) => true,
+        // SetVariable reads its value and repetition. Its third argument
+        // is only the destination.
+        Expr::Call { op, args } if *op == om_formula::Opcode::SET_VARIABLE => {
+            args.iter().take(2).any(reads_script_variable)
+        }
+        _ => children(expr).into_iter().any(reads_script_variable),
+    }
+}
+
 /// The direct parts of `expr`, in order.
 fn children(expr: &Expr) -> Vec<&Expr> {
     match expr {
@@ -10384,6 +10411,65 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(error.code, Some(error::UNAVAILABLE));
+    }
+
+    #[test]
+    fn calculated_auto_entry_refuses_unavailable_script_variables() {
+        let table = Table {
+            id: 0x8002,
+            name: "Items".into(),
+            fields: vec![field(8, FieldKind::Normal, DataType::Text, 0, 0x8, 0)],
+        };
+        let mut file = CalcSchema::new("Example", Locale::en_us());
+        file.add_occurrence(0xd0_0002, "Items", table.id);
+        let bare = Expr::Variable("$$Marker".into());
+        let compound = Expr::Call {
+            op: om_formula::Opcode::CONCAT,
+            args: vec![
+                bare.clone(),
+                Expr::Text(om_formula::Text {
+                    value: "-x".into(),
+                    style: None,
+                }),
+            ],
+        };
+        let destination_only = Expr::Call {
+            op: om_formula::Opcode::SET_VARIABLE,
+            args: vec![Expr::Empty, Expr::Empty, Expr::Variable("$Target".into())],
+        };
+        for (formula, local, snapshots_file_variables) in [
+            (bare.clone(), true, Some(true)),
+            (bare, false, None),
+            (compound, true, None),
+            (Expr::Variable("$Marker".into()), true, None),
+            (destination_only, true, Some(false)),
+        ] {
+            let formula = om_formula::polish::encode(&formula);
+            let mut tree = KeyTree::default();
+            let prefix = [
+                KeySegment(&[0x80, 2]),
+                KeySegment(&[3]),
+                KeySegment(&[5]),
+                KeySegment(&[8]),
+                KeySegment(&[5]),
+            ];
+            for (key, bytes) in [(&[4][..], CONTEXT), (&[6][..], formula.as_slice())] {
+                let mut path = prefix.to_vec();
+                path.push(KeySegment(key));
+                tree.insert(&path, om_hbam::slot::ChunkKind::Leaf, Some(bytes))
+                    .unwrap();
+            }
+            let plan = RecordPlan::from_desktop_file_schema(&table, &tree, &file, local);
+            if let Some(expected) = snapshots_file_variables {
+                assert_eq!(plan.unwrap().reads_auto_entry_file_variables(), expected);
+            } else {
+                let refusal = plan
+                    .err()
+                    .expect("script-variable formula should be refused");
+                assert_eq!(refusal.code, Some(error::UNAVAILABLE));
+                assert!(refusal.message.contains("script variables"));
+            }
+        }
     }
 
     /// The two lookups FileMaker Pro 26.0.3 saved and ran (auto-entry.md,
