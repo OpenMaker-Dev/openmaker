@@ -2965,23 +2965,15 @@ fn planted_defects_are_found() {
     for plant in PLANTS {
         // A leader counting a success of an earlier term needs the
         // returning-leader history and then an acknowledgement past the
-        // new `empty`: 7 seeds of 240 find it, the first 83, so its search
-        // starts there (the fixed returning-leader test holds it too).
-        let first = if plant == Plant::CountStaleSuccess {
-            83
-        } else {
-            0
-        };
-        let found = (first..first + SEEDS).find_map(|seed| {
+        // new `empty`: few seeds find it, and its guard is the fixed
+        // returning-leader test.
+        let found = (0..SEEDS).find_map(|seed| {
             run(seed, setup(seed, STEPS, Some(plant)))
                 .err()
                 .map(|e| (seed, e))
         });
         let Some((seed, failure)) = found else {
-            panic!(
-                "{plant:?} is not found in seeds {first} to {}",
-                first + SEEDS - 1
-            );
+            panic!("{plant:?} is not found in the default run's {SEEDS} seeds");
         };
         eprintln!("{plant:?}: {failure}");
         assert!(

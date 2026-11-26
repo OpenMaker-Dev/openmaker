@@ -5129,13 +5129,13 @@ survivor's vote is needed). The leader's own report does not decide it.
 
 Nineteen planted defects (`consensus::Plant`) each name the checks they
 must break, and a seed of the default run must find each one by one of
-them. The exception is a leader counting a success of an earlier term:
-the random search does not find it in the default run's sixty seeds. It
-needs the returning-leader history and then an acknowledgement past the
-new `empty`, and only 7 seeds of 240 find it (the first 83), so its
-search covers sixty seeds from 83. Its guard is the fixed returning-leader
-test, which plays that history by hand and fails with the plant in. The
-plants:
+them. A leader counting a success of an earlier term is thin: it needs
+the returning-leader history and then an acknowledgement past the new
+`empty`, and only 5 seeds of 240 find it (the first 15). Under round 4's
+schedules no seed of the default run found it, and a search pinned to its
+first seed stood in; any change to the schedules can move it out again.
+Its guard is the fixed returning-leader test, which plays that history by
+hand and fails with the plant in. The plants:
 - a vote answered before it is recorded; the term recorded with a vote
   but not the vote; a follower answering an append without recording the
   leader's term; an acknowledgement sent before its flush (what a member
