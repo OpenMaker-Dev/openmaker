@@ -316,9 +316,12 @@ Root-file layouts backed by a readable related hosted table can edit existing
 records. Browse and Set Field write their ordinary stored text, number, date,
 time, timestamp and container fields, a container's data going to the owning
 file's library (record-writes.md, Limits). Set Field and Browse also write
-each repetition of such a field that repeats, up to the 255th, as on a local
-table: Browse enters a later repetition by its cell, and the owning file
-checks and writes it with the record. The
+each repetition of such a text, number, date, time or timestamp field that
+repeats, up to the 255th, as on a local table: Browse enters a later
+repetition by its cell, and the owning file checks and writes it with the
+record. A container's later repetitions are not written, as on a local
+table; nor is a field whose later repetition's cell is another field's id,
+as a malformed file can make it. The
 owning provider supplies field rules, auto-entry, custom functions, stored
 calculations, version checks, locks, commit and verified readback. The root
 layout and script remain the caller's context, and returned calculations and
@@ -343,7 +346,10 @@ host refusing a later file, after an earlier file's commit leaves that earlier
 file committed (record-writes.md, "A script's transaction across files").
 A script's Delete Record inside one is held there too; the user's own edits
 and deletions on such a layout while the script is paused are refused
-([#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)).
+([#411](https://github.com/OpenMaker-Dev/openmaker/issues/411)), but for the
+user's typing into a later repetition there: the window saves it as it saves
+related records, so it is held in the transaction, as a script's write is,
+and goes with its Commit or Revert Transaction.
 Import and writes to the layout's related records in other tables remain
 refused on these layouts
 ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)). A global of

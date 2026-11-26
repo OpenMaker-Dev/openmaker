@@ -3394,6 +3394,7 @@ impl DataProvider for NativeProvider {
             // Planned over the owner's routed plan (#187), as its write is,
             // opening nothing; deferred while a file its rules read waits
             // (`routed_edits`, #1160).
+            let mut refused = BTreeMap::new();
             let editable = match self.routed_edits(route, &file)? {
                 related_owner::RoutedEdits::ReadOnly => {
                     return Ok(om_data::RecordCapabilities {
@@ -3403,22 +3404,30 @@ impl DataProvider for NativeProvider {
                 }
                 // Only the fields Browse writes through the owner
                 // (`routed_layout_field`), and its typed globals, the
-                // owner's session values (`set_typed_globals`).
+                // owner's session values (`set_typed_globals`). One the
+                // owner's account may only view is entered and refused, as
+                // on a layout of this file's table.
                 related_owner::RoutedEdits::Offered {
                     fields,
                     globals,
+                    view_only,
                     table,
-                } => Some(
-                    fields
+                } => {
+                    let (shown, offered): (BTreeSet<String>, BTreeSet<String>) = fields
                         .into_iter()
                         .filter(|name| {
                             table.fields.iter().any(|field| {
-                                field.name == *name && Self::routed_layout_field(field)
+                                field.name == *name && Self::routed_layout_field(&table, field)
                             })
                         })
                         .chain(globals)
-                        .collect::<BTreeSet<String>>(),
-                ),
+                        .partition(|name| view_only.contains(name));
+                    refused = shown
+                        .into_iter()
+                        .map(|name| (name, om_data::EditRefusal::ViewOnlyField))
+                        .collect();
+                    Some(offered)
+                }
                 related_owner::RoutedEdits::Refused => None,
             };
             // Later repetitions are entered as cells of the record's own
@@ -3447,7 +3456,7 @@ impl DataProvider for NativeProvider {
                 // Related records of a layout of another file's table
                 // are not edited in Browse yet.
                 related,
-                refused: BTreeMap::new(),
+                refused,
                 globals: file
                     .table(table.id)
                     .into_iter()

@@ -1121,6 +1121,20 @@ fn related_file_layouts_browse_and_expose_only_supported_edit_capabilities() {
         &[&[4], &[5], &uint_segment(fixture::NOTES_LAYOUT), &[2]],
         OwnedNode::leaf(Vec::new(), layout_def(REMOTE)),
     );
+    // Due repeats twice, and its second repetition's cell is the id of
+    // another field, as a malformed file can make it (#43).
+    fixture::set_field_repetitions(&mut files[1].1, TABLE, DUE, 2);
+    fixture::add_field(
+        &mut files[1].1,
+        TABLE,
+        DUE * 256 + 2,
+        "Collides",
+        1,
+        1,
+        0,
+        0,
+        0,
+    );
     let host = Host::new("writes", files);
     let mut provider = host.open(ROOT);
     provider.calc_schema().unwrap();
@@ -1131,10 +1145,10 @@ fn related_file_layouts_browse_and_expose_only_supported_edit_capabilities() {
     assert!(capabilities.create && capabilities.delete);
     // Its text global is typed as the related file's session value (#43).
     let editable = capabilities.editable_fields.as_ref().unwrap();
-    assert!(["Name", "Code", "Setting"]
+    assert!(["Name", "Code", "Setting", "Collides"]
         .iter()
         .all(|name| editable.contains(*name)));
-    assert!(!editable.contains("File Info"));
+    assert!(!editable.contains("File Info") && !editable.contains("Due"));
     assert_eq!(capabilities.globals, ["Setting".to_string()].into());
     let page = provider.records(layout, 0, 1).unwrap();
     let value = |page: &om_data::RecordPage, name: &str| {
