@@ -618,8 +618,10 @@ and named styles, padding, borders, fonts, styled text runs, static text,
 literal placeholders, merge fields, tab and slide panels, portals, popovers,
 button bars, conditional formatting and hide conditions, and field values
 from the current record page. Stored anchors resize objects within their
-containers. Record changes keep the user's selected panels. Browse shows no
-authoring part tabs or object kind captions.
+containers. Record changes keep the user's selected panels. Clicking a
+visible navigation dot in Browse selects its slide panel. The dots use
+the slide control's stored sizes, insets and normal and active colors.
+Browse shows no authoring part tabs or object kind captions.
 
 - Styled layout labels keep the stored formatting of literal text around
   a merge symbol or field. The replacement takes the styling at its
