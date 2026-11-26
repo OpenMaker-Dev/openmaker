@@ -1440,6 +1440,9 @@ fn draw(
             // part's height, in whole points, down to the lowest object in
             // it; the window sends it when the drag ends.
             if selection_tool && edges.enabled {
+                // A frame can end one drag and begin another. Finish the
+                // former from its own state regardless of part draw order.
+                let previous_drag = *edges.drag;
                 for part in &geometry.parts {
                     let Some(identity) = part.identity else {
                         continue;
@@ -1493,7 +1496,10 @@ fn draw(
                             .clamp(min, max);
                     }
                     if response.drag_stopped() {
-                        let dragged = edges.drag.take().filter(|d| d.part == identity);
+                        if edges.drag.is_some_and(|d| d.part == identity) {
+                            *edges.drag = None;
+                        }
+                        let dragged = previous_drag.filter(|d| d.part == identity);
                         if let Some(drag) = dragged.filter(|d| d.height != part.height) {
                             *edges.resize = Some(PartResize {
                                 part: identity.key,
@@ -3193,6 +3199,7 @@ mod tests {
             );
         let start = app.get_by_label("Header boundary").rect().center();
         let end = start + vec2(0.0, 15.0);
+        let body_start = app.get_by_label("Body boundary").rect().center();
         let press = |pos, pressed| egui::Event::PointerButton {
             pos,
             button: egui::PointerButton::Primary,
@@ -3204,7 +3211,11 @@ mod tests {
         app.step();
         app.event(egui::Event::PointerMoved(end));
         app.step();
+        // Release the Header and grab the Body in one input frame. The
+        // Body draws first and must not replace the completed Header drag.
         app.event(press(end, false));
+        app.event(egui::Event::PointerMoved(body_start));
+        app.event(press(body_start, true));
         app.step();
         assert_eq!(
             app.state_mut().0.take_part_resize(),
@@ -3216,8 +3227,23 @@ mod tests {
             }),
         );
 
-        // A second gesture starts on the same Header. The host refreshes
-        // the geometry while the pointer is held, and egui keeps its grab.
+        let body_end = body_start + vec2(0.0, 10.0);
+        app.event(egui::Event::PointerMoved(body_end));
+        app.step();
+        app.event(press(body_end, false));
+        app.step();
+        assert_eq!(
+            app.state_mut().0.take_part_resize(),
+            Some(PartResize {
+                part: 3,
+                part_type: 4,
+                size: 100.0,
+                revision: Some(revision),
+            }),
+        );
+
+        // If the host refreshes geometry while the pointer is held, egui
+        // keeps its grab but releasing it must not submit a new resize.
         app.event(egui::Event::PointerMoved(start));
         app.event(press(start, true));
         app.step();
