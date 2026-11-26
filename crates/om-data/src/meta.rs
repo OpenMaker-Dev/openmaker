@@ -149,12 +149,16 @@ pub fn replaceable_page_format(value: &[u8]) -> bool {
 /// made those again from `Comm` alone; a custom paper it made again
 /// under another name ("MyPaper"), and a named printer was not measured
 /// [O: file-format.md 3.8, runs W and P]. A key appears over its ticket's
-/// `<dict>` and over its value; each value is read.
+/// `<dict>` and over its value; each value is read. The keys and values
+/// are read in the text, so a record is accepted only as plain text, as
+/// Pro writes it ([`plain_plist`]): one that may spell a key or a value
+/// otherwise is not known to be one Pro makes again.
 fn regenerable_mac_page_format(plist: &[u8]) -> bool {
     let Ok(text) = std::str::from_utf8(plist) else {
         return false;
     };
     text.starts_with("<?xml")
+        && plain_plist(text)
         && plist_values(text, "com.apple.print.PaperInfo.PMCustomPaper")
             .iter()
             .all(|value| value.starts_with("<false/>"))
@@ -166,6 +170,33 @@ fn regenerable_mac_page_format(plist: &[u8]) -> bool {
                     .and_then(|rest| rest.split_once("</string>"))
                     .is_some_and(|(name, _)| name.trim().is_empty())
             })
+}
+
+/// Whether `text` holds its plist's keys and strings as they read: no
+/// entity or character reference (`&`), no CDATA section or comment, no
+/// declaration but the plist's own `<!DOCTYPE` without an internal subset,
+/// and every `<key>` and `</key>` tag written so. Then a key's text is the
+/// key, and nothing outside markup looks like a `<key>` tag.
+fn plain_plist(text: &str) -> bool {
+    let mut declarations = text.match_indices("<!");
+    let doctype = match declarations.next() {
+        None => true,
+        Some((at, _)) => {
+            text[at..].starts_with("<!DOCTYPE plist ")
+                && text[at..]
+                    .split_once('>')
+                    .is_some_and(|(decl, _)| !decl.contains('['))
+        }
+    };
+    let tags_closed = |tag: &str| {
+        text.match_indices(tag)
+            .all(|(at, _)| text[at + tag.len()..].starts_with('>'))
+    };
+    doctype
+        && declarations.next().is_none()
+        && !text.contains('&')
+        && tags_closed("<key")
+        && tags_closed("</key")
 }
 
 /// The text after each `<key>key</key>` of `text` but those that open a
@@ -1898,7 +1929,9 @@ mod tests {
         }
         let plist = |key: &str, value: &str| {
             format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist><dict>\n\
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \
+                 \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+                 <plist><dict>\n\
                  <key>{key}</key>\n<dict>\n<key>com.apple.print.ticket.itemArray</key>\n\
                  <array><dict>\n<key>{key}</key>\n{value}\n</dict></array></dict>\n</dict></plist>\n"
             )
@@ -1935,6 +1968,27 @@ mod tests {
                 false,
             ),
             (chunk(b"Comm", &comm)[..20].to_vec(), false),
+            // A key or value spelt otherwise than as plain text is not read
+            // as the key it may be: a character reference, CDATA, a tag
+            // with a space.
+            (
+                format(&plist(
+                    "com.apple.print.PageFormat.Formatting&#80;rinter",
+                    "<string>Office Laser</string>",
+                )),
+                false,
+            ),
+            (
+                format(&plist(&format!("<![CDATA[{custom}]]>"), "<true/>")),
+                false,
+            ),
+            (
+                format(
+                    &plist(printer, "<string>Office Laser</string>")
+                        .replace(&format!("<key>{printer}"), &format!("<key >{printer}")),
+                ),
+                false,
+            ),
         ] {
             assert_eq!(replaceable_page_format(&value), replaceable, "{value:02x?}");
         }

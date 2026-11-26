@@ -188,9 +188,44 @@ impl WorkerHost<'_> {
 /// Whether a stored setup, read back from its f32s, is `paper`: equal, as
 /// a setup read from the file and not edited is, or with the same
 /// orientation, scale and sheet once encoded, the f32 coordinates a page
-/// format holds (the printable size follows from them). A setup OpenMaker
-/// saved reads back so, and an edit a page format can hold differs.
-/// FileMaker Pro's A4 (595 x 842) is not OpenMaker's (595.28 x 841.89).
+/// format holds: the `Comm` chunk through the sheet's bottom edge, its
+/// first 29 bytes (the printable size follows from them). A setup
+/// OpenMaker saved reads back so, and an edit a page format can hold
+/// differs. FileMaker Pro's A4 (595 x 842) is not OpenMaker's (595.28 x
+/// 841.89).
 fn same_paper(stored: &PaperSettings, paper: &PaperSettings) -> bool {
-    stored == paper || stored.common_format()[..25] == paper.common_format()[..25]
+    stored == paper || stored.common_format()[..29] == paper.common_format()[..29]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use om_layout::paper::Orientation;
+
+    /// Each sheet field a save writes tells two setups apart: US Letter and
+    /// US Legal differ only in the sheet's bottom edge. A setup OpenMaker
+    /// saved is the same paper as it reads back, though not equal to it.
+    #[test]
+    fn a_stored_setup_is_the_same_paper_only_when_its_sheet_is() {
+        let letter = PaperSettings::default();
+        let legal = PaperSettings {
+            height: 1008.0,
+            ..letter.clone()
+        };
+        assert!(!same_paper(&letter, &legal));
+        let a4 = PaperSettings {
+            width: 595.2756,
+            height: 841.8898,
+            orientation: Orientation::Landscape,
+            scale: 0.5,
+        };
+        let back = Settings::restored(&a4.common_format()).unwrap().paper;
+        assert!(back != a4 && same_paper(&back, &a4));
+        let pro_a4 = PaperSettings {
+            width: 595.0,
+            height: 842.0,
+            ..a4.clone()
+        };
+        assert!(!same_paper(&pro_a4, &a4));
+    }
 }
