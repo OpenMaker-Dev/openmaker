@@ -3297,7 +3297,7 @@ fn merged_refusal(object: &LayoutObject) -> Result<(), ReportError> {
             Merged::Kept(_) => {
                 return Err(ReportError::unsupported(
                     "Layout merge symbols other than {{PageNumber}}, {{RecordNumber}}, \
-                     {{CurrentDate}}, {{CurrentTime}} and {{UserName}} are unsupported",
+                     {{CurrentDate}}, {{CurrentTime}}, {{UserName}} and {{AccountName}} are unsupported",
                 ))
             }
             Merged::KeptVariable(_) => {

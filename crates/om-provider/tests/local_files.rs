@@ -2933,7 +2933,7 @@ fn starter_fields_read_as_the_fields_tab_lists_them() {
 
 #[test]
 fn unsupported_stored_record_position_does_not_reserve_a_serial() {
-    use fixture::{LAYOUT, OCCURRENCE};
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
     use om_data::rules::{error, RecordNumber};
     use om_hbam::slot::uint_segment;
 
@@ -2971,7 +2971,18 @@ fn unsupported_stored_record_position_does_not_reserve_a_serial() {
     };
     let preview_error = provider.preview_new_record(&write).err().unwrap();
     assert_eq!(preview_error.code, Some(error::UNAVAILABLE));
+    let create_error = provider.write_record(&write).unwrap_err();
+    assert_eq!(create_error.code, Some(error::UNAVAILABLE));
+    let cells = [(NAME, Some("Imported".into()))].into();
+    let import_error = provider
+        .import_record(LAYOUT as u32, None, &cells, true)
+        .unwrap_err();
+    assert_eq!(import_error.code, Some(error::UNAVAILABLE));
     provider.begin_record_commit().unwrap();
+    let import_error = provider
+        .import_record(LAYOUT as u32, None, &cells, true)
+        .unwrap_err();
+    assert_eq!(import_error.code, Some(error::UNAVAILABLE));
     let create_error = provider.write_record(&write).err().unwrap();
     assert_eq!(create_error.code, Some(error::UNAVAILABLE));
     provider.revert_transaction().unwrap();
@@ -2986,6 +2997,82 @@ fn unsupported_stored_record_position_does_not_reserve_a_serial() {
         .unwrap()
         .unwrap();
     assert_eq!(next, "1");
+    drop(tree);
+    drop(file);
+
+    let mut provider = opened(&path);
+    provider.begin_record_commit().unwrap();
+    let made = provider
+        .write_record(&om_data::ScriptWrite {
+            record_number: Some(RecordNumber::LocalNewRecord(3)),
+            ..write
+        })
+        .unwrap();
+    provider.commit_record_session(false).unwrap();
+    provider.close();
+
+    let mut reopened = opened(&path);
+    let saved = reopened.record_by_id(LAYOUT as u32, made.id).unwrap();
+    assert_eq!(text(&saved, made.id, "Position"), Some("3"));
+    assert_eq!(text(&saved, made.id, "Serial"), Some("1"));
+}
+
+#[test]
+fn local_new_record_auto_enters_a_file_variable_at_creation() {
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
+    use om_data::calc::{eval::Variables, Value};
+    use om_data::ScriptWrite;
+
+    const MARKER: u64 = 40;
+    let folder = Folder::new("file-variable-auto-entry");
+    let path = folder.file("Sample.fmp12", PASSWORD, |root| {
+        fixture::add_field(root, TABLE, MARKER, "Marker", 1, 1, 0, 0x8, 0);
+        fixture::add_formula(
+            root,
+            &fixture::names(),
+            (TABLE, OCCURRENCE),
+            MARKER,
+            5,
+            "$$Marker",
+        );
+    });
+    let mut provider = opened(&path);
+    let mut variables = Variables::new();
+    let new_record = ScriptWrite {
+        layout: LAYOUT as u32,
+        ..Default::default()
+    };
+    let mut expected = Vec::new();
+    for (value, text) in [("alpha", Some("alpha")), ("beta", Some("beta")), ("", None)] {
+        variables.set("$$Marker", 1, Value::text(value));
+        provider.set_file_variables(&variables);
+        let preview = provider.preview_new_record(&new_record).unwrap().unwrap();
+        assert_eq!(preview.values.get(&MARKER).and_then(Option::as_deref), text);
+
+        // A preview keeps the file variable it read, as it keeps the
+        // creation clock, when the window later commits the row.
+        variables.set("$$Marker", 1, Value::text("later"));
+        provider.set_file_variables(&variables);
+        let record = provider
+            .write_record(&ScriptWrite {
+                prepared: Some(preview.id),
+                cells: [(NAME, Some("Note".into()))].into(),
+                ..new_record.clone()
+            })
+            .unwrap();
+        expected.push((record.id as u64, text));
+    }
+    provider.close();
+
+    let file = om_hbam::HbamFile::open(&path).unwrap();
+    let rows = file.records(TABLE).unwrap();
+    for (id, value) in expected {
+        let row = rows.iter().find(|row| row.id == id).unwrap();
+        assert_eq!(row.text(MARKER).transpose().unwrap().as_deref(), value);
+        if value.is_none() {
+            assert!(!row.cells.contains_key(&MARKER));
+        }
+    }
 }
 
 #[test]

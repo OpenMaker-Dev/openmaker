@@ -363,6 +363,9 @@ impl NativeProvider {
         (read, reserve): (bool, bool),
         compute: impl Fn(&RecordPlan, &RecordEnvironment) -> Result<T, DataError>,
     ) -> Result<T, DataError> {
+        if reserve && mode == WriteMode::Create {
+            plan.check_creation_context(&environment.context)?;
+        }
         // Each run but the last downloads one header or one member's data
         // the runs before did not: two per member the record names.
         let written = changes
