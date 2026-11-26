@@ -292,6 +292,16 @@ pub(crate) mod tests {
             ..letter
         };
         assert_eq!(turned.common_format(), STORED_LETTER_LANDSCAPE);
+        // At 50%, the `Comm` FileMaker Pro read whole in #876's run W2:
+        // the sheet as stored, the printable size 1468 x 1152.
+        let half = PaperSettings {
+            scale: 0.5,
+            ..turned
+        };
+        assert_eq!(
+            half.common_format(),
+            *b"Comm\x00\x00\x00\x1d\x02\x3f\x00\x00\x00\xc1\x90\x00\x00\xc1\x90\x00\x00\x44\x14\x80\x00\x44\x41\x80\x00\x44\xb7\x80\x00\x44\x90\x00\x00"
+        );
         let a4 = PaperSettings {
             width: 595.2756,
             height: 841.8898,

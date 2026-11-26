@@ -143,7 +143,9 @@ impl WorkerHost<'_> {
     /// its next OK. Pro's platform records go, since its sheet would show
     /// them in place of this paper. Nothing is written when the file's
     /// setup already reads as `paper`, which keeps Pro's records, or when
-    /// it is one OpenMaker cannot read, which is kept as it is. A hosted
+    /// it is one OpenMaker cannot read, which is kept as it is; the
+    /// provider also keeps a setup that is not what was read here, or that
+    /// holds records Pro does not make again. A hosted
     /// file keeps the setup for the session, as in FileMaker Pro: the
     /// provider sends nothing. After a failure the setup is the session's
     /// too, and the failure is logged.
@@ -172,7 +174,7 @@ impl WorkerHost<'_> {
             }
         }
         let value = paper.common_format();
-        match self.p().store_page_format(&value) {
+        match self.p().store_page_format(stored.as_deref(), &value) {
             Ok(true) => self.s.file.page_format_saved = Some(value.to_vec()),
             Ok(false) => {}
             Err(error) => log::warn!(
@@ -184,11 +186,14 @@ impl WorkerHost<'_> {
 }
 
 /// Whether a stored setup, read back from its f32s, is `paper`: the same
-/// orientation and scale (as f32), and the sheet to a hundredth of a point.
-/// FileMaker Pro's A4 (595 x 842) is not OpenMaker's (595.28 x 841.89).
+/// orientation, and the same scale and sheet at the f32 precision a page
+/// format holds them in. A setup read from the file and not edited is equal
+/// to it; FileMaker Pro's A4 (595 x 842) is not OpenMaker's (595.28 x
+/// 841.89). A sheet OpenMaker saved, read back as the difference of two
+/// f32s, can miss by one f32 step; it is then saved again, unchanged.
 fn same_paper(stored: &PaperSettings, paper: &PaperSettings) -> bool {
     stored.orientation == paper.orientation
         && stored.scale as f32 == paper.scale as f32
-        && (stored.width - paper.width).abs() < 0.01
-        && (stored.height - paper.height).abs() < 0.01
+        && stored.width as f32 == paper.width as f32
+        && stored.height as f32 == paper.height as f32
 }

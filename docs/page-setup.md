@@ -63,7 +63,8 @@ File > Page Setup, the Preview toolbar's button, and a script's Print Setup
 with the dialog and Restore off.
 - **What is written:** `[2, 87]` holds one `Comm` chunk
   (`PaperSettings::common_format`), stored chunked as Pro stores it.
-  `DataProvider::store_page_format` locks the key, uploads it and reads it
+  `DataProvider::store_page_format` locks the key, checks that the file
+  still stores what the decision was made on, uploads it and reads it
   back. FileMaker Pro reads such a page setup whole, in its Page Setup sheet
   and its output, and adds its own platform records at its next OK.
 - **Platform records:** those the file stored (`M_PM`, `MMod`, any other)
@@ -76,6 +77,9 @@ Nothing is written when:
   changes keeps Pro's records;
 - the file stores a setup OpenMaker cannot read, or its schema was not read,
   so what it stores is not known: it is kept as it is;
+- the file's setup holds a record other than `Comm`, `M_PM` and `MMod`, a
+  Windows one say, whose use is unmeasured, or it changed since it was read:
+  it is kept;
 - the file is hosted. FileMaker Pro sends nothing for a hosted file ([write path](re/write-path.md)
   5.9): the setup lasts while the file is open in that client, and so it
   does in OpenMaker;
@@ -86,7 +90,8 @@ Nothing is written when:
   in-process host stores a direct upload only for [Full Access]; what
   FileMaker Pro saves for other accounts is unmeasured.
 
-In each of these cases the setup is the session's, and a failure is logged.
+In each of these cases the setup is the session's. A save that is refused
+or fails is logged.
 The `Comm` carries OpenMaker's sheet sizes and printer margins, 18 / 40 /
 18 / 18, which Pro reads as they are. Pro resaves OpenMaker's A4, A3 and A5,
 which are not its own sizes, as custom papers of the same size at its next

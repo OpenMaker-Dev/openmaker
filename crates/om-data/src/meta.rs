@@ -81,6 +81,49 @@ pub fn page_format(tree: &KeyTree<'_>) -> Option<Vec<u8>> {
     node.assembled().map(|bytes| bytes.into_owned())
 }
 
+/// What a file stores at [`PAGE_SETUP`], told apart as a writer needs it:
+/// none, a value [`page_format`] reads, or one it does not (too large, or
+/// not reassembled).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StoredPageFormat {
+    None,
+    Readable(Vec<u8>),
+    Unreadable,
+}
+
+/// [`StoredPageFormat`] of `tree`.
+pub fn stored_page_format(tree: &KeyTree<'_>) -> StoredPageFormat {
+    if tree.at(&PAGE_SETUP).is_none() {
+        return StoredPageFormat::None;
+    }
+    page_format(tree).map_or(StoredPageFormat::Unreadable, StoredPageFormat::Readable)
+}
+
+/// Whether a page setup `value` may be replaced by another: its tagged
+/// chunks run to its end, and each is one FileMaker Pro regenerates from
+/// `Comm` at its next Page Setup OK, `Comm`, `M_PM` or `MMod`
+/// (file-format.md 3.8). Another chunk, a Windows record say, is of
+/// unmeasured use and is not dropped.
+pub fn replaceable_page_format(value: &[u8]) -> bool {
+    let mut rest = value;
+    while !rest.is_empty() {
+        let Some((tag, after)) = rest.split_first_chunk::<4>() else {
+            return false;
+        };
+        let Some((len, after)) = after.split_first_chunk::<4>() else {
+            return false;
+        };
+        let Some(after) = after.get(u32::from_be_bytes(*len) as usize..) else {
+            return false;
+        };
+        if !matches!(tag, b"Comm" | b"M_PM" | b"MMod") {
+            return false;
+        }
+        rest = after;
+    }
+    true
+}
+
 /// `value` as the node of a file's page setup ([`PAGE_SETUP`]), stored
 /// chunked as FileMaker Pro stores it whatever its length: child `00` the
 /// u32 total, then 1000-byte pieces keyed 1, 2, ... (file-format.md 3.8,
