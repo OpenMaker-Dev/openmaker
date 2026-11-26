@@ -2706,6 +2706,140 @@ fn a_layout_of_another_files_table_writes_its_related_records_in_their_files() {
     provider.close();
 }
 
+/// A layout of another file's table offers its related records in Browse
+/// (#43), as a layout of Root's own table does: on Root's layout of Remote
+/// Tasks (Related's Tasks), the fields it shows of Remote Notes (Related's
+/// own Notes table), of Other Tasks (a third file's Tasks) and of Root's
+/// own Tasks, each by the rules of the file that owns it. The writes Browse
+/// commits there go to that file: a related Notes record is created in
+/// Related, and Root's own related record is edited in Root.
+#[test]
+fn a_layout_of_another_files_table_offers_its_related_records() {
+    const OTHER: &str = "Other.fmp12";
+    const REMOTE_NOTES: u64 = 0xd0_0043;
+    const OTHER_TASKS: u64 = 0xd0_0044;
+    /// Related's Notes::Picture, a container.
+    const PICTURE: u64 = 3;
+    let mut root = fixture::tree(&[], true);
+    reference(&mut root, (REMOTE, "Remote Tasks"), 1, "Related");
+    reference(&mut root, (REMOTE_NOTES, "Remote Notes"), 1, "Related");
+    let mut notes = related::key(1);
+    notes.extend(related::key(fixture::NOTES));
+    root.put(
+        &[&[3], &[17], &[5], &uint_segment(REMOTE_NOTES), &[2]],
+        OwnedNode::leaf([], notes),
+    );
+    reference(&mut root, (OTHER_TASKS, "Other Tasks"), 3, "Other");
+    let notes_layout = uint_segment(fixture::NOTES_LAYOUT);
+    root.put(
+        &[&[4], &[5], &notes_layout, &[2]],
+        OwnedNode::leaf([], layout_def(REMOTE)),
+    );
+    for (id, right) in [
+        (9, (REMOTE_NOTES, fixture::BODY)),
+        (10, (OTHER_TASKS, NAME)),
+        (11, (OCCURRENCE, NAME)),
+    ] {
+        fixture::add_relationship(&mut root, id, (REMOTE, NAME), 0, right);
+    }
+    let shown = [
+        (REMOTE, NAME),
+        (REMOTE_NOTES, fixture::BODY),
+        (REMOTE_NOTES, PICTURE),
+        (OTHER_TASKS, NAME),
+        (OTHER_TASKS, fixture::DOUBLED),
+        (OCCURRENCE, NAME),
+    ];
+    let objects: Vec<Vec<u8>> = shown
+        .iter()
+        .zip(1u64..)
+        .map(|((occurrence, field), key)| {
+            let bounds = om_layout::Rect {
+                top: 30.0 * key as f64,
+                left: 10.0,
+                bottom: 30.0 * key as f64 + 20.0,
+                right: 200.0,
+                other: Vec::new(),
+            };
+            let serial = |id: u64| serial::decode(&uint_segment(id)).unwrap();
+            om_layout::encode::field_object(key, &bounds, serial(*occurrence), serial(*field))
+        })
+        .collect();
+    root.put(
+        &[&[4], &[5], &notes_layout, &[7]],
+        OwnedNode::leaf(
+            Vec::new(),
+            om_layout::encode::append_to_store(&[], &[1, 2, 3, 4, 5, 6], &objects),
+        ),
+    );
+    let mut peer = fixture::tree(&[], true);
+    fixture::add_field(&mut peer, fixture::NOTES, PICTURE, "Picture", 1, 6, 0, 0, 0);
+    let files = vec![
+        (ROOT, root),
+        (RELATED, peer),
+        (OTHER, fixture::tree(&[], true)),
+    ];
+    let host = Host::new("layout-related-offer", files);
+    let mut provider = host.open(ROOT);
+    let layout = fixture::NOTES_LAYOUT as u32;
+    provider.records(layout, 0, 10).unwrap();
+    provider
+        .calc_data(&[CalcNeed::Occurrence {
+            occurrence: OTHER_TASKS,
+        }])
+        .unwrap();
+
+    let capabilities = provider.record_capabilities(layout).unwrap();
+    let related = &capabilities.related;
+    // The layout's own record, as before (its later repetitions).
+    assert!(related[&REMOTE].contains(&NAME), "{related:?}");
+    // Related's other table, by Related's rules, its container too (Insert
+    // into it can still fail with 3 on such a layout, #957).
+    assert!(
+        related[&REMOTE_NOTES].contains(&fixture::BODY),
+        "{related:?}"
+    );
+    assert!(related[&REMOTE_NOTES].contains(&PICTURE), "{related:?}");
+    // A third file's table, by its owner's: not its calculation.
+    let other = &related[&OTHER_TASKS];
+    assert!(other.contains(&NAME) && other.contains(&COUNT), "{other:?}");
+    assert!(!other.contains(&fixture::DOUBLED), "{other:?}");
+    // Root's own table, by Root's rules.
+    assert!(related[&OCCURRENCE].contains(&NAME), "{related:?}");
+
+    let schema = provider.calc_schema().unwrap().unwrap();
+    let remote_notes = schema.table_of(REMOTE_NOTES).unwrap().id;
+    assert_ne!(remote_notes, schema.table_of(REMOTE).unwrap().id);
+    let on_layout = |write: om_data::ScriptWrite| om_data::ScriptWrite { layout, ..write };
+    // The window's commit of a related Notes record and of Root's own
+    // related record, with the layout's own record.
+    provider.begin_record_commit().unwrap();
+    let note = provider
+        .write_record(&on_layout(related_write(
+            Some(remote_notes),
+            None,
+            &[(fixture::BODY, "Typed")],
+        )))
+        .unwrap();
+    provider
+        .write_record(&on_layout(related_write(
+            Some(TABLE),
+            Some(1),
+            &[(NAME, "Root row")],
+        )))
+        .unwrap();
+    provider.commit_record_session(false).unwrap();
+    let mut peer = host.open(RELATED);
+    let page = peer.records(fixture::NOTES_LAYOUT as u32, 0, 10).unwrap();
+    let body = page.fields.iter().position(|f| f.name == "Body").unwrap();
+    let stored = page.records.iter().find(|r| r.id == note.id).unwrap();
+    assert_eq!(stored.values[body].as_deref(), Some("Typed"));
+    peer.close();
+    assert_eq!(rows_of(&host, ROOT)[0].1, "Root row");
+    assert_eq!(commits_to(&host, OTHER), 0);
+    provider.close();
+}
+
 /// A related file on the opened file's connection holds its records under
 /// the opened file's transaction, as FileMaker Pro does on FileMaker Server
 /// (write-path.md 1.5, #1006). Its lock and its commit carry that

@@ -235,7 +235,10 @@ enum WNode {
 }
 
 /// The footprint of a node is kept with it: summing it at each primitive
-/// would cost as much as the rest of a primitive.
+/// would cost as much as the rest of a primitive. This crate's own tests
+/// check the total against the sum at each use; a debug build of a crate
+/// that uses it does not, as summing there made a debug import of tens of
+/// thousands of records several times slower.
 struct WLeaf {
     items: Vec<WItem>,
     size: usize,
@@ -382,7 +385,8 @@ impl WLeaf {
     }
 
     fn footprint(&self) -> usize {
-        debug_assert_eq!(
+        #[cfg(test)]
+        assert_eq!(
             self.size,
             self.items.iter().map(WItem::footprint).sum::<usize>()
         );
@@ -409,7 +413,8 @@ impl WIndex {
     }
 
     fn footprint(&self) -> usize {
-        debug_assert_eq!(
+        #[cfg(test)]
+        assert_eq!(
             self.size,
             self.children.len() * CHILD_FOOTPRINT
                 + self.seps.iter().map(WSep::footprint).sum::<usize>()

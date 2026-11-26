@@ -1679,10 +1679,10 @@ pub(crate) fn layout(
         Option<&om_data::host::CalcSchema>,
     ),
     state: &mut LayoutWorkspace,
-    scroll: &mut crate::document::scroll::Scroll,
+    document: &mut crate::document::DocumentState,
 ) {
     let LayoutPanels { inspector, objects } = panels;
-    scroll.begin_paint(session);
+    document.scroll.begin_paint(session);
     let full = ui.max_rect();
     let left_width = if objects {
         crate::layout_objects::WIDTH
@@ -1733,7 +1733,7 @@ pub(crate) fn layout(
         fields,
         &mut state.canvas,
         state.saving,
-        scroll,
+        document,
     );
     if inspector {
         let rect = Rect::from_min_max(pos2(canvas.right(), full.top()), full.max);
@@ -1942,12 +1942,15 @@ mod tests {
             date: false,
         }];
         let mut state = LayoutWorkspace::default();
-        let mut scroll = DocumentState::default().scroll;
+        let mut document = DocumentState::default();
+        document.zoom.set_percent(200);
         let ctx = egui::Context::default();
         // A drag between layout points; the layout's origin is right of the
         // 22-point part strip.
         let mut drag = |state: &mut LayoutWorkspace, from: egui::Pos2, to: egui::Pos2| {
-            let (from, to) = (from + egui::vec2(22.0, 0.0), to + egui::vec2(22.0, 0.0));
+            let on_screen =
+                |point: egui::Pos2| Pos2::ZERO + (point.to_vec2() + vec2(22.0, 0.0)) * 2.0;
+            let (from, to) = (on_screen(from), on_screen(to));
             let button = |pos, pressed| egui::Event::PointerButton {
                 pos,
                 button: egui::PointerButton::Primary,
@@ -1981,7 +1984,7 @@ mod tests {
                                 },
                                 (&fields, None),
                                 state,
-                                &mut scroll,
+                                &mut document,
                             );
                         });
                 });

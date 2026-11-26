@@ -10,14 +10,16 @@
 use std::collections::BTreeSet;
 use std::f32::consts::FRAC_PI_2;
 
-use egui::emath::GuiRounding as _;
+use egui::emath::{GuiRounding as _, TSTransform};
 use egui::epaint::TextShape;
+use egui::scroll_area::{DragScroll, ScrollSource};
 use egui::{
     pos2, vec2, Align2, CornerRadius, Pos2, Rect, Role, Sense, Stroke, StrokeKind, Ui, WidgetInfo,
 };
 use om_data::{GeomRect, LayoutGeometry, ObjectGeom, PartGeom};
 
 use crate::app::LayoutTool;
+use crate::document::{zoom, DocumentState};
 use crate::session::{Geometry, Session};
 use crate::theme;
 
@@ -355,6 +357,7 @@ pub(crate) struct CanvasState {
     geometry: Option<LayoutGeometry>,
     selected: Selection,
     scroll_to_selected: bool,
+    shown_zoom: zoom::Zoom,
     new_fields: Vec<NewField>,
     field_drag: Option<usize>,
     field_finished: bool,
@@ -978,7 +981,7 @@ pub(crate) fn show(
     fields: &[FieldChoice],
     state: &mut CanvasState,
     frozen: bool,
-    scroll: &mut crate::document::scroll::Scroll,
+    document: &mut DocumentState,
 ) {
     state.synchronize(session);
     let incoming = egui::DragAndDrop::payload::<crate::layout_objects::FieldDrag>(ui.ctx())
@@ -996,51 +999,63 @@ pub(crate) fn show(
             });
         }
         Geometry::Loaded(geometry) => {
-            let unsaved = state.unsaved();
-            let dropped = draw(
-                ui,
-                geometry,
-                tool,
-                incoming.as_deref(),
-                &mut state.selected,
-                &mut state.scroll_to_selected,
-                New {
-                    fields: &mut state.new_fields,
-                    field_drag: &mut state.field_drag,
-                    field_finished: &mut state.field_finished,
-                    button: &mut state.new_button,
-                    text: &mut state.new_text,
-                    portal: &mut state.new_portal,
-                    drag_from: &mut state.drag_from,
-                    setup: &mut state.button_setup,
-                    portal_setup: &mut state.portal_setup,
-                },
-                (
-                    &mut state.moved,
-                    &state.deleted,
-                    &mut state.drag,
-                    &mut state.selection_drag,
-                    &state.controls,
-                ),
-                Texts {
-                    words: &mut state.words,
-                    retyping: &mut state.retyping,
-                    stored: &|key| plain_words(session, key),
-                },
-                &mut state.width,
-                PartEdges {
-                    keys: &part_keys(session),
-                    enabled: !unsaved,
-                    drag: &mut state.part_drag,
-                    resize: &mut state.part_resize,
-                },
-                // Frozen, the canvas still paints but takes no drag or click.
-                !frozen,
-                scroll,
-            );
-            if let Some(field) = dropped {
-                state.stage_field(session, field);
+            // Keep the coordinate system in which an in-flight gesture
+            // began through its release, even if the window zoom changes.
+            if state.shown_zoom != document.zoom {
+                if ui.input(|input| input.pointer.any_released()) {
+                    ui.request_repaint();
+                } else if !ui.input(|input| input.pointer.any_down()) {
+                    state.shown_zoom = document.zoom;
+                }
             }
+            let factor = state.shown_zoom.factor();
+            zoom::show(ui, ui.available_size() / factor, factor, |ui| {
+                let unsaved = state.unsaved();
+                let dropped = draw(
+                    ui,
+                    geometry,
+                    tool,
+                    incoming.as_deref(),
+                    &mut state.selected,
+                    &mut state.scroll_to_selected,
+                    New {
+                        fields: &mut state.new_fields,
+                        field_drag: &mut state.field_drag,
+                        field_finished: &mut state.field_finished,
+                        button: &mut state.new_button,
+                        text: &mut state.new_text,
+                        portal: &mut state.new_portal,
+                        drag_from: &mut state.drag_from,
+                        setup: &mut state.button_setup,
+                        portal_setup: &mut state.portal_setup,
+                    },
+                    (
+                        &mut state.moved,
+                        &state.deleted,
+                        &mut state.drag,
+                        &mut state.selection_drag,
+                        &state.controls,
+                    ),
+                    Texts {
+                        words: &mut state.words,
+                        retyping: &mut state.retyping,
+                        stored: &|key| plain_words(session, key),
+                    },
+                    &mut state.width,
+                    PartEdges {
+                        keys: &part_keys(session),
+                        enabled: !unsaved,
+                        drag: &mut state.part_drag,
+                        resize: &mut state.part_resize,
+                    },
+                    // Frozen, the canvas still paints but takes no drag or click.
+                    !frozen,
+                    &mut document.scroll,
+                );
+                if let Some(field) = dropped {
+                    state.stage_field(session, field);
+                }
+            });
         }
         Geometry::Unavailable => {
             // A provider with no layout geometry can still show a useful
@@ -1085,7 +1100,7 @@ pub(crate) fn show(
                     resize: &mut None,
                 },
                 false,
-                scroll,
+                &mut document.scroll,
             );
         }
     }
@@ -1169,7 +1184,16 @@ fn draw(
     let width = finite_extent(new_width.map_or(geometry.width, |w| w.width));
     let height = finite_extent(geometry.height);
     let frame = scroll_state.begin(ui, "layout_canvas", None);
-    let mut scroll = egui::ScrollArea::both();
+    let factor = crate::document::layer_scale(ui);
+    let mut scroll = egui::ScrollArea::both().wheel_scroll_multiplier(vec2(1.0, 1.0) / factor);
+    if factor != 1.0 {
+        // ScrollArea's touch drag uses a window-space delta. At a non-unit
+        // scale it would scroll farther or less far than the finger.
+        scroll = scroll.scroll_source(ScrollSource {
+            drag: DragScroll::Never,
+            ..Default::default()
+        });
+    }
     if let Some(offset) = frame.offset() {
         scroll = scroll.scroll_offset(offset);
     }
@@ -1212,10 +1236,21 @@ fn draw(
             let origin = pos2(area.left() + PART_STRIP_WIDTH, area.top())
                 .round_to_pixels(ui.pixels_per_point());
             let surface = Rect::from_min_size(origin, vec2(width, height));
+            // Response positions already use this layer's coordinates.
+            // Raw input (press origins and positions during a drag) does not.
+            let from_global = ui
+                .ctx()
+                .layer_transform_from_global(ui.layer_id())
+                .unwrap_or(TSTransform::IDENTITY);
+            let pointer = ui
+                .input(|input| input.pointer.interact_pos())
+                .map(|point| from_global * point);
+            let press = ui
+                .input(|input| input.pointer.press_origin())
+                .map(|point| from_global * point);
             if selectable && new.button.is_none() && new.text.is_none() && new.portal.is_none() {
                 if let Some(payload) = incoming {
-                    if let Some(pointer) = ui
-                        .input(|input| input.pointer.interact_pos())
+                    if let Some(pointer) = pointer
                         .filter(|point| surface.contains(*point) && ui.clip_rect().contains(*point))
                     {
                         if background
@@ -1368,10 +1403,7 @@ fn draw(
                 let at = |pos: Pos2| pos2((pos.x - origin.x).round(), (pos.y - origin.y).round());
                 if background.drag_started() {
                     *new.field_drag = None;
-                    *new.drag_from = ui
-                        .input(|input| input.pointer.press_origin())
-                        .or(background.interact_pointer_pos())
-                        .map(at);
+                    *new.drag_from = press.or(background.interact_pointer_pos()).map(at);
                 }
                 let mut drawn = false;
                 if background.dragged() || background.drag_stopped() {
@@ -1489,7 +1521,6 @@ fn draw(
             let at = |pos: Pos2| pos2((pos.x - origin.x).round(), (pos.y - origin.y).round());
             // A drag in progress sets its object's frame.
             if let Some(active) = *drag {
-                let pointer = ui.input(|input| input.pointer.interact_pos());
                 if let Some(pointer) = pointer.map(at) {
                     let frame = dragged(active, pointer - active.from);
                     let stored = geometry
@@ -1517,7 +1548,7 @@ fn draw(
                 *selection_drag = None;
             }
             if let Some(active) = selection_drag.as_ref() {
-                if let Some(pointer) = ui.input(|i| i.pointer.interact_pos()).map(at) {
+                if let Some(pointer) = pointer.map(at) {
                     move_selection(active, pointer, geometry, new.fields, moved);
                 }
                 if !ui.input(|i| i.pointer.any_down()) {
@@ -1613,10 +1644,7 @@ fn draw(
                     && selection_drag.is_none()
                 {
                     selected.start_drag(index, ui.input(|i| i.modifiers.shift));
-                    let from = ui
-                        .input(|input| input.pointer.press_origin())
-                        .or(response.interact_pointer_pos())
-                        .map(at);
+                    let from = press.or(response.interact_pointer_pos()).map(at);
                     if let Some(from) = from {
                         *selection_drag = begin_selection_drag(
                             selected, geometry, new.fields, moved, deleted, from,
@@ -1681,10 +1709,7 @@ fn draw(
                     && selection_drag.is_none()
                 {
                     selected.start_drag(selected_index, ui.input(|i| i.modifiers.shift));
-                    draft_drag = ui
-                        .input(|input| input.pointer.press_origin())
-                        .or(response.interact_pointer_pos())
-                        .map(at);
+                    draft_drag = press.or(response.interact_pointer_pos()).map(at);
                 }
                 if selected.0.contains(&selected_index) {
                     painter.rect_stroke(
@@ -1742,10 +1767,7 @@ fn draw(
                             WidgetInfo::labeled(Role::Button, true, format!("Resize {name}"))
                         });
                         if handle.drag_started() && drag.is_none() {
-                            let from = ui
-                                .input(|input| input.pointer.press_origin())
-                                .or(handle.interact_pointer_pos())
-                                .map(at);
+                            let from = press.or(handle.interact_pointer_pos()).map(at);
                             if let Some(from) = from {
                                 *drag = Some(Drag {
                                     key: object.key,

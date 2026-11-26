@@ -145,9 +145,9 @@ impl WorkerHost<'_> {
     /// setup already reads as `paper`, which keeps Pro's records, or when
     /// it is one OpenMaker cannot read, which is kept as it is; the
     /// provider also keeps a setup that is not what was read here, or that
-    /// holds records Pro does not make again. A hosted
-    /// file keeps the setup for the session, as in FileMaker Pro: the
-    /// provider sends nothing. After a failure the setup is the session's
+    /// holds records Pro does not make again. For a hosted file the
+    /// provider sends nothing, as FileMaker Pro does, and the setup is the
+    /// session's. After a failure the setup is the session's
     /// too, and the failure is logged.
     fn save_page_setup(&mut self, paper: &PaperSettings) {
         // What the file stores: what this session saved, else what it

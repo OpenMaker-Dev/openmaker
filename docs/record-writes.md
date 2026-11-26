@@ -432,7 +432,11 @@ before the record commit writes it.
   and to the layout the write goes through. So is a new record of a layout
   of another file's table ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)):
   its write naming the preview, outside a transaction or held in one, stores
-  what the preview drew, with no layout of the owning file's. So is a
+  what the preview drew, with no layout of the owning file's (but see
+  [#949](https://github.com/OpenMaker-Dev/openmaker/issues/949): in a
+  script's transaction with Skip auto-enter options, a preview made before
+  that file's first write there enters, and reserves, what the commit then
+  skips). So is a
   related record of another file's table on such a layout.
 - **The desktop window's use.** OnObjectSave when leaving a changed field
   by clicking the layout's background or using keyboard Commit
@@ -1075,10 +1079,16 @@ same way is inferred, not measured.
 
 **Related records of another file.** A portal row or related field of a
 table a related file owns, on a layout of the opened file's own table,
-is written by that file (`related_owner.rs`, #1000). So is a script's write
-to such a record from a layout of another file's table, whichever related
-file owns the record ([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43));
-Browse there does not edit them yet:
+is written by that file (`related_owner.rs`, #1000). So is one on a layout
+of another file's table, whichever related file owns the record
+([#43](https://github.com/OpenMaker-Dev/openmaker/issues/43)): Browse
+offers that layout's portals and related fields as on a layout of the
+opened file's table (a table of the opened file by its own rules, another
+file's by its owner's), and their edits and a script's writes go to the
+file that owns each record. Insert into a container of such a related
+record of another file's table can fail there with 3: outside a
+transaction, its preparation plans the window's own record as the opened
+file's ([#957](https://github.com/OpenMaker-Dev/openmaker/issues/957)):
 - **The owner writes.** The opened file's Browse edits, a script's Set
   Field into it (one through a relationship that allows creation creates
   the record, its match fields taking the current record's values) and
@@ -1101,9 +1111,11 @@ Browse there does not edit them yet:
 - **Fields.** Ordinary stored text, number, date, time, timestamp and container
   fields are written. Container acquisitions run on the owning file's library
   under the ordinary save's transaction; reference adjustments route there too.
-  Repetitions remain refused with error 3. A global field is no
-  record's: Set Field into one sets that file's session value ("A related
-  file's globals", below).
+  A script's Set Field writes each repetition, by its cell, as the owner
+  checks it (`check_scalar_cells`); Browse offers only fields of one
+  repetition there ([#951](https://github.com/OpenMaker-Dev/openmaker/issues/951)).
+  A global field is no record's: Set Field into one sets that file's
+  session value ("A related file's globals", below).
 - **Transactions.** Inside the window's commit transaction (or a script's
   Open Transaction), the change is held in the owning file's transaction.
   On the opened file's connection the owning file joins the opened file's
@@ -1179,7 +1191,12 @@ Browse there does not edit them yet:
     New Record and Duplicate Record are the exception: they run their
     steps, which run on top of the paused script, so the record (and a
     duplicate's container references) is held in the transaction as a
-    script's is. Whether FileMaker holds them so is #411's question.
+    script's is. So is a save of the user's edits to a related record there
+    (a portal row, a related field), as a portal row's of another file's
+    table on a layout of the opened file's table is: the window commits
+    related records through the script write path, and the record's own
+    edits saved with them go along, where a save of those alone is refused.
+    Whether FileMaker holds them so is #411's question.
 - **The window's commit of a record across files** (#1006; it begins with
   `DataProvider::begin_record_commit`, a script's Open Transaction with
   `begin_transaction`). It is saved file by file, related files first and

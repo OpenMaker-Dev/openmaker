@@ -1912,8 +1912,7 @@ pub trait DataProvider: Send {
     /// file's page setup `[2, 87]` in place of `expected`, what the caller
     /// read there (`None`: nothing). FileMaker Pro writes it at Page
     /// Setup's OK in a file on this computer, and sends nothing for a
-    /// hosted file, which keeps it while it is open in that client
-    /// (file-format.md 3.8). The file's setup is kept, with an error, when
+    /// hosted file (file-format.md 3.8). The file's setup is kept, with an error, when
     /// it is not `expected` or is one that may not be replaced
     /// ([`meta::replaceable_page_format`]). `Ok(true)` once it is stored
     /// and read back; `Ok(false)` for a hosted file, with nothing sent, and

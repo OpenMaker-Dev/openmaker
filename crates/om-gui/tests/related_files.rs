@@ -2884,6 +2884,138 @@ fn set_field_from_another_files_layout_writes_a_third_files_related_record() {
     assert_eq!(rows("Related.fmp12"), [row("Peer", "9"), row("Ship", "")]);
 }
 
+/// Browse edits a portal row of another table of a related file on Root's
+/// layout of that file's table (#43). The layout "Notes" shows Remote Tasks
+/// (Related's Tasks) and a portal of Remote Notes (Related's Notes table)
+/// through Remote Tasks::Name = Remote Notes::Task. The user's typing into
+/// the portal row's Body is saved by Related, and a new session of Related
+/// reads it.
+#[test]
+fn an_imported_layout_edits_a_portal_row_of_another_table_of_its_file() {
+    use egui_kittest::kittest::Queryable;
+    use fixture::{BODY, NAME, NOTES, TASK};
+    use om_data::DataProvider;
+    const REMOTE: u64 = 0xd0_0040;
+    const REMOTE_NOTES: u64 = 0xd0_0041;
+    const PORTAL: u64 = 1;
+    const ROW_BODY: u64 = 2;
+    const TASK_NAME: u64 = 3;
+    let alias = |occurrence: u64| om_hbam::serial::decode(&uint_segment(occurrence)).unwrap();
+    let mut root = fixture::tree(&[], true);
+    related::reference(&mut root, (REMOTE, "Remote Tasks"), 1, "Related");
+    related::reference(&mut root, (REMOTE_NOTES, "Remote Notes"), 1, "Related");
+    root.put(
+        &[&[3], &[17], &[5], &uint_segment(REMOTE_NOTES), &[2]],
+        OwnedNode::leaf(Vec::new(), [related::key(1), related::key(NOTES)].concat()),
+    );
+    fixture::add_relationship(&mut root, 9, (REMOTE, NAME), 0, (REMOTE_NOTES, TASK));
+    // Root's layout "Notes" shows Remote Tasks, its Name and the portal.
+    let notes = uint_segment(fixture::NOTES_LAYOUT);
+    root.put(
+        &[&[4], &[5], &notes, &[2]],
+        OwnedNode::leaf(
+            Vec::new(),
+            om_layout::encode::new_layout_def(alias(REMOTE), 480.0),
+        ),
+    );
+    root.put(
+        &[&[4], &[5], &notes, &[3], &[1], &[2]],
+        OwnedNode::leaf(Vec::new(), om_layout::encode::new_body_part(200.0)),
+    );
+    let bounds = |top, left, bottom, right| om_layout::Rect {
+        top,
+        left,
+        bottom,
+        right,
+        other: Vec::new(),
+    };
+    let objects = vec![
+        om_layout::encode::portal_object(
+            PORTAL,
+            &bounds(60.0, 10.0, 130.0, 410.0),
+            &[ROW_BODY],
+            alias(REMOTE_NOTES),
+            3,
+        ),
+        om_layout::encode::portal_field_object(
+            ROW_BODY,
+            &bounds(0.0, 0.0, 20.0, 300.0),
+            alias(REMOTE_NOTES),
+            BODY,
+        ),
+        om_layout::encode::field_object(
+            TASK_NAME,
+            &bounds(10.0, 10.0, 30.0, 200.0),
+            alias(REMOTE),
+            NAME,
+        ),
+    ];
+    root.put(
+        &[&[4], &[5], &notes, &[7]],
+        OwnedNode::leaf(
+            Vec::new(),
+            om_layout::encode::append_to_store(&[], &[PORTAL, TASK_NAME], &objects),
+        ),
+    );
+    // Related's Notes record 1 ("Hi") belongs to its Tasks record 1, "Write
+    // tests", the layout's first record.
+    let mut peer = fixture::tree(&[], true);
+    fixture::add_field(&mut peer, NOTES, TASK, "Task", 1, 1, 0, 0, 0);
+    peer.put(
+        &[
+            &uint_segment(NOTES),
+            &[5],
+            &om_hbam::serial::encode(1),
+            &uint_segment(TASK),
+        ],
+        om_scripts::text_node(&[], "Write tests"),
+    );
+    let host = related::Host::new(
+        "gui-imported-layout-portal",
+        vec![("Root.fmp12", root), ("Related.fmp12", peer)],
+    );
+    let mut app = common::harness_sized(Box::new(host.provider()), egui::vec2(1060.0, 900.0));
+    common::click(&mut app, "Use saved FileMaker license");
+    common::fill(
+        &mut app,
+        "Path",
+        &format!("fmnet:/127.0.0.1:{}/Root.fmp12", host.port),
+    );
+    common::fill(&mut app, "Account Name", ACCOUNT);
+    common::fill(&mut app, "Password", PASSWORD);
+    common::click(&mut app, "Open");
+    common::wait_until(&mut app, "root loaded", |a| a.state().is_settled());
+    common::select_layout(&mut app, "Notes");
+    let row = |app: &common::App| -> Vec<String> {
+        app.query_all_by_role_and_label(egui::Role::TextInput, "Remote Notes::Body")
+            .filter_map(|n| n.value())
+            .collect()
+    };
+    common::wait_until(&mut app, "the portal row", |a| {
+        a.state().is_settled() && row(a).iter().any(|v| v == "Hi")
+    });
+    common::replace(&mut app, "Remote Notes::Body", "Edited");
+    common::save_record(&mut app);
+    common::wait_until(&mut app, "the row saved", |a| {
+        a.state().error().is_some() || (a.state().is_settled() && !common::unsaved(a))
+    });
+    assert!(app.state().error().is_none(), "{:?}", app.state().error());
+    // Saved by Related: a new session reads it.
+    let mut related = host.open("Related.fmp12");
+    let page = related
+        .records(fixture::NOTES_LAYOUT as u32, 0, 10)
+        .unwrap();
+    let body = page.fields.iter().position(|f| f.name == "Body").unwrap();
+    let stored: Vec<_> = page
+        .records
+        .iter()
+        .map(|r| (r.id, r.values[body].clone().unwrap_or_default()))
+        .collect();
+    related.close();
+    assert_eq!(stored, [(1, "Edited".to_owned())]);
+    assert!(row(&app).iter().any(|v| v == "Edited"));
+}
+
 /// The three-file portal save acceptance fixture (#1006, #892): files Root,
 /// Related and Other, each a synthetic Tasks file. Root names Related and
 /// Other by a relative path, so all three are on one host, or with `peer`

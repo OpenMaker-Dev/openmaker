@@ -6,8 +6,11 @@ Legal, Tabloid, A3/A4/A5, custom width/height in points (72 points = one inch), 
 portrait/landscape. Custom dimensions are the unrotated sheet, 1–200 inches on each
 axis. Landscape swaps the axes once. A layout prints within its stored fixed margins
 when Layout Setup's "Use fixed page margins" is checked, and otherwise within
-the printer's margins, 18 / 40 / 18 / 18 points (top, bottom, left, right), for
-every paper ([portable PDF](portable-pdf.md#supported-layout-and-output-contract), #609).
+OpenMaker's printer margins, 18 / 40 / 18 / 18 points (top, bottom, left,
+right) for every paper ([portable PDF](portable-pdf.md#supported-layout-and-output-contract), #609).
+FileMaker Pro for macOS with Any Printer uses a 41-point bottom margin
+on A4 and 18 points on A3, A5 and Tabloid in the measured setups
+([file format](re/file-format.md) 3.8).
 Page Setup does not edit margins or layout metadata; a layout's fixed
 page margins are Layout Setup's (Printing tab; [desktop
 client](desktop-client.md), "Layout Setup"). A paper choice can leave a
@@ -30,8 +33,12 @@ they print at. The printer's margins scale with the page, so they stay
 ([#871](https://github.com/OpenMaker-Dev/openmaker/issues/871)): the 1%–1000%
 bounds are OpenMaker's (FileMaker Pro's are unmeasured; Claris documents scale
 only as a macOS Page Setup option), and so are a layout's fixed page margins
-scaling with the page and how Preview shows a scaled page; FileMaker's
-Preview and PDF output at a scale were not compared.
+scaling with the page and how Preview shows a scaled page;
+FileMaker's Preview was not compared. FileMaker Pro's Save Records as
+PDF differs: it writes the page in layout points, the sheet divided by
+the scale (1584 x 1224 for US Letter landscape at 50%), with no scaling
+in the content ([#954](https://github.com/OpenMaker-Dev/openmaker/issues/954),
+[file format](re/file-format.md) 3.8).
 
 Accepted paper settings belong to the open **file session**, apply to every
 layout and window of that file, and are inherited by new windows. Other files,
@@ -82,9 +89,10 @@ Nothing is written when:
   or a named printer in `M_PM`, or a record other than `Comm`, `M_PM` and
   `MMod`, a Windows one say. It is also kept when it is not stored as Pro
   stores it, or changed since it was read;
-- the file is hosted. FileMaker Pro sends nothing for a hosted file ([write path](re/write-path.md)
-  5.9): the setup lasts while the file is open in that client, and so it
-  does in OpenMaker;
+- the file is hosted. FileMaker Pro sent nothing for a hosted file, and
+  reopening it showed the setup it had ([write path](re/write-path.md)
+  5.9; whether Pro kept the accepted one until the file closed was not
+  checked). OpenMaker keeps it for the session;
 - the step restores a stored setup. FileMaker Pro's restore without the dialog
   left the file's setup as it was; with the dialog, Pro's behavior is
   unmeasured;

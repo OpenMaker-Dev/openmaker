@@ -1,7 +1,6 @@
 //! A file's page setup `[2, 87]` (file-format.md 3.8). FileMaker Pro
 //! writes the page setup accepted in Page Setup to a file on this computer,
-//! at the OK, and sends nothing for a hosted file, which keeps the setup
-//! while it is open in that client.
+//! at the OK, and sends nothing for a hosted file.
 use om_data::meta::{self, StoredPageFormat};
 use om_data::DataError;
 use om_protocol::write::{LockReply, LOCK_WRITE};
@@ -21,8 +20,8 @@ impl NativeProvider {
         expected: Option<&[u8]>,
         value: &[u8],
     ) -> Result<bool, DataError> {
-        // A hosted file's page setup is the client's for the session, as
-        // FileMaker Pro keeps it: nothing is sent (write-path.md 5.9).
+        // FileMaker Pro sends nothing for a hosted file (write-path.md
+        // 5.9); the setup stays the session's.
         if self.local.is_none() {
             return Ok(false);
         }
