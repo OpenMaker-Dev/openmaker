@@ -39,9 +39,9 @@
 //!   durable entry;
 //! - a vote goes only to a candidate that asked, with a log as up to date
 //!   as the voter's, as the two disks say;
-//! - a serving leader's `empty` entry is its own, committed and published,
-//!   and the leader of the newest term serves only with every entry
-//!   committed before its term;
+//! - a serving leader's term opens with an `empty` entry of its own,
+//!   committed and published, and the leader of the newest term serves
+//!   only with every entry committed before its term;
 //! - on a healthy network, a follower of a stable leader reaches the
 //!   leader's durable entry within a bound ([`World::watch_progress`]);
 //! - every member starts from what the faults left, and every error a
@@ -57,7 +57,8 @@
 //! one of them behind.
 //!
 //! `OM_STORE_SCALE=<n>` runs `n` times as many seeds, `OM_STORE_SEEDS=<n>`
-//! seeds 0 to `n - 1`, `OM_STORE_SEED=<s>` seed `s` alone.
+//! seeds 0 to `n - 1` and `OM_STORE_SEEDS=<a>..<b>` seeds `a` to `b - 1`,
+//! `OM_STORE_SEED=<s>` seed `s` alone.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
@@ -220,6 +221,15 @@ struct Coverage {
     /// entry, and in which they could not because one of them is behind.
     minority_progress: u64,
     minority_behind: u64,
+    /// Progress targets reached, and followers the disks confirmed behind
+    /// or blocked while watched.
+    progress_reached: u64,
+    progress_excused: u64,
+    /// Steady phases whose every target armed at their close got a
+    /// verdict, and those where one was dropped without one (the leader
+    /// changed or the network was not healthy).
+    steady_judged: u64,
+    steady_unjudged: u64,
 }
 
 impl Coverage {
@@ -254,6 +264,10 @@ impl Coverage {
         self.behind += o.behind;
         self.minority_progress += o.minority_progress;
         self.minority_behind += o.minority_behind;
+        self.progress_reached += o.progress_reached;
+        self.progress_excused += o.progress_excused;
+        self.steady_judged += o.steady_judged;
+        self.steady_unjudged += o.steady_unjudged;
     }
 }
 
@@ -290,6 +304,9 @@ struct Node {
 struct Oracle {
     committed: Vec<(u64, [u8; 32])>,
     chains: BTreeMap<u64, BTreeMap<u64, [u8; 32]>>,
+    /// Each term's first entry seen on any disk, its index and kind: the
+    /// leader's opening entry, kept after logs retire it.
+    opening: BTreeMap<u64, (u64, u16)>,
     held: Vec<BTreeMap<u64, u64>>,
     roots: BTreeMap<u64, Vec<(TreeName, Hash)>>,
     leaders: BTreeMap<u64, ServerId>,
@@ -361,8 +378,8 @@ const STORMS: [Storm; 4] = [
 type Appended = (ServerId, Echo, Pos, Vec<(u64, [u8; 32])>);
 
 /// A follower watched for progress: since which tick, the leader's durable
-/// entry then, the deadline ([`World::deadline`]), and which leader in which
-/// term.
+/// entry then (its target), the deadline ([`World::deadline`]), fixed when
+/// the target is armed, and which leader in which term.
 type Watch = (u64, u64, u64, usize, u64);
 
 /// The history the experiment review's P1-2 needs, brought about step by
@@ -429,6 +446,11 @@ struct World {
     watch: Vec<Option<Watch>>,
     /// Whether the client writes at every tick of [`World::run_until`].
     writing: bool,
+    /// At the close of the steady phase, the members whose armed progress
+    /// target still awaits its verdict; and whether one was dropped
+    /// without one.
+    closing: Option<Vec<bool>>,
+    unjudged: bool,
     /// Power losses right after a member answered a vote or an append,
     /// the window in which the answer must already be durable.
     after_answer: u64,
@@ -494,6 +516,8 @@ impl World {
             held: Vec::new(),
             watch: vec![None; setup.members],
             writing: false,
+            closing: None,
+            unjudged: false,
             after_answer: 0,
             after_append: 0,
             rng,
@@ -608,6 +632,30 @@ impl World {
         self.writing = true;
         let ticks = 20 * self.timing.0;
         self.run_until(ticks, |_| false)?;
+        // The close: no new targets, and the writes go on until every
+        // target armed now has its verdict, which its deadline bounds.
+        let armed: Vec<bool> = self.watch.iter().map(Option::is_some).collect();
+        let latest = self.watch.iter().flatten().map(|w| w.2).max();
+        let judged = match latest {
+            Some(latest) => {
+                self.closing = Some(armed);
+                self.unjudged = false;
+                let ticks = latest.saturating_sub(self.now) + 2;
+                let done = |w: &World| {
+                    w.unjudged || w.closing.as_ref().is_some_and(|p| !p.contains(&true))
+                };
+                let over = self.run_until(ticks, done)?;
+                let judged = over && !self.unjudged;
+                self.closing = None;
+                judged
+            }
+            None => false,
+        };
+        if judged {
+            self.cov.steady_judged += 1;
+        } else {
+            self.cov.steady_unjudged += 1;
+        }
         self.writing = false;
         Ok(())
     }
@@ -1050,16 +1098,24 @@ impl World {
                         ),
                     ));
                 }
+                // At or past the log's base, against the disk (at the base,
+                // the checkpoint's entry); before it, against the record of
+                // what is committed, which is all the disk keeps of it.
                 let base = store.log_base().index;
-                let held = self
-                    .quiet(i, |m| m.store.entry_at(k))
-                    .unwrap()
-                    .map_err(|e| self.fail(Check::DurableAnswer, format!("its log: {e}")))?;
+                let held = if k >= base {
+                    self.quiet(i, |m| m.store.entry_at(k))
+                        .unwrap()
+                        .map_err(|e| self.fail(Check::DurableAnswer, format!("its log: {e}")))?
+                } else {
+                    k.checked_sub(1)
+                        .and_then(|at| self.oracle.committed.get(at as usize))
+                        .copied()
+                };
                 let right = if k == prev.index {
-                    held.is_some_and(|(t, _)| t == prev.term) || k < base
+                    held.is_some_and(|(t, _)| t == prev.term)
                 } else {
                     let want = carried.iter().find(|e| e.0 == k).map(|e| e.1);
-                    k <= base || held.map(|h| h.1) == want
+                    want.is_some() && held.map(|h| h.1) == want
                 };
                 if !right {
                     return Err(self.fail(
@@ -1249,21 +1305,26 @@ impl World {
             .leading()
             .filter(|l| Some(self.core_of(*l).term()) == newest);
         let Some(l) = leader.filter(|_| healthy) else {
-            self.watch.iter_mut().for_each(|w| *w = None);
+            for f in 0..self.nodes.len() {
+                self.unwatch(f);
+            }
             return Ok(());
         };
-        let core = self.core_of(l);
-        let term = core.term();
-        let to_durable = core.durable().index;
-        let excused: Vec<ServerId> = core
-            .behind()
-            .iter()
-            .copied()
-            .chain(core.blocked().into_iter().map(|b| b.0))
-            .collect();
+        let term = self.core_of(l).term();
+        let to_durable = self.core_of(l).durable().index;
         for f in 0..self.nodes.len() {
-            if f == l || excused.contains(&self.ids[f]) {
-                self.watch[f] = None;
+            // A watch of another leader or term ends without a verdict.
+            if f == l || self.watch[f].is_some_and(|w| w.3 != l || w.4 != term) {
+                self.unwatch(f);
+            }
+            if f == l {
+                continue;
+            }
+            if self.excused(l, f)? {
+                if self.watch[f].take().is_some() {
+                    self.cov.progress_excused += 1;
+                    self.judged(f);
+                }
                 continue;
             }
             let durable = self.nodes[f]
@@ -1273,33 +1334,85 @@ impl World {
                 .store
                 .durable_entry()
                 .0;
-            match self.watch[f] {
-                Some((start, target, deadline, wl, wt)) if wl == l && wt == term => {
-                    if durable >= target && self.meet(f, l).is_some_and(|m| m >= target) {
-                        let deadline = self.deadline(f, l, to_durable);
-                        self.watch[f] = Some((self.now, to_durable, deadline, l, term));
-                    } else if self.now >= deadline {
-                        let knows = self.core_of(l).progress.get(&self.ids[f]).copied();
-                        let fc = self.core_of(f);
-                        let (fr, ft, fl) = (fc.role(), fc.term(), fc.last().index);
-                        return Err(self.fail(
-                            Check::Progress,
-                            format!(
-                                "member {f} heard from leader {l} of term {term} on a healthy \
-                                 network since tick {start}, and is at {durable}, short of \
-                                 {target}; the leader knows {knows:?}; the follower is \
-                                 {fr:?} in term {ft}, last {fl}"
-                            ),
-                        ));
-                    }
+            if let Some((start, target, deadline, _, _)) = self.watch[f] {
+                if durable >= target && self.meet(f, l).is_some_and(|m| m >= target) {
+                    self.cov.progress_reached += 1;
+                    self.judged(f);
+                    self.watch[f] = None;
+                } else if self.now >= deadline {
+                    let knows = self.core_of(l).progress.get(&self.ids[f]).copied();
+                    let reported = (
+                        self.core_of(l).behind().contains(&self.ids[f]),
+                        self.core_of(l)
+                            .blocked()
+                            .into_iter()
+                            .find(|b| b.0 == self.ids[f]),
+                    );
+                    let fc = self.core_of(f);
+                    let (fr, ft, fl) = (fc.role(), fc.term(), fc.last().index);
+                    return Err(self.fail(
+                        Check::Progress,
+                        format!(
+                            "member {f} heard from leader {l} of term {term} on a healthy \
+                             network since tick {start}, and is at {durable}, short of \
+                             {target}; the leader knows {knows:?}; reported (behind, \
+                             blocked) {reported:?}, which the disks do not confirm; the \
+                             follower is {fr:?} in term {ft}, last {fl}"
+                        ),
+                    ));
                 }
-                _ => {
-                    let deadline = self.deadline(f, l, to_durable);
-                    self.watch[f] = Some((self.now, to_durable, deadline, l, term));
-                }
+            }
+            // A new target, unless the phase is closing.
+            if self.watch[f].is_none() && self.closing.is_none() {
+                let deadline = self.deadline(f, l, to_durable);
+                self.watch[f] = Some((self.now, to_durable, deadline, l, term));
             }
         }
         Ok(())
+    }
+
+    /// Member `f`'s watch ends without a verdict.
+    fn unwatch(&mut self, f: usize) {
+        if self.watch[f].take().is_some() {
+            if let Some(pending) = self.closing.as_mut() {
+                if pending[f] {
+                    pending[f] = false;
+                    self.unjudged = true;
+                }
+            }
+        }
+    }
+
+    /// Member `f`'s target has its verdict.
+    fn judged(&mut self, f: usize) {
+        if let Some(pending) = self.closing.as_mut() {
+            pending[f] = false;
+        }
+    }
+
+    /// Whether leader `l` reports follower `f` behind or blocked and the
+    /// disks confirm it: what `f` lacks is retired from `l`'s log (where
+    /// their logs last agree is before `l`'s base), or the entry it refused
+    /// is in `l`'s log and larger than `f`'s largest.
+    fn excused(&self, l: usize, f: usize) -> Outcome<bool> {
+        let core = self.core_of(l);
+        if core.behind().contains(&self.ids[f])
+            && self.meet(f, l).is_none_or(|m| m < self.base_of(l))
+        {
+            return Ok(true);
+        }
+        let Some((_, oversize)) = core.blocked().into_iter().find(|b| b.0 == self.ids[f]) else {
+            return Ok(false);
+        };
+        let at = oversize.index;
+        let read = self
+            .quiet(l, |m| m.store.read_wire(at, at, u64::MAX, u64::MAX))
+            .unwrap()
+            .map_err(|e| self.fail(Check::Progress, format!("member {l}'s log: {e}")))?;
+        let limit = self.config(f).max_entry;
+        Ok(read
+            .first()
+            .is_some_and(|e| e.index == at && e.payload.len() as u64 > limit))
     }
 
     /// By when follower `f` must hold leader `l`'s entry `target`: six
@@ -1512,6 +1625,18 @@ impl World {
         let empty = member.core.empty;
         let published = member.store.published().index;
         let base = member.store.log_base().index;
+        // The term's first entry, as the disks showed it when it was
+        // written (kept after logs retire it), is an `empty` at `empty`.
+        let opening = self.oracle.opening.get(&term).copied();
+        if opening != Some((empty, crate::entry::Kind::Empty.code())) {
+            return Err(self.fail(
+                Check::Serving,
+                format!(
+                    "leader {i} of term {term} serves, but its term opens with {opening:?} \
+                     (index, kind), not an `empty` entry at {empty}"
+                ),
+            ));
+        }
         let ours = if empty < base {
             // Retired by a checkpoint: the record's entry there is of its
             // term, which only it makes.
@@ -1724,45 +1849,102 @@ impl World {
         let Some(m) = self.nodes[i].member.as_ref() else {
             return Ok(());
         };
-        let (index, term, _) = m.store.durable_entry();
+        let (index, term, tip) = m.store.durable_entry();
         let (saved, _) = m.store.saved_term();
         if index == 0 || term != saved {
             return Ok(());
         }
         let known = self.oracle.held[i].get(&term).copied().unwrap_or(0);
         if index > known {
-            // The entries of this term it holds, into the term's chain: one
-            // leader makes them, so two at one index are a breach.
             let base = m.store.log_base().index;
             let from = known.max(base) + 1;
             let read = self
                 .quiet(i, |m| m.store.read_wire(from, index, u64::MAX, u64::MAX))
                 .unwrap()
                 .map_err(|e| self.fail(Check::LogMatching, format!("member {i}'s log: {e}")))?;
-            for e in read.iter().filter(|e| e.term == term) {
-                let chain = self.oracle.chains.entry(term).or_default();
-                match chain.get(&e.index) {
-                    Some(h) if *h != e.hash => {
-                        return Err(self.fail(
-                            Check::LogMatching,
-                            format!(
-                                "member {i} holds another entry {} of term {term} than the \
-                                 term's chain",
-                                e.index
-                            ),
-                        ));
-                    }
-                    Some(_) => {}
-                    None => {
-                        chain.insert(e.index, e.hash);
-                    }
-                }
-            }
-            self.oracle.held[i].insert(term, index);
+            let at_base = if index == base {
+                self.quiet(i, |m| m.store.entry_at(base))
+                    .unwrap()
+                    .map_err(|e| self.fail(Check::LogMatching, format!("member {i}'s log: {e}")))?
+            } else {
+                None
+            };
+            self.record_held(i, term, index, tip, &read, at_base)?;
         } else if !again {
             return Ok(());
         }
-        let index = self.oracle.held[i][&term];
+        self.check_majority(i, term)
+    }
+
+    /// The record learns that member `i` holds term `term`'s chain through
+    /// its durable entry `index`, of hash `tip`, from what its disk read:
+    /// the term's entries after what it held before (`read`), and the
+    /// checkpoint's entry when the tip is the log's base (`at_base`). The
+    /// tip is counted only when that read shows it.
+    fn record_held(
+        &mut self,
+        i: usize,
+        term: u64,
+        index: u64,
+        tip: [u8; 32],
+        read: &[Wire],
+        at_base: Option<(u64, [u8; 32])>,
+    ) -> Outcome {
+        let shown = match at_base {
+            Some(entry) => entry == (term, tip),
+            None => read
+                .iter()
+                .any(|e| e.index == index && e.term == term && e.hash == tip),
+        };
+        if !shown {
+            return Err(self.fail(
+                Check::LogMatching,
+                format!(
+                    "member {i}'s durable entry {index} of term {term} is not in what its log \
+                     reads"
+                ),
+            ));
+        }
+        // One leader makes a term's entries, so two at one index are a
+        // breach.
+        let entries = read
+            .iter()
+            .filter(|e| e.term == term)
+            .map(|e| (e.index, e.hash, Some(e.kind)))
+            .chain(at_base.map(|(_, h)| (index, h, None)));
+        for (at, hash, kind) in entries.collect::<Vec<_>>() {
+            let chain = self.oracle.chains.entry(term).or_default();
+            match chain.get(&at) {
+                Some(h) if *h != hash => {
+                    return Err(self.fail(
+                        Check::LogMatching,
+                        format!(
+                            "member {i} holds another entry {at} of term {term} than the term's \
+                             chain"
+                        ),
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    chain.insert(at, hash);
+                }
+            }
+            if let Some(kind) = kind {
+                let opening = self.oracle.opening.entry(term).or_insert((at, kind));
+                if at < opening.0 {
+                    *opening = (at, kind);
+                }
+            }
+        }
+        self.oracle.held[i].insert(term, index);
+        Ok(())
+    }
+
+    /// The position of term `term`'s chain a majority has held: inside the
+    /// record it must be the recorded entry, by the hash counted; past it,
+    /// the record grows from member `i`'s disk if it holds that far.
+    fn check_majority(&mut self, i: usize, term: u64) -> Outcome {
+        let index = self.oracle.held[i].get(&term).copied().unwrap_or(0);
         let mut levels: Vec<u64> = self
             .oracle
             .held
@@ -1775,23 +1957,49 @@ impl World {
         if committed == 0 {
             return Ok(());
         }
-        // The position a majority held is the record's entry wherever the
-        // record reaches it.
-        let at = committed.min(max);
-        if let (Some(ours), Some(recorded)) = (
-            self.oracle.chains.get(&term).and_then(|c| c.get(&at)),
-            self.oracle.hash(at),
-        ) {
-            if *ours != recorded {
+        let ours = |at: u64| {
+            self.oracle
+                .chains
+                .get(&term)
+                .and_then(|c| c.get(&at))
+                .copied()
+        };
+        if committed <= max {
+            // Every held position was counted with its hash: the majority's
+            // must be there, and be the recorded entry.
+            let Some(hash) = ours(committed) else {
                 return Err(self.fail(
                     Check::LogMatching,
                     format!(
-                        "entry {at} of term {term}, held by a majority, is not the committed one"
+                        "a majority held term {term}'s chain through {committed}, but the record \
+                         has no entry of the term there"
+                    ),
+                ));
+            };
+            if Some(hash) != self.oracle.hash(committed) {
+                return Err(self.fail(
+                    Check::LogMatching,
+                    format!(
+                        "entry {committed} of term {term}, held by a majority, is not the \
+                         committed one"
+                    ),
+                ));
+            }
+            return Ok(());
+        }
+        // Past the record: where the record ends, the chain's entry, if the
+        // term has one there, is the recorded one.
+        if let (Some(hash), Some(recorded)) = (ours(max), self.oracle.hash(max)) {
+            if hash != recorded {
+                return Err(self.fail(
+                    Check::LogMatching,
+                    format!(
+                        "entry {max} of term {term}, held by a majority, is not the committed one"
                     ),
                 ));
             }
         }
-        if committed <= max || index < committed {
+        if index < committed {
             return Ok(());
         }
         if max > 0 {
@@ -1807,6 +2015,12 @@ impl World {
             return Err(self.fail(
                 Check::LogMatching,
                 format!("member {i} holds entry {committed} without those after {max}"),
+            ));
+        }
+        if read.last().map(|e| e.hash) != ours(committed) {
+            return Err(self.fail(
+                Check::LogMatching,
+                format!("member {i}'s entry {committed} is not the one a majority held"),
             ));
         }
         for e in read {
@@ -2393,8 +2607,12 @@ fn seeds(default: u64) -> Vec<u64> {
     if let Some(seed) = read("OM_STORE_SEED") {
         return vec![seed];
     }
-    if let Some(n) = read("OM_STORE_SEEDS") {
-        return (0..n).collect();
+    // `OM_STORE_SEEDS=<n>` for seeds 0 to n - 1, `<a>..<b>` for a to b - 1.
+    if let Ok(v) = std::env::var("OM_STORE_SEEDS") {
+        let (a, b) = v.split_once("..").unwrap_or(("0", &v));
+        if let (Ok(a), Ok(b)) = (a.parse::<u64>(), b.parse::<u64>()) {
+            return (a..b).collect();
+        }
     }
     (0..default.saturating_mul(read("OM_STORE_SCALE").unwrap_or(1))).collect()
 }
@@ -2436,7 +2654,19 @@ fn run_all(name: &str, seeds: Vec<u64>, steps: u64) {
     }
     report(name, &total, started.elapsed().as_secs_f64());
     assert!(total.elections > 0 && total.committed > 0, "{total:?}");
+    // The progress check judges what it watched: nearly every steady phase
+    // ends with a verdict on every target armed at its close.
+    assert!(
+        total.steady_judged * 100 >= JUDGED * total.schedules,
+        "{} of {} steady phases ended with a verdict on every target, below {JUDGED}%",
+        total.steady_judged,
+        total.schedules
+    );
 }
+
+/// The share, in percent, of steady phases that must end with a verdict on
+/// every progress target armed at their close.
+const JUDGED: u64 = 95;
 
 #[test]
 fn clusters_keep_the_rules_of_consensus() {
@@ -2450,7 +2680,7 @@ fn long_clusters_keep_the_rules_of_consensus() {
 }
 
 /// The planted defects a seed of the default run must find.
-const PLANTS: [Plant; 16] = [
+const PLANTS: [Plant; 17] = [
     Plant::VoteUnflushed,
     Plant::CountOlderTerm,
     Plant::CommitUnchecked,
@@ -2467,6 +2697,7 @@ const PLANTS: [Plant; 16] = [
     Plant::PublishLeaderCommitted,
     Plant::ServeBeforeEmpty,
     Plant::RefusalLatestOnly,
+    Plant::OpenWithoutEmpty,
 ];
 
 /// Planted defects measured but not required: a success past what the
@@ -2512,6 +2743,9 @@ fn expected(plant: Plant) -> (&'static [Check], &'static [&'static str]) {
         // A refusal passed over because a newer append went out: a follower
         // left behind while writes go on.
         Plant::RefusalLatestOnly => (&[Check::Progress], &[]),
+        // A term opened with an ordinary entry: the leader serves without
+        // its `empty`.
+        Plant::OpenWithoutEmpty => (&[Check::Serving], &[]),
         Plant::AppendTermUnsaved | Plant::VoteForgotten | Plant::AckBeforeFlush => {
             (&[Check::DurableAnswer], &[])
         }
@@ -2753,18 +2987,48 @@ fn a_core_takes_from_a_message_only_what_it_asked_for() {
     // to a follower is a probe: `next` stays until a success.)
     assert!(a.receive(reply(2, term, 1, None, 0)).is_empty());
     assert_eq!(a.progress[&id(2)].next, 4);
+    // Fields that contradict each other: malformed, nothing changes. A
+    // success whose term is below the term it repeats (the follower records
+    // a term before it acknowledges in it), a success whose log ends before
+    // what it acknowledges, a refusal in the term it repeats that names
+    // where to try next at or past the entry the append named (so no hint
+    // can overflow the step back), a pre-vote for a round other than its
+    // sender's next term.
+    let low = Message {
+        term: term - 1,
+        ..reply_to(2, term, 1, term, 1, 3, Some(4), 4)
+    };
+    let malformed = [
+        low,
+        reply(2, term, 3, Some(4), 3),
+        reply(2, term, 3, None, 3),
+        reply(2, term, 3, None, MAX_INDEX),
+        Message {
+            from: id(3),
+            to: id(1),
+            term: term + 5,
+            start: 1,
+            body: Body::PreVote {
+                round: term + 7,
+                last: Pos::default(),
+            },
+        },
+    ];
+    for m in malformed {
+        assert!(a.receive(m).is_empty());
+    }
+    assert_eq!(
+        (
+            a.term(),
+            a.progress[&id(2)].matched,
+            a.progress[&id(2)].next
+        ),
+        (term, 0, 4)
+    );
     // A success claiming past what was sent counts only as far as was sent:
     // the leader's entry 4 is committed, nothing past it.
-    a.receive(reply(2, term, 3, Some(9), 0));
+    a.receive(reply(2, term, 3, Some(9), 9));
     assert_eq!((a.progress[&id(2)].matched, a.committed()), (4, 4));
-    // The largest hint, answering the append out now: no overflow.
-    let out = {
-        let out = a.tick();
-        sends(&mut a, &out)
-    };
-    let (_, prev, _, _) = out.iter().copied().find(|s| s.0 == id(2)).unwrap();
-    a.receive(reply(2, term, prev.index, None, MAX_INDEX));
-    assert!(a.progress[&id(2)].next <= a.last().index + 1);
     // A term past the bound: malformed, nothing changes.
     let past = Message {
         term: u64::MAX,
@@ -3653,4 +3917,225 @@ fn a_member_does_not_open_below_the_largest_entry_it_holds() {
     );
     sim.restart();
     assert!(Member::open(fs(), STORE, cfg(4096)).is_ok());
+}
+
+/// Round 4's findings 1 and 2. A follower that retired a large entry and
+/// opened again with a smaller largest entry takes a replay of the append
+/// that carried it: what is at or before its base is not refused for its
+/// size. A leader takes a size refusal only for an entry it carried to that
+/// follower and the follower has not acknowledged.
+#[test]
+fn a_size_refusal_counts_only_for_an_entry_carried_and_not_acknowledged() {
+    let (a, b) = (0, 1);
+    let mut net = Net::new(1, None);
+    net.elect_first();
+    for _ in 0..3 {
+        net.write();
+        net.settle(a, b);
+        net.settle(a, 2);
+    }
+    let term = net.cores[a].term();
+    assert_eq!(net.cores[a].progress[&id(2)].matched, 4);
+    // A copy of the append that carried entry 3, as if 2 KiB, held back.
+    let wire = |index, len| Wire {
+        index,
+        term,
+        kind: crate::entry::Kind::Empty.code(),
+        file: 0,
+        payload: vec![0; len],
+        hash: [0; 32],
+    };
+    let replay = Message {
+        from: id(1),
+        to: id(2),
+        term,
+        start: 1,
+        body: Body::Append {
+            prev: Pos { index: 2, term },
+            entries: vec![wire(3, 2 << 10)],
+            committed: 4,
+        },
+    };
+    // B retires through 4 and opens again, its largest entry 512 bytes.
+    let cfg = Config {
+        me: id(2),
+        members: vec![id(1), id(2), id(3)],
+        election: 4,
+        heartbeat: 1,
+        batch: 1,
+        batch_bytes: 1 << 10,
+        max_entry: 512,
+        seed: 9,
+        plant: None,
+    };
+    let rec = Recovered {
+        server: id(2),
+        start_count: 2,
+        term,
+        vote: None,
+        base: Pos { index: 4, term },
+        terms: Vec::new(),
+        committed: 4,
+        published: 4,
+        largest: None,
+    };
+    net.cores[b] = Core::new(cfg, &rec).unwrap();
+    // A hears B's new start and its success through 4.
+    for _ in 0..3 {
+        net.tick(a);
+        net.settle(a, b);
+    }
+    assert_eq!(net.cores[a].progress[&id(2)].matched, 4);
+    // The replay reaches B: taken, not refused for its size.
+    let out = net.cores[b].receive(replay);
+    assert!(
+        !out.iter().any(|x| matches!(
+            x,
+            Action::Send(Message {
+                body: Body::AppendTooLarge { .. },
+                ..
+            })
+        )),
+        "{out:?}"
+    );
+    // A size refusal as a follower that still checked retired entries
+    // would send it: of an entry B acknowledged, old news.
+    let refusal = |start, prev, index| Message {
+        from: id(2),
+        to: id(1),
+        term,
+        start,
+        body: Body::AppendTooLarge {
+            echo: Echo {
+                term,
+                start: 1,
+                prev,
+            },
+            index,
+            size: 2 << 10,
+            limit: 512,
+        },
+    };
+    let heard = net.cores[a].progress[&id(2)].heard_at;
+    for _ in 0..2 {
+        net.tick(a);
+    }
+    net.flight.clear();
+    assert!(net.cores[a].receive(refusal(2, 2, 3)).is_empty());
+    // Of an entry past any A carried to B since its new start: the last
+    // append to B named 4 and carried nothing, so `sent` is 4 and what was
+    // carried less; neither 5 nor 4 was carried.
+    assert!(net.cores[a].receive(refusal(2, 4, 5)).is_empty());
+    assert!(net.cores[a].receive(refusal(2, 3, 4)).is_empty());
+    let p = net.cores[a].progress[&id(2)];
+    assert!(net.cores[a].blocked().is_empty());
+    assert_eq!((p.heard_at, p.carried), (heard, 0));
+}
+
+/// Three members settled, with entries written and committed: the ground
+/// for the checker's hand-built cases.
+fn settled(seed: u64) -> World {
+    let setup = Setup {
+        members: 3,
+        steps: 0,
+        plant: None,
+        store: STORE,
+        batch: Some((8, 64 << 10)),
+    };
+    let mut w = World::new(seed, setup).unwrap();
+    w.calm();
+    w.settle().unwrap();
+    w.writing = true;
+    w.run_until(40, |_| false).unwrap();
+    w.writing = false;
+    w.run_until(20, |_| false).unwrap();
+    w
+}
+
+/// Round 4's finding 6: the commit record counts a holder's position only
+/// with the entry its disk shows there, and a position a majority held
+/// inside the record only with the hash it counted, compared.
+#[test]
+fn the_commit_record_counts_a_holder_only_with_its_entry() {
+    let mut w = settled(21);
+    let l = w.leading().unwrap();
+    let term = w.core_of(l).term();
+    let f = (0..3).find(|i| *i != l).unwrap();
+    let max = w.oracle.max();
+    // A durable entry its read does not show: not counted.
+    let short = w.record_held(f, term, max + 5, [7; 32], &[], None);
+    let failure = short.unwrap_err();
+    eprintln!("a tip its read does not show: {failure}");
+    assert_eq!(failure.check, Check::LogMatching);
+    assert!(w.oracle.held[f].get(&term).is_none_or(|k| *k <= max));
+    // A majority position inside the record whose hash was not counted.
+    let at = w.oracle.held[l][&term];
+    assert!(at <= max);
+    w.oracle.chains.get_mut(&term).unwrap().remove(&at);
+    let failure = w.check_majority(l, term).unwrap_err();
+    eprintln!("a majority position without its hash: {failure}");
+    assert_eq!(failure.check, Check::LogMatching);
+}
+
+/// Round 4's finding 7: an acknowledgement of the entry at the follower's
+/// log base is checked against the checkpoint's entry there.
+#[test]
+fn an_acknowledgement_at_the_base_is_the_checkpoint_entry() {
+    let mut w = settled(22);
+    let l = w.leading().unwrap();
+    let f = (0..3).find(|i| *i != l).unwrap();
+    // Write and checkpoint until the follower's log retires a segment.
+    for _ in 0..20 {
+        w.writing = true;
+        w.run_until(40, |_| false).unwrap();
+        w.writing = false;
+        w.run_until(10, |_| false).unwrap();
+        w.checkpoint(f).unwrap();
+        if w.base_of(f) > 0 {
+            break;
+        }
+    }
+    let base = w.base_of(f);
+    assert!(base > 0);
+    let leader = w.ids[l];
+    let (saved, _) = w.nodes[f].member.as_ref().unwrap().store.saved_term();
+    let echo = Echo {
+        term: saved,
+        start: w.core_of(l).start(),
+        prev: base - 1,
+    };
+    let prev = Pos {
+        index: base - 1,
+        term: saved,
+    };
+    // The append carried, at the base, an entry other than the one the
+    // checkpoint keeps.
+    w.nodes[f].appended = Some((leader, echo, prev, vec![(base, [9; 32])]));
+    let reply = Message {
+        from: w.ids[f],
+        to: leader,
+        term: saved,
+        start: w.core_of(f).start(),
+        body: Body::AppendReply {
+            echo,
+            matched: Some(base),
+            hint: base,
+        },
+    };
+    let failure = w.check_answer(f, &reply).unwrap_err();
+    eprintln!("an acknowledgement at the base: {failure}");
+    assert_eq!(failure.check, Check::DurableAnswer);
+}
+
+/// Round 4's finding 5: a leader's report that a follower is behind exempts
+/// it from the progress check only when the disks confirm it.
+#[test]
+fn a_report_of_behind_exempts_a_follower_only_on_the_disks_word() {
+    let mut w = settled(23);
+    let l = w.leading().unwrap();
+    let f = (0..3).find(|i| *i != l).unwrap();
+    let id = w.ids[f];
+    w.nodes[l].member.as_mut().unwrap().core.behind.insert(id);
+    assert!(w.core_of(l).behind().contains(&id));
+    assert!(!w.excused(l, f).unwrap());
 }
