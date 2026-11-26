@@ -864,6 +864,13 @@ impl Worker {
         self.abort.store(true, Ordering::SeqCst);
     }
 
+    /// Whether [`Self::abort_script`] was asked and the script has not
+    /// taken it yet.
+    #[cfg(test)]
+    pub(crate) fn abort_asked(&self) -> bool {
+        self.abort.load(Ordering::SeqCst)
+    }
+
     /// Queue window `window`'s request. Requests run in order, one at a
     /// time.
     pub fn send(

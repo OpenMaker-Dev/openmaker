@@ -2651,22 +2651,38 @@ impl OpenMakerApp {
 
     /// Esc / Cmd-period while a script runs; Esc in a pause cancels it.
     pub(super) fn abort_keys(&mut self, ctx: &egui::Context) {
-        // The host's message over the window, its alert that a file was
-        // disconnected, or the app's own alert (a pause's message, a
-        // waiting alert) takes Escape for itself: Escape dismisses the
-        // alert, as Return does, and the next one reaches the script
-        // (#859).
+        // The host's message over the window, or its alert that a file was
+        // disconnected, takes Escape for itself.
         if !self.script.running
             || self.script.prompt.is_some()
             || self.host_message_shown()
             || self.forced_alert_shown()
-            || self.error.is_some()
         {
             return;
         }
+        // So does the app's own alert (a pause's message, a waiting
+        // alert): Escape dismisses it, as Return does, while Command-period
+        // still stops the script (#859). Only a new press of Escape stops
+        // it: the repeats of a held Escape that dismissed an alert do not.
+        let alert = self.error.is_some();
         let abort = ctx.input_mut(|input| {
-            input.consume_key(egui::Modifiers::NONE, Key::Escape)
-                || input.consume_key(egui::Modifiers::COMMAND, Key::Period)
+            let mut escape = false;
+            if !alert {
+                input.events.retain(|event| match event {
+                    egui::Event::Key {
+                        key: Key::Escape,
+                        pressed: true,
+                        repeat,
+                        modifiers,
+                        ..
+                    } if modifiers.matches_logically(egui::Modifiers::NONE) => {
+                        escape |= !repeat;
+                        false
+                    }
+                    _ => true,
+                });
+            }
+            escape || input.consume_key(egui::Modifiers::COMMAND, Key::Period)
         });
         if !abort {
             return;
