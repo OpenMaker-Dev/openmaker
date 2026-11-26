@@ -1412,6 +1412,7 @@ impl NativeProvider {
         script: bool,
         (context, prepared, layout): (WriteContext, Option<om_data::PreparedId>, Option<u32>),
     ) -> Result<Record, DataError> {
+        plan.check_creation_context(&context)?;
         let mut globals = if plan.has_global_auto_entry(entry) {
             if self.transaction_kind() != Some(TransactionKind::Record) || prepared.is_some() {
                 return Err(unavailable(
