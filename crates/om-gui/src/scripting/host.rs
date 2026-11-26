@@ -6216,8 +6216,8 @@ impl Network for WorkerHost<'_> {
             return sent.map_err(|e| failed(e.code(), e.to_string()));
         }
         let url = om_url::mailto(&mail.to, &mail.cc, &mail.bcc, &mail.subject, &mail.message)
-            .map_err(|e| failed(self, ErrorCode::UNAVAILABLE, e.to_string()))?;
-        mail::open_mailto(&url).map_err(|message| failed(self, ErrorCode::UNAVAILABLE, message))
+            .map_err(|e| failed(ErrorCode::UNAVAILABLE, e.to_string()))?;
+        mail::open_mailto(&url).map_err(|message| failed(ErrorCode::UNAVAILABLE, message))
     }
 
     /// Insert from URL (`om_url`): into a container field as container
