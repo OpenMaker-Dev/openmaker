@@ -858,7 +858,7 @@ impl CanvasState {
         let Geometry::Loaded(geometry) = &session.geometry else {
             return 0;
         };
-        if !self.matches(session) || self.geometry.as_ref() != Some(geometry) {
+        if !self.selection_matches(session, geometry) {
             return 0;
         }
         self.selected.0.len()
@@ -996,7 +996,7 @@ impl CanvasState {
         let Geometry::Loaded(geometry) = &session.geometry else {
             return None;
         };
-        if !self.matches(session) || self.geometry.as_ref() != Some(geometry) {
+        if !self.selection_matches(session, geometry) {
             return None;
         }
         geometry.objects.get(self.selected.single()?)
@@ -1010,17 +1010,25 @@ impl CanvasState {
         })
     }
 
+    fn selection_matches(&self, session: &Session, geometry: &LayoutGeometry) -> bool {
+        self.matches(session)
+            && self.panel_generation == session.layout_generation
+            && self.geometry.as_ref() == Some(geometry)
+    }
+
     pub(crate) fn synchronize(&mut self, session: &Session) {
         let geometry = match &session.geometry {
             Geometry::Loaded(geometry) => Some(geometry),
             Geometry::Loading | Geometry::Unavailable => None,
         };
         let moved = !self.matches(session);
-        if moved || self.panel_generation != session.layout_generation {
+        let revisited = self.panel_generation != session.layout_generation;
+        let geometry_changed = self.geometry.as_ref() != geometry;
+        if moved || revisited {
             self.front_panels.clear();
             self.panel_generation = session.layout_generation;
         }
-        if moved || self.geometry.as_ref() != geometry {
+        if moved || geometry_changed {
             self.clear_history();
             self.drag = None;
             self.field_drag = None;
@@ -1072,6 +1080,8 @@ impl CanvasState {
                     self.retyping = None;
                 }
             }
+        }
+        if moved || geometry_changed || revisited {
             self.clear_selection();
             self.scroll_to_selected = false;
         }
@@ -1093,7 +1103,6 @@ pub(crate) fn show(
     let incoming = egui::DragAndDrop::payload::<crate::layout_objects::FieldDrag>(ui.ctx())
         .filter(|drag| drag.matches(session, fields));
     let contents = session.panel_contents();
-    let visible = |key| contents.is_none_or(|panels| panels.visible(key, &state.front_panels));
     ui.painter()
         .rect_filled(ui.max_rect(), CornerRadius::ZERO, theme::PASTEBOARD);
 
@@ -1119,6 +1128,8 @@ pub(crate) fn show(
             let factor = state.shown_zoom.factor();
             zoom::show(ui, ui.available_size() / factor, factor, |ui| {
                 let unsaved = state.unsaved();
+                let visible =
+                    |key| contents.is_none_or(|panels| panels.visible(key, &state.front_panels));
                 let dropped = draw(
                     ui,
                     geometry,
@@ -3068,7 +3079,7 @@ mod tests {
 
     #[test]
     fn only_the_front_panel_takes_canvas_input_until_objects_reveals_another() {
-        use egui_kittest::kittest::{NodeT, Queryable};
+        use egui_kittest::kittest::Queryable;
         use om_layout::{Layout, LayoutObject, ObjectStore, TabObject};
 
         let node = |id, object_type, parent, children| LayoutObject {
@@ -3192,6 +3203,9 @@ mod tests {
         session.select_layout(1);
         session.accept_geometry(1, Ok(Some(geometry))).unwrap();
         session.accept_render_layout(1, Ok(Some(render))).unwrap();
+        assert!(state.selected_object(&session).is_none());
+        state.synchronize(&session);
+        assert!(state.selected_index().is_none());
         state.select_all(&session);
         assert_eq!(state.selected_index(), Some(0));
     }
