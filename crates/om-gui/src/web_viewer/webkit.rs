@@ -23,13 +23,15 @@ use std::sync::Arc;
 use gtk::prelude::*;
 use javascriptcore::{ContextExt as _, ValueExt as _};
 use webkit2gtk::{
-    UserContentInjectedFrames, UserContentManagerExt as _, UserScript, UserScriptInjectionTime,
-    WebViewExt as _,
+    HitTestResultExt as _, UserContentInjectedFrames, UserContentManagerExt as _, UserScript,
+    UserScriptInjectionTime, WebViewExt as _,
 };
 use wry::dpi::{PhysicalPosition, PhysicalSize};
 use wry::{WebView, WebViewBuilder, WebViewBuilderExtUnix, WebViewExtUnix};
 
-use super::{allowed, Event, MessageBudget, Navigation, BRIDGE, BRIDGE_POSTER, MAX_MESSAGE};
+use super::{
+    allowed, Event, MessageBudget, Navigation, PageCursor, BRIDGE, BRIDGE_POSTER, MAX_MESSAGE,
+};
 
 /// The bridge's message handler (`window.webkit.messageHandlers.openmaker`).
 const HANDLER: &str = "openmaker";
@@ -143,6 +145,22 @@ impl Page {
             }
         }
         webview.load_url(&url).map_err(|e| e.to_string())?;
+        // The cursor the page asks for, as it changes (a page Browse paints
+        // shows it through the app's window).
+        let cursors = Arc::clone(events);
+        let shown = Cell::new(PageCursor::Default);
+        page.connect_mouse_target_changed(move |_, hit, _| {
+            let cursor = if hit.context_is_link() {
+                PageCursor::Pointer
+            } else if hit.context_is_editable() {
+                PageCursor::Text
+            } else {
+                PageCursor::Default
+            };
+            if shown.replace(cursor) != cursor {
+                cursors(Event::Cursor { view, cursor });
+            }
+        });
         // "Allow interaction with web viewer content" off: the page takes
         // no pointer or keyboard input.
         page.set_sensitive(interactive);

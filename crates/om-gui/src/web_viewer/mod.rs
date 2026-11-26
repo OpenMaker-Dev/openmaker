@@ -182,6 +182,8 @@ pub(crate) enum PageInput {
     /// The app's window lost the keyboard: every key the page holds goes
     /// up, since their releases go to another window.
     Unfocused,
+    /// Paste this text (the app's clipboard's) in the page.
+    Paste(String),
 }
 
 /// A view's newest picture ([`composited`] backends): `size` pixels of
@@ -190,6 +192,36 @@ pub(crate) struct PageFrame {
     pub view: u64,
     pub size: [usize; 2],
     pub rgba: Vec<u8>,
+}
+
+/// The cursor a page asks for where the pointer is, as WebKit's hit test
+/// tells it (a link, editable text, anything else); a page's own CSS
+/// cursors are not known.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum PageCursor {
+    #[default]
+    Default,
+    Pointer,
+    Text,
+}
+
+/// A page's pop-up (a menu, a `<select>`'s list, a tooltip): where it lies
+/// from its view's top left corner and its size, in points, and its newest
+/// picture if it has a new one.
+pub(crate) struct PagePopup {
+    pub id: u32,
+    pub view: u64,
+    pub at: [i32; 2],
+    pub extent: [i32; 2],
+    pub frame: Option<PageFrame>,
+}
+
+/// A pop-up the app shows, over everything in its view's window.
+struct Popup {
+    view: u64,
+    at: [i32; 2],
+    extent: [i32; 2],
+    texture: Option<egui::TextureHandle>,
 }
 
 /// A page Browse paints in the window being drawn: its object, its List
@@ -204,6 +236,8 @@ pub(crate) struct PageTexture {
     pub caret: Option<egui::Rect>,
     /// It has the keyboard ([`WebViewers::take_keys`]).
     pub keyboard: bool,
+    /// The cursor it asks for where the pointer is.
+    pub cursor: PageCursor,
 }
 
 /// Whether pages are textures Browse paints (the Wayland backend) rather
@@ -389,6 +423,11 @@ pub(crate) enum Event {
         call: u64,
         result: String,
     },
+    /// What the pointer is over in the page asks for this cursor.
+    Cursor {
+        view: u64,
+        cursor: PageCursor,
+    },
     /// The page posted a message through its bridge.
     Message {
         view: u64,
@@ -430,6 +469,17 @@ pub(crate) trait Backend {
     fn caret(&self, _view: u64) -> Option<egui::Rect> {
         None
     }
+    /// The text a page copied since the last time, for the app's clipboard
+    /// ([`composited`] backends).
+    fn copied(&mut self) -> Option<String> {
+        None
+    }
+    /// The pages' pop-ups there are now ([`composited`] backends).
+    fn popups(&mut self) -> Vec<PagePopup> {
+        Vec::new()
+    }
+    /// Pointer input over pop-up `popup` ([`composited`] backends).
+    fn popup_input(&mut self, _popup: u32, _input: PageInput) {}
     /// The end of the app's frame, with the root viewport's window: a
     /// backend whose views must be made on the main thread, with a window
     /// to make them in, applies its commands now.
@@ -524,6 +574,8 @@ struct View {
     parent: NativeParent,
     /// Its object's rectangle in the window, in points, as last painted.
     rect: egui::Rect,
+    /// The cursor its page asks for where the pointer is.
+    cursor: PageCursor,
     seen: bool,
 }
 
@@ -612,6 +664,9 @@ pub(crate) struct WebViewers {
     /// The egui widget of the page with the keyboard, which keeps egui's
     /// focus (`None`: no widget has it).
     page_focus: Option<egui::Id>,
+    /// The pages' pop-ups, and whether one took a press this frame.
+    popups: std::collections::HashMap<u32, Popup>,
+    popup_pressed: bool,
 }
 
 impl Default for WebViewers {
@@ -694,6 +749,8 @@ impl WebViewers {
             textures: std::collections::HashMap::new(),
             keyboard: None,
             page_focus: None,
+            popups: std::collections::HashMap::new(),
+            popup_pressed: false,
             hovered: None,
         }
     }
@@ -863,6 +920,7 @@ impl WebViewers {
                 placed: (geometry, visible),
                 current: placement.current,
                 rect: placement.rect,
+                cursor: PageCursor::Default,
                 parent,
                 seen: true,
             });
@@ -883,7 +941,9 @@ impl WebViewers {
             None => {}
         }
         // A press in a painted page gives it the keyboard; any other press
-        // in the window takes the keyboard back from its pages.
+        // in the window (not in a page's pop-up) takes the keyboard back
+        // from its pages, and closes their pop-ups.
+        let popup_pressed = std::mem::take(&mut self.popup_pressed);
         if let Some((view, focus)) = pressed_page {
             // The page has the keyboard now, and egui's focus with it (from
             // the next frame's start, before a Tab could move it).
@@ -901,13 +961,16 @@ impl WebViewers {
                 }
             });
         } else if frame.pressed
+            && !popup_pressed
             && self
                 .keyboard
                 .is_some_and(|(window, _)| window == frame.window)
         {
             self.keyboard = None;
         }
-        if let (true, true, Some(parent)) = (frame.pressed, pressed_page.is_none(), parent) {
+        if let (true, true, false, Some(parent)) =
+            (frame.pressed, pressed_page.is_none(), popup_pressed, parent)
+        {
             let hosts = self
                 .views
                 .iter()
@@ -986,10 +1049,45 @@ impl WebViewers {
     /// Take in the views' new pictures ([`composited`] backends) as the
     /// textures [`Self::pages`] gives Browse.
     pub fn frames(&mut self, ctx: &egui::Context) {
-        let frames = match self.backend.as_mut() {
-            Some(Ok(backend)) => backend.frames(),
+        let (frames, copied, popups) = match self.backend.as_mut() {
+            Some(Ok(backend)) => (backend.frames(), backend.copied(), backend.popups()),
             _ => return,
         };
+        // The pop-ups there are now, with their new pictures.
+        let mut kept = std::collections::HashMap::new();
+        for popup in popups {
+            let mut texture = self
+                .popups
+                .remove(&popup.id)
+                .and_then(|known| known.texture);
+            if let Some(frame) = popup
+                .frame
+                .filter(|f| f.rgba.len() == f.size[0] * f.size[1] * 4)
+            {
+                let image = egui::ColorImage::from_rgba_premultiplied(frame.size, &frame.rgba);
+                match texture.as_mut() {
+                    Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
+                    None => {
+                        let name = format!("web viewer pop-up {}", popup.id);
+                        texture = Some(ctx.load_texture(name, image, egui::TextureOptions::LINEAR));
+                    }
+                }
+            }
+            kept.insert(
+                popup.id,
+                Popup {
+                    view: popup.view,
+                    at: popup.at,
+                    extent: popup.extent,
+                    texture,
+                },
+            );
+        }
+        self.popups = kept;
+        // What a page copied is the app's clipboard's.
+        if let Some(text) = copied {
+            ctx.copy_text(text);
+        }
         // Only each view's newest.
         let mut newest: std::collections::HashMap<u64, PageFrame> =
             std::collections::HashMap::new();
@@ -1052,6 +1150,7 @@ impl WebViewers {
                     record: v.key.record,
                     texture: self.textures.get(&v.id)?.id(),
                     keyboard: self.keyboard.is_some_and(|(_, view)| view == v.id),
+                    cursor: v.cursor,
                     caret: self
                         .backend
                         .as_ref()
@@ -1145,11 +1244,12 @@ impl WebViewers {
                 }
                 egui::Event::Ime(egui::ImeEvent::Commit(text)) => Some(PageInput::Commit(text)),
                 egui::Event::WindowFocused(false) => Some(PageInput::Unfocused),
-                egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_) => {
+                // The app's clipboard's text, pasted through the page's.
+                egui::Event::Paste(text) => Some(PageInput::Paste(text)),
+                egui::Event::Copy | egui::Event::Cut => {
                     let key = match event {
                         egui::Event::Copy => egui::Key::C,
-                        egui::Event::Cut => egui::Key::X,
-                        _ => egui::Key::V,
+                        _ => egui::Key::X,
                     };
                     if let Some((code, held)) = command(key) {
                         for pressed in [true, false] {
@@ -1216,8 +1316,89 @@ impl WebViewers {
         }
     }
 
+    /// After window `window` is drawn and before [`Self::reconcile`]: its
+    /// pages' pop-ups over everything in it, at their places from their
+    /// views' corners (beyond the object if they lie there), with the
+    /// pointer's input over them going to them.
+    pub fn paint_popups(&mut self, ctx: &egui::Context, window: u32) {
+        let events = ctx.input(|i| i.events.clone());
+        let mut inputs = Vec::new();
+        for (id, popup) in &self.popups {
+            let Some(view) = self
+                .views
+                .iter()
+                .find(|v| v.id == popup.view && v.key.window == window)
+            else {
+                continue;
+            };
+            let Some(texture) = &popup.texture else {
+                continue;
+            };
+            let at = view.rect.min + egui::vec2(popup.at[0] as f32, popup.at[1] as f32);
+            let size = egui::vec2(popup.extent[0] as f32, popup.extent[1] as f32);
+            let rect = egui::Rect::from_min_size(at, size);
+            let area = egui::Area::new(egui::Id::unique("web viewer pop-up").with(*id))
+                .order(egui::Order::Foreground)
+                .fixed_pos(at)
+                .interactable(true);
+            let texture = texture.id();
+            let shown = area.show(ctx, |ui| {
+                let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+                ui.painter().image(texture, rect, uv, egui::Color32::WHITE);
+                ui.allocate_rect(rect, egui::Sense::click_and_drag())
+            });
+            let response = shown.inner;
+            if !(response.hovered() || response.dragged()) {
+                continue;
+            }
+            let local = |p: egui::Pos2| (p.x - rect.min.x, p.y - rect.min.y);
+            for event in &events {
+                let input = match event {
+                    egui::Event::PointerMoved(p) => {
+                        let (x, y) = local(*p);
+                        PageInput::Move { x, y }
+                    }
+                    egui::Event::PointerButton {
+                        pos,
+                        button,
+                        pressed,
+                        ..
+                    } => {
+                        let button = match button {
+                            egui::PointerButton::Primary => 0,
+                            egui::PointerButton::Secondary => 1,
+                            egui::PointerButton::Middle => 2,
+                            _ => continue,
+                        };
+                        let (x, y) = local(*pos);
+                        PageInput::Button {
+                            x,
+                            y,
+                            button,
+                            pressed: *pressed,
+                        }
+                    }
+                    _ => continue,
+                };
+                inputs.push((*id, input));
+            }
+        }
+        if inputs
+            .iter()
+            .any(|(_, input)| matches!(input, PageInput::Button { pressed: true, .. }))
+        {
+            self.popup_pressed = true;
+        }
+        if let Some(Ok(backend)) = self.backend.as_mut() {
+            for (id, input) in inputs {
+                backend.popup_input(id, input);
+            }
+        }
+    }
+
     fn destroy(&mut self, id: u64) {
         self.textures.remove(&id);
+        self.popups.retain(|_, popup| popup.view != id);
         if self.keyboard.is_some_and(|(_, view)| view == id) {
             self.keyboard = None;
         }
@@ -1434,6 +1615,11 @@ impl WebViewers {
                             Err(INVALID)
                         },
                     });
+                }
+                Event::Cursor { view, cursor } => {
+                    if let Some(v) = self.views.iter_mut().find(|v| v.id == view) {
+                        v.cursor = cursor;
+                    }
                 }
                 Event::Message { view, body } => {
                     // Only a live view whose object allows it performs

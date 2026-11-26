@@ -8440,6 +8440,13 @@ fn paint_page(
         }
         ui.memory_mut(|m| m.set_focus_lock_filter(response.id, crate::web_viewer::PAGE_KEYS));
     }
+    if let (true, Some(page)) = (response.hovered(), page) {
+        ui.ctx().set_cursor_icon(match page.cursor {
+            crate::web_viewer::PageCursor::Default => egui::CursorIcon::Default,
+            crate::web_viewer::PageCursor::Pointer => egui::CursorIcon::PointingHand,
+            crate::web_viewer::PageCursor::Text => egui::CursorIcon::Text,
+        });
+    }
     // A press the page took: its release goes to the page wherever the
     // pointer is, in whichever frame it comes.
     let held_id = response.id.with("pressed");

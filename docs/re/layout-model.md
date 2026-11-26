@@ -2436,19 +2436,32 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
       keymap's first layout is used: the connection has no window, so the
       compositor never tells it which layout is active, and switching
       layouts (US to Russian, say) is not followed.
-    - **Edit keys.** egui's Copy, Cut and Paste reach the page as Ctrl+C,
-      X and V, in the page's own clipboard for now. egui sends Paste only
-      when the system clipboard holds text, so with it empty Ctrl+V does
-      not reach the page at all, even after a copy inside the page.
+    - **Edit keys.** egui's Copy and Cut reach the page as Ctrl+C and
+      Ctrl+X. A Paste puts the app's clipboard's text on the display's own
+      clipboard, and then sends Ctrl+V. egui sends Paste only when the
+      app's clipboard holds text, so with it empty Ctrl+V does not reach
+      the page at all.
     - **Input methods.** The input method's text goes to the page through
       `zwp_text_input_v3`: its preedit, shown in the page as it is
       composed, and its commit. The input method's window is placed by the
       caret the page reports.
     - **Order.** Keys in the same frame as a click reach the page before
       the click.
-  - **Not yet.** The page's menus and pop-ups (shown nowhere yet, and closed
-    by the next press), its cursor shapes and the system clipboard do not
-    reach it.
+  - **Pop-ups.** A page's menus, `<select>` lists and tooltips are the
+    display's pop-ups. The app draws each one over everything in the
+    window, at its place from its view's corner, so it can lie beyond the
+    object (`WebViewers::paint_popups`), and the pointer's input over it
+    goes to it. A press in the page, or anywhere outside the pages' pop-ups,
+    closes them. While a menu is open, the keys reach it through its page.
+    Limits: a pop-up stays within the app's window, and a pop-up the page
+    moves after it opened keeps its first place.
+  - **Cursor.** The cursor over a page follows WebKit's hit test: a hand
+    over a link, a text cursor over editable text, the arrow elsewhere. A
+    page's own CSS cursors are not followed.
+  - **Clipboard.** Text a page copies becomes the app's clipboard's: it is
+    read from the page's selection through a pipe, at most 16 MiB of it.
+    The app's clipboard's text is pasted in the page as above. Text is all
+    that is bridged: no images, no rich text, no primary selection.
   - **The host is another process.** Both ways are bounded. A command
     line longer than 16 MiB (a page's address, a function's parameters) is
     refused as it is written, and that load or call fails; the Set Web
@@ -2466,8 +2479,9 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323)'s study.
   `tests/web_viewer_composited.rs` runs it in the real app under Xvfb: a
   page painted in its object with no child window, a text object above
-  the viewer drawn over it, a real click reaching the page's bridge, and
-  real keys typed in the page's text box. An input method, and the
+  the viewer drawn over it, a real click reaching the page's bridge, real
+  keys typed in the page's text box, and a `<select>`'s list drawn below
+  the page and choosing with Down and Return. An input method, and the
   session's keymap, were not tried (Xvfb has neither).
 - On Linux the X11 backend's views can only be children of X11 windows, so a build with
   the feature puts its windows on winit's X11 backend whenever an X server

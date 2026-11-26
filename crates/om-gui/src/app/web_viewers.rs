@@ -41,6 +41,8 @@ impl OpenMakerApp {
             .and_then(|s| s.layout)
             .filter(|_| browse);
         let placements = std::mem::take(&mut self.w.document.web_viewers);
+        // The pages' pop-ups over everything the window drew.
+        self.web.paint_popups(ctx, self.w.id);
         let covered = covered_areas(ctx, self.viewport_layer, &self.w.document.overlays);
         self.web.reconcile(
             ctx,

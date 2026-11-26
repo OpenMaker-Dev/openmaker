@@ -12,6 +12,8 @@
 //!   performs a script that commits the record's field.
 //! - A click in the page's text box gives the page the keyboard: real keys
 //!   (XTest) type in it, in xkb's default keymap (no Wayland session).
+//! - A click on the page's `<select>` opens its list, a pop-up the app draws
+//!   below the page, past the object's edge; Down and Return choose in it.
 //!
 //! `dbus-run-session -- xvfb-run -a cargo test -p om-gui --features web-viewer
 //! --test web_viewer_composited` on Linux; skipped without an X display.
@@ -51,7 +53,10 @@ mod linux {
         'clicked')\\\" style='position:absolute;left:100px;top:100px;width:200px;\
         height:80px'>Go</button><input id='t' oninput=\\\"FileMaker.PerformScript('Record', \
         'typed:' + this.value)\\\" style='position:absolute;left:100px;top:220px;width:200px;\
-        height:30px'><script>window.addEventListener('load', function () \
+        height:30px'><select onchange=\\\"FileMaker.PerformScript('Record', 'chose:' + \
+        this.value)\\\" style='position:absolute;left:100px;top:262px;width:120px;\
+        height:30px'><option>One</option><option>Two</option><option>Three</option></select>\
+        <script>window.addEventListener('load', function () \
         { FileMaker.PerformScript('Record', 'loaded'); });</script></body></html>\"";
 
     #[derive(Default)]
@@ -431,6 +436,9 @@ mod linux {
         /// has given the page the click.
         Focusing(Instant),
         Typing,
+        /// Clicked on the `<select>`: its list is drawn by then.
+        Opening(Instant),
+        Choosing,
     }
 
     struct Driver {
@@ -572,6 +580,42 @@ mod linux {
                         shot.save("3-composited-typed");
                     }
                     println!("keys typed in the page's text box reached it");
+                    let Some([left, top, ..]) =
+                        Shot::take(&self.x11, window).as_ref().and_then(Shot::page)
+                    else {
+                        fail("the page went".into());
+                    };
+                    // The `<select>`: 100..220 x 262..292 in the page.
+                    self.click(window, (left + 160) as i16, (top + 277) as i16);
+                    self.phase = Phase::Opening(Instant::now() + Duration::from_millis(1500));
+                }
+                Phase::Opening(at) if Instant::now() >= at => {
+                    let Some(shot) = Shot::take(&self.x11, window) else {
+                        return;
+                    };
+                    shot.save("4-composited-select-open");
+                    // The page ends 300 points down: below it, where the
+                    // layout is empty, the list's items are dark text.
+                    let Some([left, top, ..]) = Shot::page(&shot) else {
+                        fail("the page went".into());
+                    };
+                    let below = (left + 100..left + 220)
+                        .flat_map(|x| (top + 302..top + 380).map(move |y| (x, y)))
+                        .filter(|&(x, y)| y < shot.height && shot.at(x, y).iter().all(|c| *c < 96))
+                        .count();
+                    if below == 0 {
+                        fail("the select's list is not drawn below the page".into());
+                    }
+                    println!("{below} dark pixels of the select's list below the page");
+                    // Down to Two, and Return (X keycodes of evdev's 108, 28).
+                    self.type_keys(&[116, 36]);
+                    self.phase = Phase::Choosing;
+                }
+                Phase::Choosing if given == "chose:Two" => {
+                    if let Some(shot) = Shot::take(&self.x11, window) {
+                        shot.save("5-composited-chose");
+                    }
+                    println!("the select's list took the keys and chose Two");
                     println!("PASS");
                     std::process::exit(0);
                 }
