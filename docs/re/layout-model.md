@@ -2255,28 +2255,29 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   every web viewer shows "Web viewer: unavailable on this display." Builds without the feature stay on native
   Wayland. Through XWayland:
   - **Scale** comes from the X server: XSETTINGS `Xft/DPI`, then the
-    `Xft.dpi` resource, then each monitor's size in RandR (winit 0.30:
-    pixels per millimetre, rounded to twelfths, at least 1), unless
+    `Xft.dpi` resource, then each monitor's size in RandR (winit 0.30: its
+    pixel density over 96 dpi, rounded to twelfths, at least 1), unless
     `WINIT_X11_SCALE_FACTOR` is set. What a desktop at a higher scale shows
     depends on its compositor. Measured 2026-11-26 with the mock provider,
     comparing the same build through XWayland and natively on Wayland
     (`DISPLAY` unset), by screenshot
     ([evidence](../evidence/xwayland-scale/README.md)):
     - **sway 1.12 (wlroots, headless)** gives XWayland the output's logical
-      size (960 × 540 for a 1920 × 1080 output at scale 2, 1280 × 720 at
-      1.5) and stretches X windows by the output's scale. With no XSETTINGS
-      or `Xft.dpi` the app draws at 1, so its windows have the native
-      windows' size but are blurred, at 2 and at 1.5. Native Wayland
-      windows are sharp at both, 1.5 included (winit follows fractional
-      scales). Raising `WINIT_X11_SCALE_FACTOR` only enlarges the stretched
-      window.
+      size (a 1920 × 1080 output is 960 × 540 pixels on 254 × 143 mm at
+      scale 2, 1280 × 720 on 339 × 190 mm at 1.5) and stretches X windows by
+      the output's scale. With no XSETTINGS or `Xft.dpi` the app draws at
+      1, so its windows have the native windows' size but are blurred, at 2
+      and at 1.5. Native Wayland windows are sharp at both, 1.5 included
+      (winit follows fractional scales). [I] Raising
+      `WINIT_X11_SCALE_FACTOR` would only enlarge the stretched window (not
+      tried).
     - **Hyprland 0.56 with `xwayland:force_zero_scaling`** (Omarchy's
       default) does not stretch X windows: XWayland has the monitor's
       pixels (1920 × 1080 on 600 × 340 mm at scale 2 as at 1) and no
       `Xft.dpi`. At scale 1 the app draws at 1, as natively. At scale 2 it
-      still draws at 1: sharp, but half the size of the native window,
-      unless `WINIT_X11_SCALE_FACTOR=2` (or an `Xft.dpi` of 192) gives the
-      desktop's scale.
+      still draws at 1: sharp, but half the size of the native window. [I]
+      `WINIT_X11_SCALE_FACTOR=2` (or an `Xft.dpi` of 192) would give it the
+      desktop's scale (not tried).
     - WebKitGTK, in the app's process, takes GDK's scale from
       `GDK_SCALE`, which some desktops set for X11 apps (Omarchy sets 2);
       its pages then draw at that scale within objects the app draws at 1
@@ -2285,8 +2286,11 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   - **The clipboard** is X selections (arboard), which the compositor shares
     with Wayland applications.
 
-  A test runs the real event loop with `WAYLAND_DISPLAY` naming no socket,
-  and `tests/web_viewer_native.rs` passes on Hyprland's XWayland. A native
+  A test runs the real event loop with `WAYLAND_DISPLAY` naming no socket.
+  `tests/web_viewer_native.rs` passed on Hyprland's XWayland at scale 1 on
+  NVIDIA's driver with the shared-memory choice of
+  [#1087](https://github.com/OpenMaker-Dev/openmaker/pull/1087) (without it
+  the page stays blank there, #1085). A native
   Wayland backend was studied and prototyped in
   [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323).
 - Every window shows its own views. eframe 0.37 gives out only the root
