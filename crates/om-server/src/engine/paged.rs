@@ -13,9 +13,12 @@
 //! through a pin's roots, or [`om_store::page::MemStore`]. Every page it
 //! reads is checked by the hash its parent holds (`om_store::tree`), and a
 //! page that does not read or check is a [`ReadError::Unreadable`] naming
-//! the path read, never data. It gives owned values and holds a page only
-//! while a call reads it: each call opens the version again from its root,
-//! which the page store's cache answers. It answers every read as the file
+//! the path read, never data. It gives owned values. It holds its
+//! version's root page, read and checked when it opens, and the pages from
+//! the root to the leaf where its last listing or subtree read stood, from
+//! which the next is sought rather than from the root (#767); every other
+//! page is read when a call needs it, which the page store's cache
+//! answers. It answers every read as the file
 //! engine's view of the same file does, page for page: the same children,
 //! subtrees and walk steps in each call, the same "more may follow"
 //! (a listing looks one child past a full page to say), the same limits
@@ -117,12 +120,13 @@ use std::borrow::Cow;
 use std::fmt;
 use std::io::{Read as IoRead, Seek};
 use std::ops::Bound;
+use std::sync::{Mutex, PoisonError};
 
 use om_hbam::stream::NodeStream;
 use om_hbam::writer::{index_entry_cost, MAX_INDEX_ENTRY, MAX_INLINE_VALUE};
 use om_hbam::OwnedNode;
 use om_store::page::{EntryPages, MemStore, PageStore, Root, TreeName};
-use om_store::tree::{self, key, Edit, Node, Tree};
+use om_store::tree::{self, key, Cursor, Edit, Node, Place, Tree};
 
 use super::export::{self, ExportError, Exported, Progress, Target};
 use super::view::{owned_path, Child, Direction, Head, ReadError, Step, Version, View, NO_LIMIT};
@@ -132,9 +136,18 @@ use super::view::{owned_path, Child, Direction, Head, ReadError, Step, Version, 
 /// follow", never "no more", and the next call fails on the same read (the
 /// module doc, "A read that fails partway").
 pub struct PagedView<'s, S: ?Sized> {
-    store: &'s S,
-    root: Root,
+    /// The version, its root page read and checked once, at the open.
+    tree: Tree<'s, S>,
     version: Version,
+    /// Where the last listing or subtree read stood in the version (#767):
+    /// the next is sought from there rather than from the root, so that an
+    /// index entry read at a key a listing has just given, and the
+    /// listing's next page, read none of the pages on the way again. After
+    /// a page of children it is the first child's place, after a subtree
+    /// where its walk ended, at the next key. Each choice is the one a
+    /// descent from the root makes ([`Place`]), so the answers are the
+    /// same from any place.
+    place: Mutex<Option<Place>>,
 }
 
 impl<'s, S: PageStore + ?Sized> PagedView<'s, S> {
@@ -143,15 +156,23 @@ impl<'s, S: PageStore + ?Sized> PagedView<'s, S> {
     pub fn open(store: &'s S, root: Root) -> Result<Self, ReadError> {
         let tree = Tree::open(store, root).map_err(|e| unreadable(&[], &e))?;
         Ok(PagedView {
-            store,
-            root,
             version: tree.last_entry(),
+            tree,
+            place: Mutex::new(None),
         })
     }
 
-    /// The version, opened again from its root for one call.
-    fn tree(&self, path: &[&[u8]]) -> Result<Tree<'s, S>, ReadError> {
-        Tree::open(self.store, self.root).map_err(|e| unreadable(path, &e))
+    /// The place the last read left, taken for one read.
+    fn take_place(&self) -> Option<Place> {
+        self.place
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
+    /// Keeps where a read ended, for the next.
+    fn keep_place(&self, place: Option<Place>) {
+        *self.place.lock().unwrap_or_else(PoisonError::into_inner) = place;
     }
 
     /// Whether the root has a child.
@@ -167,10 +188,22 @@ impl<'s, S: PageStore + ?Sized> PagedView<'s, S> {
     /// The subtree at `path` (the module doc of `super::view`, "Limits"),
     /// built from a walk of its keys, every list with exactly as many places
     /// as children so that it is counted as the file engine's tree of the
-    /// same file is.
+    /// same file is. The walk starts from where the view's last read stood.
     fn build(
         &self,
         tree: &Tree<'s, S>,
+        path: &[&[u8]],
+        limit: Limit,
+    ) -> Result<Option<OwnedNode>, ReadError> {
+        let mut items = tree.walk(path).starting_at(self.take_place());
+        let built = Self::build_from(&mut items, path, limit);
+        self.keep_place(items.place());
+        built
+    }
+
+    /// [`PagedView::build`]'s subtree, from the walk `items` of its keys.
+    fn build_from(
+        items: &mut Cursor<'_, 's, S>,
         path: &[&[u8]],
         limit: Limit,
     ) -> Result<Option<OwnedNode>, ReadError> {
@@ -200,7 +233,6 @@ impl<'s, S: PageStore + ?Sized> PagedView<'s, S> {
             Ok(())
         };
         let mut stack: Vec<OwnedNode> = Vec::new();
-        let mut items = tree.walk(path);
         if path.is_empty() {
             // The root is the file's list itself: no key, no value, never
             // written as a push (as `om_hbam::KeyTree` makes it).
@@ -388,10 +420,10 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
     }
 
     fn node(&self, path: &[&[u8]]) -> Result<Option<Head<'_>>, ReadError> {
-        let tree = self.tree(path)?;
+        let tree = &self.tree;
         if path.is_empty() {
             return Ok(Some(Head {
-                list: self.root_has_children(&tree)?,
+                list: self.root_has_children(tree)?,
                 value: None,
             }));
         }
@@ -403,9 +435,9 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
         path: &[&[u8]],
         limit: usize,
     ) -> Result<Option<Cow<'_, OwnedNode>>, ReadError> {
-        let tree = self.tree(path)?;
+        let tree = &self.tree;
         Ok(self
-            .build(&tree, path, Limit::Memory(limit))?
+            .build(tree, path, Limit::Memory(limit))?
             .map(Cow::Owned))
     }
 
@@ -418,8 +450,8 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
         path: &[&[u8]],
         work: om_query::program::Size,
     ) -> Result<Option<Cow<'_, OwnedNode>>, ReadError> {
-        let tree = self.tree(path)?;
-        Ok(self.build(&tree, path, Limit::Work(work))?.map(Cow::Owned))
+        let tree = &self.tree;
+        Ok(self.build(tree, path, Limit::Work(work))?.map(Cow::Owned))
     }
 
     fn children_page<'v>(
@@ -430,24 +462,39 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
         max: usize,
         out: &mut Vec<Child<'v>>,
     ) -> Result<bool, ReadError> {
-        let tree = self.tree(path)?;
-        let mut children = tree.children(path, from, store_direction(direction));
-        for given in 0..max {
-            match children.next() {
-                None => return Ok(false),
-                Some(Ok((segment, node))) => out.push(Child {
-                    segment: Cow::Owned(segment),
-                    head: head(node),
-                }),
-                // The children before it are given; the next page reaches
-                // it first.
-                Some(Err(_)) if given > 0 => return Ok(true),
-                Some(Err(e)) => return Err(unreadable(path, &e)),
+        let tree = &self.tree;
+        let mut children = tree
+            .children(path, from, store_direction(direction))
+            .starting_at(self.take_place());
+        let mut first = None;
+        let more = 'page: {
+            for given in 0..max {
+                match children.next() {
+                    None => break 'page Ok(false),
+                    Some(Ok((segment, node))) => {
+                        if given == 0 {
+                            first = children.place();
+                        }
+                        out.push(Child {
+                            segment: Cow::Owned(segment),
+                            head: head(node),
+                        });
+                    }
+                    // The children before it are given; the next page
+                    // reaches it first.
+                    Some(Err(_)) if given > 0 => break 'page Ok(true),
+                    Some(Err(e)) => break 'page Err(unreadable(path, &e)),
+                }
             }
-        }
-        // A full page: more follow if another child does (one that does
-        // not read is for the next page to reach).
-        Ok(children.next().is_some())
+            // A full page: more follow if another child does (one that
+            // does not read is for the next page to reach).
+            Ok(children.next().is_some())
+        };
+        // Kept at the first child given, where a reader of the children's
+        // entries starts; the walk of the last entry ends where the next
+        // page starts. With none given, where the listing stopped.
+        self.keep_place(first.or_else(|| children.place()));
+        more
     }
 
     fn subtrees_page<'v>(
@@ -459,7 +506,7 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
         limit: usize,
         out: &mut Vec<Cow<'v, OwnedNode>>,
     ) -> Result<bool, ReadError> {
-        let tree = self.tree(path)?;
+        let tree = &self.tree;
         let mut children = tree.children(path, from, store_direction(direction));
         for given in 0..max {
             let segment = match children.next() {
@@ -470,7 +517,7 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
             };
             let mut child_path = path.to_vec();
             child_path.push(&segment);
-            match self.build(&tree, &child_path, Limit::Memory(limit)) {
+            match self.build(tree, &child_path, Limit::Memory(limit)) {
                 Ok(Some(node)) => out.push(Cow::Owned(node)),
                 Ok(None) => return Err(orphan(&child_path)),
                 // A subtree past the limit fails the page, as the file
@@ -490,7 +537,7 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
         max: usize,
         out: &mut Vec<Step<'v>>,
     ) -> Result<Option<Vec<Vec<u8>>>, ReadError> {
-        let tree = self.tree(path)?;
+        let tree = &self.tree;
         let base = path.len();
         let max = max.max(1);
         let mut given = 0;
@@ -509,7 +556,7 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
                         depth: 0,
                         segment: Cow::Owned(Vec::new()),
                         head: Head {
-                            list: self.root_has_children(&tree)?,
+                            list: self.root_has_children(tree)?,
                             value: None,
                         },
                     });
@@ -572,7 +619,7 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
     }
 
     fn changed_since(&self, path: &[&[u8]], since: Version) -> Result<bool, ReadError> {
-        self.tree(path)?
+        self.tree
             .changed_since(path, since)
             .map_err(|e| unreadable(path, &e))
     }
