@@ -1744,6 +1744,54 @@ mod tests {
         assert_eq!(listed, sought);
     }
 
+    /// Review of #938, the reviewer's case through a place: on the tree of
+    /// `a_seek_from_a_held_leaf_gives_what_the_root_gives_on_a_tree_out_of_order`
+    /// (leaves `a, z` and `n, o`, the separator `m`), a new cursor started
+    /// from the place a cursor left after `a`, with the bound `n`, and a
+    /// listing started there from the child `n`, give what the same reads
+    /// from the root give, in both directions (their first items: such a
+    /// listing need not end, #998).
+    #[test]
+    fn a_place_gives_what_the_root_gives_on_a_tree_out_of_order() {
+        let store = MemStore::new(Numbering::Sequential);
+        let item = |s: &[u8]| (KIND_VALUE, key_of_segment(s), vec![7; 10]);
+        let separator = key_of_segment(b"m");
+        let leaves = [vec![item(b"a"), item(b"z")], vec![item(b"n"), item(b"o")]];
+        let root = crate::tree::built::tree(&store, &leaves, &[separator.as_slice()]).root;
+        let tree = Tree::open(&store, root).unwrap();
+        let mut after_a = tree.range(Bound::Unbounded, Bound::Unbounded, Direction::Forward);
+        let a = after_a.next().unwrap().unwrap();
+        assert_eq!(a.key.as_bytes(), key_of_segment(b"a"));
+        let place = after_a.place();
+        assert!(place.is_some());
+        let n = key_of_segment(b"n");
+        let root_path: [&[u8]; 0] = [];
+        for direction in [Direction::Forward, Direction::Backward] {
+            for bound in [Bound::Included(&n[..]), Bound::Excluded(&n[..])] {
+                let (lo, hi) = match direction {
+                    Direction::Forward => (bound, Bound::Unbounded),
+                    Direction::Backward => (Bound::Unbounded, bound),
+                };
+                let first = |cursor: Cursor<'_, '_, MemStore>| -> Vec<Vec<u8>> {
+                    cursor
+                        .take(4)
+                        .map(|i| i.unwrap().key.into_bytes())
+                        .collect()
+                };
+                let from_root = first(tree.range(lo, hi, direction));
+                let from_place = first(tree.range(lo, hi, direction).starting_at(place.clone()));
+                assert_eq!(from_place, from_root, "{direction:?} {bound:?}");
+            }
+            let first = |children: Children<'_, '_, MemStore>| -> Vec<Vec<u8>> {
+                children.take(6).map(|child| child.unwrap().0).collect()
+            };
+            let listing = || tree.children(&root_path, Bound::Included(&b"n"[..]), direction);
+            let from_root = first(listing());
+            let from_place = first(listing().starting_at(place.clone()));
+            assert_eq!(from_place, from_root, "the listing {direction:?}");
+        }
+    }
+
     /// Review of #769, rule 3: the far edge's comparison reads nothing, so
     /// a read that fails fails the item whose comparison makes it, once,
     /// and the walk ends with that error as when each item is compared. A
