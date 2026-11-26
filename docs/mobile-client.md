@@ -40,20 +40,21 @@ desktop. What FileMaker Go does is in [go-client.md](re/go-client.md).
   two entries are the same host only when they are to the network too;
   an address that maps to nothing is refused. Those the old Hosts tab
   saved under several spellings of one address are all used, each
-  certificate once, leaving out any that does not read, and Edit Host
-  shows them all. A save never removes one the editor did not show: Add
-  Host, or editing a host onto another saved host, adds the ones already
-  saved there. A host moved to another address or port keeps the
+  certificate once, leaving out any certificate that does not read, and
+  Edit Host shows them all. A save never removes one the editor did not
+  show: Add Host, or editing a host onto another saved host, adds the
+  ones already saved there. A host moved to another address or port keeps the
   certificate authority Edit Host shows (clear it there to drop it):
   what was saved under its own spelling and what was typed; what was
   kept under other spellings of its old address stays there. A save never
   drops, cuts short or rewrites a saved certificate authority it cannot
   carry whole: when the result would pass the bounds, or one it would
   replace does not read whole, it saves nothing and says why (Remove Host
-  drops them). Connecting refuses a host whose authorities are past the
-  bounds rather than use some of them. Edit Host refuses to
-  save when its host was changed, moved or removed, or its authorities
-  changed, after it opened (in another window). The apps take all of
+  drops them). Connecting uses every authority saved for the host or
+  none: it refuses a host whose authorities are past the bounds, or that
+  has a saved value too long to read, rather than use the rest. Edit Host
+  refuses to save when its host was changed, moved or removed, or its
+  authorities changed, after it opened (in another window). The apps take all of
   this from the engine (`mobile/core/src/hosts.rs`). The certificate is
   verified as the desktop client verifies it.
 - **Favorites** and **Recent** keep references to local and hosted files;

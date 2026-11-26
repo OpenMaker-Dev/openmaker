@@ -142,10 +142,18 @@ class Library(context: Context) {
     }
 
     /**
-     * The PEM certificate authorities trusted for one host and port only,
-     * under any spelling of its address ([trustedCertificate]).
+     * The PEM certificate authorities Edit Host shows for one host and port
+     * only, under any spelling of its address ([trustedCertificate]).
      */
     fun certificate(host: String, port: Int): String = trustedCertificate(certificates(), host, port.toUShort())
+
+    /**
+     * The certificate authorities a connection to one host and port trusts
+     * ([dev.openmaker.go.engine.connectCertificate]): every one saved for
+     * it, or a [GoException] saying why none can be used.
+     */
+    fun connectCertificate(host: String, port: Int): String =
+        dev.openmaker.go.engine.connectCertificate(certificates(), host, port.toUShort())
 
     /** The saved certificate authorities, by `address:port` as typed. */
     private fun certificates(): Map<String, String> =

@@ -459,11 +459,19 @@ struct LaunchCenter: View {
     certificates = (try? JSONEncoder().encode(saved)) ?? Data()
   }
 
-  /// The certificate authorities trusted for one host and port only,
-  /// under any spelling of its address (`trustedCertificate`).
+  /// The certificate authorities Edit Host shows for one host and port
+  /// only, under any spelling of its address (`trustedCertificate`).
   private func trusted(_ address: String, _ port: UInt16) -> String? {
     let pem = trustedCertificate(certificates: authorities, address: address, port: port)
     return pem.isEmpty ? nil : pem
+  }
+
+  /// A host to connect to, with every certificate authority saved for it,
+  /// or the error saying why they cannot be used (`connectCertificate`).
+  private func endpoint(_ address: String, _ port: UInt16) throws -> Host {
+    Host(
+      address: address, port: port,
+      certificate: try connectCertificate(certificates: authorities, address: address, port: port))
   }
 
   private func storeHosts(_ list: [SavedHost]) {
@@ -537,10 +545,10 @@ struct LaunchCenter: View {
     let id = key(host)
     let asked = UUID()
     listings[id] = .pending(asked)
-    let endpoint = Host(address: host.address, port: host.port, certificate: trusted(host.address, host.port) ?? "")
     let listing: Listing
     do {
-      let names = try await Task.detached { try hostedFiles(host: endpoint) }.value
+      let server = try endpoint(host.address, host.port)
+      let names = try await Task.detached { try hostedFiles(host: server) }.value
       listing = .listed(names.map { FileEntry(name: $0, address: host.address, port: host.port) })
     } catch {
       listing = .failed(error.goMessage)
@@ -580,11 +588,10 @@ struct LaunchCenter: View {
   private func open(_ file: FileEntry, account: String, password: String, license: String)
     async throws
   {
-    let host = Host(
-      address: file.address, port: file.port,
-      certificate: trusted(file.address, file.port) ?? "")
     let source: Source =
-      file.local ? .local(path: file.url.path) : .hosted(host: host, file: file.name)
+      try file.local
+      ? .local(path: file.url.path)
+      : .hosted(host: endpoint(file.address, file.port), file: file.name)
     let typed = license.trimmingCharacters(in: .whitespacesAndNewlines)
     let local = file.local
     // The canvas sends its own size once it is shown.

@@ -128,8 +128,9 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
 
     fun removeLicense() = background({ vault.remove() }) { licenseSaved = vault.saved }
 
-    /** The certificate authority a hosted entry trusts. */
-    private fun host(entry: Entry) = Host(entry.host, entry.port.toUShort(), library.certificate(entry.host, entry.port))
+    /** A hosted entry's host, with the certificate authorities it trusts, or a [GoException]. */
+    private fun host(entry: Entry) =
+        Host(entry.host, entry.port.toUShort(), library.connectCertificate(entry.host, entry.port))
 
     /** Add Host. */
     fun addHost() {
@@ -202,13 +203,15 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun listHost(host: SavedHost) {
         val key = key(host)
-        val certificate = library.certificate(host.address, host.port)
         val asked = Listing.Pending()
         listings = listings + (key to asked)
         viewModelScope.launch {
             val result =
                 withContext(Dispatchers.IO) {
-                    runCatching { dev.openmaker.go.engine.hostedFiles(Host(host.address, host.port.toUShort(), certificate)) }
+                    runCatching {
+                        val certificate = library.connectCertificate(host.address, host.port)
+                        dev.openmaker.go.engine.hostedFiles(Host(host.address, host.port.toUShort(), certificate))
+                    }
                 }
             if (listings[key] !== asked) return@launch
             listings =
@@ -260,7 +263,6 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
         }
         opening = viewModelScope.launch {
             val signal = FrameSignal()
-            val source = if (entry.local) Source.Local(library.path(entry)) else Source.Hosted(host(entry), entry.name)
             // An open can't be interrupted, and its document belongs to this
             // coroutine until the session takes it: if the view model is
             // cleared first (the activity went), even as the open's result
@@ -270,6 +272,11 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
                 val result =
                     withContext(Dispatchers.IO + NonCancellable) {
                         runCatching {
+                            // A host whose certificate authorities cannot all
+                            // be used fails here, shown as other failures.
+                            val source =
+                                if (entry.local) Source.Local(library.path(entry))
+                                else Source.Hosted(host(entry), entry.name)
                             // A hosted sign-in with no license typed sends
                             // the one saved in Settings.
                             val key = license.trim().ifEmpty { if (entry.local) "" else vault.load() }

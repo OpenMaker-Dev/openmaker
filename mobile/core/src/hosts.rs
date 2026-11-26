@@ -19,8 +19,11 @@
 //! [`MAX_CERTIFICATES`] certificates in [`MAX_PEM_BYTES`]. A save never
 //! drops, truncates or rewrites a stored authority it cannot carry whole:
 //! when the result would pass the bounds, or a value it would replace does
-//! not read whole, it saves nothing and says why. Lookup never truncates
-//! either; connecting refuses a host past the bounds ([`check_bundle`]).
+//! not read whole, it saves nothing and says why. What Edit Host shows
+//! ([`trusted_certificate`]) is never cut short either. Connecting
+//! ([`connect_certificate`]) takes every authority kept for the host or
+//! none: past the bounds, or with a value under any spelling too long to
+//! read, it refuses the host rather than use the rest.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
@@ -33,8 +36,9 @@ use crate::GoError;
 pub const MAX_PEM_BYTES: usize = 64 * 1024;
 /// The most certificates a host may trust.
 pub const MAX_CERTIFICATES: usize = 16;
-/// The most text a stored value is read from at all: beyond it, a value is
-/// read as nothing, and a save that would replace it is refused.
+/// The most text a stored value is read from at all: beyond it, Edit Host
+/// reads a value as nothing, a save that would replace it is refused, and
+/// connecting is refused (as past [`MAX_PEM_BYTES`]).
 const MAX_STORED_BYTES: usize = 1024 * 1024;
 
 /// A host of the Hosts list: its address and port, and the name it is
@@ -173,13 +177,13 @@ pub fn former_hosts(
     distinct_hosts(hosts)
 }
 
-/// The certificate authorities trusted for `address` and `port`: those
-/// kept under any spelling of the address, the one under this spelling
-/// first and the rest in order, each certificate once, as PEM, none left
-/// out for the bounds (connecting refuses a host past them,
-/// [`check_bundle`]). What does not read as a certificate a trust store
-/// takes is left out, so one malformed authority kept long ago cannot stop
-/// the others working.
+/// The certificate authorities Edit Host shows for `address` and `port`:
+/// those kept under any spelling of the address, the one under this
+/// spelling first and the rest in order, each certificate once, as PEM,
+/// none left out for the bounds. What does not read as a certificate a
+/// trust store takes is left out, so one malformed authority kept long ago
+/// cannot stop the others working. Connecting uses
+/// [`connect_certificate`].
 #[uniffi::export]
 pub fn trusted_certificate(
     certificates: HashMap<String, String>,
@@ -194,6 +198,20 @@ fn trusted(
     address: &str,
     port: u16,
 ) -> Vec<CertificateDer<'static>> {
+    let mut out = Vec::new();
+    for pem in spellings(certificates, address, port) {
+        add_unique(&mut out, stored(pem).certificates);
+    }
+    out
+}
+
+/// The values kept for `address` and `port` under any spelling of the
+/// address: the one under this spelling first, the rest in key order.
+fn spellings<'a>(
+    certificates: &'a HashMap<String, String>,
+    address: &str,
+    port: u16,
+) -> impl Iterator<Item = &'a String> {
     let target = key(address, port);
     let exact = format!("{address}:{port}");
     let spellings: BTreeMap<(bool, &String), &String> = certificates
@@ -201,20 +219,61 @@ fn trusted(
         .filter(|(stored, _)| stored_key(stored).as_deref() == Some(target.as_str()))
         .map(|(stored, pem)| ((*stored != exact, stored), pem))
         .collect();
-    let mut out = Vec::new();
-    for pem in spellings.values() {
-        add_unique(&mut out, stored(pem).certificates);
+    spellings.into_values()
+}
+
+/// The certificate authorities a connection to `address` and `port`
+/// trusts: what Edit Host shows ([`trusted_certificate`]), or the error
+/// [`check_bundle`] gives when they pass the bounds or a value kept under
+/// any spelling is too long to read, so none is ever left out unsaid. Each
+/// value's length is checked before it is read, and the count and length
+/// as each certificate is added, stopping at the first past them.
+#[uniffi::export]
+pub fn connect_certificate(
+    certificates: HashMap<String, String>,
+    address: String,
+    port: u16,
+) -> Result<String, GoError> {
+    let mut out: Vec<CertificateDer<'static>> = Vec::new();
+    let mut length = 0;
+    for pem in spellings(&certificates, &address, port) {
+        if pem.len() > MAX_PEM_BYTES {
+            return Err(past_bounds());
+        }
+        for der in stored(pem).certificates {
+            if out.contains(&der) {
+                continue;
+            }
+            // As `pem_of` writes it, a newline between certificates.
+            length += pem_of(std::slice::from_ref(&der)).len() + usize::from(!out.is_empty());
+            out.push(der);
+            if out.len() > MAX_CERTIFICATES || length > MAX_PEM_BYTES {
+                return Err(past_bounds());
+            }
+        }
     }
-    out
+    Ok(pem_of(&out))
 }
 
 /// A host's certificate authorities as the engine is given them, within
 /// the bounds, or what to do about them.
 pub(crate) fn check_bundle(text: &str) -> Result<(), GoError> {
     if text.len() > MAX_PEM_BYTES || stored(text).certificates.len() > MAX_CERTIFICATES {
-        return Err(too_many());
+        return Err(past_bounds());
     }
     Ok(())
+}
+
+/// Why a host is not connected to: its saved authorities pass the bounds,
+/// or one is too long to read. Editing the host saves them within the
+/// bounds; a value too long to read goes when the host is removed.
+fn past_bounds() -> GoError {
+    GoError::failed(format!(
+        "The certificate authorities saved for this host are more than \
+         {MAX_CERTIFICATES} or {} KiB. Edit the host and remove some, or \
+         remove the host and add it again.",
+        MAX_PEM_BYTES / 1024
+    ))
 }
 
 fn too_many() -> GoError {
@@ -813,6 +872,24 @@ mod tests {
         let all = shown(&store, "server.example", 5003);
         assert_eq!(usable(&all).len(), MAX_CERTIFICATES + 1);
         assert!(check_bundle(&all).is_err());
+        // Connecting takes them all or refuses, as it does a value too long
+        // to read beside a good one under another spelling.
+        let connect = |store: &SavedHosts| {
+            connect_certificate(store.certificates.clone(), "server.example".into(), 5003)
+        };
+        assert!(connect(&store).is_err());
+        let good = certificate("good.example");
+        let huge = "x".repeat(MAX_STORED_BYTES + 1);
+        let store = saved(
+            &["server.example"],
+            &[
+                ("server.example:5003", &good),
+                ("SERVER.example:5003", &huge),
+            ],
+        );
+        assert!(connect(&store).is_err());
+        let store = saved(&["server.example"], &[("server.example:5003", &good)]);
+        assert_eq!(usable(&connect(&store).unwrap()), usable(&good));
 
         let big = |name: &str| {
             let names: Vec<String> = (0..1400)

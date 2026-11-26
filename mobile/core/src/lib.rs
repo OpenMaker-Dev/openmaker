@@ -28,8 +28,8 @@ pub use accessibility::{Element, ElementKind};
 pub use document::{Document, DocumentObserver};
 pub use frame::{Batch, Frame, FrameTimings, TextureUpdate, TextureWrap};
 pub use hosts::{
-    distinct_hosts, former_hosts, host_key, remove_host, save_host, trusted_certificate,
-    HostChange, HostSaved, ListedHost, SavedHosts,
+    connect_certificate, distinct_hosts, former_hosts, host_key, remove_host, save_host,
+    trusted_certificate, HostChange, HostSaved, ListedHost, SavedHosts,
 };
 pub use input::{Command, Input, Key};
 pub use state::{Caret, DocumentMode, DocumentState, Menu, MenuRow, MenuRowKind};
