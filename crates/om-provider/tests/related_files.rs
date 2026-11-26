@@ -1860,8 +1860,22 @@ fn a_related_files_globals_are_its_session_values() {
         &[&[4], &[5], &[2], &[2]],
         OwnedNode::leaf([], layout_def(REMOTE)),
     );
-    // Related's new record enters its Setting, also while Name is empty.
+    // Related's new record enters its Setting, also while Name is empty;
+    // its global Defaults repeats twice.
+    const DEFAULTS: u64 = 21;
     fixture::add_field(&mut files[1].1, TABLE, 20, "Entered", 1, 1, 0, 0xa8, 0);
+    fixture::add_field(
+        &mut files[1].1,
+        TABLE,
+        DEFAULTS,
+        "Defaults",
+        1,
+        1,
+        0,
+        0x1_0000,
+        0,
+    );
+    fixture::set_field_repetitions(&mut files[1].1, TABLE, DEFAULTS, 2);
     fixture::add_formula(
         &mut files[1].1,
         &fixture::names(),
@@ -1909,9 +1923,21 @@ fn a_related_files_globals_are_its_session_values() {
     assert_eq!(value(&created, "Entered"), "scripted|Related");
 
     // Typed in Browse on the layout of Remote Tasks: no change of its record.
+    // Its second repetition is entered by the layout's occurrence and id.
     let capabilities = provider.record_capabilities(layout).unwrap();
     assert!(capabilities.editable_fields.unwrap().contains("Setting"));
+    assert_eq!(
+        capabilities.related,
+        [(REMOTE, [SETTING, DEFAULTS].into())].into()
+    );
     let before = effects();
+    provider
+        .set_typed_globals(imported, &[((DEFAULTS, 2), "second".into())].into())
+        .unwrap();
+    assert_eq!(
+        Window::new(&mut provider).read(&["GetRepetition ( Remote Tasks::Defaults ; 2 )"]),
+        [(0, "second".to_string())]
+    );
     let typed = provider
         .update_record(layout, 1, [("Setting".into(), Some("typed".into()))].into())
         .unwrap();
