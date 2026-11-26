@@ -46,11 +46,17 @@ Scripts are members of catalog `[17]` (scripts.md): `[17, 5, S]` per script.
 | `04` | step list | the step descriptors, 28 bytes each, concatenated (chunked when large) [O] |
 | `05` | step data | one subtree per step, keyed by the step's data key (section 4) [O] |
 | `10` | `KName` | script name, masked SCSU text (chunked when long) [O] |
-| `13` | (`KCachedCountIgnoreFolders`, `KCompatibility`, `KDragSize` and `KPrefixKey` share the number) | u32, 0 in all 361 samples and on all 330 scripts of the 66 starter files, folders included [O]; meaning unknown (file-format.md 3.7) |
+| `13` | `KCompatibility` | big-endian u32 [O from bin]; 0 in all 361 samples and on all 330 scripts of the 66 starter files, folders included [O] |
 | `d8`, `d9` | `KUniqueID`, `KSourceUUID` | 16-byte UUIDs [O] |
 | `f0` | `KMemberFlags` | u64; values 0, 2, 8, 9, 0xa, 0xd, 0x18 seen; bit 0 marks a folder (scripts.md) [O]; bit 3 (`0x8`) leaves the member out of the Scripts menu: FileMaker's XML writes it as the `Options` value with `hidden="True"` (oracle, "Implementation notes (Script Workspace)") [O]; "run with full access" and Siri visibility (XML `runwithfullaccess`, `SiriShortcutVisible`) are not mapped [I] |
 | `f1` | `KPrivateMemberFlags` | u64, 0 [O] |
 | `fc`, `fc01`-`fc03` | mod count, user, account, timestamp | as for every catalog member (schema-path.md 8) [O] |
+
+[O from bin, FileMaker Pro 26.1.1 macOS arm64 FMEngine]
+`FMScript::GetCompatibility` (`0x4a2884`) and `SetCompatibility`
+(`0x4a2a60`) use `KCompatibility` on the script member, with 0 as
+the getter's fallback. Which UI actions set the word and what nonzero
+values mean remain unmeasured.
 
 Key constant names are the DBEngine `Draco::K*` constants; their values are
 written by `_GLOBAL__sub_I_DBGlobals.cpp` through GOT slots. All 229
