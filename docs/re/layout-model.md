@@ -608,6 +608,15 @@ these lengths to 12 pt for the measured theme is inferred. Other theme
 unit bases, missing flags, swipe and panel-switch triggers were not measured.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1031#issuecomment-7192568479).
 
+The contents component paints the panel's background and border and clips
+its child objects [O, FileMaker Pro 26.1.1]. A two-line label placed at the
+lower edge shows the portion inside the panel, and the remainder stays
+clipped even when the label is still present in accessibility. The same
+control with dots disabled has a taller contents frame: near 3 pt of its
+height remains below the border in Enlightened. Using the dot container's
+bottom inset for that remaining space is inferred from the measured
+geometry. [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1121#issuecomment-7192729802).
+
 Popovers [I: the field names]: a popover button's `popoverKey` is the object
 key of its popover, and the popover's `buttonKey` the key of its button. In
 Browse, OpenMaker keeps a popover hidden until its button is clicked; a second
