@@ -809,14 +809,16 @@ and hosted use remain outside this support.
 [Open storage comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1060)
 [Secure storage comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1083)
 
-In a local file, a replacing 24-repetition Text auto-enter calculation
-can read the filename of the same occurrence's 24-repetition Container.
-With the measured formula and option word, a new empty record has no
-filename cells, and editing an existing source changes only its matching
-repetition. OpenMaker refuses direct writes into the calculated Text and
-creation with a nonempty source. The deferred-transfer refusal still
-applies to source containers awaiting a transfer.
-[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39)
+In a local file, a replacing Text auto-enter calculation can read the
+filename of the same occurrence's Container when the fields both have
+4, 24 or 25 repetitions. The 4- and 25-repetition cases use an embedded
+source with no validation flags. A new empty record has no filename
+cells, and editing an existing source changes only its matching
+repetition. Direct writes into the calculated Text and creation with
+a nonempty source still refuse. The 24-repetition deferred-transfer
+form permits writes to other fields and refuses writes to the container.
+[24 repetitions](https://github.com/OpenMaker-Dev/openmaker/issues/39)
+[4 and 25 repetitions](https://github.com/OpenMaker-Dev/openmaker/issues/1134#issuecomment-7204266608)
 
 In a local file, ordinary New Record applies a constant, a calculation
 that reads no fields, or a creation serial to a supported

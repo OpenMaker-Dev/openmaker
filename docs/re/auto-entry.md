@@ -265,6 +265,14 @@ repetitions as they were. Each write returned 0 with no alert, and
 closed copies confirmed the stored cells.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39)
 
+FileMaker Pro 26.1.1 also accepted 4 and 25 repetitions on both fields
+in local files. The embedded Container had option word zero and the
+Text field had `0x88`, both with no validation flags. Empty creation and
+an unrelated Label edit left all filename cells absent. Inserting,
+replacing or clearing the last attachment affected only its matching
+filename cell. Earlier filenames remained stored after reopen. Every
+step returned 0. [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1134#issuecomment-7204266608)
+
 Entering a value directly in the result field, preparing a new record
 with a nonempty source, other formulas and hosted writes are unmeasured.
 
