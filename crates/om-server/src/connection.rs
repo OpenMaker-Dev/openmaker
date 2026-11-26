@@ -95,8 +95,17 @@ pub(crate) const PROTOCOL_VERSION: u16 = 9;
 /// connection the odd ids, and FileMaker Server's first is 3 (spec 6.5).
 const FIRST_CALL_ID: u32 = 3;
 
-/// Open (op78) status for a file that is not hosted (spec 5.5).
-const OPEN_FILE_MISSING: u16 = 4;
+/// Open (op78) status for a file name the server does not host: FileMaker's
+/// `kFileNotFound`, which FileMaker Server 26.0.3 answered in a relay
+/// capture (network-protocol.md 5.5).
+const OPEN_FILE_MISSING: u16 = 0x4fb5;
+
+/// Open status for a hosted file that is closing, closed or opening: the
+/// same `kFileNotFound`, OpenMaker's choice. What FileMaker Server answers
+/// for a closed file is unmeasured (spec 5.5); 4, which OpenMaker answered
+/// for both before, is FileMaker's `kUnknownCommand`, never seen in an Open
+/// reply.
+const OPEN_FILE_NOT_SERVED: u16 = 0x4fb5;
 
 /// Open (op78) status under Block New Users: FileMaker's error 1638, "The
 /// host is not allowing new connections" (spec 5.6.4, 6.5).
@@ -1842,7 +1851,7 @@ fn open(
                 request.filename,
                 status.filemaker_name()
             );
-            return Ok(OpenReply::error_result(OPEN_FILE_MISSING, None));
+            return Ok(OpenReply::error_result(OPEN_FILE_NOT_SERVED, None));
         }
     };
     info!("{peer}: opened {:?} as file {}", hosted.name, hosted.id);
