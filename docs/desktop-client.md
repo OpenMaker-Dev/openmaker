@@ -621,6 +621,14 @@ from the current record page. Stored anchors resize objects within their
 containers. Record changes keep the user's selected panels. Browse shows no
 authoring part tabs or object kind captions.
 
+- Styled layout labels keep the stored formatting of literal text around
+  a merge symbol or field. The replacement takes the styling at its
+  opening delimiter. OpenMaker also applies this rule to merge variables
+  and paragraph runs (layout-model.md 8.2).
+- Date fields, merge fields and date symbols in Browse can show the
+  fixed named month and weekday presets in month-first English (see
+  data-format.md). OpenMaker takes names from the file's locale for
+  those presets. Short System Date is still displayed as entered.
 - A text, number, date, time or timestamp value stored with character
   styles (a chunked value beside a style subtree `ff`, calc-values.md
   implementation notes) shows its text; a nested form the provider cannot

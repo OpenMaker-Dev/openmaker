@@ -2057,6 +2057,24 @@ A set face-mask bit can explicitly turn a face off. A run that changes only
 bold must inherit the default italic setting; a color-only run must inherit
 the layout's font and point size. Unknown bits and extension bytes remain raw.
 
+### 8.2 Styled merge values
+
+[O, FileMaker Pro 26.1.1, local synthetic file] Browse preserves the
+stored formatting of literal text on either side of an inserted layout
+symbol or merge field. A uniformly styled reference passes its style to
+the replacement. Where the opening delimiters, reference name and
+closing delimiters each had a different color, the entire replacement
+used the opening delimiter's color. Treating other attributes within a
+mixed reference the same way is inferred from this test. In the saved
+split examples, the opening delimiter and name shared a run. The closing
+delimiter kept its separate color through reopening. An empty field
+removed just the replacement, and the suffix kept its styling and line.
+A long field retained its style. Both lines of a two-line field used
+the replacement's style, and the suffix kept its own style on the second
+line. Different paragraph spacing and merge-variable styling were not
+measured.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1030)
+
 ## 9. Rendering stack
 
 ### 9.1 View system
@@ -2268,16 +2286,48 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   every web viewer shows "Web viewer: unavailable on this display." Builds without the feature stay on native
   Wayland. Through XWayland:
   - **Scale** comes from the X server: XSETTINGS `Xft/DPI`, then the
-    `Xft.dpi` resource, then the monitor's size, unless
-    `WINIT_X11_SCALE_FACTOR` is set. A compositor that gives X clients no
-    scale draws them enlarged (unmeasured here).
-  - **Input** is X11's, with XIM for input methods.
+    `Xft.dpi` resource, then each monitor's size in RandR (winit 0.30: its
+    pixel density over 96 dpi, rounded to twelfths, at least 1), unless
+    `WINIT_X11_SCALE_FACTOR` is set. What a desktop at a higher scale shows
+    depends on its compositor. Measured 2026-11-26 with the mock provider,
+    comparing the same build through XWayland and natively on Wayland
+    (`DISPLAY` unset), by screenshot
+    ([evidence](../evidence/xwayland-scale/README.md)):
+    - **sway 1.12 (wlroots, headless)** gives XWayland the output's logical
+      size (a 1920 × 1080 output is 960 × 540 pixels on 254 × 143 mm at
+      scale 2, 1280 × 720 on 339 × 190 mm at 1.5) and stretches X windows by
+      the output's scale. With no XSETTINGS or `Xft.dpi` the app draws at
+      1, so its windows have the native windows' size but are blurred, at 2
+      and at 1.5. Native Wayland windows are sharp at both, 1.5 included
+      (winit follows fractional scales). [I] Raising
+      `WINIT_X11_SCALE_FACTOR` would only enlarge the stretched window (not
+      tried).
+    - **Hyprland 0.56 with `xwayland:force_zero_scaling`** (Omarchy's
+      default) does not stretch X windows: XWayland has the monitor's
+      pixels (1920 × 1080 on 600 × 340 mm at scale 2 as at 1) and no
+      `Xft.dpi`. At scale 1 the app draws at 1, as natively. At scale 2 it
+      still draws at 1: sharp, but half the size of the native window. [I]
+      `WINIT_X11_SCALE_FACTOR=2` (or an `Xft.dpi` of 192) would give it the
+      desktop's scale (not tried).
+    - WebKitGTK, in the app's process, takes GDK's scale from
+      `GDK_SCALE`, which some desktops set for X11 apps (Omarchy sets 2);
+      its pages then draw at that scale within objects the app draws at 1
+      ([#1086](https://github.com/OpenMaker-Dev/openmaker/issues/1086)).
+  - **Input** is X11's, with XIM for input methods (not measured).
   - **The clipboard** is X selections (arboard), which the compositor shares
     with Wayland applications.
 
   A test runs the real event loop with `WAYLAND_DISPLAY` naming no socket.
-  An XWayland window under a nested compositor was checked by hand, and no
-  Wayland desktop has been tried.
+  `tests/web_viewer_native.rs`, built from
+  [#1087](https://github.com/OpenMaker-Dev/openmaker/pull/1087)'s first
+  revision (its shared-memory choice on NVIDIA's driver; without it the page
+  stays blank there,
+  [#1085](https://github.com/OpenMaker-Dev/openmaker/issues/1085)), passed
+  on Hyprland's XWayland at scale 1 with `GDK_SCALE` unset; with
+  `GDK_SCALE=2` its click on the page misses
+  ([#1086](https://github.com/OpenMaker-Dev/openmaker/issues/1086)). A native
+  Wayland backend was studied and prototyped in
+  [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323).
 - Every window shows its own views. eframe 0.37 gives out only the root
   viewport's native window; another window's viewport is an immediate
   viewport whose X11 window OpenMaker finds from the server

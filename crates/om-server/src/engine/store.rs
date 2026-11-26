@@ -1363,10 +1363,11 @@ impl StoreEngine {
 
 /// The answer to `operation`, which would change the file, refused
 /// without running: a typed "unavailable", FileMaker's error 3 ("Command
-/// is unavailable"; OpenMaker's choice, as a server script's account step
-/// on a file hosted read-only answers). Each reply carries it where it has
-/// a status (`not_run`): a server script's step fails with 3, an authoring
-/// edit is refused with status 3 and says nothing was changed. Nothing is
+/// is unavailable"; OpenMaker's choice). Each reply carries it where it
+/// has a status (`not_run`): an authoring edit is refused with status 3
+/// and says nothing was changed. A server script's steps meet the script
+/// host's 6, "File is read-only", before they reach it
+/// (`ServerHost::require_edit`). Nothing is
 /// stored and no client is told of a change.
 fn unavailable(operation: Operation) -> Outcome {
     let error = StorageError {
