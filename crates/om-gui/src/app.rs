@@ -750,8 +750,8 @@ impl Action {
 
     /// Whether the window can still do this once the connection to the
     /// host is lost: close (the file closes window by window), quit,
-    /// dismiss, bring another window to the front, and change only how it
-    /// looks.
+    /// dismiss, bring another window to the front, discard local layout
+    /// edits, and change only how the window looks.
     fn works_offline(&self) -> bool {
         matches!(
             self,
@@ -774,6 +774,7 @@ impl Action {
                 | Action::DismissHostMessage
                 | Action::CloseDisconnectedFile(_)
                 | Action::DiscardEntryCandidates
+                | Action::RevertLayout
                 | Action::ZoomIn
                 | Action::ZoomOut
                 | Action::ActualSize
@@ -8995,6 +8996,40 @@ mod tests {
         app.with_window(2, |app| app.apply(&ctx, Action::CloseWindow));
         assert_eq!(app.error.as_deref(), Some(LAYOUT_UNSAVED));
         assert!(app.docs().any(|doc| doc.id == 2 && doc.layout_unsaved()));
+    }
+
+    #[test]
+    fn reverting_a_disconnected_layout_draft_allows_close() {
+        let ctx = egui::Context::default();
+        let mut app = OpenMakerApp::new(Box::new(om_data::mock::MockProvider::new()));
+        app.w = window_with_records(1, &["Ada"]);
+        app.w.mode = Mode::Layout;
+        app.w.layout_workspace.stage_field(
+            app.w.session.as_ref().unwrap(),
+            crate::layout_canvas::NewField {
+                left: 20.0,
+                top: 30.0,
+                width: 100.0,
+                height: 22.0,
+                field: None,
+                label: false,
+                control: 0,
+                value_list: None,
+                revision: None,
+            },
+        );
+        app.lose_connection(&DataError::new("Connection lost"));
+        assert!(app.w.connection_lost.is_some());
+        app.apply(&ctx, Action::CloseWindow);
+        assert_eq!(app.error.as_deref(), Some(LAYOUT_UNSAVED));
+        assert!(app.w.session.is_some() && app.layout_unsaved());
+
+        app.apply(&ctx, Action::DismissAlert);
+        app.apply(&ctx, Action::RevertLayout);
+        assert!(!app.layout_unsaved());
+        app.apply(&ctx, Action::CloseWindow);
+        assert!(app.w.session.is_none());
+        assert!(app.error.is_none());
     }
 
     #[test]
