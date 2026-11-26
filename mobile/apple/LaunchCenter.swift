@@ -35,13 +35,15 @@ struct FileEntry: Codable, Hashable, Identifiable {
 }
 
 /// A host of the Hosts list: its address and port, and the name it is
-/// listed by, empty for its location. The same address in another case is
-/// the same host.
+/// listed by, empty for its location. Two hosts are the same host when the
+/// engine says so (`hostKey`: ASCII case and an international name's
+/// punycode form, as DNS compares names).
 struct SavedHost: Codable, Hashable, Identifiable {
   var address: String
   var port: UInt16 = 5003
   var name = ""
-  var id: String { "\(address.lowercased()):\(port)" }
+  var id: String { hostKey(address: address, port: port) }
+  var endpoint: Endpoint { Endpoint(address: address, port: port) }
   /// The address, with the port when it is not FileMaker's (an IPv6
   /// address then in brackets).
   var location: String {
@@ -50,9 +52,7 @@ struct SavedHost: Codable, Hashable, Identifiable {
   }
   var label: String { name.isEmpty ? location : name }
 
-  func isHost(_ other: SavedHost) -> Bool {
-    address.caseInsensitiveCompare(other.address) == .orderedSame && port == other.port
-  }
+  func isHost(_ other: SavedHost) -> Bool { id == other.id }
 }
 
 /// A host's file list, as its page shows it.
@@ -72,6 +72,8 @@ private struct HostEdit: Identifiable {
   var port = "5003"
   var name = ""
   var certificate = ""
+  /// The certificate authorities Edit Host showed when it opened.
+  var loaded = ""
 }
 
 @main
@@ -444,51 +446,11 @@ struct LaunchCenter: View {
     certificates = (try? JSONEncoder().encode(saved)) ?? Data()
   }
 
-  /// The certificate authorities trusted for one host and port only, its
-  /// address matched in any case, as hosts are. The old Hosts tab could
-  /// save one under each spelling of an address: all of them, the one under
-  /// this spelling first, then the others in order, each once.
-  private func trusted(_ address: String, _ port: UInt16, in saved: [String: String]? = nil) -> String? {
-    let all = saved ?? authorities
-    let key = authority(address, port)
-    let spellings = all.keys
-      .filter { $0.caseInsensitiveCompare(key) == .orderedSame }
-      .sorted { ($0 != key ? 1 : 0, $0) < ($1 != key ? 1 : 0, $1) }
-    let pem = mergedPem(spellings.compactMap { all[$0] })
+  /// The certificate authorities trusted for one host and port only,
+  /// under any spelling of its address (`trustedCertificate`).
+  private func trusted(_ address: String, _ port: UInt16) -> String? {
+    let pem = trustedCertificate(saved: authorities, address: address, port: port)
     return pem.isEmpty ? nil : pem
-  }
-
-  /// `pems` as one, each certificate once, in order: the engine trusts
-  /// every certificate in the text. Text with no PEM block is kept whole.
-  private func mergedPem(_ pems: [String]) -> String {
-    var blocks: [String] = []
-    for pem in pems {
-      var found: [String] = []
-      var rest = pem[...]
-      while let begin = rest.range(of: "-----BEGIN "),
-        let end = rest.range(of: "-----END ", range: begin.upperBound..<rest.endIndex),
-        let close = rest.range(of: "-----", range: end.upperBound..<rest.endIndex)
-      {
-        found.append(String(rest[begin.lowerBound..<close.upperBound]))
-        rest = rest[close.upperBound...]
-      }
-      let trimmed = pem.trimmingCharacters(in: .whitespacesAndNewlines)
-      for block in (found.isEmpty && !trimmed.isEmpty ? [trimmed] : found) where !blocks.contains(block) {
-        blocks.append(block)
-      }
-    }
-    return blocks.joined(separator: "\n")
-  }
-
-  /// Save `pem` as the certificate authority trusted for a host and port,
-  /// in place of any kept under its address in another case; an empty one
-  /// removes them.
-  private func trust(_ address: String, _ port: UInt16, _ pem: String, in saved: inout [String: String]) {
-    let key = authority(address, port)
-    for other in Array(saved.keys) where other.caseInsensitiveCompare(key) == .orderedSame {
-      saved[other] = nil
-    }
-    if !pem.isEmpty { saved[key] = pem }
   }
 
   private func storeHosts(_ list: [SavedHost]) {
@@ -523,19 +485,20 @@ struct LaunchCenter: View {
 
   /// Edit Host, with the certificate authority trusted for the host.
   private func editHost(_ host: SavedHost) {
+    let certificate = trusted(host.address, host.port) ?? ""
     hostEdit = HostEdit(
       replaces: host, address: host.address, port: String(host.port), name: host.name,
-      certificate: trusted(host.address, host.port) ?? "")
+      certificate: certificate, loaded: certificate)
   }
 
   /// Save the host Add Host or Edit Host describes, checked as the
   /// desktop's Add Host checks one, or throw what to fix. The host goes in
   /// the place of the one it replaces, else of the one at its address and
-  /// port in any case, which is not listed twice; the entries it replaces
-  /// no longer trust anything at their own address. The certificate
-  /// authorities the editor did not show are added to the one it saves,
-  /// never dropped: Edit Host shows the edited host's, Add Host none. A
-  /// host whose page is shown stays shown, at its new address.
+  /// port in any case, which is not listed twice. The certificate
+  /// authorities trusted for it, and for the entries it replaces, are the
+  /// engine's to work out (`saveTrustedCertificates`), which refuses a save
+  /// whose host's authorities changed since the editor opened. A host
+  /// whose page is shown stays shown, at its new address.
   private func saveHost(_ edit: HostEdit) throws {
     let checked = try checkHost(
       address: edit.address, port: edit.port,
@@ -547,24 +510,20 @@ struct LaunchCenter: View {
     let at =
       edit.replaces.flatMap { old in list.firstIndex { $0.isHost(old) } }
       ?? list.firstIndex { $0.isHost(host) }
-    let replaced =
-      list.indices.filter { $0 == at || list[$0].isHost(host) }.map { list[$0] }
-      + (edit.replaces.map { [$0] } ?? [])
+    let replaced = list.indices.filter { $0 == at || list[$0].isHost(host) }.map { list[$0] }
     var updated = list.indices.compactMap { index -> SavedHost? in
       index == at ? host : list[index].isHost(host) ? nil : list[index]
     }
     if at == nil { updated.append(host) }
-    var saved = authorities
-    let unseen = ([host] + replaced).filter { edit.replaces?.isHost($0) != true }
-    let pem = mergedPem([checked.certificate] + unseen.compactMap { trusted($0.address, $0.port, in: saved) })
-    for old in replaced { trust(old.address, old.port, "", in: &saved) }
-    trust(host.address, host.port, pem, in: &saved)
+    let saved = try saveTrustedCertificates(
+      saved: authorities, edited: edit.replaces?.endpoint, loaded: edit.loaded,
+      host: host.endpoint, certificate: checked.certificate, replaced: replaced.map(\.endpoint))
     storeHosts(updated)
     storeAuthorities(saved)
     hostEdit = nil
     // Its files are listed again: the address, port or certificate
     // authority they were listed with may have changed.
-    for old in replaced { listings[key(old)] = nil }
+    for old in replaced + (edit.replaces.map { [$0] } ?? []) { listings[key(old)] = nil }
     listings[key(host)] = nil
     if let shown = hostPath.last, edit.replaces?.isHost(shown) == true || shown.isHost(host) {
       Task { await listHost(host) }
@@ -576,11 +535,8 @@ struct LaunchCenter: View {
   /// for it.
   private func removeHost(_ host: SavedHost) {
     let removed = hosts.filter { $0.isHost(host) }
-    var saved = authorities
-    for old in removed + [host] {
-      trust(old.address, old.port, "", in: &saved)
-      listings[key(old)] = nil
-    }
+    for old in removed + [host] { listings[key(old)] = nil }
+    let saved = forgetTrustedCertificates(saved: authorities, endpoints: (removed + [host]).map(\.endpoint))
     storeHosts(hosts.filter { !$0.isHost(host) })
     storeAuthorities(saved)
     if hostPath.contains(where: { $0.isHost(host) }) { hostPath = [] }

@@ -40,6 +40,8 @@ data class HostEditor(
     val port: String = Entry.DEFAULT_PORT.toString(),
     val name: String = "",
     val certificate: String = "",
+    /** The certificate authorities Edit Host showed when it opened. */
+    val loaded: String = "",
     val error: String? = null,
 )
 
@@ -135,8 +137,8 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Edit Host, with the certificate authority trusted for it. */
     fun editHost(host: SavedHost) {
-        hostEditor =
-            HostEditor(host, host.address, host.port.toString(), host.name, library.certificate(host.address, host.port))
+        val certificate = library.certificate(host.address, host.port)
+        hostEditor = HostEditor(host, host.address, host.port.toString(), host.name, certificate, loaded = certificate)
     }
 
     /**
@@ -154,7 +156,12 @@ class GoViewModel(app: Application) : AndroidViewModel(app) {
                 return
             }
         val host = SavedHost(checked.address, checked.port.toInt(), editor.name.trim())
-        library.saveHost(editor.replaces, host, checked.certificate)
+        try {
+            library.saveHost(editor.replaces, editor.loaded, host, checked.certificate)
+        } catch (error: GoException) {
+            hostEditor = editor.copy(error = error.goMessage())
+            return
+        }
         hosts = library.hosts
         hostEditor = null
         // Its files are listed again: the address, port or certificate

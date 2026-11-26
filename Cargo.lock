@@ -5134,7 +5134,9 @@ dependencies = [
 name = "openmaker-go"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "egui",
+ "idna",
  "log",
  "om-crypto",
  "om-data",
@@ -5146,6 +5148,8 @@ dependencies = [
  "om-scripts",
  "om-server",
  "rcgen 0.13.2",
+ "rustls",
+ "rustls-pemfile",
  "tempfile",
  "thiserror 2.0.21",
  "uniffi",

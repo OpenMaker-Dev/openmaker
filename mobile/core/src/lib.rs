@@ -22,12 +22,16 @@ mod frame;
 mod input;
 mod state;
 mod surface;
+mod trust;
 
 pub use accessibility::{Element, ElementKind};
 pub use document::{Document, DocumentObserver};
 pub use frame::{Batch, Frame, FrameTimings, TextureUpdate, TextureWrap};
 pub use input::{Command, Input, Key};
 pub use state::{Caret, DocumentMode, DocumentState, Menu, MenuRow, MenuRowKind};
+pub use trust::{
+    forget_trusted_certificates, host_key, save_trusted_certificates, trusted_certificate, Endpoint,
+};
 
 /// Why a file did not open, or a request failed. The text is `reason`:
 /// Kotlin's exceptions already have a `message`.
@@ -162,11 +166,12 @@ fn provider(host: Option<&Host>) -> Result<NativeProvider, GoError> {
 
 /// A host as Add Host takes it, or what to fix ([`GoError::Failed`]): the
 /// address and port are checked as the desktop's Add Host checks them
-/// (`om_gui::host_address`), and the certificate authority is kept as
-/// given.
+/// (`om_gui::host_address`), and the certificate authority, kept as given,
+/// must be empty or certificates a trust store takes.
 #[uniffi::export]
 pub fn check_host(address: String, port: String, certificate: String) -> Result<Host, GoError> {
     let (address, port) = om_gui::host_address(&address, &port).map_err(GoError::failed)?;
+    trust::readable(&certificate)?;
     Ok(Host {
         address,
         port,

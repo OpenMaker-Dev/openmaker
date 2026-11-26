@@ -6,6 +6,11 @@ import android.net.Uri
 import android.os.StatFs
 import android.provider.OpenableColumns
 import java.io.File
+import dev.openmaker.go.engine.Endpoint
+import dev.openmaker.go.engine.forgetTrustedCertificates
+import dev.openmaker.go.engine.hostKey
+import dev.openmaker.go.engine.saveTrustedCertificates
+import dev.openmaker.go.engine.trustedCertificate
 import org.json.JSONArray
 
 /** A file the Launch Center lists: on this device when [host] is empty. */
@@ -25,8 +30,9 @@ data class Entry(val name: String, val host: String = "", val port: Int = DEFAUL
 
 /**
  * A host of the Hosts list: its address and port, and the name it is
- * listed by, empty for its location. The same address in another case is
- * the same host.
+ * listed by, empty for its location. Two hosts are the same host when the
+ * engine says so ([hostKey]: ASCII case and an international name's
+ * punycode form, as DNS compares names).
  */
 data class SavedHost(val address: String, val port: Int = Entry.DEFAULT_PORT, val name: String = "") {
     /** The address, with the port when it is not FileMaker's (an IPv6 address then in brackets). */
@@ -41,9 +47,15 @@ data class SavedHost(val address: String, val port: Int = Entry.DEFAULT_PORT, va
     val label
         get() = name.ifEmpty { location }
 
-    fun isHost(address: String, port: Int) = this.address.equals(address, ignoreCase = true) && this.port == port
+    val key
+        get() = hostKey(address, port.toUShort())
 
-    fun isHost(other: SavedHost) = isHost(other.address, other.port)
+    val endpoint
+        get() = Endpoint(address, port.toUShort())
+
+    fun isHost(address: String, port: Int) = key == hostKey(address, port.toUShort())
+
+    fun isHost(other: SavedHost) = key == other.key
 }
 
 /**
@@ -106,21 +118,21 @@ class Library(context: Context) {
 
     /**
      * Add [host], or with [replacing] put it in that host's place. A host
-     * already in the list at the same address and port, in any case, is
-     * that host: it is not listed twice, and the entries it replaces no
-     * longer trust anything at their own address. [certificate] is the
-     * certificate authority trusted for it, and with it any the editor did
-     * not show: Edit Host shows the edited host's, Add Host none, so those
-     * saved for the host or an entry it replaces are added, never dropped.
-     * The list and the certificate authorities change together.
+     * already in the list that is the same host is not listed twice. The
+     * certificate authorities trusted for it, and for the entries it
+     * replaces, are the engine's to work out
+     * ([saveTrustedCertificates]): [certificate] is what the editor holds,
+     * [loaded] what it showed when it opened, and a save whose host's
+     * authorities changed since is refused ([GoException]). The list and
+     * the certificate authorities change together.
      */
-    fun saveHost(replacing: SavedHost?, host: SavedHost, certificate: String) {
+    fun saveHost(replacing: SavedHost?, loaded: String, host: SavedHost, certificate: String) {
         val list = hosts
         // Where the host goes: the replaced host's place, else its own.
         val at =
             replacing?.let { old -> list.indexOfFirst { it.isHost(old) } }?.takeIf { it >= 0 }
                 ?: list.indexOfFirst { it.isHost(host) }.takeIf { it >= 0 }
-        val replaced = list.filterIndexed { i, other -> i == at || other.isHost(host) } + listOfNotNull(replacing)
+        val replaced = list.filterIndexed { i, other -> i == at || other.isHost(host) }
         val updated =
             list
                 .mapIndexedNotNull { i, other ->
@@ -131,67 +143,51 @@ class Library(context: Context) {
                     }
                 }
                 .let { if (at == null) it + host else it }
-        val unseen = (listOf(host) + replaced).filterNot { replacing?.isHost(it) == true }
-        val pem = mergedPem(listOf(certificate) + unseen.map { this.certificate(it.address, it.port) })
-        val edit = prefs.edit().putHosts(updated)
-        for (old in replaced) edit.trust(old.address, old.port, "")
-        edit.trust(host.address, host.port, pem).apply()
+        val before = certificates()
+        val after =
+            saveTrustedCertificates(
+                before,
+                replacing?.endpoint,
+                loaded,
+                host.endpoint,
+                certificate,
+                replaced.map { it.endpoint },
+            )
+        prefs.edit().putHosts(updated).putCertificates(before, after).apply()
     }
 
     /** Remove [host] from the list, with the certificate authorities trusted for it. */
     fun removeHost(host: SavedHost) {
         val (removed, kept) = hosts.partition { it.isHost(host) }
-        val edit = prefs.edit().putHosts(kept)
-        for (old in removed + host) edit.trust(old.address, old.port, "")
-        edit.apply()
+        val before = certificates()
+        val after = forgetTrustedCertificates(before, (removed + host).map { it.endpoint })
+        prefs.edit().putHosts(kept).putCertificates(before, after).apply()
     }
 
     /**
      * The PEM certificate authorities trusted for one host and port only,
-     * its address matched in any case, as hosts are. The old Hosts tab could
-     * save one under each spelling of an address: all of them, the one
-     * under this spelling first, then the others in order, each once.
+     * under any spelling of its address ([trustedCertificate]).
      */
-    fun certificate(host: String, port: Int): String {
-        val key = caKey(host, port)
-        return mergedPem(
-            prefs.all.entries
-                .filter { it.key.equals(key, ignoreCase = true) }
-                .sortedWith(compareBy({ it.key != key }, { it.key }))
-                .mapNotNull { it.value as? String }
-        )
-    }
+    fun certificate(host: String, port: Int): String = trustedCertificate(certificates(), host, port.toUShort())
 
-    private fun caKey(host: String, port: Int) = "$CA_PREFIX$host:$port"
+    /** The saved certificate authorities, by `address:port` as typed. */
+    private fun certificates(): Map<String, String> =
+        prefs.all.entries
+            .filter { it.key.startsWith(CA_PREFIX) }
+            .mapNotNull { entry -> (entry.value as? String)?.let { entry.key.removePrefix(CA_PREFIX) to it } }
+            .toMap()
 
-    /**
-     * [pems] as one, each certificate once, in order: the engine trusts
-     * every certificate in the text. Text with no PEM block is kept whole.
-     */
-    private fun mergedPem(pems: List<String>): String {
-        val blocks = LinkedHashSet<String>()
-        for (pem in pems) {
-            val found = PEM_BLOCK.findAll(pem).map { it.value.trim() }.toList()
-            if (found.isNotEmpty()) blocks += found else if (pem.isNotBlank()) blocks += pem.trim()
+    /** Write the certificate authorities [after] in place of [before]. */
+    private fun SharedPreferences.Editor.putCertificates(before: Map<String, String>, after: Map<String, String>) =
+        apply {
+            for (key in before.keys - after.keys) remove(CA_PREFIX + key)
+            for ((key, pem) in after) if (before[key] != pem) putString(CA_PREFIX + key, pem)
         }
-        return blocks.joinToString("\n")
-    }
 
     private fun SharedPreferences.Editor.putHosts(list: List<SavedHost>) =
         putString(HOSTS, JSONArray(list.map { JSONArray().put(it.address).put(it.port).put(it.name) }).toString())
             .remove(LAST_HOST)
             .remove(LAST_PORT)
-
-    /**
-     * Save [pem] as the host's certificate authority, in place of any kept
-     * under its address in another case; an empty one removes them.
-     */
-    private fun SharedPreferences.Editor.trust(host: String, port: Int, pem: String): SharedPreferences.Editor {
-        val key = caKey(host, port)
-        for (other in prefs.all.keys) if (other.equals(key, ignoreCase = true)) remove(other)
-        if (pem.isNotBlank()) putString(key, pem)
-        return this
-    }
 
     /**
      * Copy a picked file into the documents folder under its own name. The
@@ -261,7 +257,6 @@ class Library(context: Context) {
         const val LAST_HOST = "lastHost"
         const val LAST_PORT = "lastPort"
         const val CA_PREFIX = "ca:"
-        val PEM_BLOCK = Regex("-----BEGIN [^-]+-----[\\s\\S]*?-----END [^-]+-----")
         const val MAX_RECENT = 30
         // Room an import leaves on the device for the files it opens.
         const val SPARE_BYTES = 256L shl 20
