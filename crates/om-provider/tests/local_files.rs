@@ -2933,7 +2933,7 @@ fn starter_fields_read_as_the_fields_tab_lists_them() {
 
 #[test]
 fn unsupported_stored_record_position_does_not_reserve_a_serial() {
-    use fixture::{LAYOUT, OCCURRENCE};
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
     use om_data::rules::{error, RecordNumber};
     use om_hbam::slot::uint_segment;
 
@@ -2971,7 +2971,18 @@ fn unsupported_stored_record_position_does_not_reserve_a_serial() {
     };
     let preview_error = provider.preview_new_record(&write).err().unwrap();
     assert_eq!(preview_error.code, Some(error::UNAVAILABLE));
+    let create_error = provider.write_record(&write).unwrap_err();
+    assert_eq!(create_error.code, Some(error::UNAVAILABLE));
+    let cells = [(NAME, Some("Imported".into()))].into();
+    let import_error = provider
+        .import_record(LAYOUT as u32, None, &cells, true)
+        .unwrap_err();
+    assert_eq!(import_error.code, Some(error::UNAVAILABLE));
     provider.begin_record_commit().unwrap();
+    let import_error = provider
+        .import_record(LAYOUT as u32, None, &cells, true)
+        .unwrap_err();
+    assert_eq!(import_error.code, Some(error::UNAVAILABLE));
     let create_error = provider.write_record(&write).err().unwrap();
     assert_eq!(create_error.code, Some(error::UNAVAILABLE));
     provider.revert_transaction().unwrap();
@@ -2986,6 +2997,24 @@ fn unsupported_stored_record_position_does_not_reserve_a_serial() {
         .unwrap()
         .unwrap();
     assert_eq!(next, "1");
+    drop(tree);
+    drop(file);
+
+    let mut provider = opened(&path);
+    provider.begin_record_commit().unwrap();
+    let made = provider
+        .write_record(&om_data::ScriptWrite {
+            record_number: Some(RecordNumber::LocalNewRecord(3)),
+            ..write
+        })
+        .unwrap();
+    provider.commit_record_session(false).unwrap();
+    provider.close();
+
+    let mut reopened = opened(&path);
+    let saved = reopened.record_by_id(LAYOUT as u32, made.id).unwrap();
+    assert_eq!(text(&saved, made.id, "Position"), Some("3"));
+    assert_eq!(text(&saved, made.id, "Serial"), Some("1"));
 }
 
 #[test]
