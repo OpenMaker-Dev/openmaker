@@ -358,6 +358,16 @@ lookups; the values are then read through it:
   data-entry conversion is applied.
 - An empty related value is copied as empty (asset 2's date and time).
 
+A local Text equality check in FileMaker Pro 26.1.1 used a regular Text
+key with calculated auto-enter. A constant formula produced its key and
+copied value at New Record. A formula that read a Text input left the
+new key and copy empty until Set Field supplied the input. With "Do not
+replace existing value" off (option word `0x00000088`), changing the input
+changed the key and copied value at Set Field. With it on
+(`0x00000008`), the original key and copied value stayed. The values
+survived commit and reopen.
+[Native steps and results](https://github.com/OpenMaker-Dev/openmaker/issues/1036#issuecomment-7185794524).
+
 FileMaker Pro 26.1.1, a local two-table Text lookup over an equality
 relationship with "If no exact match: Use" selected
 ([native steps and results](https://github.com/OpenMaker-Dev/openmaker/issues/1020#issuecomment-7185793871)):
@@ -376,8 +386,8 @@ relationship with "If no exact match: Use" selected
 Unmeasured for this option: explicit clear with a blank fallback, a replacing
 `Get ( UUID )` match key, hosting, imports and other field types. More generally,
 copying the next lower or higher value, container fields, Relookup Field
-Contents, and which of several matches an unsorted relationship gives remain
-unmeasured here.
+Contents, which of several matches an unsorted relationship gives, and
+additional scripted and import cases remain unmeasured here.
 
 ## Calculations over related fields
 
