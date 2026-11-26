@@ -1234,20 +1234,24 @@ fn window_menu(rows: &mut dyn MenuRows, context: &MenuContext<'_>, actions: &mut
     rows.submenu(
         "Show Window",
         !context.show_windows.is_empty(),
+        // A script can open many files hidden: the list scrolls, as File
+        // > Favorites' does, so none is out of reach.
         &mut |rows| {
-            for (id, title, hidden) in context.show_windows {
-                let this = context.open() && *id == context.window;
-                let label = if *hidden {
-                    format!("({title})")
-                } else {
-                    title.clone()
-                };
-                if rows.keyed_item(&format!("window {id}"), &label, None, this, true)
-                    && (!this || *hidden)
-                {
-                    actions.push(Action::SelectWindow(*id));
+            rows.scrolled(&mut |rows| {
+                for (id, title, hidden) in context.show_windows {
+                    let this = context.open() && *id == context.window;
+                    let label = if *hidden {
+                        format!("({title})")
+                    } else {
+                        title.clone()
+                    };
+                    if rows.keyed_item(&format!("window {id}"), &label, None, this, true)
+                        && (!this || *hidden)
+                    {
+                        actions.push(Action::SelectWindow(*id));
+                    }
                 }
-            }
+            });
         },
     );
     pending(rows, "Hide Window", None);

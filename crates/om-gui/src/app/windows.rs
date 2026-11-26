@@ -419,11 +419,13 @@ impl OpenMakerApp {
     /// Window > Show Window (and the Window menu's list): window `id` comes
     /// to the front, and is shown if it was hidden, as a file a script
     /// opened hidden is (a close trigger's too, which leaves the file open
-    /// behind Home, #679). The scripts' windows are told, so that
-    /// `WindowNames` and Select Window find it shown. Over Home, which no
-    /// file holds, the window takes Home's place rather than opening a
-    /// window of its own beside it. False when it stays behind
-    /// ([`Self::switch_blocked`]) or there is no window `id`.
+    /// behind Home, #679). A card is drawn on its document, so the document
+    /// and its cards show together, whichever of them `id` is. The
+    /// scripts' windows are told, so that `WindowNames` and Select Window
+    /// find them shown. Over Home, which no file holds, the window takes
+    /// Home's place rather than opening a window of its own beside it.
+    /// False when it stays behind ([`Self::switch_blocked`]) or there is no
+    /// window `id`.
     pub(super) fn show_window(&mut self, ctx: &egui::Context, id: u32) -> bool {
         let home = self.front_doc().session.is_none();
         if !self.bring_to_front(id) {
@@ -436,9 +438,21 @@ impl OpenMakerApp {
         {
             self.windows.pop();
         }
-        if self.w.hidden {
-            self.w.hidden = false;
-            self.request(ctx, crate::worker::Request::ShowWindow(self.w.id));
+        let chain = self.card_chain(self.base_window(id));
+        let mut shown = Vec::new();
+        for doc in std::iter::once(&mut self.w).chain(self.windows.iter_mut()) {
+            if doc.hidden && chain.contains(&doc.id) {
+                doc.hidden = false;
+                shown.push(doc.id);
+            }
+        }
+        // Also while the file's connection is lost: nothing goes to the
+        // host, and a reconnect keeps the scripts' windows as they were.
+        for window in shown {
+            let request = crate::worker::Request::ShowWindow(window);
+            if let Err(err) = self.worker.send(ctx, self.epoch, self.w.id, request) {
+                self.fail(&err);
+            }
         }
         true
     }

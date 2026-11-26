@@ -535,8 +535,12 @@ mod tests {
         assert_eq!(app.viewport_of(3), app.viewport_of(2));
         assert_eq!(app.card_chain(2), [2, 3]);
         assert_eq!(app.root_window(), 1);
+        // Hidden, as Open File [Hide] leaves a file's windows, the card and
+        // the window it is drawn on show together.
+        app.windows.iter_mut().for_each(|d| d.hidden = true);
         app.apply(&ctx, Action::SelectWindow(2));
         assert_eq!(app.w.id, 3);
+        assert!(app.docs().all(|d| !d.hidden));
         let mut stale = app.window_state();
         stale.title = Some("Stale".into());
         let epoch = app.epoch;

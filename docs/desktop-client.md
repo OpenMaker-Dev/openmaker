@@ -38,10 +38,11 @@ own chrome uses are in [design.md](design.md). Related notes:
   window, the menu bar is drawn inside each window. The window title is the
   platform's own.
 - The Window menu's New Window runs the step. Show Window lists every open
-  file's windows but cards, front first, a hidden one in parentheses;
-  choosing one brings it to the front, shown if it was hidden
-  (`OpenMakerApp::show_window`, which the list at the menu's end also
-  runs), and tells the scripts' windows so. FileMaker documents only that
+  file's windows but cards, front first, a hidden one in parentheses, and
+  scrolls when they do not fit; choosing one brings it to the front, shown
+  with its cards if it was hidden (`OpenMakerApp::show_window`, which the
+  list at the menu's end also runs), and tells the scripts' windows so,
+  also while the file's connection is lost. FileMaker documents only that
   Show Window shows a hidden window by name; the rest is inferred, and
   reduced menus leave Show Window enabled (OpenMaker's choice, unmeasured:
   [#878](https://github.com/OpenMaker-Dev/openmaker/issues/878)).

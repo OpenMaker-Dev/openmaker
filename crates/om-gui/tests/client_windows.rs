@@ -776,15 +776,27 @@ fn a_visible_peer_open_is_presented_even_when_the_script_returns_to_its_caller()
 /// that would open a file says other files are open (#679). Window > Show
 /// Window lists the hidden file's window in parentheses; choosing it shows
 /// it in Home's place, File > Close closes it, and Home's commands work
-/// again.
+/// again. A window shown that way is shown to other files' scripts too.
 #[test]
 fn show_window_shows_a_file_a_close_trigger_left_open_hidden() {
     use om_hbam::OwnedNode;
     let mut open_hidden = ScriptStep::new(33);
     open_hidden.set_calculation(0, Some(&calc("\"Peer\"")));
     open_hidden.flags |= flag::OPTION;
+    let mut count = ScriptStep::new(87);
+    count.set_calculation(0, Some(&calc("\"Count\"")));
+    count.set_calculation(
+        1,
+        Some(&calc(
+            "\"Peer windows: \" & ValueCount ( WindowNames ( \"Peer\" ) )",
+        )),
+    );
+    count.set_text(0, Some("OK"));
     let mut root = fixture::tree(
-        &[fixture::script(1, "Open peer hidden", vec![open_hidden])],
+        &[
+            fixture::script(1, "Open peer hidden", vec![open_hidden]),
+            fixture::script(2, "Count peer windows", vec![count]),
+        ],
         true,
     );
     // The document preferences with OnLastWindowClose running script 1,
@@ -814,7 +826,46 @@ fn show_window_shows_a_file_a_close_trigger_left_open_hidden() {
     common::wait_until(&mut app, "root", |a| a.state().is_settled());
     assert_eq!(app.state().window_name(), "Root (127.0.0.1)");
 
-    common::open_menu(&mut app, "File");
+    // Opened hidden by a script, then shown from Window > Show Window: a
+    // script of Root finds it among the windows.
+    common::open_menu(&mut app, "Scripts");
+    common::click(&mut app, "Open peer hidden");
+    common::wait_until(&mut app, "the hidden open", |a| {
+        !a.state().script_running() && a.state().is_settled()
+    });
+    assert_eq!(app.state_mut().window_titles(), ["Root (127.0.0.1)"]);
+    common::open_menu(&mut app, "Window");
+    common::click(&mut app, "Show Window");
+    common::click(&mut app, "(Peer (127.0.0.1))");
+    common::wait_until(&mut app, "Peer shown", |a| {
+        a.state().window_name() == "Peer (127.0.0.1)" && a.state().is_settled()
+    });
+    // Back to Root from Peer's Window menu, which is drawn second.
+    app.query_all(By::new().role(egui::Role::Button).label("Window"))
+        .nth(1)
+        .unwrap()
+        .click();
+    app.run_steps(2);
+    common::click(&mut app, "Root (127.0.0.1)");
+    common::wait_until(&mut app, "Root in front", |a| {
+        a.state().window_name() == "Root (127.0.0.1)"
+    });
+    app.query_all(By::new().role(egui::Role::Button).label("Scripts"))
+        .next()
+        .unwrap()
+        .click();
+    app.run_steps(2);
+    common::click(&mut app, "Count peer windows");
+    common::wait_for_label(&mut app, "Peer windows: 1");
+    app.get_by_label("OK").click_accesskit();
+    common::wait_until(&mut app, "the count's end", |a| !a.state().script_running());
+
+    // Closing Root runs its OnLastWindowClose, which hides Peer again.
+    app.query_all(By::new().role(egui::Role::Button).label("File"))
+        .next()
+        .unwrap()
+        .click();
+    app.run_steps(2);
     app.get_by_role_and_label(egui::Role::Button, "Close")
         .click();
     app.run_steps(2);
