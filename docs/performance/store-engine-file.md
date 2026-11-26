@@ -277,10 +277,15 @@ of the tree after it, which hashes every page once more.
   31%), finding the tree's right edge and splitting pages (24%), and hashing every
   page written. Going further would mean edits that borrow from the stream through
   `tree::apply`, a change to `om-store`'s `Edit`.
-- **Listing a node's children** costs a descent from the root for every child:
-  311 ms for 200,000 records against the file engine's 6 ms. It was not part of
-  this measurement at first and is a change to `om-store`'s `Children`:
-  [#767](https://github.com/OpenMaker-Dev/openmaker/issues/767).
+- **Listing a node's children** cost a descent from the root for every child:
+  311 ms for 200,000 records against the file engine's 6 ms. Since
+  [#767](https://github.com/OpenMaker-Dev/openmaker/issues/767) a listing seeks
+  each child from where it found the one before, in the same leaf when it is
+  there, and decodes only the child's own segment, with keys built in room
+  reserved for them: 1,000,000 records listed in 0.74 and 0.81 s against 2.41
+  and 1.97 s before (`reads`, release build, a 1 GiB cache that holds the
+  tree, after a cold and a warm walk; interleaved, load 8 to 17; the file
+  engine 37 ms). A warm walk of the same table takes 1.5 s.
 
 ## Hosting on the store engine
 
