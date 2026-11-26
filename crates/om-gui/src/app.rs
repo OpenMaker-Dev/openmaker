@@ -338,6 +338,15 @@ impl LayoutTool {
             Self::Text | Self::Shape | Self::Field | Self::Button | Self::Panel
         )
     }
+
+    fn select_all_filter(self) -> Option<om_data::layout_selection::SelectAll> {
+        use om_data::layout_selection::SelectAll;
+        match self {
+            Self::Selection => Some(SelectAll::Layout),
+            Self::Shape => Some(SelectAll::Kind(om_layout::ObjectKind::Rectangle)),
+            _ => None,
+        }
+    }
 }
 
 /// The fields Layout mode's Field tool can place: those of the layout's own
@@ -3771,7 +3780,7 @@ impl OpenMakerApp {
     }
 
     fn can_select_all_layout_objects(&self, ctx: &egui::Context) -> bool {
-        self.w.tool == LayoutTool::Selection && self.layout_selection_session(ctx).is_some()
+        self.w.tool.select_all_filter().is_some() && self.layout_selection_session(ctx).is_some()
     }
 
     /// A dialog, alert or confirmation of the app's is open: the host's
@@ -4015,7 +4024,7 @@ impl OpenMakerApp {
                     let action = match key {
                         Key::S if modifiers.matches_exact(Modifiers::COMMAND) => Action::SaveLayout,
                         _ if layout_keys
-                            && self.w.tool == LayoutTool::Selection
+                            && self.w.tool.select_all_filter().is_some()
                             && *key == shortcuts::SELECT_ALL.logical_key
                             && modifiers.matches_exact(shortcuts::SELECT_ALL.modifiers) =>
                         {
@@ -5535,9 +5544,15 @@ impl OpenMakerApp {
             }
             Action::RevertLayout => {}
             Action::SelectAllLayoutObjects => {
-                if self.can_select_all_layout_objects(ctx) {
+                if let Some(filter) = self
+                    .w
+                    .tool
+                    .select_all_filter()
+                    .filter(|_| self.can_select_all_layout_objects(ctx))
+                {
                     let session = self.w.session.as_ref().expect("checked layout");
-                    self.w.layout_workspace.select_all(session);
+                    self.w.layout_workspace.select_all(session, filter);
+                    self.w.tool = LayoutTool::Selection;
                     ctx.request_repaint();
                 }
             }
@@ -9509,6 +9524,9 @@ mod tests {
                 key: 1,
                 movable: true,
                 rect: old_frame,
+                selection: om_data::layout_selection::Target::Object(
+                    om_layout::ObjectKind::Rectangle,
+                ),
                 ..Default::default()
             }],
             revision: Some([1; 32]),
@@ -9641,6 +9659,14 @@ mod tests {
             );
         })
         .drop_without_applying_deltas();
+        app.apply(&ctx, Action::SelectTool(LayoutTool::Shape));
+        assert!(app.can_select_all_layout_objects(&ctx));
+        let mut shape_input = input();
+        shape_input.events.truncate(1);
+        frame(&mut app, shape_input, false);
+        let session = app.w.session.as_ref().unwrap();
+        assert_eq!(app.w.tool, LayoutTool::Selection);
+        assert_eq!(app.w.layout_workspace.selection_count(session), 1);
     }
 
     #[test]

@@ -455,6 +455,42 @@ documents moving the selection by one point per arrow key press. See
 [layout-model.md 10.7](layout-model.md#107-an-objects-position) for how a
 move is stored.
 
+### Select All
+
+[O] FileMaker Pro 26.1.1 on macOS, Actual Size, on a synthetic form with a
+locked rectangle, a group of two rectangles and a tab control with a
+rectangle on each panel ([#884](https://github.com/OpenMaker-Dev/openmaker/issues/884)).
+With the Selection tool active, Edit > Select All selected the standalone
+and locked rectangles, the group as a unit, both tab panels and the
+rectangles on both panels. Objects highlighted the panel rows and the group
+row, leaving the tab control row and individual group members unhighlighted.
+The front panel stayed active. With the Rectangle tool active, Select All
+selected just the four ungrouped rectangles, including the locked one and
+the one on the back panel, and switched back to the Selection tool.
+Both panel rectangles had outlines. In the Rectangle-tool result, the
+Inspector included the back-panel rectangle in the selection's bounds
+(right 720 pt, bottom 365 pt), while the canvas handles ended at the
+front-panel rectangle (right 590 pt, bottom 310 pt).
+[Claris Help](https://help.claris.com/en/pro-help/content/protecting-objects-from-change.html)
+documents that a lock protects an object from edits, moves and deletion.
+
+**Unknowns:** The all-object selection rules for portal and slide-control
+contents, the Option-held menu label, and how mixed locked selections edit.
+
+### Marquee
+
+[O] On the same synthetic form in FileMaker Pro 26.1.1, a marquee
+enclosing the standalone rectangle and crossing one member of the group
+selected the rectangle and the entire group. Neither group member was
+highlighted in Objects. A marquee surrounding the entire tab control
+selected both tab panels and their rectangles. Objects highlighted both
+panel rows while the tab control parent row stayed unhighlighted. The
+front panel stayed active ([#909](https://github.com/OpenMaker-Dev/openmaker/issues/909)).
+
+**Unknowns:** A live Command-drag was not captured. Selection across a
+group's empty space, a partly enclosed tab control, nested controls, and
+popover-scoped and portal selection were not measured.
+
 ### Arrow-key steps
 
 [O] In FileMaker Pro 26.1.1 on macOS, a selected rectangle at Actual Size
@@ -463,10 +499,6 @@ Shift+Down, and one point with Option+Right. The Position Inspector supplied
 the offsets on a synthetic Form layout ([#910](https://github.com/OpenMaker-Dev/openmaker/issues/910)).
 Other zoom levels, modifier combinations, and locked and grouped selections
 were not measured.
-
-**Selection unknowns:** Which nested objects Select All and a layout-level
-box select and how they treat locked objects remain outside the arrow-key
-measurement.
 
 ### Artwork and boundaries
 
