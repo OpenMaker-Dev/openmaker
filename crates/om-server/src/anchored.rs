@@ -228,7 +228,7 @@ impl Folder {
                 &self.fd,
                 name,
                 Access::READ_OK | Access::WRITE_OK,
-                access_flags(same_ids()),
+                access_flags(same_ids())?,
             ))
         }
         #[cfg(not(unix))]
@@ -429,7 +429,7 @@ fn may_create_in(dir: impl std::os::fd::AsFd, path: &Path) -> io::Result<bool> {
         dir,
         path,
         Access::WRITE_OK | Access::EXEC_OK,
-        access_flags(same_ids()),
+        access_flags(same_ids())?,
     ))
 }
 
@@ -439,14 +439,18 @@ fn may_create_in(dir: impl std::os::fd::AsFd, path: &Path) -> io::Result<bool> {
 /// before 5.8 has no `faccessat2`, which any flag needs, and some seccomp
 /// profiles refuse it with `EPERM`. `AT_EACCESS` only when they differ, where
 /// such a kernel or profile leaves the question unanswered or refused, and
-/// the file is held read-only.
+/// the file is held read-only. rustix has no `AT_EACCESS` for Android
+/// (whose apps run with the same ids), so there, when the ids differ, the
+/// question cannot be asked: no answer.
 #[cfg(unix)]
-fn access_flags(same_ids: bool) -> rustix::fs::AtFlags {
+fn access_flags(same_ids: bool) -> io::Result<rustix::fs::AtFlags> {
     if same_ids {
-        rustix::fs::AtFlags::empty()
-    } else {
-        rustix::fs::AtFlags::EACCESS
+        return Ok(rustix::fs::AtFlags::empty());
     }
+    #[cfg(target_os = "android")]
+    return Err(io::ErrorKind::Unsupported.into());
+    #[cfg(not(target_os = "android"))]
+    Ok(rustix::fs::AtFlags::EACCESS)
 }
 
 /// Whether this process's real and effective user and group ids are the
@@ -538,7 +542,7 @@ mod tests {
     #[test]
     fn the_effective_ids_are_asked_for_only_when_they_differ() {
         use rustix::fs::AtFlags;
-        assert_eq!(super::access_flags(true), AtFlags::empty());
-        assert_eq!(super::access_flags(false), AtFlags::EACCESS);
+        assert_eq!(super::access_flags(true).unwrap(), AtFlags::empty());
+        assert_eq!(super::access_flags(false).unwrap(), AtFlags::EACCESS);
     }
 }
