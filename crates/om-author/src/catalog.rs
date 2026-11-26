@@ -24,9 +24,9 @@ use crate::api::{
     Command, CompareDesignsParams, CompletionParams, CreateFieldParams, CreateFileParams,
     CreateLayoutParams, DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, EditParams,
     ErrorKind, FieldControlParams, FieldParams, InspectParams, LayoutParams, LayoutSetupParams,
-    LayoutWidthParams, NoParams, ObjectFramesParams, OtherParams, PartOptionsParams,
-    PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlacementParams, RunScriptParams,
-    ScriptParams, TextParams, ValueListParams, ValueListValuesParams, API_VERSION,
+    LayoutWidthParams, MoveObjectsParams, NoParams, ObjectFramesParams, OtherParams,
+    PartOptionsParams, PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlacementParams,
+    RunScriptParams, ScriptParams, TextParams, ValueListParams, ValueListValuesParams, API_VERSION,
 };
 
 /// What a command can change.
@@ -460,6 +460,22 @@ pub static ARRANGE_OBJECTS: CommandSpec = CommandSpec {
     operation: Some("set_object_frames"),
     params: schema_for_type::<ArrangeObjectsParams>,
     parse: |params| read(params).map(Command::ArrangeObjects),
+};
+
+pub static MOVE_OBJECTS: CommandSpec = CommandSpec {
+    id: om_data::layout_move::ID,
+    cli: "move-objects",
+    tool: "openmaker_move_objects",
+    title: om_data::layout_move::LABEL,
+    description: "Move top-level layout objects together by dx and dy in points, using the \
+                  same rounding and top/left clamp as the Layout mode canvas. The offset \
+                  applies only at expected_revision (get_layout's revision). Writes use \
+                  set_object_frames for bounds checks and read-back.",
+    effect: Effect::Authors,
+    needs: Needs::Grant(Grant::LayoutObjects),
+    operation: Some("set_object_frames"),
+    params: schema_for_type::<MoveObjectsParams>,
+    parse: |params| read(params).map(Command::MoveObjects),
 };
 
 pub static PLACE_TEXT: CommandSpec = CommandSpec {
@@ -964,7 +980,7 @@ pub static SCRIPT_CALLS: CommandSpec = CommandSpec {
     parse: |params| read(params).map(Command::ScriptCalls),
 };
 
-pub static ALL: [&CommandSpec; 41] = [
+pub static ALL: [&CommandSpec; 42] = [
     &CAPABILITIES,
     &INSPECT,
     &GET_SCRIPT,
@@ -978,6 +994,7 @@ pub static ALL: [&CommandSpec; 41] = [
     &PLACE_FIELD,
     &SET_OBJECT_FRAMES,
     &ARRANGE_OBJECTS,
+    &MOVE_OBJECTS,
     &DELETE_OBJECTS,
     &PLACE_TEXT,
     &PLACE_PORTAL,
@@ -1070,6 +1087,8 @@ mod tests {
                                 "objects": ["layout_object:1.4@F.fmp12",
                                             "layout_object:1.5@F.fmp12"],
                                 "arrangement": "align_left_edges"},
+            "move_objects": {"layout_name": "L", "expected_revision": "r",
+                             "objects": ["layout_object:1.4@F.fmp12"], "dx": -1, "dy": 2},
             "delete_objects": {"layout_name": "L", "expected_revision": "r",
                                "objects": ["layout_object:1.4@F.fmp12"]},
             "place_text": {"layout_name": "L", "text": "T", "frame": frame,

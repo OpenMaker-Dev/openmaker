@@ -430,11 +430,14 @@ deeper than the tree's levels.
 
 A read touches only the pages on the way to what it returns: a lookup,
 range or walk the pages from the root to the items it returns and those
-items' overflow pages; a listing of children the keys of the items it
-passes and the children's own values, each child sought from where the
-one before it was found, in the same leaf when it is there and otherwise
-below the deepest page on the way to both, never from the root again;
-"changed since" index pages only (2.8). Every comparison with a stored key or separator uses the bytes its
+items' overflow pages (a range or walk started from the place another
+read of the same version left, `tree::Place`, only those below the
+deepest page that place shares with the way to its first item); a
+listing of children the keys of the items it passes and the children's
+own values, each child sought from where the one before it was found,
+in the same leaf when it is there and otherwise below the deepest page
+on the way to both, never from the root again; "changed since" index
+pages only (2.8). Every comparison with a stored key or separator uses the bytes its
 page holds first, and reads its overflow pages one at a time only while
 the bytes so far are equal to the other key; that is the one way a read
 reaches an overflow page it does not return. A reverse listing finds each

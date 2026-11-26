@@ -413,6 +413,30 @@ records: it reads the catalogs, the accounts and the locale.
   and 2.5 to 2.6 s on the store engine. The file engine is faster too (8.2
   to 0.5 ms, 54 to 2.2 ms): it lent the index before, but checked the order
   of every key once per find.
+- **A full read of an index** lists every key and reads every entry: a find
+  for duplicates on Name, of 1,000,000 records. Each page of keys and each
+  entry was sought from the root, the version's root page read again for
+  each; since [#767](https://github.com/OpenMaker-Dev/openmaker/issues/767)
+  a listing seeks each child from where it found the one before, and the
+  view keeps the place its last read left, from which an entry at a key the
+  listing has just given, and the next page, are sought. Release build, a
+  256 MiB cache, `index-reads` four passes each and the server two starts
+  each, interleaved, load 5 to 13:
+
+  | 1,000,000 keys, store engine | Before | The listing | And the entries |
+  |---|---:|---:|---:|
+  | Every key listed | 4.6 to 5.7 s | 2.1 to 2.4 s | 2.1 to 2.3 s |
+  | Every entry read by its key | 5.9 to 6.6 s | 4.7 to 5.1 s | 3.5 to 3.9 s |
+  | The upkeep's check through the listing | 8.6 to 9.8 s | 4.9 to 5.4 s | 3.7 to 4.2 s |
+  | One walk of the index | 2.4 to 2.6 s | 2.4 to 2.8 s | 2.3 to 2.6 s |
+  | The find for duplicates, end to end (median of 3) | 6.9 and 7.2 s | 4.7 and 4.9 s | 3.6 and 3.7 s |
+
+  The find is 1.5 times a walk of the index, which is itself 27 times the
+  file engine's (0.09 s). A profile of the server during it: loading pages
+  into the cache, with each page's hash checked, about a quarter (as in a
+  walk); reading the pages and comparing keys, about as much; the
+  allocator, a sixth; encoding and decoding keys, a tenth; building each
+  entry as an owned tree, a twentieth.
 - **Lookups that miss read no entry's records.** Each of the ExistsInIndex's
   10,000 keys lands just before `Admin`'s entry, whose records (900,000, in
   about 250 nodes) the first listing built with each page and dropped: 0.59
@@ -434,9 +458,11 @@ records: it reads the catalogs, the accounts and the locale.
   the index from its first key until every record has one, which here is the
   whole index. Through listings that cost the store engine more than the
   whole copy did (3.0 to 3.4 s against 2.3 to 2.5 s at 200,000 records),
-  because its view reads each entry's records with a seek of its own (with
-  each page, `PagedView::subtrees_page`, in the first build; by the entry's
-  key, `View::subtree`, now; [#767](https://github.com/OpenMaker-Dev/openmaker/issues/767));
-  the file engine's is unchanged (3.3 s against 3.2 s, one run each).
+  because its view read each entry's records with a seek of its own from
+  the root (with each page, `PagedView::subtrees_page`, in the first build;
+  by the entry's key, `View::subtree`, later); since
+  [#767](https://github.com/OpenMaker-Dev/openmaker/issues/767) they are
+  sought from where the listing stands (not measured again for the sort).
+  The file engine's is unchanged (3.3 s against 3.2 s, one run each).
 - **The download** is 1.3 times the file engine's at 200,000 records and 1.7
   times at 1,000,000.

@@ -683,10 +683,13 @@ fn the_store_engine_refuses_an_entry_at_the_first_node_past_either_counter() {
     ] {
         counting.reads.set(0);
         assert!(refused(spent), "{spent:?}");
-        assert_eq!(counting.reads.get(), seek, "{spent:?}");
+        // No more: from the place the last read left, none at all (#767).
+        assert!(counting.reads.get() <= seek, "{spent:?}");
     }
+    // Read whole by a view that holds no place yet.
+    let fresh = PagedView::open(&counting, imported.root).unwrap();
     counting.reads.set(0);
-    assert!(view.subtree_within(&path, exact).unwrap().is_some());
+    assert!(fresh.subtree_within(&path, exact).unwrap().is_some());
     assert!(
         counting.reads.get() > seek,
         "the entry spans pages past the seek"
@@ -758,6 +761,71 @@ fn the_file_engine_lends_an_entry_and_both_engines_answer_the_reader_alike() {
             assert_eq!((file, store), (outcome, outcome), "test view, {work:?}");
         }
     }
+}
+
+/// An index entry read at a key a listing has just given is sought from the
+/// listing's place, and the listing's next page from where the last
+/// entry's walk ended (#767): listing an index of 3,000 keys in pages of
+/// eight and reading each key's entry, as a find's listed index reads them,
+/// reads each page of the index at most twice, once as the listing looks
+/// past a page of keys and once as the entries' walks reach it, where
+/// seeking every entry from the root read a way down the tree for each
+/// key; and it gives what the file engine gives.
+#[test]
+fn a_listing_and_the_entries_it_gives_read_about_the_pages_of_one_walk() {
+    use om_hbam::RidList;
+    use om_query::program::Size;
+    let mut root = fixture::tree(&[], true);
+    let index: [&[u8]; 4] = [&[0x80, 0x01], &[1], &[1], &[0]];
+    let keys: Vec<Vec<u8>> = (0..3_000u32)
+        .map(|n| format!("\x01name {n:05}").into_bytes())
+        .collect();
+    for (n, key) in (1u64..).zip(&keys) {
+        let mut at = index.to_vec();
+        at.push(key);
+        let posting: RidList = [n, n + 3_000].into_iter().collect();
+        root.put(&at, posting.to_node(Vec::new()));
+    }
+    let (memory, imported) = import_into_memory(&written(&root), SMALL);
+    let counting = CountingReads {
+        inner: &memory,
+        reads: Cell::new(0),
+    };
+    let height = Tree::open(&memory, imported.root).unwrap().height();
+    let read = |view: &dyn View| -> Vec<OwnedNode> {
+        let mut entries = Vec::new();
+        let mut after: Option<Vec<u8>> = None;
+        loop {
+            let mut page = Vec::new();
+            let from = after.as_deref().map_or(Bound::Unbounded, Bound::Excluded);
+            let more = view
+                .children_page(&index, from, Direction::Forward, 8, &mut page)
+                .unwrap();
+            for child in &page {
+                let mut at = index.to_vec();
+                at.push(&child.segment);
+                let entry = view.subtree_within(&at, Size::UNLIMITED).unwrap();
+                entries.push(entry.unwrap().into_owned());
+            }
+            after = page.last().map(|child| child.segment.to_vec());
+            if !more || after.is_none() {
+                return entries;
+            }
+        }
+    };
+    let listed = read(&PagedView::open(&counting, imported.root).unwrap());
+    let reads = counting.reads.replace(0);
+    assert_eq!(listed.len(), keys.len());
+    assert_eq!(listed, read(&crate::engine::TreeView::new(&root, 1)));
+    let view = PagedView::open(&counting, imported.root).unwrap();
+    counting.reads.set(0);
+    view.subtree(&index, NO_LIMIT).unwrap().unwrap();
+    let walk = counting.reads.get();
+    assert!(walk > 10, "{walk} pages: the index should span many leaves");
+    assert!(
+        reads <= 2 * walk + height,
+        "{reads} pages read; a walk {walk}, height {height}"
+    );
 }
 
 /// Two engines, one answer (docs/server-storage.md 12, "Both engines
