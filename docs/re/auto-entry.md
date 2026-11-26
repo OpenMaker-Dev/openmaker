@@ -537,8 +537,20 @@ committed key already matches is among them, in its creation place, read
 with the values being written (a1x, not a1). Aggregates and the first
 related record read that set.
 
+**Unsorted group join with unequal row keys.** FileMaker Pro 26.1.1
+measured two predicates on the same table: equal Text group keys and
+unequal Text record keys, with no relationship sort. The Time field's
+do-not-replace formula read fields of the first related row directly.
+New Record, setting the date and time, and the first commit left the
+result empty while the group key was empty. After assigning the group
+key on the second and third rows, the result became `0:00:10` and
+`0:00:30` during Set Field. Commit and reopen retained those values.
+The two intervals identify the oldest matching row in this setup. The
+first row retained an empty result after the later rows joined its group.
+[Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7184309703).
+
 Still unmeasured:
-- sorted or non-equality joins, a join on more than one predicate,
+- sorted joins and other non-equality and multi-predicate joins,
   stored calculations and validation, and portal rows created in one
   commit (the transaction case is a script's);
 - the stored witness for an auto-entry configured to keep the value

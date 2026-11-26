@@ -1932,9 +1932,19 @@ application creation plan.
     the self-join, and the commit refuses that read with 3. An empty
     match key is still answered as above.
     [#297](https://github.com/OpenMaker-Dev/openmaker/issues/297)
-  - **What is unmeasured:** sorted or non-equality joins with matches,
-    stored and validation formulas, portal rows made in one commit, and
-    the original solution's context.
+  - **An unsorted group join with unequal row keys** supports direct
+    first-related field reads in do-not-replace auto-entry at commit. The
+    predicates compare two Text fields with themselves across occurrences
+    of the same table, one with equality and the other with inequality.
+    The planner reads the other rows when neither the written nor the
+    stored row can match. Empty keys give an empty set. FileMaker Pro
+    also exposes the computed value at Set Field before commit. The
+    desktop path computes the stored result during commit. Hosted
+    behavior for this shape is unmeasured.
+    [Native measurements](https://github.com/OpenMaker-Dev/openmaker/issues/297#issuecomment-7184309703).
+  - **What is unmeasured:** sorted and other non-equality joins with
+    matches, stored and validation formulas, and portal rows made in one
+    commit.
   - **Its stored row is never read as a related record.** Every write names
     its record (`rules::Written`): new, as reserved by New Record, or
     stored. The stored row holds the values the write replaces.
