@@ -872,8 +872,12 @@ auto-enter a direct `$$` variable read. A Text value comes from the
 owning file's current script variables, and an unset variable gives an
 empty field. OpenMaker keeps the New Record snapshot through its preview
 and commit. That timing is inferred when the variable changes between
-those two steps. Hosted files, compound variable formulas, and non-Text
-variable values are outside this change.
+those two steps. Planning refuses with error 3 when a calculated
+auto-entry formula reads a script variable outside this form, including
+a bare read in a hosted file. A non-Text value in the supported form
+returns error 3 at evaluation. The plan check covers the field's
+auto-entry formula itself. Variable reads through custom functions,
+validation and stored calculations remain separate.
 [FileMaker Pro measurement](https://github.com/OpenMaker-Dev/openmaker/issues/1037#issuecomment-7185794811).
 
 A local stored Text calculation can use a literal `Evaluate` with
