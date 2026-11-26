@@ -2940,6 +2940,7 @@ fn a_windows_record_session_holds_its_new_record_apart_until_commit_or_revert() 
         privilege_set: None,
         record_number: None,
         prepared: None,
+        single_field_step: false,
     };
     let before = ids_of(&all_records(&mut b, notes));
     all_records(&mut a, notes);
@@ -4080,6 +4081,7 @@ fn missing_index_validation_preserves_script_import_and_skip_options() {
                             privilege_set: None,
                             record_number: None,
                             prepared: None,
+                            single_field_step: false,
                         })
                         .map(|_| ()),
                     "import" => provider
@@ -4362,6 +4364,7 @@ fn imports_write_every_field_type_with_the_imports_rules() {
         privilege_set: None,
         record_number: None,
         prepared: None,
+        single_field_step: false,
     };
     provider.write_record(&script_typed("3/4/26")).unwrap();
     let page = all_records(&mut provider, tasks);
@@ -4430,6 +4433,7 @@ fn script_writes_take_a_scripts_rules_in_and_out_of_transactions() {
         privilege_set: None,
         record_number: None,
         prepared: None,
+        single_field_step: false,
     };
     // A user may not type into Count or Creator.
     let typed = provider

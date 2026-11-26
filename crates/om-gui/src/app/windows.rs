@@ -57,6 +57,7 @@ pub(crate) struct Doc {
     pub find: FindState,
     pub toolbar: ToolbarState,
     pub show_toolbar: bool,
+    pub toolbar_locked: bool,
     pub show_formatting: bool,
     pub tool: LayoutTool,
     pub inspector: bool,
@@ -234,6 +235,7 @@ impl Doc {
             find: FindState::default(),
             toolbar: ToolbarState::default(),
             show_toolbar: true,
+            toolbar_locked: false,
             show_formatting: false,
             tool: LayoutTool::default(),
             inspector: true,
@@ -507,6 +509,7 @@ impl OpenMakerApp {
             doc.session = Some(new);
         }
         doc.show_toolbar = self.w.show_toolbar;
+        doc.toolbar_locked = self.w.toolbar_locked;
         doc.calcs.share_schema(&self.w.calcs);
         doc.calcs.share_reports(&self.w.calcs);
         doc.calcs.account.clone_from(&self.w.calcs.account);

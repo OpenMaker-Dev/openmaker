@@ -703,10 +703,12 @@ of each dependency, unless there is a concrete reason not to.
 - **Dependencies.** Requirements are ordinary (`"0.4"`, not `"=0.4.42"`),
   and the lockfile follows the latest compatible releases. A pin, or a
   hold below a crate's latest major release, needs its concrete reason in
-  a comment beside it. The exact pins today are `webkit2gtk = "=2.0.2"`
-  and `javascriptcore-rs = "=1.1.2"` (`om-gui`, `web-viewer`): they must
-  match the versions `wry` uses, because `om-gui` installs its own page
-  message handler (wry's IPC drops messages from `data:` URLs).
+  a comment beside it. The exact pins today are `webkit2gtk = "=3.0.0"`
+  and `javascriptcore-rs = "=2.0.0"` (`om-gui`, `web-viewer`): they must
+  match the versions `wry` 0.58 uses, because `om-gui` installs its own
+  page message handler (wry's IPC drops messages from `data:` URLs). Move
+  them together with `wry`; a different version links the WebKitGTK
+  system library twice, which Cargo refuses.
 - **Checking.** `rustup check` shows a newer stable.
   `cargo update --dry-run --verbose` lists compatible updates, and as
   `Unchanged ... (available: ...)` the crates behind a newer major
