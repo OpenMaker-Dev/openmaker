@@ -20,7 +20,7 @@
 //! opens the copy. Ignored by default: the templates are git-ignored inputs
 //! (`re/extracted`, docs/development.md). Run with
 //!   OM_TEMPLATES=<DynamicTemplates folder> \
-//!     xvfb-run -a cargo test -p om-gui --test starter_finds -- --ignored
+//!     tools/xvfb-run.sh cargo test -p om-gui --test starter_finds -- --ignored
 //!
 //! With `OM_STARTER_FINDS_HOSTED` set, each copy is hosted instead by
 //! OpenMaker Server, a separate `om-server` process on loopback

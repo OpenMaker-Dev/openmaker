@@ -25,7 +25,7 @@
 //! Ignored by default: the templates are git-ignored inputs (`re/extracted`,
 //! docs/development.md). Run with
 //!   OM_TEMPLATES=<DynamicTemplates folder> OM_SCORECARD_OUT=<folder> \
-//!     xvfb-run -a cargo test -p om-gui --test starter_runs -- --ignored --nocapture
+//!     tools/xvfb-run.sh cargo test -p om-gui --test starter_runs -- --ignored --nocapture
 //! `OM_STARTER_RUNS` (comma-separated solution names) limits the solutions.
 mod common;
 

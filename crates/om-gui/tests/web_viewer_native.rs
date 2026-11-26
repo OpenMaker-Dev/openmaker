@@ -28,7 +28,7 @@
 //! - On Linux it all runs with `WAYLAND_DISPLAY` set, as in a Wayland
 //!   session, so `om_gui::native_options` must choose winit's X11 backend.
 //!
-//! `xvfb-run -a cargo test -p om-gui --features web-viewer --test
+//! `tools/xvfb-run.sh cargo test -p om-gui --features web-viewer --test
 //! web_viewer_native` on Linux, skipped without a display;
 //! `cargo test -p om-gui --features web-viewer --test web_viewer_native` on
 //! macOS, which opens a window.
@@ -578,7 +578,7 @@ mod native {
         /// Connect to the X server; `None` without a display.
         pub fn start() -> Option<Self> {
             if std::env::var_os("DISPLAY").is_none() {
-                println!("skipped: no X display (run under xvfb-run)");
+                println!("skipped: no X display (run under tools/xvfb-run.sh)");
                 return None;
             }
             // A Wayland session's environment, with a socket that does

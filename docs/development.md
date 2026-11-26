@@ -13,8 +13,9 @@ in [architecture.md](architecture.md).
   non-login shell `cargo` may not be on `PATH`:
   `export PATH="$HOME/.cargo/bin:$PATH"`.
 - **Linux desktop** (Ubuntu is the first platform). The GUI needs an X11 or
-  Wayland session; its tests run headless under `xvfb-run` (Debian/Ubuntu
-  package `xvfb`).
+  Wayland session; its tests run headless under Xvfb through
+  `tools/xvfb-run.sh` (see [Checks](#checks); Debian/Ubuntu packages `xvfb`
+  and `xauth`).
 - **Optional:**
   - Web viewers (`--features web-viewer`): WebKitGTK 4.1 and GTK 3
     development files and `pkg-config` (Debian/Ubuntu:
@@ -650,14 +651,25 @@ The gate before a pull request (what merged PRs report):
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
-xvfb-run -a cargo test --locked --workspace --no-fail-fast
+tools/xvfb-run.sh cargo test --locked --workspace --no-fail-fast
 ```
 
 While iterating, check only what you touched: `cargo test -p <crate>`,
 `cargo test -p <crate> --test <file>` for one integration-test file, or
 `cargo test -p <crate> --lib` to skip examples and integration tests. The
 GUI's integration tests need a display, so run `om-gui` tests under
-`xvfb-run -a` (or in a desktop session).
+`tools/xvfb-run.sh` (or in a desktop session).
+
+`tools/xvfb-run.sh` runs a command on a private Xvfb display and stops the
+display afterwards. Use it rather than `xvfb-run -a`. `xvfb-run -a` picks a
+display number before it starts Xvfb, so jobs started together can pick the
+same number. Debian's `xvfb-run` then tries another number. Arch's runs the
+command on the other job's display, and the display goes away when that job
+ends: a test that opens it then fails with `XOpenDisplayFailed`. The script
+also unsets `WAYLAND_DISPLAY`, so windows stay on the Xvfb display rather
+than opening on a Wayland desktop. It does not use Xvfb's `-displayfd`,
+because in that mode Xvfb ignores lock files and can take over a desktop's
+display, such as XWayland's `:0` under Hyprland.
 
 ### Toolchain and dependencies
 
@@ -848,7 +860,7 @@ Each of these cost a debugging round:
   OM_SCORECARD_FILES="a.fmp12:b.fmp12" OM_SCORECARD_OUT=/tmp/scorecard \
     cargo test -p om-gui --lib scorecard::hosted -- --ignored
   OM_STARTER_FINDS_HOSTED=1 OM_TEMPLATES=<DynamicTemplates folder> \
-    xvfb-run -a cargo test -p om-gui --test starter_finds -- --ignored
+    tools/xvfb-run.sh cargo test -p om-gui --test starter_finds -- --ignored
   ```
 
   A file hosted by FileMaker Server, or by any server already running: with
@@ -904,7 +916,7 @@ Each of these cost a debugging round:
   ```sh
   OM_ACCOUNTS_FILE=<156 Contacts.fmp12> OM_CUSTOM_SETS_FILE=<137 Contacts-custom.fmp12> \
     OM_SCORECARD_OUT=/tmp/scorecard \
-    xvfb-run -a cargo test -p om-gui --test privilege_measure -- --ignored
+    tools/xvfb-run.sh cargo test -p om-gui --test privilege_measure -- --ignored
   ```
 
   For FileMaker Pro's side of criterion 7, `build_step_files` applies each
@@ -996,7 +1008,7 @@ Each of these cost a debugging round:
 
   ```sh
   OM_SCORECARD_FILES="a.fmp12:b.fmp12" OM_SCORECARD_OUT=/tmp/scorecard \
-    xvfb-run -a cargo test -p om-gui --test scorecard_transfer -- --ignored
+    tools/xvfb-run.sh cargo test -p om-gui --test scorecard_transfer -- --ignored
   ```
 
   Building a solution (criterion 7) through `om-author` on OpenMaker

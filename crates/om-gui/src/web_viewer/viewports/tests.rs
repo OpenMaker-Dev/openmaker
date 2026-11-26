@@ -38,9 +38,17 @@ fn x11(parent: &Result<NativeParent, Unavailable>) -> Option<u32> {
 /// viewport keeps its own.
 #[test]
 fn immediate_viewports_get_their_own_x11_windows() {
-    if std::env::var_os("DISPLAY").is_none() {
+    let Some(display) = std::env::var_os("DISPLAY") else {
         eprintln!("skipped: no X display");
         return;
+    };
+    // A display set but gone is the environment's fault, as when
+    // `xvfb-run -a` gave it to two jobs and the other one stopped it.
+    if let Err(e) = x11rb::connect(None) {
+        panic!(
+            "the X display {display:?} cannot be opened ({e}): run under \
+             tools/xvfb-run.sh (docs/development.md, Checks)"
+        );
     }
     let seen = Arc::new(Mutex::new(Seen::default()));
     let record = Arc::clone(&seen);

@@ -917,7 +917,7 @@ wrote under the primary weights alone does not stay behind.
   tails refused.
 - `cargo test -p om-gui --lib database_graph`: the key-field rows a box
   draws stay bounded with thousands of key fields.
-- `OM_RELATIONSHIPS_FILE=<copy.fmp12> OM_SCREENSHOTS=<dir> xvfb-run -a
+- `OM_RELATIONSHIPS_FILE=<copy.fmp12> OM_SCREENSHOTS=<dir> tools/xvfb-run.sh
   cargo test -p om-gui --test database -- --ignored
   render_relationships_of_a_file` hosts a copy of a file and renders its
   Relationships tab, to compare with FileMaker Pro's graph of the same
