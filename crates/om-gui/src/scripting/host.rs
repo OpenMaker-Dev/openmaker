@@ -5856,6 +5856,9 @@ impl Windows for WorkerHost<'_> {
             4 => egui::ViewportCommand::Maximized(false),
             _ => return Err(ErrorCode::INVALID.into()),
         };
+        if let Some(placement) = &mut self.s.file.window.state.placement {
+            placement.toolbar_resizes_frame = false;
+        }
         self.send(ScriptEvent::Viewport(command));
         Ok(())
     }
@@ -5943,14 +5946,31 @@ impl Windows for WorkerHost<'_> {
 
     fn show_hide(&mut self, bar: Bar, visibility: Visibility, lock: bool) -> HostResult {
         let state = &mut self.s.file.window.state;
+        let was_shown = state.toolbar;
         let flag = bar_flag(state, bar).ok_or(HostError::Unsupported)?;
         *flag = match visibility {
             Visibility::Show => true,
             Visibility::Hide => false,
             Visibility::Toggle => !*flag,
         };
-        if matches!(bar, Bar::Toolbars { .. }) {
+        let resize = if matches!(bar, Bar::Toolbars { .. }) {
             state.toolbar_locked = lock;
+            if state.style == super::WindowStyle::Document
+                && state.mode == Mode::Browse
+                && !state.hidden
+            {
+                state
+                    .placement
+                    .as_mut()
+                    .and_then(|placement| placement.resize_for_toolbar(was_shown, state.toolbar))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(command) = resize {
+            self.send(ScriptEvent::Viewport(command));
         }
         self.s.file.window.touch();
         Ok(())
