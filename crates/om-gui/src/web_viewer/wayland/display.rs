@@ -20,6 +20,7 @@ use std::io::{Read as _, Write as _};
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -244,6 +245,9 @@ struct State {
     wake: Arc<dyn Fn() + Send + Sync>,
     carets: Carets,
     copied: Copied,
+    /// A page's copy is being read: one at a time, so that a host that
+    /// never closes its end holds one thread, not one per copy.
+    copying: Arc<AtomicBool>,
     dh: DisplayHandle,
     /// The view the pointer is over, and the one with the keyboard.
     pointer_view: Option<u64>,
@@ -335,6 +339,7 @@ fn run(
             pressed_on: None,
             carets,
             copied,
+            copying: Arc::new(AtomicBool::new(false)),
             dh: dh.clone(),
             keyboard_view: None,
             held: Vec::new(),
@@ -904,7 +909,12 @@ impl SelectionHandler for State {
         else {
             return;
         };
+        if self.copying.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let copying = Arc::clone(&self.copying);
         let Ok((mut reader, writer)) = std::io::pipe() else {
+            copying.store(false, Ordering::SeqCst);
             return;
         };
         let asked = request_data_device_client_selection(
@@ -913,10 +923,11 @@ impl SelectionHandler for State {
             OwnedFd::from(writer),
         );
         if asked.is_err() {
+            copying.store(false, Ordering::SeqCst);
             return;
         }
         let (copied, wake) = (Arc::clone(&self.copied), Arc::clone(&self.wake));
-        let _ = std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("openmaker-page-copy".into())
             .spawn(move || {
                 let mut text = Vec::new();
@@ -926,7 +937,11 @@ impl SelectionHandler for State {
                     }
                     wake();
                 }
+                copying.store(false, Ordering::SeqCst);
             });
+        if spawned.is_err() {
+            self.copying.store(false, Ordering::SeqCst);
+        }
     }
 
     fn send_selection(
