@@ -9422,9 +9422,13 @@ mod tests {
             "preserve the stored number"
         );
 
-        at_creation.context.record_number = Some(RecordNumber::LocalFirstRelated);
         at_creation.context.sequence = WriteSequence::Local;
-        for (options, supported) in [(0x8008_0000, true), (0xc008_0000, false)] {
+        for (options, position, supported) in [
+            (0x8008_0000, RecordNumber::LocalFirstRelated, true),
+            (0xc008_0000, RecordNumber::LocalFirstRelated, false),
+            (0x8008_0000, RecordNumber::Window(1), false),
+        ] {
+            at_creation.context.record_number = Some(position);
             *table.fields.last_mut().unwrap() =
                 field(23, FieldKind::Calculation, DataType::Number, 0, options, 0);
             let index_plan = plan_of(&table, &formulas, &[]).unwrap();
