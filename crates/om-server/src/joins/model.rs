@@ -3,15 +3,16 @@
 //! every step ([`every_order`]).
 //!
 //! Each actor runs on a thread of its own, one at a time. An actor runs
-//! until it has taken a lock of one of the scenario's sections
+//! until it is about to take a lock of one of the scenario's sections
 //! ([`Section`]), or reaches a point the code marks ([`point`]); then it
-//! waits, holding that lock, while the scheduler picks the actor that goes
-//! next. A step is what an actor does between two such points: the rest of
-//! one critical section and the start of the next. The scheduler tries
+//! waits while the scheduler picks the actor that goes next. A step is
+//! what an actor does between two such points: taking a lock, its critical
+//! section and what follows until the next. Between an actor letting a
+//! lock go and taking the next, any other may go. The scheduler tries
 //! every choice, depth first, running each order from a fresh start.
 //!
-//! An actor that finds a lock taken waits until the actor that holds it
-//! has taken a step. Picking it again while the lock is still taken
+//! An actor that finds a lock taken waits until the actor that last took
+//! it has taken a step. A step that begins with the lock still taken
 //! changes nothing, so that order is cut there: every order that goes on
 //! from it is also an order in which another actor was picked instead. A
 //! lock of a section that is not one of the scenario's points is taken
@@ -356,8 +357,11 @@ impl World {
     }
 
     /// Take the lock of `section` at `address` by `try_take`, as actor
-    /// `me`: a step ends once it is taken, if `section` is a point, and
-    /// while it is taken by another.
+    /// `me`. If `section` is a point, a step ends just before: the next one
+    /// begins by taking it, so that between letting a lock go and taking
+    /// the next any other actor may go. A step also ends while the lock is
+    /// taken by another; one that begins with it still taken changes
+    /// nothing, and its order is cut.
     fn take<G>(
         &self,
         me: usize,
@@ -366,44 +370,43 @@ impl World {
         mut try_take: impl FnMut() -> Option<G>,
     ) -> G {
         let point = self.points.contains(&section);
-        let mut waited = false;
+        let mut resumed = false;
+        if point {
+            self.wait(me, Status::Ready, format!("to take {section:?}"));
+            resumed = true;
+        }
         loop {
             if let Some(guard) = try_take() {
                 TAKEN.set(STEP.get());
-                {
-                    let mut turns = self.turns();
-                    turns.holders.insert(address, me);
-                    if !point {
-                        match turns.unshared.entry(address) {
-                            Entry::Vacant(entry) => {
-                                entry.insert((me, section));
-                            }
-                            Entry::Occupied(entry) if entry.get().0 != me => {
-                                turns.trouble.push(format!(
-                                    "two actors take one lock of {section:?}, which is not a \
-                                     point of the scenario"
-                                ));
-                            }
-                            Entry::Occupied(_) => {}
+                let mut turns = self.turns();
+                turns.holders.insert(address, me);
+                if !point {
+                    match turns.unshared.entry(address) {
+                        Entry::Vacant(entry) => {
+                            entry.insert((me, section));
                         }
+                        Entry::Occupied(entry) if entry.get().0 != me => {
+                            turns.trouble.push(format!(
+                                "two actors take one lock of {section:?}, which is not a point \
+                                 of the scenario"
+                            ));
+                        }
+                        Entry::Occupied(_) => {}
                     }
-                }
-                if point {
-                    self.wait(me, Status::Ready, format!("took {section:?}"));
                 }
                 return guard;
             }
             let holder = {
                 let mut turns = self.turns();
-                turns.cut |= waited;
+                turns.cut |= resumed;
                 turns.holders.get(&address).copied()
             };
-            waited = true;
             self.wait(
                 me,
                 Status::Blocked(holder),
                 format!("waits for {section:?}"),
             );
+            resumed = true;
         }
     }
 
