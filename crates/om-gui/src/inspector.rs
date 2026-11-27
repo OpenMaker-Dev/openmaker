@@ -718,7 +718,28 @@ impl Inspector {
             }
         });
         section(ui, "Autosizing", |ui| {
-            ui.label("Anchor information is unavailable.");
+            let Some(stored) = stored else {
+                ui.label("Anchor information is unavailable.");
+                return;
+            };
+            let anchors = stored.autosizing_anchors();
+            let anchored: Vec<_> = [
+                ("Left", anchors.left),
+                ("Top", anchors.top),
+                ("Right", anchors.right),
+                ("Bottom", anchors.bottom),
+            ]
+            .into_iter()
+            .filter_map(|(edge, anchored)| anchored.then_some(edge))
+            .collect();
+            ui.vertical(|ui| {
+                ui.label(RichText::new("Stored anchors").font(theme::small()));
+                ui.label(if anchored.is_empty() {
+                    "None".into()
+                } else {
+                    anchored.join(", ")
+                });
+            });
         });
         changed
     }

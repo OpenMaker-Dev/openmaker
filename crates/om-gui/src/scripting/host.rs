@@ -2540,6 +2540,7 @@ impl<'a> WorkerHost<'a> {
             record_number: open.new.then_some(open.record_number).flatten(),
             prepared: None,
             single_field_step,
+            assignments: open.assignments.clone(),
         };
         let others: Vec<om_data::PendingRecord> = open
             .related
@@ -3013,7 +3014,7 @@ impl<'a> WorkerHost<'a> {
 
     fn set_named(&mut self, name: &str, text: String) -> HostResult {
         let (window, provider) = self.wp();
-        window.set(provider, name, text).map_err(data_error)
+        window.set(provider, name, text, false).map_err(data_error)
     }
 
     fn change(&mut self, change: FoundSetChange) -> HostResult {

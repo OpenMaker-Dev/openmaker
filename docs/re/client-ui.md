@@ -462,7 +462,8 @@ move is stored.
 locked rectangle, a group of two rectangles and a tab control with a
 rectangle on each panel ([#884](https://github.com/OpenMaker-Dev/openmaker/issues/884)).
 With nothing selected, the two grouped rectangles drew without an enclosing
-group rule or caption. Selecting the group showed its enclosing frame.
+group rule or caption. Selecting the group showed its enclosing frame
+([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
 The ordinary group in this fixture stored a script step descriptor with ID
 zero and had no button action.
 With the Selection tool active, Edit > Select All selected the standalone
@@ -517,8 +518,14 @@ boxes. Each disappeared with its respective option off.
 [O] In a 400 pt-wide duplicate, a 120 × 35 pt solid blue, borderless
 rectangle at (335, 45) kept its fill on both sides of the width divider.
 The 65 pt inside the layout was blue and the 55 pt on the pasteboard was
-dimmed. The captures are retained privately under the synthetic Client
-Card comparison ([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
+dimmed. In the JPEG-derived synthetic Client Card capture, the most
+frequent RGB values well inside those segments were (81, 127, 185) on the
+layout and (142, 166, 195) on the pasteboard. The clear pasteboard sampled
+at the same height was (217, 217, 217). The red and green channels are
+consistent with about 55% of the object color remaining under a simple
+blend [I]. The capture does not establish how FileMaker composites the
+artwork. The comparison is retained privately
+([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
 
 **Unknowns:** the exact dimming formula, other kinds of artwork, and
 whether the same effect applies below the last part.
@@ -547,6 +554,23 @@ help](https://help.claris.com/en/pro-help/content/working-with-layout-objects.ht
 describes the object list and its temporary hiding tools, including that
 the pane cannot hide or reorder panels. These behaviors were not measured
 in a running FileMaker Pro window.
+
+### Closed popovers
+
+[Claris Help](https://help.claris.com/en/pro-help/content/changing-popover-settings.html)
+documents a closed and an open popover state in Layout mode. Double-clicking
+the popover button or using Format > Display Popover opens the closed
+popover. The [selection help](https://help.claris.com/en/pro-help/content/editing-objects-parts-background.html)
+describes opening the popover before selecting it or its contents.
+
+[O] In FileMaker Pro 26.1.1 on a synthetic Apex Blue layout, the closed
+popover and its child were absent from the canvas. The child stayed in
+Objects. Select All selected only the button and the outside text. Clicking
+the child's row opened the surface over the outside text and selected just
+the child, with eight handles. In a separate run, double-clicking the
+button opened the popover and Popover Button Setup. After dismissing Setup,
+one blank Body click cleared selection and left the popover open
+([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019#issuecomment-7209664545)).
 
 ## Layout mode: Align, Distribute and Resize To
 
@@ -821,9 +845,42 @@ Titles end in three periods where shown. Current Date has no shortcut here
   layout, its bottom at the body's), with its label to its left. Undo
   removed both, and leaving the layout still asked whether to save it.
 
-Unknown: where Field... puts the edit box on other layouts (the rule
-behind 374/528), what the other items do, and Part Definition's first
-choice on other layouts.
+[O, 2026-11-26, FileMaker Pro 26.1.1 for macOS, #885's run] On a blank
+file's Form layout (Top Navigation 110 points, Body 658) and List layout
+(Top Navigation 110, a leading sub-summary 22, Body 47, Footer 22),
+Part... chose Title Header. OK added it 22 points high right below the Top
+Navigation, and every later part moved down 22 points, its height
+unchanged.
+
+[O, 2026-11-26, FileMaker Pro 26.1.1 for macOS, #911's second run] Six
+Field... insertions of one field (label at the left) were made. The layouts
+were that file's Form (1024 points wide, its parts 768 high) and its List,
+narrowed to 649 wide (parts 201 high), both Apex Blue. Frames were read in
+the Inspector and the closed file.
+- **Size:** the edit box was 253 by 31 points every time. Its label was
+  about 91.08 by 21 points, 6 points below the box's top, its right edge
+  11 points left of the box. With the box at left 0, the label was at left
+  0 too, overlapping it.
+- **Placement:**
+  - After a click on the layout, on a field or on blank space, or after a
+    field was drawn from layout point 125/137, the box was centered on that
+    point, rounded down, its left kept at 0. For example, a click at
+    450/155 gave 323/139, and the draw from 125/137 gave 0/121. That the
+    box is centered there is inferred from three runs.
+  - With no click since the layout was shown, or after only a selection
+    in the Objects pane or a move in the Inspector following an earlier
+    insertion, it went to 240/224 on the Form and 240/170 on the List, its
+    bottom at the List's bottom. This fits a box centered on the window's
+    view and kept on the layout (inferred).
+- **Its part:** the box belonged to the part its top was in. One whose top
+  was in the List's leading sub-summary belonged to it though its bottom
+  reached the Body.
+
+Unknown: Pro's rule without a click, how long a click's point lasts,
+rounding, scrolling and zoom, whether other edges are kept on the layout,
+the label's width for other names, the box's height on other themes (31
+here, 44 on the earlier layout), what the other items do, and Part
+Definition's first choice on other layouts.
 
 ## Portal Setup
 

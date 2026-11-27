@@ -9607,11 +9607,14 @@ fn resized_bounds(layout: &Layout, id: u64, mut growth: egui::Vec2) -> Option<Re
             pos2(bounds.right as f32, bounds.bottom as f32),
         );
         let original = local.size();
-        let flags = object.flags >> 28;
-        for (axis, leading, trailing) in [(0, 1, 4), (1, 2, 8)] {
-            if flags & trailing != 0 {
+        let anchors = object.autosizing_anchors();
+        for (axis, leading, trailing) in [
+            (0, anchors.left, anchors.right),
+            (1, anchors.top, anchors.bottom),
+        ] {
+            if trailing {
                 local.max[axis] += growth[axis];
-                if flags & leading == 0 {
+                if !leading {
                     local.min[axis] += growth[axis];
                 }
             }
