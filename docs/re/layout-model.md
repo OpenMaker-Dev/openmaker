@@ -3821,9 +3821,11 @@ calculation was the same in all five.]
 Turning JavaScript scripts on alone set `0x0040` and `0x0080` together.
 The other three each changed only their own bit and left `0x0080` clear.
 With W1 and W3, every value Pro stored with JavaScript scripts on has
-`0x0080`, and none without them does. [U] What `0x0080` does on its own,
+`0x0080`, and none without them does: an observation over these seven
+values, not a rule found in code. [U] What `0x0080` does on its own,
 whether turning JavaScript scripts off on a viewer that has them clears it,
-templates, and combinations of several changes other than W1's and W3's.
+the progress bar or status messages turned off alone, templates, and
+combinations of several changes other than W1's and W3's.
 
 What OpenMaker writes for a new viewer (`om_data::layout_placement::
 plan_web_viewer`, `docs/authoring.md`, "Web viewers on layouts"): the

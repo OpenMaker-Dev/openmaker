@@ -2900,10 +2900,33 @@ mod tests {
             ..WebViewerSetup::DEFAULT
         };
         assert_eq!(javascript.flags(), Some(0x80cd), "W5");
-        // Every value Pro stored with a custom address reads back as itself.
-        for flags in [0x800d, 0x80cd, 0x800f, 0x802d, 0x800c, 0x80e3, 0x80e7] {
-            let setup = WebViewerSetup::from_flags(flags).unwrap();
+        // Every value Pro stored with a custom address, with its check boxes
+        // as Pro showed them (interaction, Find mode, progress bar, status
+        // messages, encoding, JavaScript scripts), both ways.
+        let measured = [
+            (0x800d, [true, false, true, true, true, false]),
+            (0x80cd, [true, false, true, true, true, true]),
+            (0x800f, [true, true, true, true, true, false]),
+            (0x802d, [true, false, true, true, false, false]),
+            (0x800c, [false, false, true, true, true, false]),
+            (0x80e3, [true, true, false, false, false, true]),
+            (0x80e7, [true, true, true, false, false, true]),
+        ];
+        for (
+            flags,
+            [interaction, find_mode, progress_bar, status_messages, encode_url, javascript],
+        ) in measured
+        {
+            let setup = WebViewerSetup {
+                interaction,
+                find_mode,
+                progress_bar,
+                status_messages,
+                encode_url,
+                javascript,
+            };
             assert_eq!(setup.flags(), Some(flags), "{flags:#x}");
+            assert_eq!(WebViewerSetup::from_flags(flags), Some(setup), "{flags:#x}");
         }
         // Two options changed together from the defaults: not measured.
         let two = WebViewerSetup {
