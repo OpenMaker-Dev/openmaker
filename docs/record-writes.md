@@ -1988,8 +1988,8 @@ the starting occurrence, must be as FileMaker Pro writes them. It holds:
   with a replacing auto-entered `Get ( UUID )` match key refuses with 3;
 - a stored text, number or date field of one repetition with no other
   auto-entry, copying a stored text, number or date value of one
-  repetition (a data field or a stored calculation), a date field only
-  from a date: the related value's stored text as it is, as FileMaker
+  repetition (a data field or a stored calculation): the related value's
+  stored text as it is, as FileMaker
   Server's engine copies it (auto-entry.md, Lookups, battery s43). These
   are the types both hosts read with their stored text. A related date
   field holding text that is no date refuses the write with error 3 (the
@@ -1998,8 +1998,19 @@ the starting occurrence, must be as FileMaker Pro writes them. It holds:
   (`01:02:03.500` reads as `1:02:03.5`), and a date field holding other
   text reads as text in calculations where FileMaker reads an invalid
   date (`+ 1` gives 1/1/0001), so lookups of times and timestamps and of
-  text or numbers into a date field keep the table read-only ([#235](https://github.com/OpenMaker-Dev/openmaker/issues/235),
+  numbers into a date field keep the table read-only ([#235](https://github.com/OpenMaker-Dev/openmaker/issues/235),
   [#236](https://github.com/OpenMaker-Dev/openmaker/issues/236));
+- a local English MDY, value-indexed Date field (`0x80000400`, no
+  validation, one repetition) copying plain Text through one unsorted
+  equality on ordinary Text keys. Mode 0 keeps the prior date for an
+  empty source or a miss. Valid dates use the existing Date input
+  parser, including its year expansion. Nonempty invalid text without
+  digits is kept and indexed under the invalid-date key. The native
+  short-year pivot is unmeasured. Invalid inputs requiring another
+  index rule, hosted files and other date formats remain outside this
+  case. The result is available at Commit.
+  [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1207#issuecomment-7214668280),
+  [field-exit and Set Field timing](https://github.com/OpenMaker-Dev/openmaker/issues/1212);
 - a field of another table of the same file, through one relationship
   whose predicates are all `=` on stored text match fields, unsorted or
   sorted only by the related table's own data fields and stored
