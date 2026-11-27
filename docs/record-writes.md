@@ -869,6 +869,15 @@ the session globals. This scope covers scripted assignments and ordinary
 unsorted New Record in the owning local desktop file.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1138#issuecomment-7204722907)
 
+A local global Text rule of the form
+`Let ( result = Evaluate ( Input ) ; "" )` can use an ordinary Text
+input with no auto-entry or validation. Unrelated edits leave the
+global alone. Scripted unsorted New Record starts with a blank input
+and applies the measured replace or keep rule. Explicit assignments
+to the input refuse with 3. Inputs with defaults and rules that read
+the resulting global remain unsupported.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1057#issuecomment-7209580006)
+
 A calculated global Text field with the measured empty-Self default can
 retain its value or append a literal suffix. Ordinary New Record reads
 the current session value. Scripted Set Field reads its assigned text.

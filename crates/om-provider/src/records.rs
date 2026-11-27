@@ -968,7 +968,9 @@ impl NativeProvider {
         entry: Entry,
         environment: &RecordEnvironment,
         creation: RecordCreation,
+        cells: &BTreeMap<u64, Option<String>>,
     ) -> Result<NewGlobals, DataError> {
+        plan.check_global_evaluate_inputs(cells.keys().copied())?;
         if !plan.has_global_auto_entry(entry) {
             return Ok(NewGlobals::default());
         }
@@ -1662,7 +1664,7 @@ impl NativeProvider {
     ) -> Result<Record, DataError> {
         let environment = self.rule_environment(table.id, plan, context)?;
         let entry = Entry::default();
-        let globals = self.new_record_defaults(plan, entry, &environment, creation)?;
+        let globals = self.new_record_defaults(plan, entry, &environment, creation, changes)?;
         // Compute and check every value before reserving a record id.
         let prepared = self.prepare_record(
             plan,
@@ -2074,7 +2076,8 @@ impl NativeProvider {
         let txn = self.new_transaction();
         let result = (|| match record {
             None => {
-                let globals = self.new_record_defaults(plan, entry, &environment, creation)?;
+                let globals =
+                    self.new_record_defaults(plan, entry, &environment, creation, cells)?;
                 self.prepare_record(
                     plan,
                     (WriteMode::Create, entry, Written::New(None)),
