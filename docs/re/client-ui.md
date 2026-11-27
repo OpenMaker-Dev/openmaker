@@ -544,6 +544,14 @@ describes the object list and its temporary hiding tools, including that
 the pane cannot hide or reorder panels. These behaviors were not measured
 in a running FileMaker Pro window.
 
+### Closed popovers
+
+[Claris Help](https://help.claris.com/en/pro-help/content/changing-popover-settings.html)
+documents a closed and an open popover state in Layout mode. Double-clicking
+the popover button or using Format > Display Popover opens the closed
+popover. The [selection help](https://help.claris.com/en/pro-help/content/editing-objects-parts-background.html)
+describes opening the popover before selecting it or its contents.
+
 ## Layout mode: Align, Distribute and Resize To
 
 From Claris's help (doc), fetched 2026-11-20:
