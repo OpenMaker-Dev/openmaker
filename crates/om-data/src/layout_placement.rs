@@ -2885,8 +2885,9 @@ mod tests {
             Err(Refusal::Unsupported(_))
         ));
 
+        // JavaScript scripts without 0x0080, which Pro never stored.
         let unmeasured = WebViewerPlacement {
-            flags: 0x800c,
+            flags: 0x804d,
             ..viewer
         };
         assert!(matches!(
@@ -2894,6 +2895,23 @@ mod tests {
             Err(Refusal::Unsupported(_))
         ));
         assert_eq!(WebViewerSetup::DEFAULT.flags(), Some(0x800d));
+        let javascript = WebViewerSetup {
+            javascript: true,
+            ..WebViewerSetup::DEFAULT
+        };
+        assert_eq!(javascript.flags(), Some(0x80cd), "W5");
+        // Every value Pro stored with a custom address reads back as itself.
+        for flags in [0x800d, 0x80cd, 0x800f, 0x802d, 0x800c, 0x80e3, 0x80e7] {
+            let setup = WebViewerSetup::from_flags(flags).unwrap();
+            assert_eq!(setup.flags(), Some(flags), "{flags:#x}");
+        }
+        // Two options changed together from the defaults: not measured.
+        let two = WebViewerSetup {
+            find_mode: true,
+            encode_url: false,
+            ..WebViewerSetup::DEFAULT
+        };
+        assert_eq!(two.flags(), None);
     }
 
     /// A button performing script 3 with the parameter "Report" (#226):

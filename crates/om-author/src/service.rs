@@ -2547,9 +2547,9 @@ impl Service {
             AuthorError::new(
                 ErrorKind::Unsupported,
                 "OpenMaker does not write this combination of Web Viewer Setup's options yet: \
-                 what FileMaker Pro stores for it is not measured. The defaults, and \
-                 interaction, Find mode and JavaScript scripts on with the rest off (with or \
-                 without the progress bar), are written.",
+                 what FileMaker Pro stores for it is not measured. The defaults, the defaults \
+                 with one option changed, and interaction, Find mode and JavaScript scripts on \
+                 with the rest off (with or without the progress bar), are written.",
             )
         })?;
         let mut layout = self.load_layout(&LayoutParams {

@@ -15,9 +15,10 @@
 //!   for each field the address reads;
 //! - the last object key issued `05, 00` raised to its key.
 //!
-//! The options are the measured ones only: what Pro stores for each other
-//! combination is unmeasured, since `0x0080` came with some of them and not
-//! others (layout-model.md 9.6).
+//! The options are the measured combinations only: the defaults, each
+//! option changed alone from them, and two of Pro's own sets. What Pro
+//! stores for the other combinations is not measured (layout-model.md
+//! 10.19).
 
 use super::*;
 
@@ -51,14 +52,21 @@ impl WebViewerSetup {
         javascript: false,
     };
 
-    /// The `externalObj.flags` FileMaker Pro stored for these options with
-    /// a custom web address, when they are a combination it was seen to
-    /// store (#896): the defaults `0x800d` (W2); interaction, Find mode and
-    /// JavaScript scripts on, the rest off, `0x80e3` (W1); and that with the
-    /// progress bar on, `0x80e7` (W3). Each has `0x8000`, which marks a
-    /// custom address (inferred: a template's viewer lacked it), and the
-    /// last two `0x0080`, which no setter writes. `None` for the others,
-    /// whose `0x0080` is unknown.
+    /// The `externalObj.flags` FileMaker Pro 26.1.1 stored for these
+    /// options with a custom web address, when they are a combination it
+    /// was seen to store (#896, layout-model.md 10.19):
+    /// - the defaults `0x800d` (W2);
+    /// - each option changed alone from them: JavaScript scripts on
+    ///   `0x80cd` (W5), Find mode on `0x800f` (W6), encoding off `0x802d`
+    ///   (W7), interaction off `0x800c` (W8);
+    /// - interaction, Find mode and JavaScript scripts on, the rest off,
+    ///   `0x80e3` (W1), and that with the progress bar on, `0x80e7` (W3).
+    ///
+    /// Each has `0x8000`, which marks a custom address (inferred: a
+    /// template's viewer lacked it). `0x0080`, which no setter writes, is
+    /// set together with JavaScript scripts, in every value Pro stored
+    /// with them and in none without them. `None` for the other
+    /// combinations, which are not measured.
     pub fn flags(&self) -> Option<u32> {
         let setters = u32::from(self.interaction)
             | u32::from(self.find_mode) << 1
@@ -66,11 +74,10 @@ impl WebViewerSetup {
             | u32::from(self.status_messages) << 3
             | u32::from(!self.encode_url) << 5
             | u32::from(self.javascript) << 6;
-        // The custom address bit, and 0x0080 where Pro set it.
         match setters {
-            0x0d => Some(0x800d),
-            0x63 => Some(0x80e3),
-            0x67 => Some(0x80e7),
+            0x0d | 0x0f | 0x2d | 0x0c => Some(0x8000 | setters),
+            // 0x0080 with JavaScript scripts.
+            0x4d | 0x63 | 0x67 => Some(0x8080 | setters),
             _ => None,
         }
     }

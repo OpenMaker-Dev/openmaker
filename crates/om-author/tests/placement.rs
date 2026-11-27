@@ -349,7 +349,11 @@ fn a_web_viewer_is_placed_and_lasts_a_restart() {
             expected_revision: expected.into(),
         })
     };
-    let unmeasured = error(service.handle(&place(Some(&[("encode_url", false)]), &base)));
+    // Two options changed together from the defaults: not measured.
+    let unmeasured = error(service.handle(&place(
+        Some(&[("encode_url", false), ("display_in_find_mode", true)]),
+        &base,
+    )));
     assert_eq!(unmeasured["kind"], "unsupported", "{unmeasured:#}");
     let placed = ok(service.handle(&place(None, &base)));
     assert_eq!(placed["status"], "placed", "{placed:#}");

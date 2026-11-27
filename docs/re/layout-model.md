@@ -2244,7 +2244,7 @@ Storage [O, 2026-11-02]:
   `0x40`. The setup model does not touch `0x8000`, which most stored viewers
   have: FileMaker Pro 26.1.1 set it for a custom web address and not for a
   template (inferred, 10.19); it also stored `0x0080`, which no setter
-  writes, with some options (10.19). Across the 80 web viewers of the MBS 16.3
+  writes, together with JavaScript scripts (10.19). Across the 80 web viewers of the MBS 16.3
   examples, 62 store `0x800d`: FileMaker's defaults (interaction, progress
   bar, status messages, encoding on; Find mode and JavaScript scripts off).
   None of them allows JavaScript scripts, and none of their pages call
@@ -3801,17 +3801,37 @@ text, and recompiled to the stored Polish.
 
 [I] `0x8000` marks a custom address: W2 and W4 have the same check boxes
 and differ only by it, which explains why most stored viewers have it
-(9.6). [U] `0x0080`: W1 and W3 have it and no Setup setter writes it; W2
-does not. Which option or action sets it is not isolated yet (#896's
-follow-up runs W5-W8, one option each).
+(9.6).
+
+[O, 2026-11-26, FileMaker Pro 26.1.1 for macOS, #896's follow-up: a blank
+file, one viewer drawn with the Web Viewer tool at 40/300/440/500 points,
+Custom Web Address `"https://example.com"`, the defaults, saved and closed
+(`0x800d`); four copies of it, each with one check box changed in Web
+Viewer Setup, saved and closed. Pro showed no warning or confirmation. The
+object stores matched byte for byte apart from the flags, and the stored
+calculation was the same in all five.]
+
+| Copy | Change from the defaults | `externalObj.flags` |
+|---|---|---|
+| W5 | Allow JavaScript to perform FileMaker scripts on | `0x80cd` |
+| W6 | Display content in Find mode on | `0x800f` |
+| W7 | Automatically encode URL off | `0x802d` |
+| W8 | Allow interaction with web viewer content off | `0x800c` |
+
+Turning JavaScript scripts on alone set `0x0040` and `0x0080` together.
+The other three each changed only their own bit and left `0x0080` clear.
+With W1 and W3, every value Pro stored with JavaScript scripts on has
+`0x0080`, and none without them does. [U] What `0x0080` does on its own,
+whether turning JavaScript scripts off on a viewer that has them clears it,
+templates, and combinations of several changes other than W1's and W3's.
 
 What OpenMaker writes for a new viewer (`om_data::layout_placement::
 plan_web_viewer`, `docs/authoring.md`, "Web viewers on layouts"): the
 records above, but for `kSelected` in the object's flags, which no
 placement writes (10.5), and the object store, to which the viewer is
 appended with every stored byte kept. It writes only the option
-combinations measured above (W2's, W1's and W3's flags) with a custom
-address, and refuses the others; and only an address whose formatted
+combinations measured above (W1's, W2's, W3's and W5's to W8's flags)
+with a custom address, and refuses the others; and only an address whose formatted
 stream, printed with the file's names as Web Viewer Setup shows it and
 compiled again as text with them, gives back the same tokens and the
 stored Polish stream, as Pro's four did (names that begin or end a binding
