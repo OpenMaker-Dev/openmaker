@@ -60,7 +60,7 @@
 //! seeds 0 to `n - 1` and `OM_STORE_SEEDS=<a>..<b>` seeds `a` to `b - 1`,
 //! `OM_STORE_SEED=<s>` seed `s` alone.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -475,6 +475,9 @@ struct World {
     /// every message takes [`World::electing_delay`] ticks.
     electing: bool,
     elect_from: u64,
+    /// The campaigns (candidate and term) under way when the steady phase
+    /// opened: one of them that wins was not elected under that rule.
+    begun: BTreeSet<(ServerId, u64)>,
     /// The member that runs with a smaller largest entry until the steady
     /// phase, when it starts again with the cluster's (an operator's
     /// mistake and its correction, section 7.1).
@@ -555,6 +558,7 @@ impl World {
             leaderless: None,
             electing: false,
             elect_from: 0,
+            begun: BTreeSet::new(),
             small,
             after_answer: 0,
             after_append: 0,
@@ -675,13 +679,28 @@ impl World {
         self.writing = true;
         self.leaderless = None;
         let election = self.timing.0;
-        // It opens with an election: the leader in office stops and starts
-        // again, and until a leader is in office every message takes the
-        // same time, a vote's round trip less than the shortest timeout.
-        // The election check bounds it.
-        if let Some(l) = self.leading() {
+        // It opens with an election: every member that believes it leads
+        // stops and starts again (one deposed that has not heard yet too),
+        // and until a leader is in office whose campaign began after this,
+        // every message takes the same time, a vote's round trip less than
+        // the shortest timeout. A campaign under way now, its votes asked
+        // on the faults' network, may still win: that leader stops and
+        // starts again too ([`World::watch_election`]). The election check
+        // bounds it.
+        let leaders: Vec<usize> = self
+            .up()
+            .into_iter()
+            .filter(|i| self.core_of(*i).role() == Role::Leader)
+            .collect();
+        for l in leaders {
             self.restart(l)?;
         }
+        self.begun = self
+            .up()
+            .into_iter()
+            .filter(|i| self.core_of(*i).role() == Role::Candidate)
+            .map(|i| (self.ids[i], self.core_of(i).term()))
+            .collect();
         self.electing = true;
         self.elect_from = self.now;
         self.run_until(1000 * election, |w| !w.electing)?;
@@ -732,18 +751,24 @@ impl World {
         }
         let up = self.up();
         let top = up.iter().map(|i| self.core_of(*i).term()).max();
-        let in_office = up.iter().any(|i| {
+        let in_office = up.iter().copied().find(|i| {
             let c = self.core_of(*i);
             c.role() == Role::Leader && Some(c.term()) == top
         });
-        if in_office {
-            self.electing = false;
+        if let Some(l) = in_office {
             if let Some(since) = self.leaderless.take() {
                 let spell = self.now - since;
                 self.cov.leaderless_ticks = self.cov.leaderless_ticks.max(spell);
                 let tenths = spell * 10 / (self.election_deadline() / ATTEMPTS);
                 self.cov.leaderless_tenths = self.cov.leaderless_tenths.max(tenths);
             }
+            if self.electing && self.begun.contains(&(self.ids[l], self.core_of(l).term())) {
+                // Elected by a campaign begun before the opening election,
+                // not under its rule: it stops and starts again, a leader's
+                // fall, and the election goes on.
+                return self.restart(l);
+            }
+            self.electing = false;
             return Ok(());
         }
         let since = *self.leaderless.get_or_insert(self.now);
@@ -3403,6 +3428,11 @@ fn a_follower_catches_up_through_entries_larger_than_a_batch() {
 /// script does.
 impl World {
     fn scripted(members: usize, plant: Option<Plant>) -> World {
+        World::scripted_seed(7, members, plant)
+    }
+
+    /// The same, with seed `seed`'s settings (timing, the regimes drawn).
+    fn scripted_seed(seed: u64, members: usize, plant: Option<Plant>) -> World {
         let setup = Setup {
             members,
             steps: 0,
@@ -3410,7 +3440,7 @@ impl World {
             store: STORE,
             batch: Some((8, 16 << 10)),
         };
-        let mut w = World::new(7, setup).unwrap();
+        let mut w = World::new(seed, setup).unwrap();
         w.calm();
         w
     }
@@ -4608,4 +4638,52 @@ fn a_message_that_breaks_one_relation_changes_nothing() {
         assert!(out.is_empty(), "{relation}: {out:?}");
         assert_eq!(format!("{core:?}"), before, "{relation}");
     }
+}
+
+/// The terms whose leaders the simulator has seen.
+fn led_terms(w: &World) -> Vec<u64> {
+    w.oracle.leaders.keys().copied().collect()
+}
+
+/// Issue #1188, 1: the steady phase opens with an election run under its
+/// rule, whatever the faults left (seed 1's settings, five members). The
+/// review's schedule: a member still believes it leads term 1 while
+/// another leads term 2; the phase stopped only the first leader it found
+/// and took the other at once, with no election. And a campaign under way
+/// when the phase opens, its votes asked on the faults' network, which
+/// wins in the phase: it was taken as the phase's election.
+#[test]
+fn the_steady_phase_opens_with_an_election_under_its_rule() {
+    let mut w = World::scripted_seed(1, 5, None);
+    w.win(0, &[1, 2]).unwrap();
+    // Nothing of member 0's reaches anyone again before the phase.
+    w.take(|_, from, _| from == 0);
+    w.win(2, &[3, 4]).unwrap();
+    let led = |w: &World, i| (w.core_of(i).role(), w.core_of(i).term());
+    assert_eq!(led(&w, 0), (Role::Leader, 1));
+    assert_eq!(led(&w, 2), (Role::Leader, 2));
+    w.steady().unwrap();
+    let terms = led_terms(&w);
+    assert!(terms.iter().any(|t| *t > 2), "leaders of terms {terms:?}");
+
+    let mut w = World::scripted_seed(1, 5, None);
+    for _ in 0..4 * w.timing.0 {
+        if w.core_of(0).role() == Role::PreCandidate {
+            break;
+        }
+        w.tick_member(0, 1).unwrap();
+    }
+    w.pass(|m, f, t| {
+        matches!(m.body, Body::PreVote { .. } | Body::PreVoteReply { .. }) && (f == 0 || t == 0)
+    })
+    .unwrap();
+    assert_eq!(led(&w, 0), (Role::Candidate, 1));
+    let asked = w
+        .flight
+        .iter()
+        .filter(|f| matches!(f.2.body, Body::Vote { .. }));
+    assert_eq!(asked.count(), 4);
+    w.steady().unwrap();
+    let terms = led_terms(&w);
+    assert!(terms.iter().any(|t| *t > 1), "leaders of terms {terms:?}");
 }
