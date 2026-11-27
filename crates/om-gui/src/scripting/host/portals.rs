@@ -1291,7 +1291,11 @@ impl WorkerHost<'_> {
                     let mut cells = draft.cells.clone();
                     cells.insert(cell, value);
                     let id = draft.prepared.as_ref().map(|prepared| prepared.id);
-                    let prepared = self.preview_first_related(table, &cells, id)?;
+                    let (_, _, position) = self
+                        .first_related_match_fields(occurrence, table)
+                        .filter(|(_, match_key, _)| *match_key == key)
+                        .ok_or(ErrorCode::UNAVAILABLE)?;
+                    let prepared = self.preview_first_related(table, &cells, id, position)?;
                     let draft = &mut self.s.file.window.state.uncommitted.related[i];
                     draft.cells = cells;
                     draft.prepared = Some(prepared);
@@ -1383,14 +1387,14 @@ impl WorkerHost<'_> {
             }
             Target::Create => {
                 let CreationMatch { mut cells, parent } = self.match_cells(occurrence)?;
-                let first_related_key = if direct_set_field {
+                let first_related = if direct_set_field {
                     self.first_related_key(occurrence, table, &cells, cell)
                 } else {
                     None
                 };
                 cells.insert(cell, value);
-                let prepared = first_related_key
-                    .map(|_| self.preview_first_related(table, &cells, None))
+                let prepared = first_related
+                    .map(|(_, position)| self.preview_first_related(table, &cells, None, position))
                     .transpose()?;
                 // An active creation row is now the new record's (a new
                 // creation row follows it).
@@ -1413,7 +1417,7 @@ impl WorkerHost<'_> {
                         begun: None,
                         matched: true,
                         creation_parent: parent,
-                        first_related_key,
+                        first_related_key: first_related.map(|(key, _)| key),
                         related_self: None,
                         deleted: false,
                         saved: BTreeMap::new(),
@@ -1498,7 +1502,11 @@ impl WorkerHost<'_> {
     /// relationship. The child must belong to a different table in this
     /// file. The copied global value wins even over the measured replacing
     /// UUID default: the provider keeps explicit cells on a scripted create.
-    fn first_related_match_fields(&self, occurrence: u64, table: u64) -> Option<(u64, u64)> {
+    fn first_related_match_fields(
+        &self,
+        occurrence: u64,
+        table: u64,
+    ) -> Option<(u64, u64, RecordNumber)> {
         let schema = self.schema()?;
         let current = self.s.file.occurrence?;
         let own = schema.table_of(current)?;
@@ -1556,7 +1564,12 @@ impl WorkerHost<'_> {
             && fields
                 .values()
                 .any(|field| related_number_self(field).is_some());
-        (has_position || has_self_default).then_some((from.id, to.id))
+        let position = if replacing_uuid {
+            RecordNumber::LocalFirstRelatedUuid
+        } else {
+            RecordNumber::LocalFirstRelated
+        };
+        (has_position || has_self_default).then_some((from.id, to.id, position))
     }
 
     fn has_stored_related_parent(&self) -> bool {
@@ -1576,8 +1589,8 @@ impl WorkerHost<'_> {
         table: u64,
         cells: &Cells,
         target: u64,
-    ) -> Option<u64> {
-        let (_, key) = self.first_related_match_fields(occurrence, table)?;
+    ) -> Option<(u64, RecordNumber)> {
+        let (_, key, position) = self.first_related_match_fields(occurrence, table)?;
         if target == key
             || !self.has_stored_related_parent()
             || !self.s.file.window.state.uncommitted.related.is_empty()
@@ -1588,7 +1601,7 @@ impl WorkerHost<'_> {
         if value.is_empty() || value.contains(['\r', '\n']) {
             return None;
         }
-        self.p().local_path().is_some().then_some(key)
+        self.p().local_path().is_some().then_some((key, position))
     }
 
     fn preview_first_related(
@@ -1596,6 +1609,7 @@ impl WorkerHost<'_> {
         table: u64,
         cells: &Cells,
         prepared: Option<om_data::PreparedId>,
+        position: RecordNumber,
     ) -> HostResult<PreparedDraft> {
         let layout = self
             .s
@@ -1609,7 +1623,7 @@ impl WorkerHost<'_> {
             table: Some(table),
             cells: cells.clone(),
             privilege_set: self.current_set_name(),
-            record_number: Some(RecordNumber::LocalFirstRelated),
+            record_number: Some(position),
             prepared,
             ..Default::default()
         };
@@ -1650,7 +1664,7 @@ impl WorkerHost<'_> {
                     && draft.record.is_none()
                     && !draft.deleted
             })?;
-        let (source, key) = self.first_related_match_fields(related, draft.table)?;
+        let (source, key, _) = self.first_related_match_fields(related, draft.table)?;
         if draft.first_related_key != Some(key) {
             return None;
         }
@@ -1687,7 +1701,11 @@ impl WorkerHost<'_> {
                     .file(|f| f.related_records(occurrence, record, draft.occurrence))
                     .is_some_and(|rows| rows.is_ok_and(|rows| rows.is_empty()))
             {
-                numbers.insert(0, RecordNumber::LocalFirstRelated);
+                if let Some((_, _, position)) =
+                    self.first_related_match_fields(draft.occurrence, draft.table)
+                {
+                    numbers.insert(0, position);
+                }
             }
         }
         numbers

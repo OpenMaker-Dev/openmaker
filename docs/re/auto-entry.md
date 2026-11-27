@@ -917,6 +917,15 @@ copied match value. Ordinary New Record in the Child table generated
 a UUID and stored its own position, 3.
 [FileMaker Pro 26.1.1 comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7204904879)
 
+FileMaker Pro also combined the indexed Position and replacing UUID
+key with a value-indexed Number using the nonreplacing
+`If ( IsEmpty ( Self ) ; 0 ; Self )` (`0x80000008`). The first related
+write showed Position 1 and Number 0, and setting the Number to 25
+showed and stored 25. An intermediate Commit did not change either
+result. Exact Finds after reopen returned the new row from both indexes.
+The closed indexes already contained the new entries before the Finds.
+[Combined comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7205174459)
+
 ## Serial numbers
 
 Option `0x2` generates a serial number when the record is created, `0x200`
