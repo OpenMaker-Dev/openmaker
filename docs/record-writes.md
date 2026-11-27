@@ -789,6 +789,11 @@ stored-calculation options keep the table read-only.
 [Number comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204266349),
 [Text comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204722695)
 
+In a local desktop file, a single-repetition Text field with Data
+enabled, no validation, and absent constant data leaves its new cell
+empty. The measured option words are `0x00000004` and `0xa0000004`.
+Explicit assignments and index maintenance use the ordinary write path.
+
 An ordinary local Number auto-entry calculation can use `Self` as its
 only field input. It reads the proposed value at ordinary New Record in
 an unsorted or sorted local desktop window with a known insertion

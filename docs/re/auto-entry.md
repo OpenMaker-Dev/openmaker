@@ -144,6 +144,17 @@ The validation word masks `0x4`, `0x8`, `0x10` correspond to XML children
 remain raw. In particular, timestamp validation `0x2000` is not interpreted.
 These flags describe requirements; recognizing them does not perform them.
 
+When the Data checkbox is on and its Text box is blank, FileMaker Pro
+26.1.1 saves the constant bit with no member `0d`. In a local,
+single-repetition field with validation off, New Record leaves its cell
+absent and keeps later explicit text. This holds with indexing None
+(`0x00000004`) and All (`0xa0000004`). With All, a closed copy made before
+any Find held the blank row under the value index's empty key. An
+explicit value appeared in both indexes, and an exact Find for it
+returned that row without changing the file.
+[Unindexed comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1132#issuecomment-7204266062),
+[Indexed comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1132#issuecomment-7209355458)
+
 ## Index bits
 
 schema-path.md 5.5 names the option word's index bits: `0x80000000` value

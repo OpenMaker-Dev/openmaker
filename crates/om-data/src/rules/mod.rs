@@ -2384,13 +2384,25 @@ impl RecordPlan {
                 None
             };
             let constant = if options.auto_entry_constant() {
-                Some(
-                    field_node
-                        .and_then(|n| n.get(FIELD_CONSTANT))
-                        .and_then(|n| n.text())
-                        .and_then(Result::ok)
-                        .ok_or_else(|| error("auto-entered constant data is missing."))?,
-                )
+                match field_node.and_then(|n| n.get(FIELD_CONSTANT)) {
+                    Some(node) => Some(
+                        node.text()
+                            .and_then(Result::ok)
+                            .ok_or_else(|| error("auto-entered constant data is unreadable."))?,
+                    ),
+                    // FileMaker leaves out member 0d when Data is checked
+                    // with blank Text. There is no value to add to the row.
+                    None if local
+                        && kind == FieldKind::Normal
+                        && field.data_type == DataType::Text
+                        && options.max_repetitions == 1
+                        && options.validation_options == 0
+                        && matches!(options.options, 0x0000_0004 | 0xa000_0004) =>
+                    {
+                        None
+                    }
+                    None => return Err(error("auto-entered constant data is missing.")),
+                }
             } else {
                 None
             };
@@ -10718,6 +10730,23 @@ mod tests {
             )
             .unwrap();
         assert!(!updated.values.contains_key(&23));
+    }
+
+    #[test]
+    fn checked_blank_data_leaves_the_text_cell_absent_until_assigned() {
+        for options in [0x0000_0004, 0xa000_0004] {
+            let mut table = table();
+            table
+                .fields
+                .push(field(23, FieldKind::Normal, DataType::Text, 0, options, 0));
+            let plan = plan_of(&table, &base_formulas(), &[]).unwrap();
+            assert!(plan.editable_fields().contains("Field23"));
+            let unassigned = create(&plan, &[(1, "First")]).unwrap();
+            assert!(!unassigned.values.contains_key(&23));
+            let assigned = create(&plan, &[(23, "Explicit")]).unwrap();
+            assert_eq!(decoded(&assigned, 23).as_deref(), Some("Explicit"));
+            assert!(plan_with(&table, &base_formulas(), &[], Vec::new(), false).is_err());
+        }
     }
 
     #[test]
