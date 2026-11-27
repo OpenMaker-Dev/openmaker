@@ -50,7 +50,10 @@ use om_data::formula::Expr;
 use om_data::host::session::selector;
 use om_data::host::{CalcNeed, CalcSchema, FieldClass, Hop};
 use om_data::meta::{relation_option, JoinOp};
-use om_data::rules::{related_number_self, stores_record_number, RecordNumber, RelatedNumberSelf};
+use om_data::rules::{
+    related_number_self, stores_record_number, RecordNumber, RelatedNumberSelf,
+    COPIED_UUID_KEY_VALIDATION,
+};
 use om_data::runtime::{ErrorCode, FieldRef, HostError, HostResult, RecordMove};
 use om_data::specs::SortSpec;
 use om_layout::ObjectKind;
@@ -1542,7 +1545,7 @@ impl WorkerHost<'_> {
         }
         let replacing_uuid = to.options == 0xa000_0088
             && from.validation_options == 0
-            && to.validation_options == 0
+            && matches!(to.validation_options, 0 | COPIED_UUID_KEY_VALIDATION)
             && to
                 .auto_enter
                 .as_ref()
@@ -1564,12 +1567,22 @@ impl WorkerHost<'_> {
             && fields
                 .values()
                 .any(|field| related_number_self(field).is_some());
+        // The validated UUID key was measured with both indexed fields.
+        // The normal write path still checks the copied key's validation.
+        let supported = if replacing_uuid && to.validation_options != 0 {
+            has_position
+                && fields
+                    .values()
+                    .any(|field| related_number_self(field) == Some(RelatedNumberSelf::KeepIndexed))
+        } else {
+            has_position || has_self_default
+        };
         let position = if replacing_uuid {
-            RecordNumber::LocalFirstRelatedUuid
+            RecordNumber::LocalFirstRelatedUuid { key: to.id }
         } else {
             RecordNumber::LocalFirstRelated
         };
-        (has_position || has_self_default).then_some((from.id, to.id, position))
+        supported.then_some((from.id, to.id, position))
     }
 
     fn has_stored_related_parent(&self) -> bool {

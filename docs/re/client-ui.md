@@ -462,7 +462,8 @@ move is stored.
 locked rectangle, a group of two rectangles and a tab control with a
 rectangle on each panel ([#884](https://github.com/OpenMaker-Dev/openmaker/issues/884)).
 With nothing selected, the two grouped rectangles drew without an enclosing
-group rule or caption. Selecting the group showed its enclosing frame.
+group rule or caption. Selecting the group showed its enclosing frame
+([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
 The ordinary group in this fixture stored a script step descriptor with ID
 zero and had no button action.
 With the Selection tool active, Edit > Select All selected the standalone
@@ -517,8 +518,14 @@ boxes. Each disappeared with its respective option off.
 [O] In a 400 pt-wide duplicate, a 120 × 35 pt solid blue, borderless
 rectangle at (335, 45) kept its fill on both sides of the width divider.
 The 65 pt inside the layout was blue and the 55 pt on the pasteboard was
-dimmed. The captures are retained privately under the synthetic Client
-Card comparison ([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
+dimmed. In the JPEG-derived synthetic Client Card capture, the most
+frequent RGB values well inside those segments were (81, 127, 185) on the
+layout and (142, 166, 195) on the pasteboard. The clear pasteboard sampled
+at the same height was (217, 217, 217). The red and green channels are
+consistent with about 55% of the object color remaining under a simple
+blend [I]. The capture does not establish how FileMaker composites the
+artwork. The comparison is retained privately
+([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
 
 **Unknowns:** the exact dimming formula, other kinds of artwork, and
 whether the same effect applies below the last part.
@@ -555,6 +562,15 @@ documents a closed and an open popover state in Layout mode. Double-clicking
 the popover button or using Format > Display Popover opens the closed
 popover. The [selection help](https://help.claris.com/en/pro-help/content/editing-objects-parts-background.html)
 describes opening the popover before selecting it or its contents.
+
+[O] In FileMaker Pro 26.1.1 on a synthetic Apex Blue layout, the closed
+popover and its child were absent from the canvas. The child stayed in
+Objects. Select All selected only the button and the outside text. Clicking
+the child's row opened the surface over the outside text and selected just
+the child, with eight handles. In a separate run, double-clicking the
+button opened the popover and Popover Button Setup. After dismissing Setup,
+one blank Body click cleared selection and left the popover open
+([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019#issuecomment-7209664545)).
 
 ## Layout mode: Align, Distribute and Resize To
 

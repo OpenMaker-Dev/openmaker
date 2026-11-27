@@ -105,6 +105,15 @@ impl PanelContents {
         popovers
     }
 
+    /// Whether this surface or object belongs to the raised popover layer.
+    pub fn in_previewed_popover(&self, object: u64, previewed: &BTreeSet<u64>) -> bool {
+        let mut raised = false;
+        self.walk(object, |key| {
+            raised |= previewed.contains(&key);
+            true
+        }) && raised
+    }
+
     /// Bring the object's enclosing panels to the front in the window's
     /// view. The store stays untouched.
     pub fn reveal(&self, object: u64, front: &mut BTreeMap<u64, u64>) {
@@ -182,6 +191,9 @@ mod tests {
         let closed = BTreeSet::new();
         let previewed = contents.containing_popovers([6]);
         assert_eq!(previewed, [4].into());
+        assert!(contents.in_previewed_popover(4, &previewed));
+        assert!(contents.in_previewed_popover(6, &previewed));
+        assert!(!contents.in_previewed_popover(7, &previewed));
         assert!(!contents.visible(6, &front, &previewed));
         contents.reveal(6, &mut front);
         assert!(!contents.visible(4, &front, &closed));

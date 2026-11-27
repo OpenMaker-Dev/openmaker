@@ -1441,7 +1441,7 @@ impl NativeProvider {
             }
             self.leave_single_root_recovery()?;
             let environment = self.rule_environment(table.id, plan, context.clone())?;
-            self.new_record_defaults(plan, entry, &environment, creation)?
+            self.new_record_defaults(plan, entry, &environment, creation, &cells)?
         } else {
             self.begin_single_root_proof(table.id, cells.keys().copied().collect(), layout);
             records::NewGlobals::default()
