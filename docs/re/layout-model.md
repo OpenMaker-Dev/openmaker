@@ -2436,9 +2436,12 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
       keymap's first layout is used: the connection has no window, so the
       compositor never tells it which layout is active, and switching
       layouts (US to Russian, say) is not followed.
-    - **Edit keys.** egui's Copy and Cut reach the page as Ctrl+C and
-      Ctrl+X. A Paste puts the app's clipboard's text on the display's own
-      clipboard, and then sends Ctrl+V. egui sends Paste only when the
+    - **Edit keys.** egui's Copy and Cut reach the page as Ctrl and the
+      keys that type c and x in the page's keymap (their US places unless
+      its first layout has them elsewhere, as Dvorak does). A Paste puts
+      the app's clipboard's text on the display's own clipboard, offered
+      only as the current selection, and then sends Ctrl and the keymap's
+      v. egui sends Paste only when the
       app's clipboard holds text, so with it empty Ctrl+V does not reach
       the page at all.
     - **Input methods.** The input method's text goes to the page through

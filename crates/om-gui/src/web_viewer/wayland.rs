@@ -665,9 +665,16 @@ impl Backend for WaylandBackend {
     }
 
     fn input(&mut self, view: u64, input: PageInput) {
-        if let PageInput::Paste(text) = input {
-            self.display.send(Request::Paste { view, text });
-            return;
+        match input {
+            PageInput::Paste(text) => {
+                self.display.send(Request::Paste { view, text });
+                return;
+            }
+            PageInput::Edit { cut } => {
+                self.display.send(Request::Edit { view, cut });
+                return;
+            }
+            _ => {}
         }
         if matches!(input, PageInput::Button { pressed: true, .. }) {
             self.display.send(Request::Focus(Some(view)));

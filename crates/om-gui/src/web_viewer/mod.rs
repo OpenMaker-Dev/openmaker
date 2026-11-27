@@ -184,6 +184,11 @@ pub(crate) enum PageInput {
     Unfocused,
     /// Paste this text (the app's clipboard's) in the page.
     Paste(String),
+    /// Copy (or cut, `true`) the page's selection: Ctrl and the key that
+    /// types c (x) in the page's keymap.
+    Edit {
+        cut: bool,
+    },
 }
 
 /// A view's newest picture ([`composited`] backends): `size` pixels of
@@ -676,6 +681,8 @@ pub(crate) struct WebViewers {
     /// The pop-up a press went to: it has the pointer's input until the
     /// release, wherever the pointer goes.
     popup_held: Option<u32>,
+    /// The buttons it holds (0 primary, 1 secondary, 2 middle).
+    popup_buttons: Vec<u8>,
 }
 
 impl Default for WebViewers {
@@ -761,6 +768,7 @@ impl WebViewers {
             popups: std::collections::HashMap::new(),
             popup_pressed: false,
             popup_held: None,
+            popup_buttons: Vec::new(),
             hovered: None,
         }
     }
@@ -1111,6 +1119,7 @@ impl WebViewers {
             .is_some_and(|held| !self.popups.contains_key(&held))
         {
             self.popup_held = None;
+            self.popup_buttons.clear();
         }
         // What a page copied is the app's clipboard's.
         if let Some(text) = copied {
@@ -1254,7 +1263,6 @@ impl WebViewers {
         };
         let any = !events.is_empty();
         for event in events {
-            let command = |key| keys::code(key).map(|code| (code, vec![keys::CONTROL]));
             let input = match event {
                 egui::Event::Key {
                     key,
@@ -1274,26 +1282,8 @@ impl WebViewers {
                 egui::Event::WindowFocused(false) => Some(PageInput::Unfocused),
                 // The app's clipboard's text, pasted through the page's.
                 egui::Event::Paste(text) => Some(PageInput::Paste(text)),
-                egui::Event::Copy | egui::Event::Cut => {
-                    let key = match event {
-                        egui::Event::Copy => egui::Key::C,
-                        _ => egui::Key::X,
-                    };
-                    if let Some((code, held)) = command(key) {
-                        for pressed in [true, false] {
-                            let held = held.clone();
-                            backend.input(
-                                view,
-                                PageInput::Key {
-                                    code,
-                                    pressed,
-                                    held,
-                                },
-                            );
-                        }
-                    }
-                    None
-                }
+                egui::Event::Copy => Some(PageInput::Edit { cut: false }),
+                egui::Event::Cut => Some(PageInput::Edit { cut: true }),
                 _ => None,
             };
             if let Some(input) = input {
@@ -1352,6 +1342,7 @@ impl WebViewers {
         let events = ctx.input(|i| i.events.clone());
         let mut inputs = Vec::new();
         let mut held = self.popup_held;
+        let mut buttons = std::mem::take(&mut self.popup_buttons);
         for (id, popup) in &self.popups {
             let Some(view) = self
                 .views
@@ -1405,7 +1396,13 @@ impl WebViewers {
                             _ => continue,
                         };
                         let (x, y) = local(*pos);
-                        held = pressed.then_some(*id);
+                        // Held until the last of its buttons goes up.
+                        if *pressed {
+                            buttons.push(button);
+                        } else {
+                            buttons.retain(|b| *b != button);
+                        }
+                        held = (!buttons.is_empty()).then_some(*id);
                         PageInput::Button {
                             x,
                             y,
@@ -1419,6 +1416,7 @@ impl WebViewers {
             }
         }
         self.popup_held = held;
+        self.popup_buttons = if held.is_some() { buttons } else { Vec::new() };
         if inputs
             .iter()
             .any(|(_, input)| matches!(input, PageInput::Button { pressed: true, .. }))

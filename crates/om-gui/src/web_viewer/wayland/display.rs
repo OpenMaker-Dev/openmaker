@@ -98,6 +98,63 @@ pub(crate) enum Request {
     PopupPointer { popup: u32, input: PageInput },
     /// Paste `text` in `view`'s page: the clipboard holds it, then Ctrl+V.
     Paste { view: u64, text: String },
+    /// Copy (or cut) the selection in `view`'s page.
+    Edit { view: u64, cut: bool },
+}
+
+/// The Linux key codes of the keys that type c, x and v in the page's
+/// keymap: where they are on a US keyboard, unless its first layout has
+/// them elsewhere (Dvorak, AZERTY).
+#[derive(Clone, Copy)]
+struct EditKeys {
+    c: u32,
+    x: u32,
+    v: u32,
+}
+
+impl Default for EditKeys {
+    fn default() -> Self {
+        EditKeys {
+            c: 46,
+            x: 45,
+            v: 47,
+        }
+    }
+}
+
+impl EditKeys {
+    /// The keys in `keymap` (the text of an xkb keymap).
+    fn of(keymap: &str) -> Self {
+        use smithay::input::keyboard::{keysyms, xkb};
+        let mut keys = EditKeys::default();
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let Some(keymap) = xkb::Keymap::new_from_string(
+            &context,
+            keymap.to_owned(),
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        ) else {
+            return keys;
+        };
+        let wanted = [
+            (keysyms::KEY_c, &mut keys.c),
+            (keysyms::KEY_x, &mut keys.x),
+            (keysyms::KEY_v, &mut keys.v),
+        ];
+        for (symbol, code) in wanted {
+            let found = (keymap.min_keycode().raw()..=keymap.max_keycode().raw()).find(|raw| {
+                keymap
+                    .key_get_syms_by_level((*raw).into(), 0, 0)
+                    .iter()
+                    .any(|sym| sym.raw() == symbol)
+            });
+            if let Some(raw) = found {
+                // xkb's codes are the Linux ones plus 8.
+                *code = raw.saturating_sub(8);
+            }
+        }
+        keys
+    }
 }
 
 /// Where each view's text caret is, in its points (x, y, width, height), as
@@ -260,6 +317,13 @@ struct State {
     pastes: Vec<Transfer>,
     copy_asked: Option<&'static str>,
     paste_asked: Vec<(OwnedFd, Arc<str>)>,
+    /// The text the display's own selection holds now, by the number its
+    /// offers carry: an older offer a page kept gets nothing, so no older
+    /// text is held for it.
+    selection: Option<(u64, Arc<str>)>,
+    /// The keys that type c, x and v in the page's keymap (Linux key
+    /// codes), for Copy, Cut and Paste.
+    edit_keys: EditKeys,
     dh: DisplayHandle,
     /// The view the pointer is over, and the one with the keyboard.
     pointer_view: Option<u64>,
@@ -358,6 +422,8 @@ fn run(
             pastes: Vec::new(),
             copy_asked: None,
             paste_asked: Vec::new(),
+            selection: None,
+            edit_keys: EditKeys::default(),
             dh: dh.clone(),
             keyboard_view: None,
             held: Vec::new(),
@@ -383,7 +449,8 @@ fn run(
             .try_clone_to_owned()
             .map_err(|e| e.to_string())?;
         let clients = Rc::clone(&display);
-        let transfers = handle.clone();
+        // Weak: the loop's sources must not keep the loop alive.
+        let transfers = handle.downgrade();
         handle
             .insert_source(
                 Generic::new(
@@ -393,7 +460,9 @@ fn run(
                 ),
                 move |_, _, state| {
                     let _ = clients.borrow_mut().dispatch_clients(state);
-                    state.transfer(&transfers);
+                    if let Some(handle) = transfers.upgrade() {
+                        state.transfer(&handle);
+                    }
                     Ok(PostAction::Continue)
                 },
             )
@@ -482,6 +551,7 @@ impl State {
                 PageInput::Commit(text) => self.compose(view, None, Some(text)),
                 PageInput::Unfocused => self.release_keys(),
                 PageInput::Paste(text) => self.request(Request::Paste { view, text }),
+                PageInput::Edit { cut } => self.request(Request::Edit { view, cut }),
                 input => self.pointer(view, None, input),
             },
             Request::PopupPointer { popup, input } => {
@@ -498,14 +568,30 @@ impl State {
             }
             Request::Scale(scale) => set_scale(&self.output, scale),
             Request::Paste { view, text } => {
+                // Only in the page with the keyboard (one that went since
+                // gets nothing), and no more than a copy may hold.
+                if self.keyboard_view != Some(view) || text.len() > MAX_COPY {
+                    return;
+                }
+                let number = self
+                    .selection
+                    .as_ref()
+                    .map_or(0, |(n, _)| n.wrapping_add(1));
+                self.selection = Some((number, Arc::from(text)));
                 let types = TEXT_TYPES.map(String::from).to_vec();
-                set_data_device_selection(&self.dh, &self.seat, types, Arc::from(text));
-                let (v, control) = (47, crate::web_viewer::keys::CONTROL);
-                self.key(view, v, true, &[control]);
-                self.key(view, v, false, &[control]);
-                self.key(view, control, false, &[]);
+                set_data_device_selection(&self.dh, &self.seat, types, number);
+                self.edit_key(view, self.edit_keys.v);
+            }
+            Request::Edit { view, cut } => {
+                let key = if cut {
+                    self.edit_keys.x
+                } else {
+                    self.edit_keys.c
+                };
+                self.edit_key(view, key);
             }
             Request::Keymap(keymap) => {
+                self.edit_keys = EditKeys::of(&keymap);
                 if let Some(keyboard) = self.seat.get_keyboard() {
                     if let Err(error) = keyboard.set_keymap_from_string(self, keymap) {
                         eprintln!("openmaker: web viewers: the session's keymap: {error:?}");
@@ -556,7 +642,20 @@ impl State {
                 input.resource.enter(surface);
             }
         }
+        if surface.is_none() {
+            // smithay tells the handler of a new focus only: no page may
+            // set the clipboard, or is offered it, without the keyboard.
+            set_data_device_focus(&self.dh, &self.seat, None);
+        }
         self.keyboard_view = surface.and(view);
+    }
+
+    /// Ctrl and `key` in `view`, as Copy, Cut or Paste.
+    fn edit_key(&mut self, view: u64, key: u32) {
+        let control = crate::web_viewer::keys::CONTROL;
+        self.key(view, key, true, &[control]);
+        self.key(view, key, false, &[control]);
+        self.key(view, control, false, &[]);
     }
 
     /// Send a key to `view`, which gets the keyboard if it had not, the
@@ -664,6 +763,10 @@ impl State {
     /// Close the pages' pop-ups. The app stops showing them, and their
     /// input stops, now, whenever the host destroys them.
     fn dismiss_popups(&mut self) {
+        // Buttons held in one are let go of with it.
+        if self.pressed_popup.is_some() {
+            self.release_pointer();
+        }
         for popup in self.popups.drain(..) {
             popup.send_popup_done();
         }
@@ -794,7 +897,8 @@ impl State {
             | PageInput::Preedit(_)
             | PageInput::Commit(_)
             | PageInput::Unfocused
-            | PageInput::Paste(_) => return,
+            | PageInput::Paste(_)
+            | PageInput::Edit { .. } => return,
             PageInput::Wheel { x, y, dx, dy } => {
                 motion(self, x, y);
                 let mut frame = AxisFrame::new(time).source(AxisSource::Continuous);
@@ -958,7 +1062,7 @@ impl SeatHandler for State {
 /// what the app pastes in a page is the display's selection, the text it
 /// was given.
 impl SelectionHandler for State {
-    type SelectionUserData = Arc<str>;
+    type SelectionUserData = u64;
 
     fn new_selection(
         &mut self,
@@ -983,12 +1087,21 @@ impl SelectionHandler for State {
         mime_type: String,
         fd: OwnedFd,
         _: Seat<Self>,
-        text: &Arc<str>,
+        number: &u64,
     ) {
         if ty != SelectionTarget::Clipboard || !TEXT_TYPES.contains(&mime_type.as_str()) {
             return;
         }
-        self.paste_asked.push((fd, Arc::clone(text)));
+        // Only the current selection's offer, and within the pastes a page
+        // may be taking: otherwise `fd` closes now, and that paste is empty.
+        let current = match &self.selection {
+            Some((current, text)) if current == number => Arc::clone(text),
+            _ => return,
+        };
+        let taking = self.pastes.iter().filter(|paste| !paste.over()).count();
+        if taking + self.paste_asked.len() < MAX_PASTES {
+            self.paste_asked.push((fd, current));
+        }
     }
 }
 
@@ -1022,6 +1135,10 @@ impl XdgShellHandler for State {
             .iter()
             .find(|(_, s)| *s == surface.wl_surface())
             .map(|(view, _)| *view);
+        // A view with the keyboard gives it up, and the clipboard, first.
+        if gone.is_some() && gone == self.keyboard_view {
+            self.focus(None);
+        }
         self.toplevels.retain(|t| t != &surface);
         self.views.retain(|_, s| s != surface.wl_surface());
         // The buttons pressed on a view that goes are let go of, so that

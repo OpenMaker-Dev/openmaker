@@ -362,7 +362,7 @@ fn steps_on_a_backend_that_ended_fail_as_unavailable() {
 
 /// A page a press gave the keyboard takes the window's keys, as event
 /// codes with the modifiers held, and its input method's text; egui's Copy
-/// is Ctrl+C again; nothing of it is left for the window's own widgets.
+/// is a copy in the page; nothing of it is left for the window's own widgets.
 #[test]
 fn a_painted_page_with_the_keyboard_takes_the_window_keys() {
     let (mut viewers, recorded) = viewers();
@@ -417,14 +417,8 @@ fn a_painted_page_with_the_keyboard_takes_the_window_keys() {
                 held(&[42])
             ),
             "input 1 Commit(\"日本\")".to_owned(),
-            format!(
-                "input 1 Key {{ code: 46, pressed: true, held: {} }}",
-                held(&[29])
-            ),
-            format!(
-                "input 1 Key {{ code: 46, pressed: false, held: {} }}",
-                held(&[29])
-            ),
+            // Copy: Ctrl and the page keymap's c, which the display finds.
+            "input 1 Edit { cut: false }".to_owned(),
             "input 1 Paste(\"pasted\")".to_owned(),
             format!(
                 "input 1 Key {{ code: 42, pressed: false, held: {} }}",

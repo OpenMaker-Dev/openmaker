@@ -50,10 +50,14 @@ fn deadline<D: 'static>(
     token: RegistrationToken,
     over: &Rc<Cell<bool>>,
 ) {
-    let (remove, ended) = (handle.clone(), Rc::clone(over));
+    // A weak handle: the loop's sources must not keep the loop, and with
+    // it their descriptors, alive once it is dropped.
+    let (remove, ended) = (handle.downgrade(), Rc::clone(over));
     let timer = handle.insert_source(Timer::from_duration(DEADLINE), move |_, _, _| {
         if !ended.replace(true) {
-            remove.remove(token);
+            if let Some(handle) = remove.upgrade() {
+                handle.remove(token);
+            }
         }
         TimeoutAction::Drop
     });
@@ -153,4 +157,26 @@ pub(super) fn write<D: 'static>(
         .ok()?;
     deadline(handle, token, &over);
     Some(Transfer { token, over })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{ErrorKind, Write as _};
+
+    use smithay::reexports::calloop::EventLoop;
+
+    /// A page that never finishes its copy holds its pipe only while the
+    /// display's loop lives: dropping the loop closes the descriptor.
+    #[test]
+    fn a_stalled_copy_closes_with_its_loop() {
+        let event_loop: EventLoop<'static, ()> = EventLoop::try_new().expect("a loop");
+        let (reader, mut writer) = std::io::pipe().expect("a pipe");
+        let transfer = super::read(&event_loop.handle(), reader, 16, |_: &mut (), _| {});
+        assert!(transfer.is_some());
+        writer.write_all(b"partial").expect("the reader is open");
+        drop(transfer);
+        drop(event_loop);
+        let closed = writer.write_all(b"more").expect_err("the reader closed");
+        assert_eq!(closed.kind(), ErrorKind::BrokenPipe);
+    }
 }
