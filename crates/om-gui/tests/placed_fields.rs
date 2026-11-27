@@ -1009,14 +1009,18 @@ fn a_web_viewer_drawn_in_layout_mode_is_set_up_and_saved() {
     app.get_by_role_and_label(Role::MultilineTextInput, "Web Address")
         .type_text("\"https://example.com/?q=\" & Name");
     app.run_steps(2);
-    // An option combination Pro was not seen to store: OK waits.
-    app.get_by_role_and_label(Role::CheckBox, "Automatically encode URL")
-        .click();
-    app.run_steps(2);
+    // Encoding off alone is a combination Pro was seen to store (W7); with
+    // Find mode on too it is not, and OK waits.
+    let checkbox = |app: &mut common::App, title: &str| {
+        app.get_by_role_and_label(Role::CheckBox, title).click();
+        app.run_steps(2);
+    };
+    checkbox(&mut app, "Automatically encode URL");
+    assert!(!app.get_by_label("OK").accesskit_node().is_disabled());
+    checkbox(&mut app, "Display content in Find mode");
     assert!(app.get_by_label("OK").accesskit_node().is_disabled());
-    app.get_by_role_and_label(Role::CheckBox, "Automatically encode URL")
-        .click();
-    app.run_steps(2);
+    checkbox(&mut app, "Display content in Find mode");
+    checkbox(&mut app, "Automatically encode URL");
     shot(
         &mut app,
         "web-viewer-setup",

@@ -2442,7 +2442,9 @@ operation `om-author`'s `place_web_viewer` uses ([authoring](authoring.md),
   field names read as the layout's occurrence's and stored qualified. A
   calculation that does not compile shows FileMaker's message for its
   error under the options. OK is disabled for an option combination
-  FileMaker Pro was not seen to store, with a note saying so. Cancel drops
+  FileMaker Pro was not seen to store, with a note saying so; the ones it
+  stored are listed in [authoring](authoring.md), "Web viewers on
+  layouts". Cancel drops
   a viewer not set up yet; a double click on the new viewer opens the
   dialog again.
 - **Save Layout** places it as it places a new portal, with the layout's
