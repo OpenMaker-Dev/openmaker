@@ -563,6 +563,15 @@ the popover button or using Format > Display Popover opens the closed
 popover. The [selection help](https://help.claris.com/en/pro-help/content/editing-objects-parts-background.html)
 describes opening the popover before selecting it or its contents.
 
+[O] In FileMaker Pro 26.1.1 on a synthetic Apex Blue layout, the closed
+popover and its child were absent from the canvas. The child stayed in
+Objects. Select All selected only the button and the outside text. Clicking
+the child's row opened the surface over the outside text and selected just
+the child, with eight handles. In a separate run, double-clicking the
+button opened the popover and Popover Button Setup. After dismissing Setup,
+one blank Body click cleared selection and left the popover open
+([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019#issuecomment-7209664545)).
+
 ## Layout mode: Align, Distribute and Resize To
 
 From Claris's help (doc), fetched 2026-11-20:
