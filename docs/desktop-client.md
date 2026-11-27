@@ -2208,10 +2208,13 @@ FileMaker Pro 26.1.1 can toggle field and text boundaries separately, and
 its field boundaries include dotted baselines. OpenMaker uses fixed faint
 outlines ([client-ui.md](re/client-ui.md#artwork-and-boundaries)).
 Closed popovers and their contents are hidden from the canvas. Selecting
-a popover or one of its objects from Objects previews it at its stored
-position while that selection remains. This is OpenMaker's inspection
-behavior. Opening from the button or the Format menu and positioning the
-open popover as FileMaker does are unavailable
+a popover or one of its objects from Objects previews the styled surface
+and contents above the stored layout objects, at their saved positions.
+The preview takes input above those objects and ends with its selection.
+Field drafts keep their editing layer. FileMaker Pro 26.1.1 opens a popover
+and selects its child when the child is clicked in Objects. Direct opening
+and dismissal controls, the title and pointer, and FileMaker's
+open-position behavior remain unavailable
 ([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
 
 The Objects pane is 220 pt wide, lists the layout's objects front to back,
