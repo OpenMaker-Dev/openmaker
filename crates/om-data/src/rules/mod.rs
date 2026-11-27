@@ -2700,8 +2700,14 @@ impl RecordPlan {
             let range = (options.validation_options & VALIDATE_RANGE != 0)
                 .then(|| (text_at(FIELD_RANGE_FROM), text_at(FIELD_RANGE_TO)));
             let list = if options.validation_options & VALIDATE_VALUE_LIST != 0 {
+                let defer_dangling = local
+                    && kind == FieldKind::Normal
+                    && field.data_type == DataType::Text
+                    && options.options == 0
+                    && options.validation_options == (VALIDATE_VALUE_LIST | 0x4)
+                    && options.max_repetitions == 1;
                 Some(
-                    list_rule(tree, field_node, schema.value_lists())
+                    list_rule(tree, field_node, schema.value_lists(), defer_dangling)
                         .map_err(|reason| error(&reason))?,
                 )
             } else {
@@ -4534,7 +4540,7 @@ impl RecordPlan {
             return true;
         }
         let node = tree.at(&[table, 3, 5, field]);
-        match list_rule(tree, node, file.value_lists()) {
+        match list_rule(tree, node, file.value_lists(), false) {
             Ok(ListRule::Custom(_)) => true,
             Ok(ListRule::Field { occurrence, .. }) => {
                 file.data_source(occurrence).is_none()
@@ -6853,6 +6859,7 @@ fn list_rule(
     tree: &KeyTree<'_>,
     field: Option<&Node<'_>>,
     lists: &[ValueList],
+    defer_dangling: bool,
 ) -> Result<ListRule, String> {
     let reference = field
         .and_then(|n| n.get(FIELD_VALUE_LIST))
@@ -6864,9 +6871,23 @@ fn list_rule(
         .iter()
         .find(|l| l.id == id)
         .cloned()
-        .or_else(|| tree.at(&path).and_then(|n| ValueList::from_node(n)))
-        .ok_or("its value list is missing.")?;
-    Ok(rule_of(list).unwrap_or_else(ListRule::Unchecked))
+        .or_else(|| tree.at(&path).and_then(|n| ValueList::from_node(n)));
+    if let Some(list) = list {
+        return Ok(rule_of(list).unwrap_or_else(ListRule::Unchecked));
+    }
+    // FileMaker's list deletion left this single-byte ID reference in
+    // place. The scripts that need no membership check kept writing.
+    // Keep a refusal for entry that would need the list.
+    if defer_dangling
+        && tree.at(&path).is_none()
+        && matches!(
+            reference.as_ref(),
+            [2, 1, 1..=255, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0xff]
+        )
+    {
+        return Ok(ListRule::Unchecked("its value list is missing".into()));
+    }
+    Err("its value list is missing.".into())
 }
 
 /// Why record rules cannot check a field's values against value list
@@ -10670,6 +10691,75 @@ mod tests {
     /// bookkeeping (as FMUpgradeTool writes it, script oracle s18).
     fn list_reference(id: u8) -> Vec<u8> {
         vec![2, 1, id, 0x90, 0, 0, 2, 1, 0, 0, 0, 0, 0xff]
+    }
+
+    #[test]
+    fn a_dangling_data_entry_list_does_not_block_scripted_or_unrelated_writes() {
+        let table = Table {
+            id: 0x8002,
+            name: "Example".into(),
+            fields: vec![
+                field(6, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(7, FieldKind::Normal, DataType::Text, 0, 0, 0x104),
+            ],
+        };
+        // Closed FileMaker definition after deletion of list 1 (#1136).
+        let reference = [(
+            7,
+            FIELD_VALUE_LIST,
+            vec![2, 1, 1, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0xff],
+        )];
+        let plan = plan_with(&table, &[], &reference, Vec::new(), true).unwrap();
+        let script = Entry::script(false, false);
+        let environment = environment();
+        let name = BTreeMap::from([(6, Some("Probe".into()))]);
+        assert_eq!(
+            plan.compute(
+                WriteMode::Create,
+                &BTreeMap::new(),
+                &name,
+                &environment,
+                script
+            )
+            .unwrap(),
+            name
+        );
+        let row = BTreeMap::from([(7, "Red".into())]);
+        let changed = BTreeMap::from([(7, Some("Other".into()))]);
+        assert_eq!(
+            plan.compute(WriteMode::Update, &row, &changed, &environment, script)
+                .unwrap(),
+            changed
+        );
+        assert_eq!(
+            plan.compute(
+                WriteMode::Update,
+                &row,
+                &name,
+                &environment,
+                Entry::default()
+            )
+            .unwrap(),
+            name
+        );
+        assert_eq!(
+            plan.compute(
+                WriteMode::Update,
+                &row,
+                &changed,
+                &environment,
+                Entry::default()
+            )
+            .unwrap_err()
+            .code,
+            Some(error::UNAVAILABLE)
+        );
+        assert!(plan_with(&table, &[], &reference, Vec::new(), false).is_err());
+        assert!(plan_with(&table, &[], &[], Vec::new(), true).is_err());
+
+        let mut always = table;
+        always.fields[1].options[12..16].copy_from_slice(&0x504_u32.to_be_bytes());
+        assert!(plan_with(&always, &[], &reference, Vec::new(), true).is_err());
     }
 
     #[test]
