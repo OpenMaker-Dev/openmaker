@@ -423,39 +423,64 @@ pub fn stores_record_number(field: &FieldDef) -> bool {
             .is_some_and(|formula| matches!(formula.polish, Expr::Get(selector::RECORD_NUMBER)))
 }
 
-/// The value-indexed Number default measured on a first related create.
-pub fn keeps_indexed_related_self(field: &FieldDef) -> bool {
+/// Number defaults measured on the first related record made by Set Field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelatedNumberSelf {
+    KeepIndexed,
+    Replace,
+}
+
+/// Recognize the exact definitions from the related Number Self trials.
+pub fn related_number_self(field: &FieldDef) -> Option<RelatedNumberSelf> {
     if field.class != FieldClass::Data
         || field.value_type != ValueType::Number
         || field.global
         || field.repetitions != 1
-        || field.options != 0x8000_0008
         || field.validation_options != 0
     {
-        return false;
+        return None;
     }
     let Some(Expr::Call {
         op: Opcode::IF,
         args,
     }) = field.auto_enter.as_ref().map(|formula| &formula.polish)
     else {
-        return false;
+        return None;
     };
     let [Expr::Call { op, args: tested }, Expr::Number(om_formula::Number::Decimal(zero)), fallback] =
         args.as_slice()
     else {
-        return false;
+        return None;
     };
     let self_value =
         |expr: &Expr| matches!(expr, Expr::Call { op: Opcode::SELF, args } if args.is_empty());
-    op.name() == Some("IsEmpty")
-        && matches!(tested.as_slice(), [value] if self_value(value))
-        && zero
-            .whole
-            .iter()
-            .chain(&zero.fraction)
-            .all(|word| *word == 0)
-        && self_value(fallback)
+    let literal = |number: &om_formula::Decimal, whole| {
+        !number.negative
+            && number.whole.as_slice() == [whole]
+            && number.fraction.iter().all(|word| *word == 0)
+    };
+    if op.name() != Some("IsEmpty")
+        || !matches!(tested.as_slice(), [value] if self_value(value))
+        || !literal(zero, 0)
+    {
+        return None;
+    }
+    match (field.options, fallback) {
+        (0x8000_0008, value) if self_value(value) => Some(RelatedNumberSelf::KeepIndexed),
+        (
+            0x0000_0088,
+            Expr::Call {
+                op: Opcode::ADD,
+                args,
+            },
+        ) if matches!(args.as_slice(),
+                [value, Expr::Number(om_formula::Number::Decimal(one))]
+                if self_value(value) && literal(one, 1)) =>
+        {
+            Some(RelatedNumberSelf::Replace)
+        }
+        _ => None,
+    }
 }
 
 /// The UTC millisecond samples a new record's formulas have drawn. Clones
@@ -4217,7 +4242,8 @@ impl RecordPlan {
                             && (!sorted || field.options.options & ALWAYS_EVALUATE != 0)
                             && !related_self_table
                                 .and_then(|table| table.fields.get(*id))
-                                .is_some_and(keeps_indexed_related_self)
+                                .and_then(related_number_self)
+                                .is_some()
                     }
                     AutoEntrySelf::Unsupported => true,
                 }
@@ -9781,18 +9807,25 @@ mod tests {
         let mut env = environment();
         env.context.record_number = Some(RecordNumber::LocalFirstRelated);
         env.context.sequence = WriteSequence::Local;
-        let plan = plan_of(&table, &formulas, &[]).unwrap();
-        plan.check_creation_context(&env.context, Entry::script(false, false))
-            .unwrap();
-        for (assigned, expected) in [(None, "0"), (Some("25"), "25")] {
-            let mut changes = BTreeMap::from([(1, Some("linked".into()))]);
-            if let Some(value) = assigned {
-                changes.insert(20, Some(value.into()));
-            }
-            let computed = plan
-                .compute(WriteMode::Create, &BTreeMap::new(), &changes, &env, entry)
+        for (options, source, assigned_result) in [
+            (0x0000_0088, "If ( IsEmpty ( Self ) ; 0 ; Self + 1 )", "26"),
+            (0x8000_0008, "If ( IsEmpty ( Self ) ; 0 ; Self )", "25"),
+        ] {
+            table.fields[1] = field(20, FieldKind::Normal, DataType::Number, 0, options, 0);
+            formulas[0] = (20, 5, source);
+            let plan = plan_of(&table, &formulas, &[]).unwrap();
+            plan.check_creation_context(&env.context, Entry::script(false, false))
                 .unwrap();
-            assert_eq!(computed[&20].as_deref(), Some(expected));
+            for (assigned, expected) in [(None, "0"), (Some("25"), assigned_result)] {
+                let mut changes = BTreeMap::from([(1, Some("linked".into()))]);
+                if let Some(value) = assigned {
+                    changes.insert(20, Some(value.into()));
+                }
+                let computed = plan
+                    .compute(WriteMode::Create, &BTreeMap::new(), &changes, &env, entry)
+                    .unwrap();
+                assert_eq!(computed[&20].as_deref(), Some(expected));
+            }
         }
         table.fields.push(field(
             21,
