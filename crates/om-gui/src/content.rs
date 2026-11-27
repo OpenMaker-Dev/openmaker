@@ -1414,8 +1414,9 @@ impl LayoutWorkspace {
         self.canvas.take_orphaned_drafts()
     }
 
-    /// Whether the Part tool was used on the layout since the last call.
-    pub(crate) fn take_part_tool(&mut self) -> bool {
+    /// Where the Part tool was used on the layout since the last call: the
+    /// layout point's y, in points.
+    pub(crate) fn take_part_tool(&mut self) -> Option<f64> {
         self.canvas.take_part_tool()
     }
 
