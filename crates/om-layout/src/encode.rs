@@ -50,6 +50,9 @@ pub const BUTTON_ICON_SIZE: u64 = 16;
 /// (layout-model.md 5.7), with no other bit.
 pub const ANCHOR_LEFT_TOP: u64 = 0x3000_0000;
 
+/// The four Autosizing bits in `LayoutObject.flags` (layout-model.md 5.7).
+pub const ANCHOR_MASK: u64 = 0xf000_0000;
+
 /// `FieldLayoutObject.flags` of a new edit box: the bits every enterable
 /// edit box in the shipped templates has (`0x20`, `0x40`, `0x80`; their
 /// meanings are not decoded), without the placeholder (`0x20000`), scroll
@@ -450,6 +453,79 @@ pub fn with_object_bounds(store: &[u8], key: u64, bounds: &Rect) -> Option<Vec<u
     new_object.extend_from_slice(&object[b_end..]);
     let mut out = store[..start].to_vec();
     bytes(2, &new_object, &mut out);
+    out.extend_from_slice(&store[end..]);
+    Some(out)
+}
+
+/// Replace the four autosizing bits of one stored object, keeping its other
+/// flags, other fields, and the store's order as they are. Refuse an absent
+/// or ambiguous object or flags field, or a mask containing other bits.
+pub fn with_object_anchors(store: &[u8], key: u64, anchors: u64) -> Option<Vec<u8>> {
+    if key == 0 || anchors & !ANCHOR_MASK != 0 {
+        return None;
+    }
+    let mut found = None;
+    for (number, value, start, end) in spans(store, "LayoutObjectStore")? {
+        if number != 2 {
+            continue;
+        }
+        let Value::Bytes(object) = value else {
+            return None;
+        };
+        let fields = spans(object, "LayoutObject")?;
+        let mut ids = fields.iter().filter(|(n, ..)| *n == 2);
+        if !ids.clone().any(|(_, v, ..)| *v == Value::Varint(key)) {
+            continue;
+        }
+        if ids.nth(1).is_some() || found.is_some() {
+            return None;
+        }
+        let mut flag_fields = fields.iter().filter(|(n, ..)| *n == 3);
+        let (_, Value::Varint(flags), flag_start, flag_end) = *flag_fields.next()? else {
+            return None;
+        };
+        if flag_fields.next().is_some() {
+            return None;
+        }
+        found = Some((object, start, end, flags, flag_start, flag_end));
+    }
+    let (object, start, end, flags, flag_start, flag_end) = found?;
+    let new_flags = (flags & !ANCHOR_MASK) | anchors;
+    if new_flags == flags {
+        return Some(store.to_vec());
+    }
+    let tag_end = flag_start
+        + object[flag_start..flag_end]
+            .iter()
+            .position(|byte| byte & 0x80 == 0)?
+        + 1;
+    let stored_flags = &object[tag_end..flag_end];
+    let mut encoded = Vec::new();
+    varint(new_flags, &mut encoded);
+    if stored_flags.len() > 1 && stored_flags.last() == Some(&0) {
+        // Keep padding in an already nonminimal encoding.
+        while encoded.len() < stored_flags.len() {
+            *encoded.last_mut()? |= 0x80;
+            encoded.push(0);
+        }
+    }
+    let mut edited = object[..tag_end].to_vec();
+    edited.extend_from_slice(&encoded);
+    edited.extend_from_slice(&object[flag_end..]);
+
+    let payload_start = end - object.len();
+    let mut out = store[..start].to_vec();
+    if edited.len() == object.len() {
+        out.extend_from_slice(&store[start..payload_start]);
+    } else {
+        // Keep the existing tag when only the payload length must change.
+        let tag_end = store[start..payload_start]
+            .iter()
+            .position(|byte| byte & 0x80 == 0)?;
+        out.extend_from_slice(&store[start..=start + tag_end]);
+        varint(edited.len() as u64, &mut out);
+    }
+    out.extend_from_slice(&edited);
     out.extend_from_slice(&store[end..]);
     Some(out)
 }
@@ -993,6 +1069,40 @@ mod tests {
         assert!(differing <= 32, "{differing}");
         assert_eq!(after[store.len() - second.len()..], second[..]);
         assert!(with_object_bounds(&store, 11, &moved).is_none());
+    }
+
+    #[test]
+    fn setting_anchors_keeps_selection_bits_and_stored_order() {
+        let object = |id, flags| {
+            let mut object = Vec::new();
+            uint(1, 2, &mut object);
+            uint(2, id, &mut object);
+            uint(3, flags, &mut object);
+            bytes(77, &[0xaa, 0x55], &mut object);
+            object
+        };
+        let store =
+            |flags| append_to_store(&[], &[9, 10], &[object(10, 0x30c0_4000), object(9, flags)]);
+        let before = store(0x3040_0001);
+        assert_eq!(
+            with_object_anchors(&before, 9, 0xc000_0000),
+            Some(store(0xc040_0001))
+        );
+        assert_eq!(with_object_anchors(&before, 9, 0), Some(store(0x0040_0001)));
+        assert_eq!(
+            with_object_anchors(&before, 9, ANCHOR_LEFT_TOP),
+            Some(before.clone())
+        );
+        let mut duplicate = before.clone();
+        bytes(2, &object(9, 0x3040_0001), &mut duplicate);
+        assert!(with_object_anchors(&duplicate, 9, 0x7000_0000).is_none());
+        assert!(with_object_anchors(&before, 9, 0x0040_0000).is_none());
+
+        let padded = unhex("12 0a 10 09 98 00 80 80 80 80 83 00");
+        let changed = unhex("12 0a 10 09 98 00 80 80 80 80 8c 00");
+        assert_eq!(with_object_anchors(&padded, 9, 0xc000_0000), Some(changed));
+        let overflowing_id = unhex("12 0d 10 89 80 80 80 80 80 80 80 80 02 18 00");
+        assert!(with_object_anchors(&overflowing_id, 9, 0x7000_0000).is_none());
     }
 
     #[test]
