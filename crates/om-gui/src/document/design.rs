@@ -197,6 +197,21 @@ impl<'a> Surface<'a> {
             // still owns visibility, selection and drawing the children.
             return tabs.1.framed_panels.contains(&key);
         }
+        if kind == ObjectKind::Group && object.script_step().is_none() {
+            // A plain group has no artwork of its own. Its drawable members
+            // are painted by the canvas in stored order.
+            return object.children.iter().any(|&child| {
+                child != key
+                    && self.cache.object(self.layout, child).is_some_and(|member| {
+                        member.parent == Some(key)
+                            && member.bounds.as_ref().is_some_and(|bounds| {
+                                [bounds.left, bounds.top, bounds.right, bounds.bottom]
+                                    .into_iter()
+                                    .all(f64::is_finite)
+                            })
+                    })
+            });
+        }
         if !matches!(
             kind,
             ObjectKind::Field

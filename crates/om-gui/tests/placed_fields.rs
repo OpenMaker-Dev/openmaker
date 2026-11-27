@@ -971,6 +971,103 @@ fn a_portal_drawn_in_layout_mode_is_set_up_and_saved() {
     );
 }
 
+/// Layout mode's Web Viewer tool draws a web viewer (#896); Web Viewer
+/// Setup, which opens as the drawing ends, takes a custom web address and
+/// refuses options FileMaker Pro was not seen to store; Save Layout places
+/// it with the operation `om-author`'s `place_web_viewer` uses, and a new
+/// connection reads it with its options and address.
+#[test]
+fn a_web_viewer_drawn_in_layout_mode_is_set_up_and_saved() {
+    use egui::accesskit::Role;
+    let file = form_file_with(NAME);
+    let hosted = hosted::host_file(
+        "place-web-viewer",
+        Path::new(&file.0),
+        fixture::FILE,
+        (ACCOUNT, PASSWORD),
+    );
+    let mut app = open_window(&hosted);
+    common::click(&mut app, "Edit Layout");
+    common::wait_until(&mut app, "the layout canvas", |app| {
+        app.query_by_label("Field: Name (object 1)").is_some()
+    });
+    common::click(&mut app, "Web Viewer");
+    let canvas = app.get_by_label("Layout canvas").rect();
+    let origin = canvas.min + egui::vec2(22.0, 0.0);
+    drag(
+        &mut app,
+        origin + egui::vec2(20.0, 60.0),
+        origin + egui::vec2(320.0, 170.0),
+    );
+    common::wait_until(&mut app, "Web Viewer Setup", |app| {
+        app.query_by_role_and_label(Role::MultilineTextInput, "Web Address")
+            .is_some()
+    });
+    app.get_by_role_and_label(Role::MultilineTextInput, "Web Address")
+        .click();
+    app.run_steps(2);
+    app.get_by_role_and_label(Role::MultilineTextInput, "Web Address")
+        .type_text("\"https://example.com/?q=\" & Name");
+    app.run_steps(2);
+    // An option combination Pro was not seen to store: OK waits.
+    app.get_by_role_and_label(Role::CheckBox, "Automatically encode URL")
+        .click();
+    app.run_steps(2);
+    assert!(app.get_by_label("OK").accesskit_node().is_disabled());
+    app.get_by_role_and_label(Role::CheckBox, "Automatically encode URL")
+        .click();
+    app.run_steps(2);
+    shot(
+        &mut app,
+        "web-viewer-setup",
+        "Web Viewer Setup for the drawn web viewer",
+    );
+    ok(&mut app);
+    let drafted = "New web viewer \"https://example.com/?q=\" & Name";
+    common::wait_for_label(&mut app, drafted);
+    // Setup's OK is a step of the draft's history: Undo drops the set-up
+    // viewer and Redo brings it back (#1076's review).
+    common::open_menu(&mut app, "Edit");
+    common::click(&mut app, "Undo");
+    assert!(app.query_by_label(drafted).is_none());
+    app.key_press_modifiers(
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        egui::Key::Z,
+    );
+    app.run_steps(3);
+    common::wait_for_label(&mut app, drafted);
+    save_layout(&mut app);
+    common::wait_until(&mut app, "the layout saved", |app| {
+        assert!(app.state().error().is_none(), "{:?}", app.state().error());
+        app.state().is_settled()
+            && app
+                .query_by_role_and_label(Role::MultilineTextInput, "Web Address")
+                .is_none()
+            && app
+                .query_by_label("New web viewer \"https://example.com/?q=\" & Name")
+                .is_none()
+    });
+    shot(&mut app, "web-viewer-saved", "the web viewer saved");
+    drop(app);
+
+    let mut reader = hosted.opened();
+    let member = reader.layout_member(fixture::LAYOUT).unwrap().unwrap();
+    reader.close();
+    let layout = om_data::layout_placement::decode(&member).unwrap();
+    let viewer = layout
+        .objects
+        .get(*layout.objects.root.last().unwrap())
+        .unwrap();
+    assert_eq!(viewer.web_viewer().map(|o| o.0), Some(0x800d));
+    let bounds = viewer.bounds.as_ref().unwrap();
+    assert_eq!(
+        (bounds.left, bounds.top, bounds.right, bounds.bottom),
+        (20.0, 60.0, 320.0, 170.0)
+    );
+    let address = viewer.calcs.web_address.as_ref().expect("the web address");
+    assert_eq!(address.polish.field_references().len(), 1);
+}
+
 /// Layout mode's New Layout / Report adds a Form layout on the occurrence
 /// chosen, named as typed, with the operation `om-author`'s
 /// `create_layout` uses (`DataProvider::create_layout`): the window opens
@@ -2366,13 +2463,34 @@ fn part_setup_creates_and_deletes_a_header_and_the_body_boundary_is_dragged() {
         (vec![(4, 0.0, 240.0), (7, 240.0, 22.0)], 20.0)
     );
 
-    // The Part tool's button dropped on the layout (#885) opens Part
-    // Definition alone, whose OK adds the part as Create does.
+    // The Part tool's button dropped within the parts adds none, as
+    // FileMaker Pro 26.1.1 added none at any such drop (#885).
     let tool = app.get_by_label("Part Tool").rect().center();
     let canvas = app.get_by_label("Layout canvas").rect();
     drag(&mut app, tool, canvas.min + egui::vec2(200.0, 60.0));
+    common::wait_until(&mut app, "the drop refused", |app| {
+        app.state().error().is_some()
+    });
+    assert_eq!(
+        app.state().error(),
+        Some("This part cannot be positioned here.")
+    );
+    shot(
+        &mut app,
+        "95b-part-tool-refused",
+        "the Part tool dropped within the Body",
+    );
+    common::click(&mut app, "OK");
+    app.run_steps(2);
+
+    // Dropped 17 points below the layout's last part, it opens Part
+    // Definition alone with the kinds that follow the Footer offered and
+    // the first chosen, and OK adds that part from the Footer's bottom
+    // down to the drop point, as Pro's did on a List layout.
+    let tool = app.get_by_label("Part Tool").rect().center();
+    drag(&mut app, tool, canvas.min + egui::vec2(200.0, 262.0 + 17.0));
     common::wait_until(&mut app, "the Part tool's Part Definition", |app| {
-        app.query_by_role_and_label(Role::RadioButton, "Header")
+        app.query_by_role_and_label(Role::RadioButton, "Title Footer")
             .is_some()
     });
     assert!(
@@ -2380,34 +2498,46 @@ fn part_setup_creates_and_deletes_a_header_and_the_body_boundary_is_dragged() {
             .is_none(),
         "Part Definition opens without Part Setup's list"
     );
-    app.get_by_role_and_label(Role::RadioButton, "Header")
-        .click();
-    app.run_steps(2);
+    let radio = |app: &common::App, kind: &str| {
+        let radio = app.get_by_role_and_label(Role::RadioButton, kind);
+        let node = radio.accesskit_node();
+        (
+            node.toggled() == Some(egui::accesskit::Toggled::True),
+            !node.is_disabled(),
+        )
+    };
+    assert_eq!(radio(&app, "Title Footer"), (true, true));
+    assert_eq!(radio(&app, "Bottom Navigation"), (false, true));
+    assert_eq!(
+        radio(&app, "Header"),
+        (false, false),
+        "not after the Footer"
+    );
     shot(
         &mut app,
         "96-part-tool",
-        "the Part tool's Part Definition, Header chosen",
+        "the Part tool dropped below the Footer, Title Footer chosen",
     );
     common::click(&mut app, "OK");
-    common::wait_until(&mut app, "the Part tool's header saved", |app| {
+    common::wait_until(&mut app, "the Part tool's part saved", |app| {
         assert!(app.state().error().is_none(), "{:?}", app.state().error());
-        app.state().is_settled() && app.query_by_label("Header boundary").is_some()
+        app.state().is_settled() && app.query_by_label("Title Footer boundary").is_some()
     });
     assert!(
-        app.query_by_role_and_label(Role::RadioButton, "Header")
+        app.query_by_role_and_label(Role::RadioButton, "Title Footer")
             .is_none(),
         "Part Definition closed"
     );
     shot(
         &mut app,
-        "97-part-tool-header",
-        "the Header the Part tool added",
+        "97-part-tool-title-footer",
+        "the Title Footer the Part tool added",
     );
     assert_eq!(
         read(&hosted),
         (
-            vec![(1, 0.0, 110.0), (4, 110.0, 240.0), (7, 350.0, 22.0)],
-            130.0
+            vec![(4, 0.0, 240.0), (7, 240.0, 22.0), (8, 262.0, 17.0)],
+            20.0
         )
     );
 
@@ -2437,11 +2567,11 @@ fn part_setup_creates_and_deletes_a_header_and_the_body_boundary_is_dragged() {
         (
             vec![
                 (12, 0.0, 22.0),
-                (1, 22.0, 110.0),
-                (4, 132.0, 240.0),
-                (7, 372.0, 22.0)
+                (4, 22.0, 240.0),
+                (7, 262.0, 22.0),
+                (8, 284.0, 17.0)
             ],
-            152.0
+            42.0
         )
     );
 }
