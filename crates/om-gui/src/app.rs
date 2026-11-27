@@ -647,9 +647,10 @@ pub(crate) enum Action {
     SetUpLayout(om_data::layout_catalog::LayoutSetupChange),
     /// Layouts > Part Setup...: its dialog, and Part Definition's change.
     PartSetup,
-    /// The Part tool used on the layout: Part Definition alone, whose OK
-    /// adds a part as Part Setup's Create does.
-    InsertPart,
+    /// Insert > Part... (None), or the Part tool used at the layout point
+    /// with this y (in points): Part Definition alone, whose OK adds a part
+    /// as Part Setup's Create does (`PartSetup::creating_alone`).
+    InsertPart(Option<f64>),
     /// Insert > Field...: an edit box staged and selected on the layout,
     /// its field chosen in the Inspector (`CanvasState::insert_field`).
     InsertField,
@@ -2945,6 +2946,11 @@ impl OpenMakerApp {
             self.w
                 .layout_workspace
                 .show_portal_setup(&ctx, self.w.calcs.schema().cloned(), own);
+            self.w.layout_workspace.show_web_viewer_setup(
+                &ctx,
+                self.w.calcs.schema().cloned(),
+                own,
+            );
             // Changes another client's deletion made impossible to save
             // stay as unsaved changes (closing and quitting wait for Save
             // or Revert Layout); the window says why they cannot be saved.
@@ -2958,9 +2964,9 @@ impl OpenMakerApp {
             }
             // The Part tool, single use as the Field tool is: Part
             // Definition opens, and the tool goes back to Selection.
-            if self.w.layout_workspace.take_part_tool() {
+            if let Some(at) = self.w.layout_workspace.take_part_tool() {
                 self.w.tool = LayoutTool::Selection;
-                actions.push(Action::InsertPart);
+                actions.push(Action::InsertPart(Some(at)));
             }
             // A part boundary dragged with the Selection tool goes to the
             // host at once, as Part Setup's changes do.
@@ -5490,7 +5496,7 @@ impl OpenMakerApp {
 
             // A change with the host: Part Setup would read the layout as
             // it was.
-            Action::PartSetup | Action::InsertPart if self.w.layout_workspace.saving => {
+            Action::PartSetup | Action::InsertPart(_) if self.w.layout_workspace.saving => {
                 self.error = Some(
                     "This layout's last change is still being saved; try again when it is.".into(),
                 );
@@ -5506,7 +5512,7 @@ impl OpenMakerApp {
             | Action::DeleteLayout(_)
             | Action::LayoutSetup
             | Action::PartSetup
-            | Action::InsertPart
+            | Action::InsertPart(_)
                 if self.w.layout_workspace.has_changes() =>
             {
                 self.error = Some(LAYOUT_UNSAVED.into());
@@ -5540,7 +5546,7 @@ impl OpenMakerApp {
                     }
                 }
             }
-            Action::InsertPart => {
+            Action::InsertPart(at) => {
                 // Not over a Part Setup already open, whose request may be
                 // with the host.
                 if self.w.mode != Mode::Layout
@@ -5551,7 +5557,7 @@ impl OpenMakerApp {
                 }
                 self.open_part_setup();
                 if let Some(dialog) = self.part_setup.take() {
-                    match dialog.creating_alone() {
+                    match dialog.creating_alone(at) {
                         Ok(dialog) => self.part_setup = Some(dialog),
                         Err(refusal) => self.error = Some(refusal.into()),
                     }
@@ -6373,6 +6379,10 @@ impl OpenMakerApp {
             self.save_layout_portal(ctx, new_portal);
             return;
         }
+        if let Some(viewer) = self.w.layout_workspace.new_web_viewer().cloned() {
+            self.save_layout_web_viewer(ctx, viewer);
+            return;
+        }
         if let Some(new_text) = self.w.layout_workspace.new_text().cloned() {
             self.save_layout_text(ctx, new_text);
             return;
@@ -6568,6 +6578,44 @@ impl OpenMakerApp {
     /// Save Layout with a new portal: the records, rows and fields Portal
     /// Setup and Add Fields to Portal set, at the revision of the layout it
     /// was drawn on.
+    fn save_layout_web_viewer(
+        &mut self,
+        ctx: &egui::Context,
+        viewer: crate::layout_canvas::NewWebViewer,
+    ) {
+        let Some(setup) = viewer.setup.as_ref() else {
+            self.error = Some(
+                "Set the web viewer's address in Web Viewer Setup, then save the layout.".into(),
+            );
+            return;
+        };
+        let Some(expected) = viewer.revision else {
+            self.error = Some(
+                "This layout cannot be saved here: the window does not know which version of \
+                 it is shown."
+                    .into(),
+            );
+            return;
+        };
+        let Some(layout) = self.w.session.as_ref().and_then(|session| session.layout) else {
+            self.error = Some("The layout has not loaded yet; save it again when it has.".into());
+            return;
+        };
+        self.request_layout_save(
+            ctx,
+            Request::PlaceLayoutWebViewer(om_data::layout_placement::LayoutWebViewerPlacement {
+                layout,
+                viewer: om_data::layout_placement::WebViewerPlacement {
+                    frame: viewer.frame(),
+                    flags: setup.flags,
+                    formatted: setup.formatted.clone(),
+                    polish: setup.polish.clone(),
+                },
+                expected,
+            }),
+        );
+    }
+
     fn save_layout_portal(&mut self, ctx: &egui::Context, portal: crate::layout_canvas::NewPortal) {
         let Some(setup) = portal.setup.as_ref() else {
             self.error = Some(
@@ -6983,6 +7031,7 @@ impl OpenMakerApp {
                 part_type: part.part_type,
                 flags: part.flags,
                 page_break_after: part.page_break_after,
+                height: part.height,
                 sorted_by: part
                     .break_field()
                     .ok()
@@ -8052,6 +8101,9 @@ impl OpenMakerApp {
             }
             Reply::LayoutButtonPlaced(result) => self.layout_object_placed(ctx, result.map(|_| ())),
             Reply::LayoutPortalPlaced(result) => self.layout_object_placed(ctx, result.map(|_| ())),
+            Reply::LayoutWebViewerPlaced(result) => {
+                self.layout_object_placed(ctx, result.map(|_| ()))
+            }
             Reply::LayoutTextPlaced(result) => self.layout_object_placed(ctx, result.map(|_| ())),
             Reply::ObjectsFramed(result) => self.objects_framed(ctx, result),
             Reply::LayoutWidthSet(result) => self.width_set(ctx, result),

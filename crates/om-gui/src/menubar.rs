@@ -857,7 +857,7 @@ fn layout_insert_rows(
         actions.push(Action::InsertField);
     }
     if rows.item("Part...", None, false, context.insert_part) {
-        actions.push(Action::InsertPart);
+        actions.push(Action::InsertPart(None));
     }
     rows.separator();
     // The submenus open on their items, none offered yet.

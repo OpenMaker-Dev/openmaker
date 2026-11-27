@@ -634,8 +634,8 @@ with a custom web address (operation 28, planned with
   `conflict`.
 
 Limits: templates (Google Maps and the others) are not offered, and a
-viewer's setup cannot be changed once it is placed. The desktop has no
-Web Viewer tool yet. That FileMaker Pro opens a file with a viewer placed
+viewer's setup cannot be changed once it is placed. The desktop's Web
+Viewer tool places viewers with this operation. That FileMaker Pro opens a file with a viewer placed
 this way is not yet checked.
 
 ### Moving objects
