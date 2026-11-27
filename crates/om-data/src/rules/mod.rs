@@ -6885,9 +6885,8 @@ fn list_rule(
     if let Some(list) = list {
         return Ok(rule_of(list).unwrap_or_else(ListRule::Unchecked));
     }
-    // FileMaker's list deletion left this single-byte ID reference in
-    // place. The scripts that need no membership check kept writing.
-    // Keep a refusal for entry that would need the list.
+    // FileMaker kept this reference after deleting the list. The list
+    // accepts no nonempty input when membership is actually checked.
     if defer_dangling
         && tree.at(&path).is_none()
         && matches!(
@@ -6895,7 +6894,7 @@ fn list_rule(
             [2, 1, 1..=255, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0xff]
         )
     {
-        return Ok(ListRule::Unchecked("its value list is missing".into()));
+        return Ok(ListRule::Custom(Vec::new()));
     }
     Err("its value list is missing.".into())
 }
@@ -10819,8 +10818,16 @@ mod tests {
             )
             .unwrap_err()
             .code,
-            Some(error::UNAVAILABLE)
+            Some(error::NOT_IN_LIST)
         );
+        for text in ["Red", "Other"] {
+            assert_eq!(
+                plan.check_entry(7, text, Entry::default())
+                    .unwrap_err()
+                    .code,
+                Some(error::NOT_IN_LIST)
+            );
+        }
         assert!(plan_with(&table, &[], &reference, Vec::new(), false).is_err());
         assert!(plan_with(&table, &[], &[], Vec::new(), true).is_err());
 
