@@ -781,11 +781,18 @@ them as described below (globals as session values, later repetitions in
 their own cells). An unstored calculation's option bits are not checked
 but for a lookup's, which would write into it: a stray `0x80`
 (auto-entry.md) leaves the table writable. In a local file a stored
-Number calculation with one repetition, no validation, and option word
-`0x80000080` also follows the ordinary stored calculation rules. Its
-definition retains the replacement bit. Other unknown stored-calculation
-options keep the table read-only.
-[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204266349)
+calculation with one repetition and no validation follows the ordinary
+stored calculation rules for Number with option word `0x80000080` and
+Text with `0x80000080` or `0xc0000080`. The field definition retains
+the replacement bit and keeps its existing value index. Other unknown
+stored-calculation options keep the table read-only.
+[Number comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204266349),
+[Text comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204722695)
+
+In a local desktop file, a single-repetition Text field with Data
+enabled, no validation, and absent constant data leaves its new cell
+empty. The measured option words are `0x00000004` and `0xa0000004`.
+Explicit assignments and index maintenance use the ordinary write path.
 
 An ordinary local Number auto-entry calculation can use `Self` as its
 only field input. It reads the proposed value at ordinary New Record in
@@ -845,6 +852,31 @@ remain unsupported for global auto-entry. OpenMaker keeps local globals
 in memory for the session. See the native
 observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
 and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
+
+A local single-repetition global Text field with option word
+`0x00010080` and no validation stays writable. The replacement bit and
+any retained calculation are inactive. New Record keeps the current
+session value. The field definition is preserved.
+
+A local single-repetition replacing global Text calculation
+(`0x00010088`) can read one plain global Text field of the same
+occurrence (`0x00010000`). Both fields have zero validation flags. The
+supported `Let` returns that binding or empty Text. Scripted Set Field on
+the input updates the output immediately, including same-value writes
+and clears, with no record opened. Ordinary unsorted New Record reads the
+current input and updates the output at creation. Both values belong to
+the session globals. This scope covers scripted assignments and ordinary
+unsorted New Record in the owning local desktop file.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1138#issuecomment-7204722907)
+
+A local global Text rule of the form
+`Let ( result = Evaluate ( Input ) ; "" )` can use an ordinary Text
+input with no auto-entry or validation. Unrelated edits leave the
+global alone. Scripted unsorted New Record starts with a blank input
+and applies the measured replace or keep rule. Explicit assignments
+to the input refuse with 3. Inputs with defaults and rules that read
+the resulting global remain unsupported.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1057#issuecomment-7209580006)
 
 A calculated global Text field with the measured empty-Self default can
 retain its value or append a literal suffix. Ordinary New Record reads
@@ -1167,10 +1199,32 @@ record's place in what the rules read:
   set inserts it immediately after the current row when that row is known.
   Unrelated edits and later re-sorting leave its stored value alone.
   Automatic re-sorting after commit is a separate difference.
-  An unindexed stored Number calculation also gets position 1 when local
-  Set Field creates the first match of a direct, unsorted equality
-  relationship from a plain global Text key to a plain stored Text key.
-  The script can read that value and count the new match before Commit.
+  The stored Number calculation (`0x00080000` or value-indexed
+  `0x80080000`) also gets position 1 when local Set Field creates the
+  first match of a direct, unsorted equality relationship from a plain
+  global Text key to a plain stored Text key. The script can read the
+  position and count the new match before Commit. With the value index,
+  an exact Find for the stored position includes the new record.
+  The measured indexed Position case also supports an indexed Text match
+  key with replacing `Get ( UUID )` (`0xa0000088`, no validation).
+  Related creation uses the copied global as the match value. Direct New
+  Record on the related table still evaluates its UUID default.
+  A first-match case with that UUID key also supports the value-indexed Number default
+  `If ( IsEmpty ( Self ) ; 0 ; Self )` (`0x80000008`, no validation).
+  The related draft shows 0 on creation and keeps a nonempty assignment
+  made before or after an intermediate Commit. This also works with the
+  measured indexed Position. Both stored values can be found after
+  reopen through their indexes. With both indexed fields, a replacing
+  UUID key can validate Always, Not empty and Unique with override
+  disabled (`0x0000041c`). The copied value goes through normal write
+  validation and can be distinct plain text.
+  The measured unindexed, replacing
+  `If ( IsEmpty ( Self ) ; 0 ; Self + 1 )` (`0x00000088`, no validation)
+  also starts at 0 in this relationship when there is no stored Position.
+  An assigned 25 shows and stores
+  26, including when the script commits the new match before assigning
+  the Number. The pending read evaluates the proposed value, and Commit
+  uses that same proposal to avoid applying the increment twice.
   The parent's record is already stored and otherwise unedited. The
   matching key and position are checked again at save.
   The same field definition refuses writes

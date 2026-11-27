@@ -2475,6 +2475,16 @@ impl<'a> WorkerHost<'a> {
             };
             if let Some(mut values) = self.stored_values(table.id, record) {
                 apply_cells(&mut values, table, &draft.cells, &cx);
+                if let Some(known) = &draft.related_self {
+                    if draft.cells.get(&known.cell) == Some(&known.input)
+                        && !draft.typed.contains(&known.cell)
+                    {
+                        if let Some(field) = table.fields.get(&known.cell) {
+                            let text = known.value.as_deref().unwrap_or_default();
+                            values.set(known.cell, 1, stored_value(text, field.value_type, &cx));
+                        }
+                    }
+                }
                 out.push((table.id, record, Arc::new(values)));
             }
         }

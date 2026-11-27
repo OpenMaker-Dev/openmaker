@@ -228,11 +228,11 @@ confirmed value against what the open returns.
 The design asks for one thing more that the format does not have yet
 (server-storage.md 7.5): a repair record whose required end is not yet
 known, for a cluster member whose start passed over a copy and found no
-whole batch after the marker. It waits for replication
-([issue #673](https://github.com/OpenMaker-Dev/openmaker/issues/673), step
-3); on
-one server the mark is settled by the store's record of the possible loss
-instead (section 7).
+whole batch after the marker. Repair is not built
+([issue #673](https://github.com/OpenMaker-Dev/openmaker/issues/673)): on
+one server, and for now on a cluster member too (server-storage.md 7.1,
+"As built"), the mark is settled by the store's record of the possible
+loss instead (section 7).
 
 ## 2. Pages and trees
 

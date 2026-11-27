@@ -49,12 +49,17 @@ use om_layout::{LayoutDef, LayoutObject, ObjectKind, ObjectStore, Part, PartKind
 
 mod parts;
 mod portal;
+mod web_viewer;
 pub use parts::{
     already_parts, part_rank, part_type_name, plan_parts, PartChange, PartsChange, ADDABLE_PARTS,
 };
 pub use portal::{
     already_placed_portal, plan_portal, portal_field_frames, theme_key, LayoutPortalPlacement,
     PlacedLayoutPortal, PlannedPortal, PortalPlacement, MAX_PORTAL_FIELDS, MAX_PORTAL_ROWS,
+};
+pub use web_viewer::{
+    already_placed_web_viewer, compile_address, plan_web_viewer, LayoutWebViewerPlacement,
+    PlacedLayoutWebViewer, PlannedWebViewer, WebViewerPlacement, WebViewerSetup, MAX_ADDRESS_BYTES,
 };
 
 /// Keys of a layout member `[4, 5, L]` (file-format.md 3, layout-model.md
@@ -1765,6 +1770,30 @@ fn on_body(member: &OwnedNode, frames: &[(&str, &Rect)]) -> Result<OnBody, Refus
     })
 }
 
+/// The key of a new entry in `member`'s tab order `15`: one past the
+/// greatest stored, so the stored order and its gaps stay
+/// (layout-model.md 10.5).
+fn next_tab_position(member: &OwnedNode) -> Result<[u8; 2], Refusal> {
+    let unsupported = |why: &str| Refusal::Unsupported(why.into());
+    let tab_order = member.child(&[TAB_ORDER]);
+    let bad_order = || unsupported("The layout's tab order is not one OpenMaker reads.");
+    if tab_order.is_some_and(|order| order.value.is_some()) {
+        return Err(bad_order());
+    }
+    let last = tab_order
+        .into_iter()
+        .flat_map(|order| &order.children)
+        .map(|entry| <[u8; 2]>::try_from(entry.segment.as_slice()).map(u16::from_be_bytes))
+        .try_fold(0u16, |last, position| {
+            position.map(|position| last.max(position))
+        })
+        .map_err(|_| bad_order())?;
+    let position = last
+        .checked_add(1)
+        .ok_or_else(|| unsupported("The layout's tab order is full."))?;
+    Ok(position.to_be_bytes())
+}
+
 /// The key of the first object a placement makes: after every key the
 /// layout uses, every key its part lists name and the last one it issued.
 fn first_new_key(member: &OwnedNode, objects: &ObjectStore) -> Result<u64, Refusal> {
@@ -1891,24 +1920,8 @@ fn plan_objects(
             }
             let (index_key, index_value) =
                 object_index_entry(placement.frame.top, placement.frame.left, sequence, key)?;
-            let tab_order = member.child(&[TAB_ORDER]);
-            let bad_order =
-                || unsupported("The layout's tab order is not one OpenMaker reads.".into());
-            if tab_order.is_some_and(|order| order.value.is_some()) {
-                return Err(bad_order());
-            }
-            let last = tab_order
-                .into_iter()
-                .flat_map(|order| &order.children)
-                .map(|entry| <[u8; 2]>::try_from(entry.segment.as_slice()).map(u16::from_be_bytes))
-                .try_fold(0u16, |last, position| {
-                    position.map(|position| last.max(position))
-                })
-                .map_err(|_| bad_order())?;
-            let position = last
-                .checked_add(1)
-                .ok_or_else(|| unsupported("The layout's tab order is full.".into()))?;
-            Some((index_key, index_value, sequence, position.to_be_bytes()))
+            let position = next_tab_position(member)?;
+            Some((index_key, index_value, sequence, position))
         }
         _ => None,
     };
@@ -2650,6 +2663,237 @@ mod tests {
 
     fn decoded(member: &OwnedNode) -> om_layout::Layout {
         decode(member).unwrap()
+    }
+
+    /// A web viewer (#896) gets the records FileMaker Pro 26.1.1 wrote for
+    /// its W2 viewer: the address `"https://example.com"` as the streams
+    /// Pro stored under `00 00` (context `01 00`), the data format `00 0a`,
+    /// no name; the body's list, the object index and the tab order end
+    /// with it, and the last key issued is its key. An address reading a
+    /// field adds that field's reference, valued `0d`. A retry finds it,
+    /// and options Pro was not seen to store are refused.
+    #[test]
+    fn a_web_viewer_gets_the_records_filemaker_pro_wrote() {
+        let unhex = |text: &str| -> Vec<u8> {
+            (0..text.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+                .collect()
+        };
+        let compile = |source: &str| {
+            let names = om_formula::NoNames;
+            let compiled = om_formula::compile(source, &om_formula::Context::new(&names)).unwrap();
+            (
+                om_formula::formatted::encode(&compiled.tokens),
+                om_formula::polish::encode(&compiled.expr),
+            )
+        };
+        let before = layout();
+        // The file's names for W1's field: Contacts::Website.
+        let mut names = om_formula::NameTable::default();
+        names.add_occurrence(0xd0_0002, "Contacts", 0x81);
+        names.add_field(0x81, 7, "Website");
+        let (formatted, polish) = compile("\"https://example.com\"");
+        let pro = unhex("1313322e2e2a296075753f223b372a363f7439353700");
+        assert_eq!((&formatted, &polish), (&pro, &pro));
+        let viewer = WebViewerPlacement {
+            frame: rect(340.0, 60.0, 120.0, 60.0),
+            flags: 0x800d,
+            formatted,
+            polish,
+        };
+        let planned = plan_web_viewer(&before, &viewer, &names).unwrap();
+        let key = planned.viewer;
+        let member = &planned.member;
+        let record = member.at(&[&[ATTRIBUTES], &serial::encode(key)]).unwrap();
+        let value = |path: &[&[u8]]| record.at(path).and_then(|n| n.value.clone());
+        assert_eq!(value(&[&[0, 0], &[5], &[4]]), Some(vec![1, 0]));
+        assert_eq!(value(&[&[0, 0], &[5], &[5]]), Some(pro.clone()));
+        assert_eq!(value(&[&[0, 0], &[5], &[6]]), Some(pro.clone()));
+        assert_eq!(value(&[&[FORMAT]]), Some(vec![0, 0x0a]));
+        assert!(record.child(&[NAME]).is_none());
+        let layout = decoded(member);
+        assert_eq!(layout.objects.root.last(), Some(&key));
+        let object = layout.objects.get(key).unwrap();
+        assert_eq!(object.web_viewer().map(|o| o.0), Some(0x800d));
+        assert_eq!(
+            part_list(
+                member
+                    .at(&[&[PARTS], &[2], &[PART_OBJECTS]])
+                    .and_then(|n| n.value.as_deref())
+                    .unwrap()
+            )
+            .unwrap(),
+            [1, 2, 3, key]
+        );
+        let sequence = tree_size(&stored_objects(&before).unwrap().1).unwrap();
+        let (index_key, index_value) = object_index_entry(60.0, 340.0, sequence, key).unwrap();
+        assert_eq!(
+            member
+                .at(&[&[OBJECT_INDEX], &index_key])
+                .and_then(|n| n.value.clone()),
+            Some(index_value.clone())
+        );
+        assert_eq!(
+            member
+                .at(&[&[TAB_ORDER], &[0, 1]])
+                .and_then(|n| n.value.clone()),
+            Some(index_value)
+        );
+        assert_eq!(last_issued(member).unwrap(), Some(key));
+        assert_eq!(already_placed_web_viewer(member, &viewer), Some(key));
+        assert_eq!(already_placed_web_viewer(&before, &viewer), None);
+
+        // A field the address reads, as Pro stored W1's address
+        // `"https://example.com/?q=" & Contacts::Website` (field 7 of
+        // occurrence d0 00 02): its reference, valued 0d.
+        let reads = WebViewerPlacement {
+            formatted: unhex(
+                "1317322e2e2a296075753f223b372a363f7439353775652b67000c13017a00500c13017a0016040403d000020201070001",
+            ),
+            polish: unhex(
+                "501317322e2e2a296075753f223b372a363f7439353775652b670016040403d000020201070001",
+            ),
+            ..viewer.clone()
+        };
+        let planned = plan_web_viewer(&before, &reads, &names).unwrap();
+        assert_eq!(
+            planned
+                .member
+                .at(&[
+                    &[FIELD_INDEX],
+                    &[0xd0, 0, 2],
+                    &[7],
+                    &serial::encode(planned.viewer)
+                ])
+                .and_then(|n| n.value.clone()),
+            Some(vec![0x0d])
+        );
+        // Text and evaluated calculation that disagree are refused: the
+        // field shown would be neither read nor indexed.
+        let mismatched = WebViewerPlacement {
+            polish: viewer.polish.clone(),
+            ..reads.clone()
+        };
+        assert!(matches!(
+            plan_web_viewer(&before, &mismatched, &names),
+            Err(Refusal::Invalid(_))
+        ));
+
+        // A field without its occurrence is refused: with no context of
+        // its own, the address's text would not say which field it reads.
+        let bare = om_formula::Field {
+            flags: 0,
+            occurrence: om_formula::Key(vec![3, 0xd0, 0, 2]),
+            field: om_formula::Key(vec![1, 7]),
+            repetition: 1,
+        };
+        let unqualified = WebViewerPlacement {
+            formatted: om_formula::formatted::encode(&[om_formula::Token::Field(bare.clone())]),
+            polish: om_formula::polish::encode(&om_formula::Expr::Field(bare)),
+            ..viewer.clone()
+        };
+        assert!(matches!(
+            plan_web_viewer(&before, &unqualified, &names),
+            Err(Refusal::Invalid(_))
+        ));
+
+        // Whitespace holding text shows a calculation other than the one
+        // stored: `Contacts::Website //` shown before the field read.
+        let shown = om_formula::Field {
+            flags: om_formula::Field::TABLE_PRESENT,
+            occurrence: om_formula::Key(vec![3, 0xd0, 0, 3]),
+            field: om_formula::Key(vec![1, 7]),
+            repetition: 1,
+        };
+        let hidden = WebViewerPlacement {
+            formatted: om_formula::formatted::encode(&[
+                om_formula::Token::Whitespace(om_formula::Text::plain("Contacts::Website //")),
+                om_formula::Token::Field(shown.clone()),
+            ]),
+            polish: om_formula::polish::encode(&om_formula::Expr::Field(shown)),
+            ..viewer.clone()
+        };
+        assert!(matches!(
+            plan_web_viewer(&before, &hidden, &names),
+            Err(Refusal::Invalid(_))
+        ));
+
+        // Text that would show other than it reads back is refused: a line
+        // comment with no return before `& Related::Website` (W1's tokens
+        // with it added), a variable named like a field, a line separator
+        // as whitespace, an unclosed nested block comment. Valid comments
+        // read back and pass.
+        let w1 = om_formula::formatted::decode(&reads.formatted).unwrap();
+        let with = |tokens: Vec<om_formula::Token>, polish: Vec<u8>| WebViewerPlacement {
+            formatted: om_formula::formatted::encode(&tokens),
+            polish,
+            ..viewer.clone()
+        };
+        let text = |t: &str| om_formula::Text::plain(t);
+        let mut hidden_tail = w1.clone();
+        hidden_tail.insert(2, om_formula::Token::LineComment(text(" ")));
+        let mut separator = w1.clone();
+        separator[1] = om_formula::Token::Whitespace(text("\u{2028}"));
+        let mut unclosed = w1.clone();
+        unclosed.insert(2, om_formula::Token::BlockComment(text("/* x")));
+        let variable = "Contacts::Website".to_owned();
+        for (case, placement) in [
+            ("line comment", with(hidden_tail, reads.polish.clone())),
+            ("line separator", with(separator, reads.polish.clone())),
+            ("unclosed comment", with(unclosed, reads.polish.clone())),
+            (
+                "variable",
+                with(
+                    vec![om_formula::Token::Variable(variable.clone())],
+                    om_formula::polish::encode(&om_formula::Expr::Variable(variable)),
+                ),
+            ),
+        ] {
+            assert!(
+                matches!(
+                    plan_web_viewer(&before, &placement, &names),
+                    Err(Refusal::Invalid(_))
+                ),
+                "{case}"
+            );
+        }
+        let mut commented = w1.clone();
+        commented.insert(2, om_formula::Token::BlockComment(text(" a /* b */ c ")));
+        commented.insert(2, om_formula::Token::LineComment(text(" note\r")));
+        assert!(plan_web_viewer(&before, &with(commented, reads.polish.clone()), &names).is_ok());
+
+        // Names that would show as `Contacts:::Website`, which reads as
+        // Contacts' `:Website`, are refused.
+        let mut colons = om_formula::NameTable::default();
+        colons.add_occurrence(0xd0_0004, "Contacts:", 0x82);
+        colons.add_field(0x82, 7, "Website");
+        colons.add_occurrence(0xd0_0005, "Contacts", 0x83);
+        colons.add_field(0x83, 8, ":Website");
+        let edged = om_formula::Field {
+            flags: om_formula::Field::TABLE_PRESENT,
+            occurrence: om_formula::Key(vec![3, 0xd0, 0, 4]),
+            field: om_formula::Key(vec![1, 7]),
+            repetition: 1,
+        };
+        let ambiguous = with(
+            vec![om_formula::Token::Field(edged.clone())],
+            om_formula::polish::encode(&om_formula::Expr::Field(edged)),
+        );
+        assert!(matches!(
+            plan_web_viewer(&before, &ambiguous, &colons),
+            Err(Refusal::Unsupported(_))
+        ));
+
+        let unmeasured = WebViewerPlacement {
+            flags: 0x800c,
+            ..viewer
+        };
+        assert!(matches!(
+            plan_web_viewer(&before, &unmeasured, &names),
+            Err(Refusal::Unsupported(_))
+        ));
+        assert_eq!(WebViewerSetup::DEFAULT.flags(), Some(0x800d));
     }
 
     /// A button performing script 3 with the parameter "Report" (#226):

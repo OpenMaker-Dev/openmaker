@@ -2289,14 +2289,57 @@ fn a_committed_untouched_new_record_can_be_edited_in_its_window() {
 /// stored position is visible before Commit and is written with that row.
 #[test]
 fn local_related_position_is_visible_before_commit() {
+    local_first_related(RelatedProbe::Position);
+}
+
+#[test]
+fn local_related_position_keeps_the_copied_uuid_key() {
+    local_first_related(RelatedProbe::IndexedPosition);
+}
+
+#[test]
+fn local_related_creation_keeps_the_validated_match_key() {
+    local_first_related(RelatedProbe::ValidatedUuidKey);
+}
+
+#[test]
+fn local_related_self_is_visible_after_an_intermediate_commit() {
+    local_first_related(RelatedProbe::ReplacingAmount);
+}
+
+#[test]
+fn local_related_position_refuses_an_unmeasured_calculated_match_key() {
+    local_first_related(RelatedProbe::CalculatedMatchKey);
+}
+
+enum RelatedProbe {
+    Position,
+    IndexedPosition,
+    ValidatedUuidKey,
+    ReplacingAmount,
+    CalculatedMatchKey,
+}
+
+fn local_first_related(probe: RelatedProbe) {
     use fixture::{BODY, NAME, NOTES, NOTES_OCCURRENCE, OCCURRENCE, TABLE, TASK};
     use om_hbam::{HbamFile, OwnedNode};
     use om_scripts::{flag, Calculation, FieldSpec, ScriptStep, StoredKey};
 
-    const POSITION: u64 = 3;
+    const RESULT: u64 = 3;
+    const AMOUNT: u64 = 4;
+    let replacing = matches!(probe, RelatedProbe::ReplacingAmount);
+    let refuses = matches!(probe, RelatedProbe::CalculatedMatchKey);
+    let validated = matches!(probe, RelatedProbe::ValidatedUuidKey);
+    let result_name = if replacing { "Amount" } else { "Position" };
     let mut names = fixture::calculated_names();
-    names.add_field(NOTES, POSITION, "Position");
-    let calc = |text| {
+    names.add_field(NOTES, RESULT, result_name);
+    let amount = if validated {
+        names.add_field(NOTES, AMOUNT, "Amount");
+        " & \"|\" & Notes::Amount"
+    } else {
+        ""
+    };
+    let calc = |text: &str| {
         let mut context = om_formula::Context::new(&names);
         context.occurrence = Some(OCCURRENCE);
         let compiled = om_formula::compile(text, &context).unwrap();
@@ -2305,42 +2348,62 @@ fn local_related_position_is_visible_before_commit() {
             om_formula::polish::encode(&compiled.expr),
         )
     };
-    let mut related = ScriptStep::new(76);
-    related.set_field_spec(
-        0,
-        Some(FieldSpec::new(
-            StoredKey::from_id(NOTES_OCCURRENCE).unwrap(),
-            StoredKey::from_id(BODY).unwrap(),
-            1,
-        )),
-    );
-    related.set_calculation(0, Some(&calc("\"linked\"")));
+    let set_related = |field, expression| {
+        let mut step = ScriptStep::new(76);
+        step.set_field_spec(
+            0,
+            Some(FieldSpec::new(
+                StoredKey::from_id(NOTES_OCCURRENCE).unwrap(),
+                StoredKey::from_id(field).unwrap(),
+                1,
+            )),
+        );
+        step.set_calculation(0, Some(&calc(expression)));
+        step
+    };
     let mut pending = show("\"\"");
     pending.set_calculation(
         1,
-        Some(&calc(
-            "Get ( LastError ) & \"|\" & Count ( Notes::Task ) & \"|\" & Notes::Position",
-        )),
+        Some(&calc(&format!(
+            "Get ( LastError ) & \"|\" & Count ( Notes::Task ) & \"|\" & Notes::{result_name} & \"|\" & Notes::Task{amount}",
+        ))),
     );
     let mut commit = ScriptStep::new(75);
     commit.flags |= flag::NO_INTERACT;
     let mut report = show("\"\"");
     report.set_calculation(
         1,
-        Some(&calc("Get ( LastError ) & \"|\" & Notes::Position")),
+        Some(&calc(&format!(
+            "Get ( LastError ) & \"|\" & Notes::{result_name}{amount}"
+        ))),
     );
-    let script = fixture::script(
-        1,
-        "Create first match",
-        vec![
-            fixture::on(86, true),
-            fixture::set_field(NAME, "\"fresh key\""),
-            related,
-            pending,
-            commit,
-            report,
-        ],
-    );
+    let mut steps = vec![
+        fixture::on(86, true),
+        fixture::set_field(NAME, "\"fresh key\""),
+        set_related(BODY, "\"linked\""),
+        pending,
+    ];
+    if validated {
+        steps.push(set_related(AMOUNT, "25"));
+    }
+    steps.push(commit.clone());
+    if replacing {
+        let mut assigned = show("\"\"");
+        assigned.set_calculation(
+            1,
+            Some(&calc(
+                "\"pending|\" & Get ( LastError ) & \"|\" & Notes::Amount",
+            )),
+        );
+        steps.extend([set_related(RESULT, "25"), assigned, commit]);
+    }
+    steps.push(report);
+    if refuses {
+        let mut revert = ScriptStep::new(51);
+        revert.flags |= flag::NO_INTERACT;
+        steps.push(revert);
+    }
+    let script = fixture::script(1, "Create first match", steps);
     let mut root = fixture::tree(&[script], true);
     fixture::add_local_accounts(&mut root);
     add_name_field(&mut root);
@@ -2351,16 +2414,80 @@ fn local_related_position_is_visible_before_commit() {
     let flags = definition.len() - 4;
     definition[flags..].copy_from_slice(&0x10u32.to_be_bytes());
     root.put(relationship, OwnedNode::leaf(Vec::new(), definition));
-    fixture::add_field(&mut root, NOTES, POSITION, "Position", 2, 2, 0, 0x80000, 0);
+    let (kind, options, formula, tag) = match probe {
+        RelatedProbe::Position => (2, 0x0008_0000, "Get ( RecordNumber )", "related-position"),
+        RelatedProbe::IndexedPosition => (
+            2,
+            0x8008_0000,
+            "Get ( RecordNumber )",
+            "related-position-uuid",
+        ),
+        RelatedProbe::ValidatedUuidKey => (
+            2,
+            0x8008_0000,
+            "Get ( RecordNumber )",
+            "related-position-validated-uuid",
+        ),
+        RelatedProbe::CalculatedMatchKey => (
+            2,
+            0x8008_0000,
+            "Get ( RecordNumber )",
+            "related-position-calculated-key",
+        ),
+        RelatedProbe::ReplacingAmount => (
+            1,
+            0x0000_0088,
+            "If ( IsEmpty ( Self ) ; 0 ; Self + 1 )",
+            "related-replacing-self",
+        ),
+    };
+    fixture::add_field(
+        &mut root,
+        NOTES,
+        RESULT,
+        result_name,
+        kind,
+        2,
+        0,
+        options,
+        0,
+    );
     fixture::add_formula(
         &mut root,
         &names,
         (NOTES, NOTES_OCCURRENCE),
-        POSITION,
+        RESULT,
         5,
-        "Get ( RecordNumber )",
+        formula,
     );
-    let folder = Folder::new("related-position");
+    if !matches!(probe, RelatedProbe::Position) {
+        fixture::set_field_options(&mut root, NOTES, TASK, 0xa000_0088);
+        fixture::add_formula(
+            &mut root,
+            &names,
+            (NOTES, NOTES_OCCURRENCE),
+            TASK,
+            5,
+            if refuses {
+                "\"calculated key\""
+            } else {
+                "Get ( UUID )"
+            },
+        );
+    }
+    if validated {
+        fixture::set_field_validation(&mut root, NOTES, TASK, 0x0000_041c);
+        fixture::add_field(&mut root, NOTES, AMOUNT, "Amount", 1, 2, 0, 0x8000_0008, 0);
+        fixture::add_formula(
+            &mut root,
+            &names,
+            (NOTES, NOTES_OCCURRENCE),
+            AMOUNT,
+            5,
+            "If ( IsEmpty ( Self ) ; 0 ; Self )",
+        );
+    }
+    let folder = Folder::new(tag);
     fixture::write_tree(&folder.file(), &root);
     let mut app = app();
     common::open_menu(&mut app, "File");
@@ -2370,16 +2497,38 @@ fn local_related_position_is_visible_before_commit() {
     wait_open(&mut app);
     common::open_menu(&mut app, "Scripts");
     common::click(&mut app, "Create first match");
-    common::wait_for_label(&mut app, "0|1|1");
-    let before_commit = HbamFile::open(folder.file()).unwrap();
-    assert!(before_commit
-        .records(NOTES)
+    let initial = if refuses {
+        "0|0||"
+    } else if replacing {
+        "0|1|0|fresh key"
+    } else if validated {
+        "0|1|1|fresh key|0"
+    } else {
+        "0|1|1|fresh key"
+    };
+    common::wait_for_label(&mut app, initial);
+    let before_commit = HbamFile::open(folder.file())
         .unwrap()
+        .records(NOTES)
+        .unwrap();
+    assert!(before_commit
         .iter()
         .all(|row| { row.text(BODY).transpose().unwrap().as_deref() != Some("linked") }));
-    drop(before_commit);
     common::click(&mut app, "OK");
-    common::wait_for_label(&mut app, "0|1");
+    if replacing {
+        common::wait_for_label(&mut app, "pending|0|26");
+        common::click(&mut app, "OK");
+    }
+    let committed = if refuses {
+        "3|"
+    } else if replacing {
+        "0|26"
+    } else if validated {
+        "0|1|25"
+    } else {
+        "0|1"
+    };
+    common::wait_for_label(&mut app, committed);
     common::click(&mut app, "OK");
     common::wait_until(&mut app, "the script to finish", |app| {
         !app.state().script_running()
@@ -2392,6 +2541,10 @@ fn local_related_position_is_visible_before_commit() {
     });
     let file = HbamFile::open(folder.file()).unwrap();
     let rows = file.records(NOTES).unwrap();
+    if refuses {
+        assert_eq!(rows, before_commit);
+        return;
+    }
     let child = rows
         .iter()
         .find(|row| row.text(BODY).transpose().unwrap().as_deref() == Some("linked"))
@@ -2401,7 +2554,13 @@ fn local_related_position_is_visible_before_commit() {
         Some("fresh key")
     );
     assert_eq!(
-        child.text(POSITION).transpose().unwrap().as_deref(),
-        Some("1")
+        child.text(RESULT).transpose().unwrap().as_deref(),
+        Some(if replacing { "26" } else { "1" })
     );
+    if validated {
+        assert_eq!(
+            child.text(AMOUNT).transpose().unwrap().as_deref(),
+            Some("25")
+        );
+    }
 }

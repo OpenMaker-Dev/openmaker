@@ -461,6 +461,10 @@ move is stored.
 [O] FileMaker Pro 26.1.1 on macOS, Actual Size, on a synthetic form with a
 locked rectangle, a group of two rectangles and a tab control with a
 rectangle on each panel ([#884](https://github.com/OpenMaker-Dev/openmaker/issues/884)).
+With nothing selected, the two grouped rectangles drew without an enclosing
+group rule or caption. Selecting the group showed its enclosing frame.
+The ordinary group in this fixture stored a script step descriptor with ID
+zero and had no button action.
 With the Selection tool active, Edit > Select All selected the standalone
 and locked rectangles, the group as a unit, both tab panels and the
 rectangles on both panels. Objects highlighted the panel rows and the group
@@ -543,6 +547,14 @@ help](https://help.claris.com/en/pro-help/content/working-with-layout-objects.ht
 describes the object list and its temporary hiding tools, including that
 the pane cannot hide or reorder panels. These behaviors were not measured
 in a running FileMaker Pro window.
+
+### Closed popovers
+
+[Claris Help](https://help.claris.com/en/pro-help/content/changing-popover-settings.html)
+documents a closed and an open popover state in Layout mode. Double-clicking
+the popover button or using Format > Display Popover opens the closed
+popover. The [selection help](https://help.claris.com/en/pro-help/content/editing-objects-parts-background.html)
+describes opening the popover before selecting it or its contents.
 
 ## Layout mode: Align, Distribute and Resize To
 
@@ -723,15 +735,62 @@ choose Insert menu > Part." Then "In the Part Definition dialog box, select
 the type of layout part you want. Part types that are already on the
 layout are dimmed. (Only subsummary parts can exist more than once on a
 layout.)" The page also says "FileMaker Pro considers an object to be in a
-part when the top of the object is in or just touching the part." Unknown:
-the height of a part the Part tool adds, what the drop point decides (where
-a sub-summary goes, whether a drop in an impossible place is refused), and
-whether a click with the tool does anything.
+part when the top of the object is in or just touching the part."
+
+[O, 2026-11-26, FileMaker Pro 26.1.1 for macOS, #885's run: a blank
+file's Form layout (Top Navigation 110 points, Body 658) and List layout
+(Top Navigation 110, a leading sub-summary 22, Body 47, Footer 22), at
+100%, the Part tool dragged from the status toolbar; heights read from the
+closed file, drop points from 2× screenshots, to about half a point]
+
+- Dropped below the last part, the tool opened Part Definition at once,
+  and OK added the part after the last part, its top at the layout's old
+  bottom and its lower boundary at the drop point: drops 14 and 25 points
+  below the Form's Body gave parts 14 and 25 points high, drops 12 and 17
+  points below the List's Footer parts 12 and 17 points high. The parts
+  above did not change.
+- The kinds offered were those that may follow the last part and the
+  layout lacked: after the Form's Body, Sub-summary when sorted by,
+  Trailing Grand Summary, Footer, Title Footer and Bottom Navigation; after
+  the List's Footer, Title Footer and Bottom Navigation. The first of them
+  in the dialog's order was chosen: Sub-summary on the Form, whose OK, a
+  break field chosen, added a trailing sub-summary without asking whether
+  to print it above or below the records; Title Footer on the List. That
+  Pro always chooses the first kind offered is inferred from the two.
+- No drop within the parts added a part. Dropped on the List at the
+  boundary between the leading sub-summary and the Body, and at the one
+  between the Body and the Footer, Pro said "This part cannot be positioned
+  here." (OK dismisses it); at four other points of the List, one at the
+  Top Navigation's lower boundary, and within the Form, nothing happened.
+  Nor did a drop about 22 points below the List's Footer or one about 50
+  points below the Form's Body add a part.
+
+Unknown ([#1182](https://github.com/OpenMaker-Dev/openmaker/issues/1182)):
+the distance from a boundary at which Pro refuses with the alert, whether a
+drop at a boundary ever inserts a part between two others, the farthest
+drop below the parts that adds one, how the drop point is rounded,
+the order among several sub-summaries, other themes, and whether a click
+with the tool does anything.
 
 SHA-256 of the archives: `IDD_PART_SETUP.nib`
 `3231311abf1fbf77a3d0511afc31b78796d82f84d7f3cf293579f6a32af195ec`;
 `IDD_PART_DEFINITION.nib`
 `a5068fd2b6fa7447f66a1950740445d0fdd9e16991de0710f588f64d17e68224`.
+
+## Web Viewer Setup
+
+[O, 2026-11-26, FileMaker Pro 26.1.1 for macOS, #896's run, the dialog's
+accessibility tree] For a viewer just drawn with the Web Viewer tool, the
+dialog opens on the template Google Maps (US), its five boxes (Address,
+City, State, Zip Code, Country) blank and the Web Address prefilled with
+the template's calculation. Choosing Custom Web Address keeps that
+calculation until it is replaced. The options, in order, with their
+defaults for a new viewer: Allow interaction with web viewer content (on),
+Display content in Find mode (off), Display progress bar (on), Display
+status messages (on), Automatically encode URL (on), Allow JavaScript to
+perform FileMaker scripts (off). Their storage is in layout-model.md 9.6
+and 10.19. Unknown: the dialog's frames and the template list's order
+(no nib or screenshot measured here).
 
 ## Layout mode's Insert menu
 
@@ -760,8 +819,8 @@ Titles end in three periods where shown. Current Date has no shortcut here
 - **Part...** opened Part Definition at once, with Title Header chosen,
   on a layout with a top navigation part and a body (both dimmed). Title
   Header is the first kind in the dialog's order that layout lacked;
-  whether Pro always chooses that way, and what its Part tool chooses, is
-  not measured. Every checkbox was off, and
+  whether Pro always chooses that way is not measured (its Part tool's
+  choice is under "The Part tool"). Every checkbox was off, and
   only "Restart page numbers after each occurrence" was enabled for that
   choice.
 - **Field...** opened Specify Field on the layout's table, no field chosen

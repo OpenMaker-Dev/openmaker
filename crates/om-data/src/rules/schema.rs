@@ -135,6 +135,7 @@ pub(super) fn field_def_at(
         .with_global(options.options & GLOBAL != 0);
     def.class = class;
     def.options = options.options;
+    def.validation_options = options.validation_options;
     def.language = u32::from_be_bytes(options.raw[4..8].try_into().ok()?);
     def.comment = node
         .and_then(|n| n.get(FIELD_COMMENT))

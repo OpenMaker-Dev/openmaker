@@ -52,6 +52,7 @@ pub enum Command {
     DeleteObjects(DeleteObjectsParams),
     PlaceText(PlaceTextParams),
     PlacePortal(PlacePortalParams),
+    PlaceWebViewer(PlaceWebViewerParams),
     DuplicateLayout(DuplicateLayoutParams),
     DeleteLayout(DeleteLayoutParams),
     LayoutSetup(LayoutSetupParams),
@@ -129,6 +130,7 @@ impl Command {
             Command::DeleteObjects(_) => &catalog::DELETE_OBJECTS,
             Command::PlaceText(_) => &catalog::PLACE_TEXT,
             Command::PlacePortal(_) => &catalog::PLACE_PORTAL,
+            Command::PlaceWebViewer(_) => &catalog::PLACE_WEB_VIEWER,
             Command::DuplicateLayout(_) => &catalog::DUPLICATE_LAYOUT,
             Command::DeleteLayout(_) => &catalog::DELETE_LAYOUT,
             Command::LayoutSetup(_) => &catalog::LAYOUT_SETUP,
@@ -629,6 +631,37 @@ pub struct PlaceTextParams {
     pub layout_name: Option<String>,
     /// One line of at most 1,000 characters.
     pub text: String,
+    /// Whole points left and top, inside the body part and the layout's
+    /// width, not over a group, portal, tab or slide control, popover or
+    /// button bar.
+    pub frame: FrameParams,
+    /// The layout's `revision` from get_layout: required, so nothing is
+    /// placed on a layout that changed unseen.
+    pub expected_revision: String,
+}
+
+/// A web viewer to place on a layout's body, as FileMaker Pro's Web Viewer
+/// tool and Web Viewer Setup make one with a custom web address.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PlaceWebViewerParams {
+    /// The layout, as for `get_layout`.
+    #[serde(default)]
+    pub layout: Option<String>,
+    #[serde(default)]
+    pub layout_name: Option<String>,
+    /// The web address: calculation text, as Specify Calculation takes it,
+    /// such as `"https://example.com/?q=" & Website`. Unqualified field
+    /// names are fields of the layout's table occurrence.
+    pub address: String,
+    /// Web Viewer Setup's options to turn on (true) or off (false), by
+    /// name: allow_interaction, display_in_find_mode, display_progress_bar,
+    /// display_status_messages, encode_url, allow_javascript_scripts. The
+    /// others keep FileMaker Pro's defaults for a new viewer (interaction,
+    /// progress bar, status messages and encoding on). Only combinations
+    /// FileMaker Pro was seen to store are written; others are refused.
+    #[serde(default)]
+    pub options: Option<std::collections::BTreeMap<String, bool>>,
     /// Whole points left and top, inside the body part and the layout's
     /// width, not over a group, portal, tab or slide control, popover or
     /// button bar.

@@ -7,7 +7,7 @@ use std::mem::size_of;
 
 use super::{
     CanvasState, ControlChanges, DeletedObjects, MovedObjects, NewButton, NewField, NewPortal,
-    NewText, NewWidth, WordChanges,
+    NewText, NewWebViewer, NewWidth, WordChanges,
 };
 use crate::session::{Geometry, Session};
 
@@ -46,6 +46,7 @@ pub(crate) struct Draft {
     button: Option<NewButton>,
     text: Option<NewText>,
     portal: Option<NewPortal>,
+    web_viewer: Option<NewWebViewer>,
     moved: MovedObjects,
     deleted: DeletedObjects,
     controls: ControlChanges,
@@ -76,6 +77,11 @@ impl CanvasState {
                 .new_portal
                 .as_ref()
                 .filter(|p| p.setup.is_some())
+                .cloned(),
+            web_viewer: self
+                .new_web_viewer
+                .as_ref()
+                .filter(|v| v.setup.is_some())
                 .cloned(),
             moved: self.moved.clone(),
             deleted: self.deleted.clone(),
@@ -129,6 +135,11 @@ impl CanvasState {
         if let Some(button) = button {
             reserve(button.label.len())?;
             reserve(button.action.len())?;
+        }
+        if let Some(choice) = self.new_web_viewer.as_ref().and_then(|v| v.setup.as_ref()) {
+            reserve(choice.address.len())?;
+            reserve(choice.formatted.len())?;
+            reserve(choice.polish.len())?;
         }
         if let Some(choice) = portal.and_then(|p| p.setup.as_ref()) {
             reserve(choice.name.len())?;
@@ -271,6 +282,7 @@ impl CanvasState {
         self.new_button = draft.button;
         self.new_text = draft.text;
         self.new_portal = draft.portal;
+        self.new_web_viewer = draft.web_viewer;
         self.moved = draft.moved;
         self.deleted = draft.deleted;
         self.controls = draft.controls;
@@ -285,6 +297,8 @@ impl Draft {
         self.fields == canvas.new_fields
             && self.button.as_ref() == canvas.new_button.as_ref().filter(|b| b.step.is_some())
             && self.portal.as_ref() == canvas.new_portal.as_ref().filter(|p| p.setup.is_some())
+            && self.web_viewer.as_ref()
+                == canvas.new_web_viewer.as_ref().filter(|v| v.setup.is_some())
             && match (&self.text, &canvas.new_text) {
                 (None, None) => true,
                 (Some(before), Some(now)) => {

@@ -3808,6 +3808,118 @@ fn global_text_auto_entry_reads_current_or_assigned_self() {
 }
 
 #[test]
+fn a_local_global_recalculates_from_explicit_input_and_new_record() {
+    use fixture::{LAYOUT, NAME, OCCURRENCE};
+    use om_data::calc::Value;
+    use om_data::host::CalcNeed;
+    use om_data::rules::RecordNumber;
+    use om_data::{RecordCreation, ScriptWrite};
+
+    const INPUT: u64 = 40;
+    const OUTPUT: u64 = 41;
+    for (tag, formula, before, changed, seeded) in [
+        ("empty", r#"Let ( observed = Input ; "" )"#, "", "", ""),
+        (
+            "echo",
+            "Let ( observed = Input ; observed )",
+            "before",
+            "changed",
+            "seed",
+        ),
+    ] {
+        let folder = Folder::new(tag);
+        let path = folder.file(FILE, PASSWORD, |root| {
+            fixture::add_field(root, TABLE, INPUT, "Input", 1, 1, 0, 0x1_0000, 0);
+            fixture::add_field(root, TABLE, OUTPUT, "Output", 1, 1, 0, 0x1_0088, 0);
+            let mut names = fixture::names();
+            names.add_field(TABLE, INPUT, "Input");
+            fixture::add_formula(root, &names, (TABLE, OCCURRENCE), OUTPUT, 5, formula);
+        });
+        let mut provider = opened(&path);
+        let values = |provider: &mut NativeProvider| {
+            let data = provider
+                .calc_data(&[CalcNeed::Globals { table: TABLE }])
+                .unwrap();
+            [INPUT, OUTPUT].map(|field| match data.globals[&TABLE].get(field, 1) {
+                Some(Value::Text(text)) => text.as_str().to_owned(),
+                None => String::new(),
+                other => panic!("expected plain Text, got {other:?}"),
+            })
+        };
+        let layout = LAYOUT as u32;
+        let original = provider.records(layout, 0, 1).unwrap();
+        provider.set_global(TABLE, INPUT, 1, "before").unwrap();
+        assert_eq!(values(&mut provider), ["before", before]);
+        assert!(!provider.record_session_open());
+        provider.set_global(TABLE, OUTPUT, 1, "prior").unwrap();
+        provider.begin_record_commit().unwrap();
+        provider
+            .write_record(&ScriptWrite {
+                layout,
+                record: Some(original.records[0].id),
+                cells: [(NAME, Some("Unrelated edit".into()))].into(),
+                ..Default::default()
+            })
+            .unwrap();
+        provider.commit_record_session(false).unwrap();
+        assert_eq!(values(&mut provider), ["before", "prior"]);
+
+        for (input, expected) in [("changed", changed), ("changed", changed), ("", "")] {
+            provider.set_global(TABLE, OUTPUT, 1, "prior").unwrap();
+            provider.set_global(TABLE, INPUT, 1, input).unwrap();
+            assert_eq!(values(&mut provider), [input, expected]);
+            assert!(!provider.record_session_open());
+        }
+        assert_eq!(
+            provider.records(layout, 0, 1).unwrap().total,
+            original.total
+        );
+
+        provider.set_global(TABLE, INPUT, 1, "seed").unwrap();
+        provider.set_global(TABLE, OUTPUT, 1, "prior").unwrap();
+        provider.begin_record_commit().unwrap();
+        let new = ScriptWrite {
+            layout,
+            record_number: Some(RecordNumber::LocalNewRecord(original.total + 1)),
+            ..Default::default()
+        };
+        let sorted = ScriptWrite {
+            record_number: Some(RecordNumber::LocalSortedNewRecord {
+                position: 2,
+                after: original.records[0].id as u64,
+            }),
+            ..new.clone()
+        };
+        assert_eq!(
+            provider
+                .write_record_with_creation(&sorted, RecordCreation::NewRecord)
+                .unwrap_err()
+                .code,
+            Some(3)
+        );
+        assert_eq!(values(&mut provider), ["seed", "prior"]);
+        let created = provider
+            .write_record_with_creation(&new, RecordCreation::NewRecord)
+            .unwrap();
+        assert_eq!(values(&mut provider), ["seed", seeded]);
+        provider.commit_record_session(false).unwrap();
+        assert_eq!(values(&mut provider), ["seed", seeded]);
+        provider.close();
+
+        let file = om_hbam::HbamFile::open(&path).unwrap();
+        assert_eq!(
+            file.records(TABLE).unwrap().len(),
+            original.total as usize + 1
+        );
+        for record in [original.records[0].id, created.id] {
+            for field in [INPUT, OUTPUT] {
+                assert!(file.cell(TABLE, record as u64, field).unwrap().is_none());
+            }
+        }
+    }
+}
+
+#[test]
 fn new_record_auto_enters_the_session_globals() {
     use fixture::{LAYOUT, NAME, OCCURRENCE};
     use om_data::calc::Value;

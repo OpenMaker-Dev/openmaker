@@ -12,8 +12,8 @@ use om_author::api::{
     DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, EditParams, FieldControlParams,
     FieldParams, FieldType, FrameParams, InspectParams, LabelParams, LayoutParams,
     LayoutSetupParams, LayoutWidthParams, ObjectFrameParams, ObjectFramesParams, PageMargins, Part,
-    PartOptionsParams, PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlacementParams,
-    RunScriptParams, ScriptParams, TextParams,
+    PartOptionsParams, PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlaceWebViewerParams,
+    PlacementParams, RunScriptParams, ScriptParams, TextParams,
 };
 use om_author::api::{
     ChoiceParams, ChooseParams, CompletionParams, NoParams, OtherParams, ValueListParams,
@@ -67,6 +67,11 @@ commands (each prints one JSON response):
                                      place a portal of a related occurrence with
                                      those fields in its first row, then read
                                      the layout back
+  place-web-viewer LAYOUT --address CALC --frame FRAME --expected-revision REV
+      [--options OPTION=on|off,...]  place a web viewer with that web address
+                                     (calculation text) and Web Viewer Setup's
+                                     options (allow_interaction, encode_url,
+                                     ...), then read the layout back
   delete-objects LAYOUT --object REF --expected-revision REV
                                      delete one object, then read the layout
                                      back
@@ -233,6 +238,7 @@ struct Args {
     record: Option<String>,
     value: Option<String>,
     text: Option<String>,
+    address: Option<String>,
     cursor: Option<String>,
     occurrence: Option<String>,
     occurrence_name: Option<String>,
@@ -347,6 +353,7 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
             "--label-frame" => args.label_frame = Some(value(&arg)?),
             "--parameter" => args.parameter = Some(value(&arg)?),
             "--text" => args.text = Some(value(&arg)?),
+            "--address" => args.address = Some(value(&arg)?),
             "--cursor" => args.cursor = Some(value(&arg)?),
             "--occurrence" => args.occurrence = Some(value(&arg)?),
             "--occurrence-name" => args.occurrence_name = Some(value(&arg)?),
@@ -633,6 +640,20 @@ fn command(name: &str, args: &Args) -> Result<Command, String> {
             frame: frame(args.frame.as_deref(), "--frame")?,
             expected_revision: args.expected_revision.clone().ok_or(
                 "place-text needs --expected-revision: the layout's revision from get-layout.",
+            )?,
+        }),
+        "place_web_viewer" => Command::PlaceWebViewer(PlaceWebViewerParams {
+            layout: args.layout.clone(),
+            layout_name: args.layout_name.clone(),
+            address: args
+                .address
+                .clone()
+                .ok_or("place-web-viewer needs --address: the web address, a calculation.")?,
+            options: on_off(&args.options)?,
+            frame: frame(args.frame.as_deref(), "--frame")?,
+            expected_revision: args.expected_revision.clone().ok_or(
+                "place-web-viewer needs --expected-revision: the layout's revision from \
+                 get-layout.",
             )?,
         }),
         "place_portal" => Command::PlacePortal(PlacePortalParams {
@@ -1078,6 +1099,7 @@ mod tests {
             target_file: Some("B.fmp12".into()),
             value_list: Some("value_list:1@F.fmp12".into()),
             arrangement: Some("align_left_edges".into()),
+            address: Some("\"https://example.com\"".into()),
             dx: Some(-1.0),
             dy: Some(2.0),
             ..Args::default()
