@@ -2720,9 +2720,19 @@ impl RecordPlan {
                     .and_then(Result::ok)
                     .unwrap_or_default()
             };
+            // In the measured local definition, membership was selected
+            // but no list reference was stored. FileMaker accepted typed
+            // values without prompting and kept the field's bytes intact.
+            let absent_list = local
+                && kind == FieldKind::Normal
+                && field.data_type == DataType::Text
+                && options.options == 0
+                && options.validation_options == VALIDATE_VALUE_LIST
+                && options.max_repetitions == 1
+                && field_node.is_some_and(|node| node.get(FIELD_VALUE_LIST).is_none());
             let range = (options.validation_options & VALIDATE_RANGE != 0)
                 .then(|| (text_at(FIELD_RANGE_FROM), text_at(FIELD_RANGE_TO)));
-            let list = if options.validation_options & VALIDATE_VALUE_LIST != 0 {
+            let list = if options.validation_options & VALIDATE_VALUE_LIST != 0 && !absent_list {
                 let defer_dangling = local
                     && kind == FieldKind::Normal
                     && field.data_type == DataType::Text
@@ -6977,9 +6987,8 @@ fn list_rule(
     if let Some(list) = list {
         return Ok(rule_of(list).unwrap_or_else(ListRule::Unchecked));
     }
-    // FileMaker's list deletion left this single-byte ID reference in
-    // place. The scripts that need no membership check kept writing.
-    // Keep a refusal for entry that would need the list.
+    // FileMaker kept this reference after deleting the list. The list
+    // accepts no nonempty input when membership is actually checked.
     if defer_dangling
         && tree.at(&path).is_none()
         && matches!(
@@ -6987,7 +6996,7 @@ fn list_rule(
             [2, 1, 1..=255, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0xff]
         )
     {
-        return Ok(ListRule::Unchecked("its value list is missing".into()));
+        return Ok(ListRule::Custom(Vec::new()));
     }
     Err("its value list is missing.".into())
 }
@@ -10893,6 +10902,63 @@ mod tests {
         }
     }
 
+    #[test]
+    fn local_membership_without_a_reference_accepts_written_text() {
+        let table = Table {
+            id: 0x8002,
+            name: "Example".into(),
+            fields: vec![
+                field(6, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(7, FieldKind::Normal, DataType::Text, 0, 0, 0x100),
+            ],
+        };
+        // Include the measured field definition, with no member 07.
+        let definition = (7, 2, table.fields[1].options.to_vec());
+        let plan = plan_with(
+            &table,
+            &[],
+            std::slice::from_ref(&definition),
+            Vec::new(),
+            true,
+        )
+        .unwrap();
+        let input = BTreeMap::from([(7, Some("Other".into()))]);
+        for entry in [Entry::default(), Entry::script(false, false)] {
+            plan.check_entry(7, "Other", entry).unwrap();
+            assert_eq!(
+                plan.compute(
+                    WriteMode::Update,
+                    &BTreeMap::new(),
+                    &input,
+                    &environment(),
+                    entry
+                )
+                .unwrap(),
+                input
+            );
+        }
+        assert!(plan_with(
+            &table,
+            &[],
+            std::slice::from_ref(&definition),
+            Vec::new(),
+            false
+        )
+        .is_err());
+        assert!(plan_with(
+            &table,
+            &[],
+            &[definition, (7, FIELD_VALUE_LIST, list_reference(1))],
+            Vec::new(),
+            true
+        )
+        .is_err());
+        let mut strict = table;
+        strict.fields[1].options[12..16].copy_from_slice(&0x104_u32.to_be_bytes());
+        let strict_definition = (7, 2, strict.fields[1].options.to_vec());
+        assert!(plan_with(&strict, &[], &[strict_definition], Vec::new(), true).is_err());
+    }
+
     /// Value list `id` of the catalog `[21, 5, id]`: custom values, or the
     /// values of `field` of occurrence `0xd0_0002`.
     fn value_list(
@@ -10988,8 +11054,16 @@ mod tests {
             )
             .unwrap_err()
             .code,
-            Some(error::UNAVAILABLE)
+            Some(error::NOT_IN_LIST)
         );
+        for text in ["Red", "Other"] {
+            assert_eq!(
+                plan.check_entry(7, text, Entry::default())
+                    .unwrap_err()
+                    .code,
+                Some(error::NOT_IN_LIST)
+            );
+        }
         assert!(plan_with(&table, &[], &reference, Vec::new(), false).is_err());
         assert!(plan_with(&table, &[], &[], Vec::new(), true).is_err());
 
