@@ -2783,12 +2783,47 @@ anything for the kinds OpenMaker adds, and what a click with the tool does
 order, with its submenus and shortcuts (re/client-ui.md, "Layout mode's
 Insert menu"). Part... works as above, enabled when Part Definition can open
 (the layout read, no unsaved change, nothing with the host, a kind of part
-missing). The other items are shown but not offered yet: Field... (Pro
-opens Specify Field; on the layout captured it inserted a selected edit box
-with its label at the bottom of the body), the items of the Graphic Object and
-Field/Control submenus (which open on them), the objects of the other tools, Picture..., the
-current date, time and user name, the symbols, Merge Field..., Merge
-Variable and Layout Calculation....
+missing). It adds a Title Header to a layout with a top navigation part 22
+points high, right below that part, the parts below moving down 22 points,
+as Pro 26.1.1's did.
+
+Field... adds an edit box to the layout's draft and selects it, with Create
+label on, as a field dragged from the Fields pane is; the Inspector
+chooses its field, and Save Layout places it. It is enabled in Layout mode
+when the layout is read and nothing is being saved or placed with the
+Button, Text or Portal tool. The box is 253 points wide, as Pro 26.1.1's
+was, and centered where Pro centered its box (re/client-ui.md, "Layout
+mode's Insert menu"):
+- **After a click on the layout,** or where a drag on it began, with any
+  tool, it is centered on that point, its edges rounded down and its left
+  kept at the layout's left edge. The point is used once.
+- **Without one,** it is centered on the canvas the window shows. This fits
+  where Pro put it on two layouts, but Pro's rule is not measured.
+
+Either way it is kept within the layout, its bottom no lower than the
+layout's (as Pro's was on a short layout); keeping the other edges in is
+OpenMaker's choice.
+
+Limits of Field..., against Pro:
+- Pro opens Specify Field, and its OK inserts the chosen field. OpenMaker
+  chooses the field in the Inspector, as for its Field tool.
+- The box is 44 points high, as from the Fields pane. Pro's was 31 on an
+  Apex Blue layout and 44 on another, so its height follows the theme,
+  which OpenMaker does not read yet.
+- The label follows OpenMaker's rule for new fields: 90 points wide, 4 left
+  of the box and as high as it, and none at the layout's left edge. Pro's
+  was about 91 by 21 points, 11 left of the box and 6 points down, and at
+  the left edge it overlapped the box.
+- Pro did not follow a selection made in the Objects pane or a move made
+  in the Inspector. How long its point lasts, scrolling and zoom were not
+  measured.
+
+The other items are shown but not offered yet:
+- the items of the Graphic Object and Field/Control submenus (which open
+  on them);
+- the objects of the other tools, and Picture...;
+- the current date, time and user name, and the symbols;
+- Merge Field..., Merge Variable and Layout Calculation....
 
 **A part's boundary.** In Layout mode the Selection tool drags a part's
 lower boundary (a band across the layout and the part strip) to set its

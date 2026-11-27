@@ -770,9 +770,42 @@ Titles end in three periods where shown. Current Date has no shortcut here
   layout, its bottom at the body's), with its label to its left. Undo
   removed both, and leaving the layout still asked whether to save it.
 
-Unknown: where Field... puts the edit box on other layouts (the rule
-behind 374/528), what the other items do, and Part Definition's first
-choice on other layouts.
+[O, 2026-11-26, FileMaker Pro 26.1.1 for macOS, #885's run] On a blank
+file's Form layout (Top Navigation 110 points, Body 658) and List layout
+(Top Navigation 110, a leading sub-summary 22, Body 47, Footer 22),
+Part... chose Title Header. OK added it 22 points high right below the Top
+Navigation, and every later part moved down 22 points, its height
+unchanged.
+
+[O, 2026-11-26, FileMaker Pro 26.1.1 for macOS, #911's second run] Six
+Field... insertions of one field (label at the left) were made. The layouts
+were that file's Form (1024 points wide, its parts 768 high) and its List,
+narrowed to 649 wide (parts 201 high), both Apex Blue. Frames were read in
+the Inspector and the closed file.
+- **Size:** the edit box was 253 by 31 points every time. Its label was
+  about 91.08 by 21 points, 6 points below the box's top, its right edge
+  11 points left of the box. With the box at left 0, the label was at left
+  0 too, overlapping it.
+- **Placement:**
+  - After a click on the layout, on a field or on blank space, or after a
+    field was drawn from layout point 125/137, the box was centered on that
+    point, rounded down, its left kept at 0. For example, a click at
+    450/155 gave 323/139, and the draw from 125/137 gave 0/121. That the
+    box is centered there is inferred from three runs.
+  - With no click since the layout was shown, or after only a selection
+    in the Objects pane or a move in the Inspector following an earlier
+    insertion, it went to 240/224 on the Form and 240/170 on the List, its
+    bottom at the List's bottom. This fits a box centered on the window's
+    view and kept on the layout (inferred).
+- **Its part:** the box belonged to the part its top was in. One whose top
+  was in the List's leading sub-summary belonged to it though its bottom
+  reached the Body.
+
+Unknown: Pro's rule without a click, how long a click's point lasts,
+rounding, scrolling and zoom, whether other edges are kept on the layout,
+the label's width for other names, the box's height on other themes (31
+here, 44 on the earlier layout), what the other items do, and Part
+Definition's first choice on other layouts.
 
 ## Portal Setup
 

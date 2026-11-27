@@ -843,6 +843,78 @@ fn a_sidebar_field_drop_saves_a_44_point_edit_box() {
     assert_eq!(field.rect.height(), 44.0);
 }
 
+/// Insert > Field... (#911) stages an edit box 253 points wide, its field
+/// chosen in the Inspector. With no click on the layout yet it is centered
+/// on the canvas shown, its bottom kept at the short layout's bottom, as
+/// FileMaker Pro 26.1.1's was on a short List layout; after a click on
+/// blank space it is centered on that point, its left kept at the layout's
+/// left edge, as Pro's was.
+#[test]
+fn insert_field_puts_its_edit_box_where_filemaker_pro_did() {
+    let file = form_file();
+    let hosted = hosted::host_file(
+        "insert-field",
+        Path::new(&file.0),
+        fixture::FILE,
+        (ACCOUNT, PASSWORD),
+    );
+    let mut app = open_window(&hosted);
+    common::click(&mut app, "Edit Layout");
+    common::wait_for_label(&mut app, "Field: Count (object 1)");
+    let inserted = |app: &mut common::App| {
+        common::open_menu(app, "Insert");
+        common::click(app, "Field...");
+        app.run_steps(2);
+        ["Left", "Top", "Width", "Height"].map(|side| {
+            app.get_by_label(&format!("New Field {side}"))
+                .accesskit_node()
+                .numeric_value()
+                .unwrap()
+        })
+    };
+    let [left, top, width, height] = inserted(&mut app);
+    assert_eq!([top, width, height], [200.0 - 44.0, 253.0, 44.0]);
+    assert!(left >= 0.0, "{left}");
+    shot(&mut app, "insert-field", "Insert > Field..., no click yet");
+    common::click(&mut app, "Field to Place");
+    app.get_all_by_label("Name").last().unwrap().click();
+    app.run_steps(3);
+    save_layout(&mut app);
+    common::wait_until(&mut app, "the inserted field saved", |app| {
+        assert!(app.state().error().is_none(), "{:?}", app.state().error());
+        app.state().is_settled() && app.query_by_label("New field Name").is_none()
+    });
+    let geometry = hosted
+        .opened()
+        .layout_geometry(fixture::LAYOUT.try_into().unwrap())
+        .unwrap()
+        .unwrap();
+    let field = geometry
+        .objects
+        .iter()
+        .find(|object| object.field_name.as_deref() == Some("Name"))
+        .unwrap();
+    assert_eq!(
+        [
+            field.rect.left,
+            field.rect.top,
+            field.rect.width(),
+            field.rect.height()
+        ],
+        [left, top, 253.0, 44.0]
+    );
+
+    // A click on blank space of the Body, 50 points from the layout's left.
+    let canvas = app.get_by_label("Layout canvas").rect();
+    click_at(&mut app, canvas.min + egui::vec2(22.0 + 50.0, 150.0));
+    assert_eq!(inserted(&mut app), [0.0, 150.0 - 22.0, 253.0, 44.0]);
+    shot(
+        &mut app,
+        "insert-field-click",
+        "Insert > Field... after a click 50 points from the left edge",
+    );
+}
+
 /// Layout mode's Portal tool draws a portal; Portal Setup, which opens as
 /// the drawing ends, offers the occurrences related to the layout's and the
 /// number of rows, and Add Fields to Portal the occurrence's fields; Save
@@ -2431,7 +2503,6 @@ fn part_setup_creates_and_deletes_a_header_and_the_body_boundary_is_dragged() {
         assert!(app.state().error().is_none(), "{:?}", app.state().error());
         app.state().is_settled() && app.query_by_label("Top Navigation boundary").is_some()
     });
-    drop(app);
     assert_eq!(
         read(&hosted),
         (
@@ -2442,6 +2513,42 @@ fn part_setup_creates_and_deletes_a_header_and_the_body_boundary_is_dragged() {
                 (7, 372.0, 22.0)
             ],
             152.0
+        )
+    );
+
+    // Again, with a Top Navigation part: Title Header is chosen, and OK
+    // adds it 22 points high right below the Top Navigation, the parts
+    // below moving down 22 points, as FileMaker Pro 26.1.1's Insert > Part
+    // did.
+    common::open_menu(&mut app, "Insert");
+    common::click(&mut app, "Part...");
+    common::wait_until(&mut app, "Insert > Part's Part Definition", |app| {
+        app.query_by_role_and_label(Role::RadioButton, "Title Header")
+            .is_some()
+    });
+    assert_eq!(
+        app.get_by_role_and_label(Role::RadioButton, "Title Header")
+            .accesskit_node()
+            .toggled(),
+        Some(egui::accesskit::Toggled::True)
+    );
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "Insert > Part's Title Header saved", |app| {
+        assert!(app.state().error().is_none(), "{:?}", app.state().error());
+        app.state().is_settled() && app.query_by_label("Title Header boundary").is_some()
+    });
+    drop(app);
+    assert_eq!(
+        read(&hosted),
+        (
+            vec![
+                (12, 0.0, 22.0),
+                (0, 22.0, 22.0),
+                (1, 44.0, 110.0),
+                (4, 154.0, 240.0),
+                (7, 394.0, 22.0)
+            ],
+            174.0
         )
     );
 }

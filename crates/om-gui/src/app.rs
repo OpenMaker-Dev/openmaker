@@ -650,6 +650,9 @@ pub(crate) enum Action {
     /// The Part tool used on the layout: Part Definition alone, whose OK
     /// adds a part as Part Setup's Create does.
     InsertPart,
+    /// Insert > Field...: an edit box staged and selected on the layout,
+    /// its field chosen in the Inspector (`CanvasState::insert_field`).
+    InsertField,
     SetPartOptions(om_data::layout_placement::PartOptionsChange),
     ConfirmDeleteLayout,
     CancelDeleteLayout,
@@ -1982,6 +1985,7 @@ impl OpenMakerApp {
                         && self.w.layout_workspace.selection_count(session) > 0
                 }),
             insert_part: self.can_insert_part(),
+            insert_field: self.can_insert_field(),
             layout_arrange: match self.w.session.as_ref() {
                 Some(session)
                     if self.w.mode == Mode::Layout
@@ -5529,6 +5533,13 @@ impl OpenMakerApp {
             Action::CancelDeleteLayout => self.w.delete_layout = None,
             Action::LayoutSetup => self.open_layout_setup(),
             Action::PartSetup => self.open_part_setup(),
+            Action::InsertField => {
+                if self.can_insert_field() {
+                    if let Some(session) = &self.w.session {
+                        self.w.layout_workspace.insert_field(session);
+                    }
+                }
+            }
             Action::InsertPart => {
                 // Not over a Part Setup already open, whose request may be
                 // with the host.
@@ -6906,6 +6917,29 @@ impl OpenMakerApp {
             && om_data::layout_placement::ADDABLE_PARTS
                 .iter()
                 .any(|kind| !document.layout.parts.iter().any(|p| p.part_type == *kind))
+    }
+
+    /// Whether Insert > Field... can add an edit box now: Layout mode with
+    /// design access, the layout read with its revision, nothing being
+    /// saved, and no button, text or portal being placed, as for a field
+    /// dragged from the Fields pane. `InsertField` checks again when it
+    /// runs.
+    fn can_insert_field(&self) -> bool {
+        let Some(session) = self.w.session.as_ref() else {
+            return false;
+        };
+        let crate::session::Geometry::Loaded(geometry) = &session.geometry else {
+            return false;
+        };
+        self.w.mode == Mode::Layout
+            && self.design_allowed()
+            && self.w.connection_lost.is_none()
+            && !self.recovery_holds()
+            && !self.script.busy()
+            && session.layout.is_some()
+            && geometry.revision.is_some()
+            && !self.w.layout_workspace.saving
+            && self.w.layout_workspace.can_insert_field()
     }
 
     /// Part Setup over the layout the window shows in Layout mode: its
