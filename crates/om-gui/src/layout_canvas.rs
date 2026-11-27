@@ -550,7 +550,7 @@ impl CanvasState {
     /// being placed, as a field dragged from the Fields pane is refused
     /// then.
     pub(crate) fn can_insert_field(&self) -> bool {
-        self.geometry.as_ref().is_some_and(|g| body_of(g).is_some())
+        self.insert_area().is_some()
             && self.new_button.is_none()
             && self.new_text.is_none()
             && self.new_portal.is_none()
@@ -573,19 +573,10 @@ impl CanvasState {
         if !self.can_insert_field() {
             return false;
         }
-        let Some((geometry, body)) = self.geometry.as_ref().and_then(|g| Some((g, body_of(g)?)))
-        else {
+        let Some((layout_width, body_top, body_height)) = self.insert_area() else {
             return false;
         };
-        let layout_width = f64::from(finite_extent(
-            self.width.map_or(geometry.width, |w| w.width),
-        ))
-        .floor();
-        let body_top = body.top.ceil();
-        let body_height = (body.top + body.height).floor() - body_top;
-        if layout_width < 1.0 || body_height < 1.0 {
-            return false;
-        }
+        let revision = self.geometry.as_ref().and_then(|g| g.revision);
         let width = INSERTED_FIELD.0.min(layout_width);
         let height = INSERTED_FIELD.1.min(body_height);
         let center = self
@@ -615,10 +606,23 @@ impl CanvasState {
             label: true,
             control: 0,
             value_list: None,
-            revision: geometry.revision,
+            revision,
         };
         self.stage_field(session, field);
         true
+    }
+
+    /// Where Insert > Field... may put its box, in whole points inside the
+    /// stored bounds: the layout's width, and the body part's top and
+    /// height. `None` without a body at least a point high.
+    fn insert_area(&self) -> Option<(f64, f64, f64)> {
+        let geometry = self.geometry.as_ref()?;
+        let body = body_of(geometry)?;
+        let width = self.width.map_or(geometry.width, |w| w.width);
+        let layout_width = width.is_finite().then(|| width.floor())?;
+        let body_top = body.top.ceil();
+        let body_height = (body.top + body.height).floor() - body_top;
+        (layout_width >= 1.0 && body_height >= 1.0).then_some((layout_width, body_top, body_height))
     }
 
     pub(crate) fn take_field_finished(&mut self) -> bool {
@@ -1505,22 +1509,34 @@ fn draw(
             // and one on blank space; not one on a menu or dialog over the
             // canvas. Taken from the press itself, which a release in the
             // same frame does not clear.
-            let pressed = ui.input(|input| {
-                input.events.iter().rev().find_map(|event| match event {
-                    egui::Event::PointerButton {
-                        pos,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        ..
-                    } => Some(*pos),
-                    _ => None,
-                })
+            // The latest such press of the frame's events, checked outside
+            // `input`, which holds the context.
+            let presses: Vec<Pos2> = ui.input(|input| {
+                input
+                    .events
+                    .iter()
+                    .filter_map(|event| match event {
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            ..
+                        } => Some(*pos),
+                        _ => None,
+                    })
+                    .collect()
             });
-            if let Some(global) = pressed.filter(|_| selectable) {
-                let point = from_global * global;
-                if surface.contains(point) && ui.ctx().layer_id_at(global) == Some(ui.layer_id()) {
-                    insert_at.point = Some(point - origin.to_vec2());
-                }
+            let pressed = presses
+                .into_iter()
+                .rev()
+                .filter(|_| selectable)
+                .find_map(|global| {
+                    let point = from_global * global;
+                    (surface.contains(point) && ui.ctx().layer_id_at(global) == Some(ui.layer_id()))
+                        .then_some(point)
+                });
+            if let Some(point) = pressed {
+                insert_at.point = Some(point - origin.to_vec2());
             }
             insert_at.shown = Some(ui.clip_rect().translate(-origin.to_vec2()));
             // The pasteboard keeps ScrollArea's drag behavior. Only the
