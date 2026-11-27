@@ -103,6 +103,25 @@ impl NewField {
     }
 }
 
+/// The edit box Insert > Field... puts on the layout: as wide as FileMaker
+/// Pro 26.1.1's (253 points, on two layouts), and as high as a field
+/// dragged from the Fields pane (OpenMaker's choice: Pro's was 31 points on
+/// an Apex Blue layout and 44 on another, so it follows the theme, which
+/// OpenMaker does not read yet). Re/client-ui.md, "Layout mode's Insert
+/// menu".
+const INSERTED_FIELD: (f64, f64) = (253.0, 44.0);
+
+/// Where Insert > Field... centers its edit box: the layout point last
+/// pressed on the editable canvas, until a field is put there or the
+/// canvas's history is cleared (another mode, Revert Layout, the layout
+/// read again or another layout); else the middle of the canvas the window
+/// showed when last drawn. Both in layout coordinates.
+#[derive(Clone, Copy, Debug, Default)]
+struct InsertAt {
+    point: Option<Pos2>,
+    shown: Option<Rect>,
+}
+
 /// A text being placed with the Text tool: its frame, dragged on the
 /// canvas (or a click's default size), its one line of text, typed on the
 /// canvas, and the revision of the layout it was drawn on. As with
@@ -445,6 +464,8 @@ pub(crate) struct CanvasState {
     /// The Part tool was used on the layout, at this layout point's y (in
     /// points): Part Definition opens.
     part_tool: Option<f64>,
+    /// Where Insert > Field... puts its edit box.
+    insert_at: InsertAt,
     /// A layout read again no longer has objects that unsaved control or
     /// text changes were made to; the changes are kept.
     orphaned_drafts: bool,
@@ -554,6 +575,86 @@ impl CanvasState {
 
     pub(crate) fn fields(&self) -> &[NewField] {
         &self.new_fields
+    }
+
+    /// Whether Insert > Field... can add an edit box: the layout read with
+    /// a body part, where fields are placed, and no button, text or portal
+    /// being placed, as a field dragged from the Fields pane is refused
+    /// then.
+    pub(crate) fn can_insert_field(&self) -> bool {
+        self.insert_area().is_some()
+            && self.new_button.is_none()
+            && self.new_text.is_none()
+            && self.new_portal.is_none()
+    }
+
+    /// Insert > Field...: an edit box with no field chosen yet, its label
+    /// on, staged and selected as a drawn one is (the Inspector chooses its
+    /// field). As FileMaker Pro 26.1.1 put its edit box, it is centered on
+    /// the layout point last clicked, or where a drag on the layout began,
+    /// its edges rounded down and its left kept at the layout's left edge;
+    /// the point is used once. Without one, it is centered on the canvas the
+    /// window shows, which fits where Pro put it on two layouts (inferred;
+    /// Pro's rule is not measured). It is kept within the layout's width
+    /// and in its body part, where Save Layout places fields (Pro kept its
+    /// box's bottom at a short layout's bottom, and put a box in whatever
+    /// part its top was in), narrower or lower than its size where they are.
+    /// False when nothing was added.
+    pub(crate) fn insert_field(&mut self, session: &Session) -> bool {
+        self.synchronize(session);
+        if !self.can_insert_field() {
+            return false;
+        }
+        let Some((layout_width, body_top, body_height)) = self.insert_area() else {
+            return false;
+        };
+        let revision = self.geometry.as_ref().and_then(|g| g.revision);
+        let width = INSERTED_FIELD.0.min(layout_width);
+        let height = INSERTED_FIELD.1.min(body_height);
+        let center = self
+            .insert_at
+            .point
+            .take()
+            .or_else(|| self.insert_at.shown.map(|shown| shown.center()))
+            .map_or(
+                (layout_width / 2.0, body_top + body_height / 2.0),
+                |point| (f64::from(point.x), f64::from(point.y)),
+            );
+        // The edge centering it, rounded down, kept in `from..from + extent`.
+        let place = |center: f64, size: f64, from: f64, extent: f64| {
+            let edge = (center - size / 2.0).floor();
+            if edge.is_finite() {
+                edge.min(from + extent - size).max(from)
+            } else {
+                from
+            }
+        };
+        let field = NewField {
+            left: place(center.0, width, 0.0, layout_width),
+            top: place(center.1, height, body_top, body_height),
+            width,
+            height,
+            field: None,
+            label: true,
+            control: 0,
+            value_list: None,
+            revision,
+        };
+        self.stage_field(session, field);
+        true
+    }
+
+    /// Where Insert > Field... may put its box, in whole points inside the
+    /// stored bounds: the layout's width, and the body part's top and
+    /// height. `None` without a body at least a point high.
+    fn insert_area(&self) -> Option<(f64, f64, f64)> {
+        let geometry = self.geometry.as_ref()?;
+        let body = body_of(geometry)?;
+        let width = self.width.map_or(geometry.width, |w| w.width);
+        let layout_width = width.is_finite().then(|| width.floor())?;
+        let body_top = body.top.ceil();
+        let body_height = (body.top + body.height).floor() - body_top;
+        (layout_width >= 1.0 && body_height >= 1.0).then_some((layout_width, body_top, body_height))
     }
 
     pub(crate) fn take_field_finished(&mut self) -> bool {
@@ -1128,6 +1229,7 @@ impl CanvasState {
                 self.drop_words();
                 self.drop_width();
                 self.known_keys.clear();
+                self.insert_at = InsertAt::default();
             }
             self.identity = Some((
                 session.target.host.clone(),
@@ -1285,6 +1387,7 @@ pub(crate) fn show(
                         .map(|(order, first)| (order.as_slice(), *first)),
                     design.as_ref(),
                     scroll,
+                    &mut state.insert_at,
                 );
                 if clicked_blank && had_selection && state.selected.0.is_empty() {
                     state.deselected_popovers = selected_popovers;
@@ -1348,6 +1451,7 @@ pub(crate) fn show(
                 None,
                 None,
                 &mut document.scroll,
+                &mut InsertAt::default(),
             );
         }
     }
@@ -1436,6 +1540,7 @@ fn draw(
     stack: Option<(&[usize], usize)>,
     design: Option<&crate::document::design::Surface<'_>>,
     scroll_state: &mut crate::document::scroll::Scroll,
+    insert_at: &mut InsertAt,
 ) -> (Option<NewField>, bool) {
     let order = stack.map(|(order, _)| order);
     let mut dropped = None;
@@ -1505,6 +1610,42 @@ fn draw(
             let press = ui
                 .input(|input| input.pointer.press_origin())
                 .map(|point| from_global * point);
+            // Insert > Field...'s point: a press on the editable layout with
+            // any tool, whether it selects, clicks blank space or begins a
+            // drag, as FileMaker Pro 26.1.1's followed a click on a field
+            // and one on blank space; not one on a menu or dialog over the
+            // canvas. Taken from the press itself, which a release in the
+            // same frame does not clear.
+            // The latest such press of the frame's events, checked outside
+            // `input`, which holds the context.
+            let presses: Vec<Pos2> = ui.input(|input| {
+                input
+                    .events
+                    .iter()
+                    .filter_map(|event| match event {
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            ..
+                        } => Some(*pos),
+                        _ => None,
+                    })
+                    .collect()
+            });
+            let pressed = presses
+                .into_iter()
+                .rev()
+                .filter(|_| selectable)
+                .find_map(|global| {
+                    let point = from_global * global;
+                    (surface.contains(point) && ui.ctx().layer_id_at(global) == Some(ui.layer_id()))
+                        .then_some(point)
+                });
+            if let Some(point) = pressed {
+                insert_at.point = Some(point - origin.to_vec2());
+            }
+            insert_at.shown = Some(ui.clip_rect().translate(-origin.to_vec2()));
             // The pasteboard keeps ScrollArea's drag behavior. Only the
             // layout surface owns a Selection tool box gesture.
             let box_response = (selection_tool && incoming.is_none()).then(|| {
@@ -2593,6 +2734,14 @@ fn handles(rect: Rect) -> [(&'static str, Pos2, Edges); 8] {
         ),
         ("left", rect.left_center(), e(true, false, false, false)),
     ]
+}
+
+/// The layout's body part, where Save Layout places new objects.
+fn body_of(geometry: &LayoutGeometry) -> Option<&PartGeom> {
+    geometry
+        .parts
+        .iter()
+        .find(|p| p.identity.is_some_and(|i| i.part_type == 4))
 }
 
 fn finite_extent(value: f64) -> f32 {

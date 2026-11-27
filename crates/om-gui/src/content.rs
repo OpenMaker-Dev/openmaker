@@ -1325,6 +1325,20 @@ impl LayoutWorkspace {
         self.drop_words();
     }
 
+    /// Whether Insert > Field... can add an edit box to the layout.
+    pub(crate) fn can_insert_field(&self) -> bool {
+        self.canvas.can_insert_field()
+    }
+
+    /// Insert > Field...: an edit box staged and selected where
+    /// `CanvasState::insert_field` puts it.
+    pub(crate) fn insert_field(&mut self, session: &Session) {
+        let before = self.canvas.checkpoint();
+        if self.canvas.insert_field(session) {
+            self.canvas.record_command(before);
+        }
+    }
+
     /// The next field draft to send on explicit Save Layout.
     pub(crate) fn new_field(&self) -> Option<&crate::layout_canvas::NewField> {
         self.canvas.new_field()

@@ -17,7 +17,8 @@ A container field a formula reads is read as its data, through the
 write's container reader. An auto-entered or validation calculation may
 read one repetition of a non-container global of its own table. Other
 global reads, entry from the last visited record, summary fields, plug-in
-functions, custom functions that read fields and dependency cycles fail
+functions, custom functions that read fields outside the measured named
+Text case, and dependency cycles fail
 preflight. The supported lookups, related reads and unstored calculations
 are listed in docs/record-writes.md, Limits.
 
@@ -100,6 +101,32 @@ before Commit showed and stored 25. An unindexed, replacing
 26 after the assignment, with or without an intermediate Commit. The
 tested steps all returned 0 without alerts.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1059#issuecomment-7204905093)
+
+### GetField in a local custom auto-enter helper
+
+FileMaker Pro 26.1.1 evaluated a Text field with the formula
+`Trigger & ":" & ReadNamed ( FieldName )`, where the one-parameter
+helper was exactly `GetField ( name )`. The closed replacing and
+keep-existing definitions held `0x000000a8` and `0x00000028`.
+Ordinary New Record produced `:` in both cases. In the replacing
+case, changing a directly named field recalculated the result at once.
+Changing a field reached only by GetField did not recalculate it. The
+next direct change read that field's new value. The keep-existing case
+retained its creation value through both pre-Commit and later edits.
+The results persisted across reopen. Both scripts returned 0 at every
+step. Other helper bodies and dynamic target types were not part of
+this run.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7205073084)
+
+In a second local run, a same-value Set Field on Trigger changed
+`one:A1` to `one:A2` immediately. Starting with Alpha at `A2`, setting
+Trigger to `three` then Alpha to `A3` kept `three:A2`. Reversing those
+steps gave `three:A3`. Both results survived Commit and reopen. On a new
+record, setting FieldName, Trigger, then Alpha kept `one:`, the value
+produced by the Trigger step. A change only to the field reached through
+GetField left the result alone before and after Commit. This measured
+scripted Set Field. Interactive edits were outside the run.
+[Set Field ordering](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7209664301)
 
 ## Fixed field definition
 
