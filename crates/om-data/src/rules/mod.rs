@@ -1194,6 +1194,9 @@ pub struct RecordPlan {
     evaluation_order: Vec<u64>,
     /// (auto-entered result, equality key, inequality key, entry mode).
     grouped_self_joins: BTreeSet<(u64, u64, u64, GroupedAutoEntry)>,
+    /// Plain fields whose text would be evaluated by global auto-entry.
+    /// This plan supports only creation where these fields start empty.
+    blank_evaluate_inputs: BTreeSet<u64>,
     /// The file's calculation schema with this table's current fields.
     schema: Arc<CalcSchema>,
 }
@@ -2159,6 +2162,45 @@ fn supports_creation_time_text(locale: &Locale) -> bool {
         && locale.pm == " PM"
 }
 
+/// A global rule of the form `Let ( result = Evaluate ( Input ) ; "" )`.
+/// The input has no default and the result is empty at ordinary New Record.
+/// An explicit assignment to the input is outside that measured write path.
+fn blank_global_evaluate_input<'a>(
+    table: &Table,
+    context: &[u8],
+    polish: &'a Expr,
+) -> Option<(u64, &'a Expr)> {
+    let Expr::Let { bindings, body } = polish else {
+        return None;
+    };
+    let [Expr::Evaluate {
+        args,
+        need_field_ref: 0,
+    }] = bindings.as_slice()
+    else {
+        return None;
+    };
+    let [Expr::Field(field)] = args.as_slice() else {
+        return None;
+    };
+    if field.occurrence.0 != context
+        || field.repetition != 1
+        || !matches!(field.flags, 0 | 4)
+        || !matches!(body.as_ref(), Expr::Text(text) if text.style.is_none() && text.value.is_empty())
+    {
+        return None;
+    }
+    let id = field.field.id()?;
+    let source = table.field(id)?;
+    let options = source.decoded_options()?;
+    (source.kind == FieldKind::Normal
+        && source.data_type == DataType::Text
+        && options.options == 0
+        && options.validation_options == 0
+        && options.max_repetitions == 1)
+        .then_some((id, body.as_ref()))
+}
+
 impl RecordPlan {
     /// The rules of `table` from its definitions in `tree` alone (no other
     /// tables, occurrences or custom functions).
@@ -2212,6 +2254,8 @@ impl RecordPlan {
         // check in language 0 is then refused, not keyed in English.
         let own_language = schema.file_language();
         let mut fields = BTreeMap::new();
+        let mut blank_evaluate_inputs = BTreeSet::new();
+        let mut blank_evaluate_outputs = BTreeSet::new();
         let mut contexts = BTreeSet::new();
         // The table's unstored calculations a formula of the table may read
         // (`UnstoredGraph`), or why one cannot be evaluated for a write.
@@ -2419,7 +2463,7 @@ impl RecordPlan {
             } else {
                 None
             };
-            let formula_at = |key: u64, usage: FormulaUse| -> Result<Expression, DataError> {
+            let mut formula_at = |key: u64, usage: FormulaUse| -> Result<Expression, DataError> {
                 let formula = field_node.and_then(|node| node.get(key));
                 let context = formula
                     .and_then(|node| node.get(4))
@@ -2430,6 +2474,22 @@ impl RecordPlan {
                     .and_then(|n| n.assembled())
                     .ok_or_else(|| error("calculation code is missing."))?;
                 let polish = decode_rule_code(&code).map_err(|e| error(&e))?;
+                if key == FIELD_FORMULA
+                    && local
+                    && kind == FieldKind::Normal
+                    && field.data_type == DataType::Text
+                    && matches!(options.options, 0x0001_0008 | 0x0001_0088)
+                    && options.validation_options == 0
+                    && options.max_repetitions == 1
+                {
+                    if let Some((input, blank)) =
+                        blank_global_evaluate_input(table, &context, &polish)
+                    {
+                        blank_evaluate_inputs.insert(input);
+                        blank_evaluate_outputs.insert(field.id);
+                        return analyze_rule(blank.clone(), &context, usage).map_err(|e| error(&e));
+                    }
+                }
                 if key == FIELD_FORMULA
                     && kind == FieldKind::Calculation
                     && field.data_type == DataType::Text
@@ -3079,11 +3139,31 @@ impl RecordPlan {
             }
         }
         let evaluation_order = evaluation_order(&fields)?;
+        if !blank_evaluate_outputs.is_empty()
+            && fields
+                .values()
+                .flat_map(PlannedField::formulas)
+                .any(|formula| {
+                    !formula.dependencies.is_disjoint(&blank_evaluate_outputs)
+                        || formula.related.iter().any(|(occurrence, field)| {
+                            blank_evaluate_outputs.contains(field)
+                                && schema
+                                    .table_of(*occurrence)
+                                    .is_some_and(|t| t.id == table.id)
+                        })
+                })
+        {
+            return Err(DataError::with_code(
+                error::UNAVAILABLE,
+                "A record rule that reads a global with Evaluate auto-entry is unsupported.",
+            ));
+        }
         Ok(Self {
             table: table.id,
             fields,
             evaluation_order,
             grouped_self_joins,
+            blank_evaluate_inputs,
             schema: Arc::new(schema),
         })
     }
@@ -4196,6 +4276,13 @@ impl RecordPlan {
             context.record_number,
             Some(RecordNumber::LocalSortedNewRecord { .. })
         );
+        if !self.blank_evaluate_inputs.is_empty() && (!unsorted || !entry.script || entry.imported)
+        {
+            return Err(DataError::with_code(
+                error::UNAVAILABLE,
+                "Global Evaluate auto-entry requires scripted New Record in an unsorted local window.",
+            ));
+        }
         if !entry.skip_auto_enter && !unsorted {
             if let Some(field) = self
                 .fields
@@ -4515,6 +4602,7 @@ impl RecordPlan {
     /// was (script oracle s17, s18); a value list of a field's values is
     /// the host's ([`Self::value_list_field`]). Empty values pass.
     pub fn check_entry(&self, cell: u64, text: &str, entry: Entry) -> Result<(), DataError> {
+        self.check_global_evaluate_inputs([cell])?;
         let Some(field) = self.cell_field(cell).map(|(id, _)| &self.fields[&id]) else {
             return Ok(());
         };
@@ -4528,6 +4616,31 @@ impl RecordPlan {
             Some((code, requirement)) => Err(self.invalid(field, code, &requirement)),
             None => Ok(()),
         }
+    }
+
+    /// Assignments that could execute formula text are outside this slice.
+    /// A creation checks its supplied cells before taking record IDs or serials.
+    pub fn check_global_evaluate_inputs(
+        &self,
+        cells: impl IntoIterator<Item = u64>,
+    ) -> Result<(), DataError> {
+        if self.blank_evaluate_inputs.is_empty() {
+            return Ok(());
+        }
+        let input = cells
+            .into_iter()
+            .filter_map(|cell| self.cell_field(cell).map(|(field, _)| field))
+            .find(|field| self.blank_evaluate_inputs.contains(field));
+        if let Some(input) = input {
+            return Err(DataError::with_code(
+                error::UNAVAILABLE,
+                format!(
+                    "Field {}: evaluating assigned text in global auto-entry is unsupported.",
+                    self.fields[&input].name
+                ),
+            ));
+        }
+        Ok(())
     }
 
     /// A user's write: the changed cells, encoded for upload.
@@ -4790,6 +4903,7 @@ impl RecordPlan {
         changes: &BTreeMap<u64, Option<String>>,
         entry: Entry,
     ) -> Result<(BTreeMap<u64, String>, BTreeSet<u64>), DataError> {
+        self.check_global_evaluate_inputs(changes.keys().copied())?;
         let mut row = existing.clone();
         let mut dirty = BTreeSet::new();
         for (id, value) in changes {
@@ -6872,6 +6986,7 @@ impl Expression {
             fields: BTreeMap::new(),
             evaluation_order: Vec::new(),
             grouped_self_joins: BTreeSet::new(),
+            blank_evaluate_inputs: BTreeSet::new(),
             schema: Arc::new(schema),
         };
         let first = InRepetition::Calculation(1);
@@ -10806,6 +10921,79 @@ mod tests {
         assert_eq!(decoded(&created, 1).as_deref(), Some("Ada"));
         assert!(!created.values.contains_key(&23));
         assert!(plan_with(&table, &formulas, &[], Vec::new(), false).is_err());
+    }
+
+    #[test]
+    fn global_evaluate_auto_entry_supports_only_a_blank_creation_input() {
+        let entry = Entry::script(false, false);
+        let mut environment = environment();
+        environment.context.record_number = Some(RecordNumber::LocalNewRecord(1));
+        let mut globals = RecordValues::default();
+        globals.set(24, 1, Value::text("prior"));
+        for (options, expected) in [(0x0001_0088, Some("")), (0x0001_0008, None)] {
+            let mut table = Table {
+                id: 0x8002,
+                name: "Example".into(),
+                fields: vec![
+                    field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                    field(23, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                    field(24, FieldKind::Normal, DataType::Text, 0, options, 0),
+                ],
+            };
+            let code = polish(&table, "Let ( result = Evaluate ( Field23 ) ; \"\" )");
+            let mut tree = KeyTree::default();
+            let default = om_scsu::encode_scsu("Let ( $$Trace = \"ran\" ; 1 )");
+            let mut with_default = KeyTree::default();
+            with_default
+                .insert(
+                    &[
+                        KeySegment(&[0x80, 2]),
+                        KeySegment(&[3]),
+                        KeySegment(&[5]),
+                        KeySegment(&[23]),
+                        KeySegment(&[0x0d]),
+                    ],
+                    om_hbam::slot::ChunkKind::Leaf,
+                    Some(&default),
+                )
+                .unwrap();
+            let prefix = [
+                KeySegment(&[0x80, 2]),
+                KeySegment(&[3]),
+                KeySegment(&[5]),
+                KeySegment(&[24]),
+                KeySegment(&[5]),
+            ];
+            for (member, value) in [(&[4][..], CONTEXT), (&[6][..], code.as_slice())] {
+                let mut path = prefix.to_vec();
+                path.push(KeySegment(member));
+                for tree in [&mut tree, &mut with_default] {
+                    tree.insert(&path, om_hbam::slot::ChunkKind::Leaf, Some(value))
+                        .unwrap();
+                }
+            }
+            let plan = RecordPlan::plan(&table, &tree, None, true, true, None).unwrap();
+            plan.check_creation_context(&environment.context, entry)
+                .unwrap();
+            let (changes, _) = plan
+                .new_record_globals(entry, &globals, &environment, true)
+                .unwrap();
+            assert_eq!(changes.get(&(24, 1)).map(String::as_str), expected);
+
+            let stored = BTreeMap::from([(23, "Let ( $$Trace = \"ran\" ; 1 )".into())]);
+            let note = BTreeMap::from([(1, Some("edited".into()))]);
+            let changed = plan
+                .compute(WriteMode::Update, &stored, &note, &environment, entry)
+                .unwrap();
+            assert_eq!(changed, note);
+            assert_eq!(
+                plan.check_entry(23, "", entry).unwrap_err().code,
+                Some(error::UNAVAILABLE)
+            );
+            assert!(RecordPlan::plan(&table, &tree, None, true, false, None).is_err());
+            table.fields[1] = field(23, FieldKind::Normal, DataType::Text, 0, 4, 0);
+            assert!(RecordPlan::plan(&table, &with_default, None, true, true, None).is_err());
+        }
     }
 
     #[test]

@@ -993,6 +993,24 @@ persisted at close. The timing of the counter write before close and
 the result of reverting a newly created record were not measured.
 [O, closed-file readback](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7185027447).
 
+### A global calculation discarding an Evaluate result
+
+FileMaker Pro 26.1.1 tested a local global Text field with the rule
+`Let ( result = Evaluate ( ExpressionText ) ; "" )` and option words
+`0x00010088` (replace) and `0x00010008` (keep). An unrelated field
+edit leaves the global and file variables alone. On New Record with
+no input default, the replacing rule clears a prior global and the
+keeping rule preserves it. Neither changes the trace variable.
+
+With a valid input default or a scripted assignment to the input,
+the trace changed immediately when the rule ran, even though the
+outer calculation returned empty text. Keeping a nonempty global
+suppressed the side effect. A malformed default persisted as text
+without a trace change or an error. The trial's scripted global
+assignments did not survive reopen, unlike the separate global-input
+trial below. The cause was not measured.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1057#issuecomment-7209580006)
+
 ### A calculated global reading another global
 
 FileMaker Pro 26.1.1 on a local file measured global Text `Input` with
