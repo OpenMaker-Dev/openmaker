@@ -2208,10 +2208,13 @@ FileMaker Pro 26.1.1 can toggle field and text boundaries separately, and
 its field boundaries include dotted baselines. OpenMaker uses fixed faint
 outlines ([client-ui.md](re/client-ui.md#artwork-and-boundaries)).
 Closed popovers and their contents are hidden from the canvas. Selecting
-a popover or one of its objects from Objects previews it at its stored
-position while that selection remains. This is OpenMaker's inspection
-behavior. Opening from the button or the Format menu and positioning the
-open popover as FileMaker does are unavailable
+a popover or one of its objects from Objects previews the styled surface
+and contents above the stored layout objects, at their saved positions.
+The preview takes input above those objects and ends with its selection.
+Field drafts keep their editing layer. FileMaker Pro 26.1.1 opens a popover
+and selects its child when the child is clicked in Objects. Direct opening
+and dismissal controls, the title and pointer, and FileMaker's
+open-position behavior remain unavailable
 ([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
 
 The Objects pane is 220 pt wide, lists the layout's objects front to back,
@@ -2636,9 +2639,13 @@ for sides that draw no border, and Styles can list names the cascade skips
 ([#886](https://github.com/OpenMaker-Dev/openmaker/issues/886)). Position
 shows the stored name of a single decoded object as read-only, or a dash
 when the object has no name. Renaming and object tooltips are unavailable
-([#887](https://github.com/OpenMaker-Dev/openmaker/issues/887)). Autosizing
-information is unavailable. Data Formatting shows OpenMaker's
-read-only summary of the decoded number, date, time or graphic format for
+([#887](https://github.com/OpenMaker-Dev/openmaker/issues/887)). The
+Autosizing section lists the selected object's stored edge anchors as
+read-only. The list shows the saved flags before constraints from enclosing
+objects. Changing anchors is unavailable
+([#888](https://github.com/OpenMaker-Dev/openmaker/issues/888)). Data
+Formatting shows OpenMaker's read-only summary of the decoded number,
+date, time or graphic format for
 a stored field whose type is known to the window. Its wording has not been
 compared with FileMaker Pro's Inspector
 ([#891](https://github.com/OpenMaker-Dev/openmaker/issues/891)). Layouts
@@ -2842,12 +2849,51 @@ Limits, against Pro's tool:
 order, with its submenus and shortcuts (re/client-ui.md, "Layout mode's
 Insert menu"). Part... works as above, enabled when Part Definition can open
 (the layout read, no unsaved change, nothing with the host, a kind of part
-missing). The other items are shown but not offered yet: Field... (Pro
-opens Specify Field; on the layout captured it inserted a selected edit box
-with its label at the bottom of the body), the items of the Graphic Object and
-Field/Control submenus (which open on them), the objects of the other tools, Picture..., the
-current date, time and user name, the symbols, Merge Field..., Merge
-Variable and Layout Calculation....
+missing). It adds a Title Header to a layout with a top navigation part 22
+points high, right below that part, the parts below moving down 22 points,
+as Pro 26.1.1's did.
+
+Field... adds an edit box to the layout's draft and selects it, with Create
+label on, as a field dragged from the Fields pane is; the Inspector
+chooses its field, and Save Layout places it; Undo takes it back. It is
+enabled in Layout mode when the layout is read, has a body part, and
+nothing is being saved or placed with the Button, Text or Portal tool. The
+box is 253 points wide, as Pro 26.1.1's was, and centered where Pro
+centered its box (re/client-ui.md, "Layout mode's Insert menu"):
+- **After a press on the layout** that can be edited (a click, or the start
+  of a drag) with any tool, it is centered on that point, its edges rounded
+  down and its left kept at the layout's left edge. The point is used once,
+  and forgotten when the mode changes, the layout is reverted or read
+  again, or another layout is shown.
+- **Without one,** it is centered on the canvas the window shows. This fits
+  where Pro put it on two layouts, but Pro's rule is not measured.
+
+Either way it is kept within the layout's width and inside the body part,
+where Save Layout places fields, narrower or lower than 253 by 44 points
+where the layout or the body is. Pro kept its box's bottom at a short
+layout's bottom, and put the box in whichever part its top was in.
+
+Limits of Field..., against Pro:
+- Pro opens Specify Field, and its OK inserts the chosen field. OpenMaker
+  chooses the field in the Inspector, as for its Field tool.
+- The box is 44 points high, as from the Fields pane. Pro's was 31 on an
+  Apex Blue layout and 44 on another layout. The theme probably decides it
+  (inferred: no layout was compared under two themes), and OpenMaker does
+  not read the theme yet.
+- The label follows OpenMaker's rule for new fields: 90 points wide, 4 left
+  of the box and as high as it, and none at the layout's left edge. Pro's
+  was about 91 by 21 points, 11 left of the box and 6 points down, and at
+  the left edge it overlapped the box.
+- Pro did not follow a selection made in the Objects pane or a move made
+  in the Inspector. How long its point lasts, scrolling and zoom were not
+  measured.
+
+The other items are shown but not offered yet:
+- the items of the Graphic Object and Field/Control submenus (which open
+  on them);
+- the objects of the other tools, and Picture...;
+- the current date, time and user name, and the symbols;
+- Merge Field..., Merge Variable and Layout Calculation....
 
 **A part's boundary.** In Layout mode the Selection tool drags a part's
 lower boundary (a band across the layout and the part strip) to set its

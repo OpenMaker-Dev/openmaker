@@ -17,7 +17,8 @@ A container field a formula reads is read as its data, through the
 write's container reader. An auto-entered or validation calculation may
 read one repetition of a non-container global of its own table. Other
 global reads, entry from the last visited record, summary fields, plug-in
-functions, custom functions that read fields and dependency cycles fail
+functions, custom functions that read fields outside the measured named
+Text case, and dependency cycles fail
 preflight. The supported lookups, related reads and unstored calculations
 are listed in docs/record-writes.md, Limits.
 
@@ -100,6 +101,32 @@ before Commit showed and stored 25. An unindexed, replacing
 26 after the assignment, with or without an intermediate Commit. The
 tested steps all returned 0 without alerts.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1059#issuecomment-7204905093)
+
+### GetField in a local custom auto-enter helper
+
+FileMaker Pro 26.1.1 evaluated a Text field with the formula
+`Trigger & ":" & ReadNamed ( FieldName )`, where the one-parameter
+helper was exactly `GetField ( name )`. The closed replacing and
+keep-existing definitions held `0x000000a8` and `0x00000028`.
+Ordinary New Record produced `:` in both cases. In the replacing
+case, changing a directly named field recalculated the result at once.
+Changing a field reached only by GetField did not recalculate it. The
+next direct change read that field's new value. The keep-existing case
+retained its creation value through both pre-Commit and later edits.
+The results persisted across reopen. Both scripts returned 0 at every
+step. Other helper bodies and dynamic target types were not part of
+this run.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7205073084)
+
+In a second local run, a same-value Set Field on Trigger changed
+`one:A1` to `one:A2` immediately. Starting with Alpha at `A2`, setting
+Trigger to `three` then Alpha to `A3` kept `three:A2`. Reversing those
+steps gave `three:A3`. Both results survived Commit and reopen. On a new
+record, setting FieldName, Trigger, then Alpha kept `one:`, the value
+produced by the Trigger step. A change only to the field reached through
+GetField left the result alone before and after Commit. This measured
+scripted Set Field. Interactive edits were outside the run.
+[Set Field ordering](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7209664301)
 
 ## Fixed field definition
 
@@ -926,6 +953,16 @@ result. Exact Finds after reopen returned the new row from both indexes.
 The closed indexes already contained the new entries before the Finds.
 [Combined comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7205174459)
 
+With those two indexed Number fields, the replacing UUID key also kept
+its copied value when the key validated Always, Not empty and Unique
+with override disabled (validation word `0x0000041c`). Both a fresh UUID
+and distinct plain text worked as the copied key. Position 1 and Amount 0
+were visible at creation, and assigning 25 persisted. The UUID tests with
+and without an intermediate Commit both returned 0 and gave the same
+exact Find results after reopen. The comparison did not time validation
+on a duplicate edit.
+[Validated-key comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7205531644)
+
 ## Serial numbers
 
 Option `0x2` generates a serial number when the record is created, `0x200`
@@ -992,6 +1029,24 @@ records had no cell for the global field. This measures the counter
 persisted at close. The timing of the counter write before close and
 the result of reverting a newly created record were not measured.
 [O, closed-file readback](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7185027447).
+
+### A global calculation discarding an Evaluate result
+
+FileMaker Pro 26.1.1 tested a local global Text field with the rule
+`Let ( result = Evaluate ( ExpressionText ) ; "" )` and option words
+`0x00010088` (replace) and `0x00010008` (keep). An unrelated field
+edit leaves the global and file variables alone. On New Record with
+no input default, the replacing rule clears a prior global and the
+keeping rule preserves it. Neither changes the trace variable.
+
+With a valid input default or a scripted assignment to the input,
+the trace changed immediately when the rule ran, even though the
+outer calculation returned empty text. Keeping a nonempty global
+suppressed the side effect. A malformed default persisted as text
+without a trace change or an error. The trial's scripted global
+assignments did not survive reopen, unlike the separate global-input
+trial below. The cause was not measured.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1057#issuecomment-7209580006)
 
 ### A calculated global reading another global
 

@@ -869,6 +869,15 @@ the session globals. This scope covers scripted assignments and ordinary
 unsorted New Record in the owning local desktop file.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1138#issuecomment-7204722907)
 
+A local global Text rule of the form
+`Let ( result = Evaluate ( Input ) ; "" )` can use an ordinary Text
+input with no auto-entry or validation. Unrelated edits leave the
+global alone. Scripted unsorted New Record starts with a blank input
+and applies the measured replace or keep rule. Explicit assignments
+to the input refuse with 3. Inputs with defaults and rules that read
+the resulting global remain unsupported.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1057#issuecomment-7209580006)
+
 A calculated global Text field with the measured empty-Self default can
 retain its value or append a literal suffix. Ordinary New Record reads
 the current session value. Scripted Set Field reads its assigned text.
@@ -1003,6 +1012,25 @@ is omitted. Stored self-cycles and cycles between different fields remain
 refused. This named-reference behavior is inferred from Claris's documented
 `Self` auto-entry support (auto-entry.md), without a native comparison.
 
+Local scripted Text auto-entry supports concatenating a plain Text trigger,
+a literal separator, and a one-argument helper consisting of
+`GetField ( name )`. The helper receives the name from a plain Text field
+in the same occurrence and reads another plain scalar Text field of that
+record. The named field does not trigger the rule. Ordinary unsorted
+New Record with the measured keep-existing option keeps its initial result
+through the first Commit. The replacing option evaluates each direct input
+assignment against the values present at that step, including a same-value
+Set Field. A scripted read of the current record sees that result before
+Commit, and a later assignment to just the indirect input keeps it.
+This covers option words `0x00000028` and
+`0x000000a8` without validation. Qualified, repeating and computed
+targets, other helper forms, and other creation contexts remain unsupported.
+A save that would evaluate the rule without a complete local Set Field
+sequence returns error 3. Interactive entry and explicit transactions are
+outside the measured scope.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7205073084)
+[Set Field ordering](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7209664301)
+
 **A field validated against a related-values list** (one field's values,
 "Include only related values starting from", file-metadata.md 6.4) is
 checked by the desktop at the commit (`om-provider` `related_lists.rs`).
@@ -1113,6 +1141,21 @@ checked by the desktop at the commit (`om-provider` `related_lists.rs`).
 - **OpenMaker Server's scripts** refuse with 3 a value the rules check
   against such a list.
 
+For a local normal one-repetition Text field with option word `0` and
+validation word `0x00000100`, an absent list reference (`07`) leaves
+the field and table writable. Browse accepts typed text without a
+membership check, and record writes preserve the field definition.
+The comparison covered this exact combination of validation flags and
+reference storage.
+[Absent-reference comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1136#issuecomment-7214224232)
+
+The measured local scalar Text definition with option word `0` and
+validation word `0x00000104` retains its single-byte list ID reference
+after list deletion. A nonempty value checked against that missing list
+fails membership validation with error 506. A script whose write skips
+the membership check can still save the value.
+[Dangling-reference comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1136#issuecomment-7214224232)
+
 **A field validated against a value list the rules cannot check yet**
 (another file's, a calculation, or a second field) leaves the table
 writable.
@@ -1205,7 +1248,10 @@ record's place in what the rules read:
   The related draft shows 0 on creation and keeps a nonempty assignment
   made before or after an intermediate Commit. This also works with the
   measured indexed Position. Both stored values can be found after
-  reopen through their indexes.
+  reopen through their indexes. With both indexed fields, a replacing
+  UUID key can validate Always, Not empty and Unique with override
+  disabled (`0x0000041c`). The copied value goes through normal write
+  validation and can be distinct plain text.
   The measured unindexed, replacing
   `If ( IsEmpty ( Self ) ; 0 ; Self + 1 )` (`0x00000088`, no validation)
   also starts at 0 in this relationship when there is no stored Position.

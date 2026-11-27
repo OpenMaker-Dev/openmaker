@@ -921,6 +921,7 @@ impl NativeProvider {
         }
         let mut context = self.write_context(plan, origin.layout, origin.set)?;
         context.record_number = origin.record_number;
+        context.assignments = origin.assignments;
         if origin.single_field_step && context.sequence == WriteSequence::Local {
             context.sequence = WriteSequence::SingleLocalFieldStep;
         }
@@ -968,7 +969,9 @@ impl NativeProvider {
         entry: Entry,
         environment: &RecordEnvironment,
         creation: RecordCreation,
+        cells: &BTreeMap<u64, Option<String>>,
     ) -> Result<NewGlobals, DataError> {
+        plan.check_global_evaluate_inputs(cells.keys().copied())?;
         if !plan.has_global_auto_entry(entry) {
             return Ok(NewGlobals::default());
         }
@@ -1662,7 +1665,7 @@ impl NativeProvider {
     ) -> Result<Record, DataError> {
         let environment = self.rule_environment(table.id, plan, context)?;
         let entry = Entry::default();
-        let globals = self.new_record_defaults(plan, entry, &environment, creation)?;
+        let globals = self.new_record_defaults(plan, entry, &environment, creation, changes)?;
         // Compute and check every value before reserving a record id.
         let prepared = self.prepare_record(
             plan,
@@ -2074,7 +2077,8 @@ impl NativeProvider {
         let txn = self.new_transaction();
         let result = (|| match record {
             None => {
-                let globals = self.new_record_defaults(plan, entry, &environment, creation)?;
+                let globals =
+                    self.new_record_defaults(plan, entry, &environment, creation, cells)?;
                 self.prepare_record(
                     plan,
                     (WriteMode::Create, entry, Written::New(None)),
@@ -2652,6 +2656,8 @@ pub(crate) struct Origin {
     /// The window proved a single field-setting step, with no other
     /// staged edits to the record.
     pub single_field_step: bool,
+    /// Ordered Set Field assignments from an ordinary local record draft.
+    pub assignments: Option<om_data::ScriptAssignments>,
 }
 
 /// Whose privilege set a write's formulas read as current

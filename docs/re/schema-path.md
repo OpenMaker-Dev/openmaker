@@ -926,6 +926,15 @@ empty, `0x10` unique, `0x20` existing, `0x40` in range, `0x80` custom message
 one value, `0x1000` strict data type number, `0x2000` four-digit year,
 `0x4000` time of day, `0x8000` message by calculation (`20`).
 
+Deleting a custom value list in FileMaker Pro 26.1.1 left the dependent
+Text field's validation word at `0x00000104` and kept the same `07`
+reference to the deleted list. The Validation tab still selected
+membership, with no list to choose. Scripted New Record, unrelated writes
+and assigning or clearing the field all returned 0 and committed. These
+steps used validation only during data entry. Typed membership checks
+and a definition with member `07` absent were outside that run.
+[Native list deletion](https://github.com/OpenMaker-Dev/openmaker/issues/1136#issuecomment-7204267134)
+
 **The lookup definition `08`** (High for bytes 0 and 1 and the keys;
 the engine runs l01-l04 of 5.13 complete the samples below). Three
 samples:
