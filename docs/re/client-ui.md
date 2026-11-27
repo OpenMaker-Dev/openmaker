@@ -236,6 +236,7 @@ gray.
   Formatting Bar | Ruler | Actual Size, Zoom In, Zoom Out.
 - **Insert**: Picture..., Audio/Video..., PDF..., File... | Current Date,
   Current Time, Current User Name | From Index..., From Last Visited Record.
+  Layout mode has its own (below, "Layout mode's Insert menu").
 - **Format**: Font >, Size >, Style >, Align Text >, Line Spacing >,
   Text Color >.
 - **Records** (Browse/Preview): New Record ⌘N, Duplicate Record ⌘D, Delete
@@ -530,6 +531,12 @@ says a tab control keeps the previously displayed tab when entering Layout
 mode. The [slide control help](https://help.claris.com/en/pro-help/content/changing-slide-control.html)
 identifies the leftmost slide as the default.
 
+[O] In FileMaker Pro 26.1.1 Layout mode, the Apex Blue selection fixture
+shows both stored tab labels with nothing selected. The front tab shares
+its fill with the panel, and only that panel's child rectangle draws.
+See the private synthetic fixture capture for
+[#1156](https://github.com/OpenMaker-Dev/openmaker/issues/1156).
+
 **Unknowns:** whether selecting an object in the Objects pane switches its
 containing panel or changes the current selection. The [Objects pane
 help](https://help.claris.com/en/pro-help/content/working-with-layout-objects.html)
@@ -709,6 +716,18 @@ origin bottom left]
 
 Which options each part type enables is in layout-model.md 10.15.
 
+**The Part tool** (doc: Claris's help, "Adding a layout part",
+`adding-layout-part.html`, FileMaker Pro 2026, fetched 2026-11-25): "In
+Layout mode, drag the Part tool in the status toolbar to the layout. Or,
+choose Insert menu > Part." Then "In the Part Definition dialog box, select
+the type of layout part you want. Part types that are already on the
+layout are dimmed. (Only subsummary parts can exist more than once on a
+layout.)" The page also says "FileMaker Pro considers an object to be in a
+part when the top of the object is in or just touching the part." Unknown:
+the height of a part the Part tool adds, what the drop point decides (where
+a sub-summary goes, whether a drop in an impossible place is refused), and
+whether a click with the tool does anything.
+
 SHA-256 of the archives: `IDD_PART_SETUP.nib`
 `3231311abf1fbf77a3d0511afc31b78796d82f84d7f3cf293579f6a32af195ec`;
 `IDD_PART_DEFINITION.nib`
@@ -728,6 +747,47 @@ status messages (on), Automatically encode URL (on), Allow JavaScript to
 perform FileMaker scripts (off). Their storage is in layout-model.md 9.6
 and 10.19. Unknown: the dialog's frames and the template list's order
 (no nib or screenshot measured here).
+
+## Layout mode's Insert menu
+
+[O, 2026-11-26, FileMaker Pro 26.1.1 for macOS, #911's run: Layout mode on
+a starter layout, the menu read through accessibility and a 2× screenshot
+with nothing selected, with one edit box selected, and while a text was
+being edited] The menu was the same in all three states, every item
+enabled. Top to bottom (`|` a separator, `>` a submenu):
+
+- Field..., Part... |
+- Graphic Object > (Text, Line, Rectangle, Rounded Rectangle, Oval),
+  Field/Control > (Edit Box, Drop-down List, Pop-up Menu, Checkbox Set,
+  Radio Button Set, Drop-down Calendar, Concealed Edit Box), Portal...,
+  Tab Control..., Slide Control, Web Viewer..., Chart..., Button, Popover
+  Button, Button Bar |
+- Picture... |
+- Current Date, Current Time ⌘;, Current User Name ⇧⌘N |
+- Date Symbol, Time Symbol, User Name Symbol, Page Number Symbol, Record
+  Number Symbol, Other Symbol... |
+- Merge Field... ⌥⌘M, Merge Variable |
+- Layout Calculation... ⇧⌘C
+
+Titles end in three periods where shown. Current Date has no shortcut here
+(⌘- in Browse).
+
+- **Part...** opened Part Definition at once, with Title Header chosen,
+  on a layout with a top navigation part and a body (both dimmed). Title
+  Header is the first kind in the dialog's order that layout lacked;
+  whether Pro always chooses that way, and what its Part tool chooses, is
+  not measured. Every checkbox was off, and
+  only "Restart page numbers after each occurrence" was enabled for that
+  choice.
+- **Field...** opened Specify Field on the layout's table, no field chosen
+  (OK dimmed) and the label to the left. OK inserted a selected edit box
+  at the bottom of the body (left 374, top 528, 253 by 44 points on that
+  layout, its bottom at the body's), with its label to its left. Undo
+  removed both, and leaving the layout still asked whether to save it.
+
+Unknown: where Field... puts the edit box on other layouts (the rule
+behind 374/528), what the other items do, and Part Definition's first
+choice on other layouts.
 
 ## Portal Setup
 

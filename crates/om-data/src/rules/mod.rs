@@ -19,7 +19,9 @@
 //! field values; it does not send protocol requests or write records.
 //! Refusals carry the FileMaker error a script step reports
 //! ([`DataError::code`]).
+mod global_text_input;
 mod global_text_self;
+pub use global_text_input::global_text_input_changes;
 pub use global_text_self::global_text_assignment;
 pub mod recalc;
 pub mod schema;
@@ -39,7 +41,7 @@ use om_formula::{DecodeErrorKind, Expr, Formula, Key, Opcode};
 use om_hbam::catalog::{DataType, Field, FieldKind};
 use om_hbam::{EntryVariable, FieldOptions, KeyTree, Node, Table};
 
-use self::global_text_self::GlobalTextSelf;
+use self::{global_text_input::GlobalTextInput, global_text_self::GlobalTextSelf};
 use crate::containers::{self, MemberInfo};
 use crate::meta::{ValueList, ValueSource};
 
@@ -395,6 +397,9 @@ pub enum RecordNumber {
     /// Ordinary local New Record in a sorted found set. The held row
     /// follows the current row before any later re-sort.
     LocalSortedNewRecord { position: u64, after: u64 },
+    /// Local Set Field created the first match of a direct unsorted
+    /// relationship from a global Text key.
+    LocalFirstRelated,
 }
 
 impl RecordNumber {
@@ -402,6 +407,7 @@ impl RecordNumber {
         match self {
             Self::Window(number) | Self::LocalNewRecord(number) => number,
             Self::LocalSortedNewRecord { position, .. } => position,
+            Self::LocalFirstRelated => 1,
         }
     }
 }
@@ -1136,6 +1142,8 @@ struct PlannedField {
     auto_enter_self: AutoEntrySelf,
     /// This local global's auto-entry reads Self.
     global_text_self: GlobalTextSelf,
+    /// This local global's auto-entry reads an independent plain global.
+    global_text_input: Option<GlobalTextInput>,
     /// Creation Date supplies the value on create. The calculation's
     /// dependencies identify updates with an unmeasured result.
     creation_date_with_calculation: bool,
@@ -2178,15 +2186,18 @@ impl RecordPlan {
                 // `0x80` (auto-entry.md, Index bits), cannot change a
                 // write and are not. A stored calculation's all are.
                 FieldKind::Calculation if options.options & UNSTORED != 0 => !LOOKUP,
-                // Converting a replacing Number auto-entry to a stored,
-                // indexed calculation left the replacement bit set (#1133).
-                // Both definitions used the ordinary stored calculation.
+                // The measured local Number and Text conversions kept
+                // the replacement bit and followed the ordinary stored
+                // calculation rules (#1133).
                 FieldKind::Calculation
                     if local
-                        && field.data_type == DataType::Number
-                        && options.options == 0x8000_0080
                         && options.validation_options == 0
-                        && options.max_repetitions == 1 =>
+                        && options.max_repetitions == 1
+                        && matches!(
+                            (field.data_type, options.options),
+                            (DataType::Number | DataType::Text, 0x8000_0080)
+                                | (DataType::Text, 0xc000_0080)
+                        ) =>
                 {
                     options.options
                 }
@@ -2344,6 +2355,7 @@ impl RecordPlan {
                 }
                 analyze_rule(polish, &context, usage).map_err(|e| error(&e))
             };
+            let mut global_text_input = None;
             let computed = (kind == FieldKind::Calculation && !unstored) || auto_calculation;
             let expression = if computed {
                 if field.data_type == DataType::Container
@@ -2385,9 +2397,16 @@ impl RecordPlan {
                 if auto_enters_global
                     && (!formula.dependencies.is_empty() || !formula.related.is_empty())
                 {
-                    return Err(error(
-                        "auto-entry into a global that reads fields is unsupported.",
-                    ));
+                    global_text_input = local
+                        .then(|| {
+                            global_text_input::classify(table, &schema, field, &formula.formula)
+                        })
+                        .flatten();
+                    if global_text_input.is_none() {
+                        return Err(error(
+                            "auto-entry into a global that reads fields is unsupported.",
+                        ));
+                    }
                 }
                 Some(formula)
             } else {
@@ -2602,6 +2621,7 @@ impl RecordPlan {
                 expression,
                 auto_enter_self,
                 global_text_self,
+                global_text_input,
                 creation_date_with_calculation,
                 constant,
                 validation,
@@ -3022,7 +3042,21 @@ impl RecordPlan {
                     ),
                 ));
             }
-            if let Some(serial) = field.serial {
+            if let Some(input) = field.global_text_input {
+                if !allow_nonempty {
+                    return Err(DataError::with_code(
+                        error::UNAVAILABLE,
+                        format!(
+                            "Field {}: global Text auto-entry from another global requires local New Record.",
+                            field.name
+                        ),
+                    ));
+                }
+                values.insert(
+                    (id, 1),
+                    input.result_from_session(globals.get(input.source, 1))?,
+                );
+            } else if let Some(serial) = field.serial {
                 serials.push(serial);
             } else if let Some(value) = &field.constant {
                 values.insert((id, 1), value.clone());
@@ -4066,6 +4100,43 @@ impl RecordPlan {
             context.record_number,
             Some(RecordNumber::LocalSortedNewRecord { .. })
         );
+        if !entry.skip_auto_enter && !unsorted {
+            if let Some(field) = self
+                .fields
+                .values()
+                .find(|field| field.global_text_input.is_some())
+            {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!(
+                        "Field {}: global Text auto-entry from another global requires unsorted local New Record.",
+                        field.name
+                    ),
+                ));
+            }
+        }
+        let first_related = context.record_number == Some(RecordNumber::LocalFirstRelated)
+            && context.sequence == WriteSequence::Local;
+        if first_related {
+            for field in self.fields.values() {
+                let reads_position = |expression: &Expression| {
+                    context_selectors(&self.schema, &expression.formula.polish)
+                        .contains(&selector::RECORD_NUMBER)
+                };
+                if field.formulas().any(reads_position)
+                    && (!field.stored_calculation()
+                        || field.validation.as_ref().is_some_and(reads_position))
+                {
+                    return Err(DataError::with_code(
+                        error::UNAVAILABLE,
+                        format!(
+                            "Field {}: a first related position is supported only in a stored Number calculation.",
+                            field.name
+                        ),
+                    ));
+                }
+            }
+        }
         if !entry.skip_auto_enter && (!unsorted || context.sequence == WriteSequence::Unmeasured) {
             if let Some((result, _, _, _)) = self
                 .grouped_self_joins
@@ -4112,11 +4183,14 @@ impl RecordPlan {
                 .map(|expression| (field, expression))
         }) {
             let reason = if !sorted
+                && !(first_related
+                    && matches!(field.options.options, 0x0008_0000 | 0x8008_0000)
+                    && field.options.validation_options == 0)
                 && matches!(
                     expression.formula.polish,
                     Expr::Get(selector::RECORD_NUMBER)
                 ) {
-                "a stored record number requires ordinary New Record in a local window with a known insertion position."
+                "a stored record number requires a supported local creation with a known position."
             } else if expression.stored_evaluate.is_some() {
                 "a stored Evaluate requires ordinary New Record in an unsorted local window."
             } else {
@@ -9201,7 +9275,18 @@ mod tests {
             .prepare(WriteMode::Create, &BTreeMap::new(), &changes, &at_creation)
             .unwrap();
         assert_eq!(decoded(&created, 23).as_deref(), Some("3"));
-        for number in [None, Some(RecordNumber::Window(3))] {
+        at_creation.context.record_number = Some(RecordNumber::LocalFirstRelated);
+        at_creation.context.sequence = WriteSequence::Local;
+        let related = plan
+            .prepare(WriteMode::Create, &BTreeMap::new(), &changes, &at_creation)
+            .unwrap();
+        assert_eq!(decoded(&related, 23).as_deref(), Some("1"));
+        at_creation.context.sequence = WriteSequence::Unmeasured;
+        for number in [
+            None,
+            Some(RecordNumber::Window(3)),
+            Some(RecordNumber::LocalFirstRelated),
+        ] {
             at_creation.context.record_number = number;
             let error = plan
                 .prepare(WriteMode::Create, &BTreeMap::new(), &changes, &at_creation)
@@ -9223,6 +9308,21 @@ mod tests {
             !edited.values.contains_key(&23),
             "preserve the stored number"
         );
+
+        at_creation.context.record_number = Some(RecordNumber::LocalFirstRelated);
+        at_creation.context.sequence = WriteSequence::Local;
+        for (options, supported) in [(0x8008_0000, true), (0xc008_0000, false)] {
+            *table.fields.last_mut().unwrap() =
+                field(23, FieldKind::Calculation, DataType::Number, 0, options, 0);
+            let index_plan = plan_of(&table, &formulas, &[]).unwrap();
+            let result =
+                index_plan.prepare(WriteMode::Create, &BTreeMap::new(), &changes, &at_creation);
+            if supported {
+                assert_eq!(decoded(&result.unwrap(), 23).as_deref(), Some("1"));
+            } else {
+                assert_eq!(result.err().unwrap().code, Some(error::UNAVAILABLE));
+            }
+        }
 
         for (data_type, source) in [
             (DataType::Number, "Get ( RecordNumber ) + 0"),
@@ -12371,7 +12471,7 @@ mod tests {
     }
 
     #[test]
-    fn a_local_stored_number_accepts_the_retained_replacement_bit() {
+    fn local_stored_calculations_accept_measured_retained_replacement_bits() {
         let mut table = Table {
             id: 0x8002,
             name: "Items".into(),
@@ -12388,30 +12488,76 @@ mod tests {
                 ),
             ],
         };
-        let formulas = [(3, 5, "Year ( Field1 )")];
-        let plan = plan_of(&table, &formulas, &[]).unwrap();
-        assert_eq!(decoded(&create(&plan, &[]).unwrap(), 3), None);
-        let made = create(&plan, &[(1, "12/25/2024"), (2, "Test")]).unwrap();
-        assert_eq!(decoded(&made, 3).as_deref(), Some("2024"));
-        assert!(!plan.editable_fields().contains("Field3"));
+        for (data_type, options, formula, first, second) in [
+            (
+                DataType::Number,
+                0x8000_0080,
+                "Year ( Field1 )",
+                "2024",
+                "2025",
+            ),
+            (
+                DataType::Text,
+                0x8000_0080,
+                "MonthName ( Field1 )",
+                "December",
+                "January",
+            ),
+            (
+                DataType::Text,
+                0xc000_0080,
+                "MonthName ( Field1 )",
+                "December",
+                "January",
+            ),
+            (
+                DataType::Text,
+                0xc000_0000,
+                "MonthName ( Field1 )",
+                "December",
+                "January",
+            ),
+        ] {
+            table.fields[2] = field(3, FieldKind::Calculation, data_type, 0, options, 0);
+            let formulas = [(3, 5, formula)];
+            let plan = plan_of(&table, &formulas, &[]).unwrap();
+            assert_eq!(decoded(&create(&plan, &[]).unwrap(), 3), None);
+            let made = create(&plan, &[(1, "12/25/2024"), (2, "Test")]).unwrap();
+            assert_eq!(decoded(&made, 3).as_deref(), Some(first));
+            assert!(!plan.editable_fields().contains("Field3"));
 
-        let existing = BTreeMap::from([
-            (1, "12/25/2024".into()),
-            (2, "Test".into()),
-            (3, "2024".into()),
-        ]);
-        let changed = plan
-            .prepare(
-                WriteMode::Update,
-                &existing,
-                &BTreeMap::from([(1, Some("1/1/2025".into()))]),
-                &environment(),
-            )
-            .unwrap();
-        assert_eq!(decoded(&changed, 3).as_deref(), Some("2025"));
-        assert!(plan_with(&table, &formulas, &[], Vec::new(), false).is_err());
-        table.fields[2].options[8..12].copy_from_slice(&0x8000_00a0u32.to_be_bytes());
-        assert!(plan_of(&table, &formulas, &[]).is_err());
+            let existing = BTreeMap::from([
+                (1, "12/25/2024".into()),
+                (2, "Test".into()),
+                (3, first.into()),
+            ]);
+            let changed = plan
+                .prepare(
+                    WriteMode::Update,
+                    &existing,
+                    &BTreeMap::from([(1, Some("1/1/2025".into()))]),
+                    &environment(),
+                )
+                .unwrap();
+            assert_eq!(decoded(&changed, 3).as_deref(), Some(second));
+            if options & 0x80 != 0 {
+                assert!(plan_with(&table, &formulas, &[], Vec::new(), false).is_err());
+            }
+        }
+
+        for (data_type, options, formula) in [
+            (DataType::Number, 0x8000_00a0, "Year ( Field1 )"),
+            (DataType::Text, 0xa000_0080, "MonthName ( Field1 )"),
+        ] {
+            table.fields[2] = field(3, FieldKind::Calculation, data_type, 0, options, 0);
+            let refused = plan_of(&table, &[(3, 5, formula)], &[])
+                .err()
+                .expect("the unmeasured option word must refuse planning");
+            assert!(
+                refused.message.contains("unsupported field options"),
+                "{refused}"
+            );
+        }
     }
 
     #[test]

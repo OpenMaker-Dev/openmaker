@@ -56,6 +56,8 @@ pub struct FieldDef {
     /// The option word of the definition (schema-path.md 5.5): indexing,
     /// auto-enter and storage bits.
     pub options: u32,
+    /// The validation option word of the field definition.
+    pub validation_options: u32,
     /// The index and sort language (`mIndexLang`, a `Locale::Type`); 0
     /// for the file's.
     pub language: u32,
@@ -82,6 +84,7 @@ impl FieldDef {
             validation: None,
             summary: None,
             options: 0,
+            validation_options: 0,
             language: 0,
             comment: String::new(),
             next_serial: None,
