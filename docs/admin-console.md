@@ -1117,9 +1117,13 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
     layout (the hosted files' common folder was different then) is not
     recognised as holding the file, and is deleted as before.
   - The rule only keeps what the keep count would delete; it never deletes
-    more. A name planted in a backup folder can make it stay, never make
-    another go. Preserved backups are untouched, as before, and count as
-    holding what they hold.
+    anything the keep count alone would not have deleted. It looks at
+    names, not at whether a file can be restored: a planted or damaged
+    file at a hosted file's place in a newer backup counts as holding that
+    file, and so takes the rule's protection away from an older backup,
+    which then goes at the keep count as it would have without the rule.
+    Preserved backups are untouched, as before, and count as holding what
+    they hold.
   - OpenMaker's choice: whether FileMaker Server's backups copy closed
     files is unmeasured
     ([#1115](https://github.com/OpenMaker-Dev/openmaker/issues/1115)). If

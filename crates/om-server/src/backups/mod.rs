@@ -80,7 +80,8 @@
 //! backup of the schedule holding a hosted file (open or closed, at its
 //! place in the layout) that no newer backup that stays holds, so that a
 //! run which left a closed file out never retires the last backup of it
-//! (OpenMaker's choice). A folder is removed through the
+//! (OpenMaker's choice). It reads names only, not whether a copy can be
+//! restored, and never deletes what the keep count alone would not. A folder is removed through the
 //! handle it was checked on, its contents first and then its name, which
 //! fails unless the name still holds an empty folder. One run copies at a
 //! time across the server (FileMaker's Parallel Backup off); a run due
@@ -727,7 +728,10 @@ impl Backups {
     /// schedule holding a hosted file (at one of `places`) that no newer
     /// backup that stays holds: a run that left a closed file out must not
     /// retire the last backup of it. That only keeps what the keep count
-    /// would delete, never deletes more.
+    /// would delete; it never deletes anything the keep count alone would
+    /// not. It looks at names (`holds`), not at whether a copy can be
+    /// restored, so a planted or damaged file at a hosted file's place in a
+    /// newer backup takes the rule's protection away from an older one.
     fn retain(
         &self,
         target: &Target,
@@ -1201,11 +1205,13 @@ fn hosted_places(shared: &Shared) -> Vec<Place> {
         .collect()
 }
 
-/// Whether backup `backup` holds a file at `place`, looked up without
-/// following links; not when the lookup fails: a backup retention would
-/// delete that cannot be read is deleted as before, and one that stays
-/// and cannot be read holds nothing for the rule, so an older one may stay
-/// instead. Either way retention deletes no more than its keep count says.
+/// Whether backup `backup` holds a file at `place`: a regular file of that
+/// name, looked up without following links. A name only: whether the file
+/// can be restored is not checked, so an empty or damaged file there
+/// counts. Not when the lookup fails: a backup retention would delete that
+/// cannot be read is deleted as before, and one that stays and cannot be
+/// read holds nothing for the rule, so an older one may stay instead.
+/// Either way retention deletes no more than its keep count says.
 fn holds(backup: &Folder, place: &Place) -> bool {
     let found = (|| {
         let mut folder = backup.open(OsStr::new(DATABASES))?;
