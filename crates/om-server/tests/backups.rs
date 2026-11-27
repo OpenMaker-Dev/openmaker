@@ -776,6 +776,68 @@ fn retention_keeps_the_last_backup_of_a_closed_file() {
     assert!(!both.exists(), "{both:?} kept once Other was copied again");
 }
 
+/// A folder backup that leaves out a file not served when it read the
+/// files' statuses publishes the rest, and retention keeps the earlier
+/// backup that holds the file left out (#1110 with #1172). The review's
+/// sequence, B beginning to close between A's status read and B's, reaches
+/// retention the same way as B closed before the run, which this test
+/// makes: forcing the close between the two reads would take a hook in the
+/// run.
+#[cfg(unix)]
+#[test]
+fn a_folder_backup_that_leaves_a_file_out_keeps_its_last_backup() {
+    let folder = Folder::new("folder-left-out");
+    let file = hosted_file(&folder);
+    let built = TempFile::new("backup-left-out-other", &[], true);
+    let other = TempFile(folder.0.join("db/Other.fmp12"));
+    std::fs::rename(&built.0, &other.0).unwrap();
+    let backups = folder.0.join("Backups");
+    let clock = ManualClock::new(at(8, 59));
+    let mut schedule = backup_schedule("Folder", 1);
+    let ScheduleTask::Backup(task) = &mut schedule.task else {
+        unreachable!();
+    };
+    task.files = BackupFiles::Folder(folder.0.join("db"));
+    let (_, handle) =
+        server::start_hosting(&[(fixture::FILE, &file), ("Other", &other)], |server| {
+            server
+                .with_clock(clock.clone())
+                .with_backup_folder(&backups)
+                .unwrap()
+                .with_schedules(vec![schedule])
+                .unwrap()
+        });
+    assert!(
+        handle.wait_for_schedules(WAIT),
+        "the scheduler did not start"
+    );
+    let other_id = handle
+        .files()
+        .iter()
+        .find(|info| info.name == "Other")
+        .unwrap()
+        .id;
+
+    move_to(&handle, &clock, at(9, 0));
+    let both = backups.join("Folder_2026-10-29_0900");
+    assert!(both.join("Databases/Other.fmp12").exists(), "{both:?}");
+
+    // Other closed: the run publishes Sample alone, keep 1, and the backup
+    // that holds Other stays.
+    close_file(&handle, other_id);
+    move_to(&handle, &clock, at(9, 1));
+    let run = last_run(&handle, "Folder");
+    assert!(run.succeeded(), "{run:?}");
+    let alone = backups.join("Folder_2026-10-29_0901");
+    assert!(alone.join("Databases/Sample.fmp12").exists());
+    assert!(!alone.join("Databases/Other.fmp12").exists());
+    assert_eq!(
+        std::fs::read(both.join("Databases/Other.fmp12")).unwrap(),
+        std::fs::read(&other.0).unwrap(),
+        "the last backup of the file left out is kept, its copy whole"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn a_backup_folder_never_holds_a_hosted_file() {

@@ -1169,11 +1169,14 @@ pub(crate) fn chosen(shared: &Shared, files: &BackupFiles) -> Result<Vec<Arc<Hos
     }
 }
 
-/// Which of `slots` serve their file (open or paused) now: one look at
-/// each, with no file-system call between them, so that the files a folder
-/// backup must copy are those served at one moment, when its choice
-/// begins. A file opened after it is left out, as one opened after the run
-/// began.
+/// Which of `slots` serve their file (open or paused): each slot's status
+/// read once, in one pass without any file-system call, as the run begins
+/// to choose. Each is read under its own slot's lock, one after another,
+/// not at one instant: a file whose close had begun when its status was
+/// read is left out, as one closed before the run, and so is one opened
+/// after that read. A file left out of a run that completes is protected
+/// by retention, which keeps the newest backup holding a hosted file no
+/// newer backup holds (`Backups::retain`), not by the timing of this pass.
 fn served_now(slots: &[crate::hosting::Slot]) -> Vec<bool> {
     slots
         .iter()
