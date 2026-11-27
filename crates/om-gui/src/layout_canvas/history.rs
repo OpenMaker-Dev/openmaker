@@ -56,6 +56,8 @@ pub(crate) struct Draft {
 impl CanvasState {
     pub(crate) fn clear_history(&mut self) {
         self.history = History::default();
+        // Insert > Field...'s point belongs to the layout as it was shown.
+        self.insert_at.point = None;
     }
 
     /// The state before a canvas gesture or a discrete draft edit.

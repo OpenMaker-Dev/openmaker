@@ -112,9 +112,10 @@ impl NewField {
 const INSERTED_FIELD: (f64, f64) = (253.0, 44.0);
 
 /// Where Insert > Field... centers its edit box: the layout point last
-/// clicked, or where a drag on the layout began, until a field is put
-/// there; else the middle of the canvas the window showed when last drawn.
-/// Both in layout coordinates.
+/// pressed on the editable canvas, until a field is put there or the
+/// canvas's history is cleared (another mode, Revert Layout, the layout
+/// read again or another layout); else the middle of the canvas the window
+/// showed when last drawn. Both in layout coordinates.
 #[derive(Clone, Copy, Debug, Default)]
 struct InsertAt {
     point: Option<Pos2>,
@@ -544,11 +545,12 @@ impl CanvasState {
         &self.new_fields
     }
 
-    /// Whether Insert > Field... can add an edit box: the layout read, and
-    /// no button, text or portal being placed, as a field dragged from the
-    /// Fields pane is refused then.
+    /// Whether Insert > Field... can add an edit box: the layout read with
+    /// a body part, where fields are placed, and no button, text or portal
+    /// being placed, as a field dragged from the Fields pane is refused
+    /// then.
     pub(crate) fn can_insert_field(&self) -> bool {
-        self.geometry.is_some()
+        self.geometry.as_ref().is_some_and(|g| body_of(g).is_some())
             && self.new_button.is_none()
             && self.new_text.is_none()
             && self.new_portal.is_none()
@@ -561,43 +563,52 @@ impl CanvasState {
     /// its edges rounded down and its left kept at the layout's left edge;
     /// the point is used once. Without one, it is centered on the canvas the
     /// window shows, which fits where Pro put it on two layouts (inferred;
-    /// Pro's rule is not measured). It is kept within the layout, its
-    /// bottom at the layout's bottom at most (as Pro's was on a short
-    /// layout; the other edges are OpenMaker's choice).
-    pub(crate) fn insert_field(&mut self, session: &Session) {
+    /// Pro's rule is not measured). It is kept within the layout's width
+    /// and in its body part, where Save Layout places fields (Pro kept its
+    /// box's bottom at a short layout's bottom, and put a box in whatever
+    /// part its top was in), narrower or lower than its size where they are.
+    /// False when nothing was added.
+    pub(crate) fn insert_field(&mut self, session: &Session) -> bool {
         self.synchronize(session);
         if !self.can_insert_field() {
-            return;
+            return false;
         }
-        let Some(geometry) = &self.geometry else {
-            return;
+        let Some((geometry, body)) = self.geometry.as_ref().and_then(|g| Some((g, body_of(g)?)))
+        else {
+            return false;
         };
         let layout_width = f64::from(finite_extent(
             self.width.map_or(geometry.width, |w| w.width),
         ))
         .floor();
-        let layout_height = f64::from(finite_extent(geometry.height)).floor();
-        let width = INSERTED_FIELD.0.min(layout_width).max(1.0);
-        let height = INSERTED_FIELD.1.min(layout_height).max(1.0);
+        let body_top = body.top.ceil();
+        let body_height = (body.top + body.height).floor() - body_top;
+        if layout_width < 1.0 || body_height < 1.0 {
+            return false;
+        }
+        let width = INSERTED_FIELD.0.min(layout_width);
+        let height = INSERTED_FIELD.1.min(body_height);
         let center = self
             .insert_at
             .point
             .take()
             .or_else(|| self.insert_at.shown.map(|shown| shown.center()))
-            .map_or((layout_width / 2.0, layout_height / 2.0), |point| {
-                (f64::from(point.x), f64::from(point.y))
-            });
-        let place = |center: f64, size: f64, extent: f64| {
+            .map_or(
+                (layout_width / 2.0, body_top + body_height / 2.0),
+                |point| (f64::from(point.x), f64::from(point.y)),
+            );
+        // The edge centering it, rounded down, kept in `from..from + extent`.
+        let place = |center: f64, size: f64, from: f64, extent: f64| {
             let edge = (center - size / 2.0).floor();
             if edge.is_finite() {
-                edge.min(extent - size).max(0.0)
+                edge.min(from + extent - size).max(from)
             } else {
-                0.0
+                from
             }
         };
         let field = NewField {
-            left: place(center.0, width, layout_width),
-            top: place(center.1, height, layout_height),
+            left: place(center.0, width, 0.0, layout_width),
+            top: place(center.1, height, body_top, body_height),
             width,
             height,
             field: None,
@@ -607,6 +618,7 @@ impl CanvasState {
             revision: geometry.revision,
         };
         self.stage_field(session, field);
+        true
     }
 
     pub(crate) fn take_field_finished(&mut self) -> bool {
@@ -1487,15 +1499,27 @@ fn draw(
             let press = ui
                 .input(|input| input.pointer.press_origin())
                 .map(|point| from_global * point);
-            // Insert > Field...'s point: a press on the layout with any
-            // tool, whether it selects, clicks blank space or begins a drag,
-            // as FileMaker Pro 26.1.1's followed a click on a field and one
-            // on blank space; not one on a dialog over the canvas.
-            if ui.input(|input| input.pointer.primary_pressed())
-                && ui.rect_contains_pointer(surface)
-            {
-                if let Some(press) = press.filter(|point| surface.contains(*point)) {
-                    insert_at.point = Some(press - origin.to_vec2());
+            // Insert > Field...'s point: a press on the editable layout with
+            // any tool, whether it selects, clicks blank space or begins a
+            // drag, as FileMaker Pro 26.1.1's followed a click on a field
+            // and one on blank space; not one on a menu or dialog over the
+            // canvas. Taken from the press itself, which a release in the
+            // same frame does not clear.
+            let pressed = ui.input(|input| {
+                input.events.iter().rev().find_map(|event| match event {
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        ..
+                    } => Some(*pos),
+                    _ => None,
+                })
+            });
+            if let Some(global) = pressed.filter(|_| selectable) {
+                let point = from_global * global;
+                if surface.contains(point) && ui.ctx().layer_id_at(global) == Some(ui.layer_id()) {
+                    insert_at.point = Some(point - origin.to_vec2());
                 }
             }
             insert_at.shown = Some(ui.clip_rect().translate(-origin.to_vec2()));
@@ -2545,6 +2569,14 @@ fn handles(rect: Rect) -> [(&'static str, Pos2, Edges); 8] {
         ),
         ("left", rect.left_center(), e(true, false, false, false)),
     ]
+}
+
+/// The layout's body part, where Save Layout places new objects.
+fn body_of(geometry: &LayoutGeometry) -> Option<&PartGeom> {
+    geometry
+        .parts
+        .iter()
+        .find(|p| p.identity.is_some_and(|i| i.part_type == 4))
 }
 
 fn finite_extent(value: f64) -> f32 {

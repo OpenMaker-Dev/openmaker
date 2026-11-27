@@ -845,10 +845,11 @@ fn a_sidebar_field_drop_saves_a_44_point_edit_box() {
 
 /// Insert > Field... (#911) stages an edit box 253 points wide, its field
 /// chosen in the Inspector. With no click on the layout yet it is centered
-/// on the canvas shown, its bottom kept at the short layout's bottom, as
-/// FileMaker Pro 26.1.1's was on a short List layout; after a click on
-/// blank space it is centered on that point, its left kept at the layout's
-/// left edge, as Pro's was.
+/// on the canvas shown, its bottom kept at the bottom of the short body, not
+/// in the Footer below (Save Layout places fields in the body); after a
+/// click on blank space it is centered on that point, its left kept at the
+/// layout's left edge, as FileMaker Pro 26.1.1's was. Undo takes back the
+/// insertion alone.
 #[test]
 fn insert_field_puts_its_edit_box_where_filemaker_pro_did() {
     let file = form_file();
@@ -858,6 +859,19 @@ fn insert_field_puts_its_edit_box_where_filemaker_pro_did() {
         fixture::FILE,
         (ACCOUNT, PASSWORD),
     );
+    let mut other = hosted.opened();
+    let shown = other.layout_member(fixture::LAYOUT).unwrap().unwrap();
+    other
+        .set_layout_parts(om_data::layout_placement::PartsChange {
+            layout: u32::try_from(fixture::LAYOUT).unwrap(),
+            expected: catalog_revision(&shown),
+            change: om_data::layout_placement::PartChange::Add {
+                part_type: 7,
+                size: 22.0,
+            },
+        })
+        .unwrap();
+    other.close();
     let mut app = open_window(&hosted);
     common::click(&mut app, "Edit Layout");
     common::wait_for_label(&mut app, "Field: Count (object 1)");
@@ -913,6 +927,22 @@ fn insert_field_puts_its_edit_box_where_filemaker_pro_did() {
         "insert-field-click",
         "Insert > Field... after a click 50 points from the left edge",
     );
+
+    // Count nudged one point right, then a field inserted: Undo takes back
+    // the field, and the nudge stays.
+    click_at(&mut app, canvas.min + egui::vec2(22.0 + 170.0, 30.0));
+    let count = canvas_frame(&app, "Field: Count (object 1)");
+    app.key_press(egui::Key::ArrowRight);
+    app.run_steps(2);
+    let nudged = canvas_frame(&app, "Field: Count (object 1)");
+    assert_eq!(nudged[0], count[0] + 1.0);
+    inserted(&mut app);
+    assert_eq!(app.get_all_by_label("New field").count(), 2);
+    common::open_menu(&mut app, "Edit");
+    common::click(&mut app, "Undo");
+    app.run_steps(2);
+    assert_eq!(app.get_all_by_label("New field").count(), 1);
+    assert_eq!(canvas_frame(&app, "Field: Count (object 1)"), nudged);
 }
 
 /// Layout mode's Portal tool draws a portal; Portal Setup, which opens as

@@ -2789,27 +2789,31 @@ as Pro 26.1.1's did.
 
 Field... adds an edit box to the layout's draft and selects it, with Create
 label on, as a field dragged from the Fields pane is; the Inspector
-chooses its field, and Save Layout places it. It is enabled in Layout mode
-when the layout is read and nothing is being saved or placed with the
-Button, Text or Portal tool. The box is 253 points wide, as Pro 26.1.1's
-was, and centered where Pro centered its box (re/client-ui.md, "Layout
-mode's Insert menu"):
-- **After a click on the layout,** or where a drag on it began, with any
-  tool, it is centered on that point, its edges rounded down and its left
-  kept at the layout's left edge. The point is used once.
+chooses its field, and Save Layout places it; Undo takes it back. It is
+enabled in Layout mode when the layout is read, has a body part, and
+nothing is being saved or placed with the Button, Text or Portal tool. The
+box is 253 points wide, as Pro 26.1.1's was, and centered where Pro
+centered its box (re/client-ui.md, "Layout mode's Insert menu"):
+- **After a press on the layout** that can be edited (a click, or the start
+  of a drag) with any tool, it is centered on that point, its edges rounded
+  down and its left kept at the layout's left edge. The point is used once,
+  and forgotten when the mode changes, the layout is reverted or read
+  again, or another layout is shown.
 - **Without one,** it is centered on the canvas the window shows. This fits
   where Pro put it on two layouts, but Pro's rule is not measured.
 
-Either way it is kept within the layout, its bottom no lower than the
-layout's (as Pro's was on a short layout); keeping the other edges in is
-OpenMaker's choice.
+Either way it is kept within the layout's width and inside the body part,
+where Save Layout places fields, narrower or lower than 253 by 44 points
+where the layout or the body is. Pro kept its box's bottom at a short
+layout's bottom, and put the box in whichever part its top was in.
 
 Limits of Field..., against Pro:
 - Pro opens Specify Field, and its OK inserts the chosen field. OpenMaker
   chooses the field in the Inspector, as for its Field tool.
 - The box is 44 points high, as from the Fields pane. Pro's was 31 on an
-  Apex Blue layout and 44 on another, so its height follows the theme,
-  which OpenMaker does not read yet.
+  Apex Blue layout and 44 on another layout. The theme probably decides it
+  (inferred: no layout was compared under two themes), and OpenMaker does
+  not read the theme yet.
 - The label follows OpenMaker's rule for new fields: 90 points wide, 4 left
   of the box and as high as it, and none at the layout's left edge. Pro's
   was about 91 by 21 points, 11 left of the box and 6 points down, and at

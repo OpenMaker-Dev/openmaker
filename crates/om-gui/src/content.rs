@@ -1331,7 +1331,10 @@ impl LayoutWorkspace {
     /// Insert > Field...: an edit box staged and selected where
     /// `CanvasState::insert_field` puts it.
     pub(crate) fn insert_field(&mut self, session: &Session) {
-        self.canvas.insert_field(session);
+        let before = self.canvas.checkpoint();
+        if self.canvas.insert_field(session) {
+            self.canvas.record_command(before);
+        }
     }
 
     /// The next field draft to send on explicit Save Layout.
