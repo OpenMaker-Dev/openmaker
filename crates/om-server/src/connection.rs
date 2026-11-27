@@ -374,6 +374,21 @@ impl Shared {
     pub(crate) fn connection_alive(&self, id: u32) -> bool {
         self.connection_ids().contains(&id)
     }
+
+    /// Close every accepted connection's socket at once
+    /// ([`crate::ServerHandle::close_connections`]); how many there were.
+    /// First, in one step, no session's other transports are admitted to
+    /// read from then on, before any connection's thread gets to end its
+    /// session; the sockets are shut next, and what those transports page
+    /// goes last, as that waits for reads under way.
+    pub(crate) fn close_connections(&self) -> usize {
+        let grants = self.joins.stop_all();
+        let closed = self.sockets.close_all();
+        for grant in grants {
+            grant.drain();
+        }
+        closed
+    }
 }
 
 /// A file opened on this connection.
@@ -485,13 +500,11 @@ impl Session {
 
 /// A session this transport joined ([`crate::joins`]): its place among
 /// the session's joined transports, with the downloads it pages for it
-/// (`Seat::transfers`: its own, a download being continued on the transport
+/// (`Seat::table`: its own, a download being continued on the transport
 /// that started it, and let go by the session when it loses the file or
 /// ends), and what it served, for the log.
 struct Joined {
     seat: Seat,
-    /// Per file, the Login its transfers were started under.
-    logins: HashMap<u32, u64>,
     /// Requests answered, by opcode.
     served: std::collections::BTreeMap<u8, u64>,
 }
@@ -648,6 +661,7 @@ impl Connection {
             // reconnects.
             if self.notifications_overflowed() {
                 info!("{}: closing: too many notifications wait for it", self.peer);
+                self.stop_reads();
                 self.ending = SessionEnd::Overflow;
                 let close = om_giop::build_close_connection();
                 self.record(false, &close);
@@ -675,6 +689,7 @@ impl Connection {
                             "{}: closing after {limit:?} without a request{session}",
                             self.peer
                         );
+                        self.stop_reads();
                         self.ending = SessionEnd::Idle(limit);
                         let close = om_giop::build_close_connection();
                         self.record(false, &close);
@@ -1095,6 +1110,7 @@ impl Connection {
                          administrator",
                         self.peer
                     );
+                    self.stop_reads();
                     self.send(stream, &om_protocol::build_disconnect(id, connection, true))?;
                     self.end_session();
                 }
@@ -1214,8 +1230,16 @@ impl Connection {
     /// Also run while the thread unwinds from a panic (`Drop`), where a
     /// second panic aborts the server: so nothing here may panic, and
     /// every lock it takes is used even when poisoned.
+    ///
+    /// Every way a session ends or is replaced comes here (Disconnect, a
+    /// Connect on its transport, its transport closing for any reason, a
+    /// panic), and the first thing done is to stop the session's grant: no
+    /// other transport is admitted to read through it from then on,
+    /// whatever below waits. What the transports that joined it page goes
+    /// last, as that can wait for a read under way (`joins::Grant`).
     fn end_session(&mut self) {
         if let Some(mut session) = self.session.take() {
+            session.grant.stop();
             if let Some(client) = &session.access {
                 let events = &self.shared.events;
                 for file in session.open.values() {
@@ -1247,6 +1271,8 @@ impl Connection {
             // client registry's lock alone, no other being held then, and
             // cannot panic (`Clients::closed`).
             for file in std::mem::take(&mut session.open).into_values() {
+                #[cfg(test)]
+                joins::model::point(joins::Section::Release);
                 let release = Operation::ReleaseSessionLocks(ReleaseSessionLocks { connection });
                 let outcome = self.shared.engine.submit(&file.hosted, release);
                 outcome
@@ -1257,13 +1283,6 @@ impl Connection {
                     .retain(|r| r.connection != connection);
                 self.shared.clients.closed(connection, file.hosted.id);
             }
-            // The locks go first and wait for nothing this adds; then the
-            // grant closes: no other transport reads through the session (a
-            // read already under way finishes, as one a moment earlier
-            // would). An administrator's disconnect ended the grant at once
-            // already, from the administrator's thread (`Joins::end`), a
-            // flag that does not wait for this thread to get here.
-            self.shared.joins.close(&session.grant);
             self.shared.mailboxes.close(connection);
             self.shared.clients.ended(connection);
             // After the entry is gone no message can be queued for the
@@ -1285,6 +1304,20 @@ impl Connection {
                 "{}: session 0x{:08x} ended",
                 self.peer, session.connection_id
             );
+            // Last, once the locks are released: the grant leaves the list
+            // and what the joined transports page for it goes, which waits
+            // for a read under way.
+            self.shared.joins.close(&session.grant);
+        }
+    }
+
+    /// The session is ending: from now on no other transport is admitted
+    /// to read through it, before a step that can wait (a write to a client
+    /// that does not read) and the session's end itself
+    /// ([`Connection::end_session`]).
+    fn stop_reads(&self) {
+        if let Some(session) = &self.session {
+            session.grant.stop();
         }
     }
 
@@ -1719,25 +1752,11 @@ impl Connection {
             debug!("{}: Perform for an unknown connection", self.peer);
             return Some(exception(id, "BAD_PARAM"));
         }
-        // Each request takes an attempt from its address's allowance before
-        // it is looked at, in one step, and gives it back when admitted: an
-        // address that used up its refusals is refused unexamined, however
-        // many of its connections try at once, so that a guess costs it the
-        // same whatever the id. (A connection's own count needs no such
-        // step: its requests are answered one at a time.)
-        let address = crate::admission::client_key(self.address.ip());
-        let joined = if self.shared.joins.take_attempt(address) {
-            let joined = self.join(session_id, header);
-            if joined.is_ok() {
-                self.shared.joins.give_back(address);
-            }
-            joined
-        } else {
-            Err(Refusal::Allowance)
-        };
-        let file = match joined {
+        let file = match self.join(session_id, header) {
             Ok(file) => file,
-            Err(refusal) => return Some(self.refuse(id, session_id, header.opcode, refusal)),
+            Err(refusal) => {
+                return Some(self.refuse(id, session_id, header.opcode, refusal, true));
+            }
         };
         // A read of a paused file waits, as the session's own would
         // (`held_for`), and so does one after a request held for its file.
@@ -1748,121 +1767,139 @@ impl Connection {
         let Some(joined) = self.joined.get_mut(&session_id) else {
             return Some(exception(id, "BAD_PARAM"));
         };
-        let mut transfers = joined
+        // Under the table's lock, once the session still grants the file
+        // under the Login the read was admitted with (`Seat::table`).
+        let read = joined
             .seat
-            .transfers()
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        // What it paged of the file under an earlier Login goes, as the
-        // session's own transfers go at Logout (`clear_file_session`; the
-        // session's revoke of the file already let it go).
-        if joined.logins.insert(header.file_id, file.login) != Some(file.login) {
-            transfers.drop_file(header.file_id);
-        }
-        *joined.served.entry(header.opcode).or_default() += 1;
-        shared.joins.served(
-            peer,
-            format_args!(
-                "serving op{} {} of file {} for session 0x{session_id:08x} \
-                 ({} bytes, maxreturn {})",
-                header.opcode,
-                Opcode::name(header.opcode).unwrap_or("(unknown)"),
-                header.file_id,
-                perform.transaction.len(),
-                perform.max_return
-            ),
-        );
-        let open = OpenFile {
-            hosted: file.hosted,
-            nonce: 0,
-            account: file.account,
-            close: CloseStep::None,
-            withheld: file.withheld,
-            login: file.login,
-        };
-        let reader = Reader {
-            file: Some(&open),
-            transfers: &mut transfers,
-        };
-        let (txn, max_return) = (perform.transaction, perform.max_return);
-        let result = if header.opcode == Opcode::DownloadWithLock as u8 {
-            download(shared, peer, reader, header, txn, max_return)
-        } else {
-            download_list(shared, peer, reader, header, txn, max_return)
-        };
-        Some(perform_reply(peer, id, header.opcode, result, &BACKCHANNEL))
+            .table(header.file_id, file.login)
+            .map(|mut transfers| {
+                *joined.served.entry(header.opcode).or_default() += 1;
+                shared.joins.served(
+                    peer,
+                    format_args!(
+                        "serving op{} {} of file {} for session 0x{session_id:08x} \
+                         ({} bytes, maxreturn {})",
+                        header.opcode,
+                        Opcode::name(header.opcode).unwrap_or("(unknown)"),
+                        header.file_id,
+                        perform.transaction.len(),
+                        perform.max_return
+                    ),
+                );
+                let open = OpenFile {
+                    hosted: file.hosted,
+                    nonce: 0,
+                    account: file.account,
+                    close: CloseStep::None,
+                    withheld: file.withheld,
+                    login: file.login,
+                };
+                let reader = Reader {
+                    file: Some(&open),
+                    transfers: &mut transfers,
+                };
+                let (txn, max_return) = (perform.transaction, perform.max_return);
+                if header.opcode == Opcode::DownloadWithLock as u8 {
+                    download(shared, peer, reader, header, txn, max_return)
+                } else {
+                    download_list(shared, peer, reader, header, txn, max_return)
+                }
+            });
+        Some(match read {
+            Ok(result) => perform_reply(peer, id, header.opcode, result, &BACKCHANNEL),
+            // The session lost the file or ended between the read's
+            // admission and its turn at the table: refused, at no cost, as
+            // the rule admitted it.
+            Err(refusal) => self.refuse(id, session_id, header.opcode, refusal, false),
+        })
     }
 
     /// Refuse request `id` naming session `session_id` (`BAD_PARAM`, the
-    /// same for every refusal), and count it against this transport and its
-    /// address: at either's limit the transport is closed after the answer
-    /// (`crate::config::JoinRefusals`).
-    fn refuse(&mut self, id: u32, session_id: u32, opcode: u8, refusal: Refusal) -> Vec<u8> {
+    /// same for every refusal). One the rule refused (`counted`) counts
+    /// against this transport, which is closed after the answer at its
+    /// limit or its address's (`crate::config::JoinRefusals`); the address
+    /// was charged as it was looked at (`Joins::admit`).
+    fn refuse(
+        &mut self,
+        id: u32,
+        session_id: u32,
+        opcode: u8,
+        refusal: Refusal,
+        counted: bool,
+    ) -> Vec<u8> {
         if matches!(refusal, Refusal::NoSession | Refusal::Ended) {
             self.leave(session_id);
         }
         // At most one count per opcode: bounded whatever is sent.
         *self.refused_joins.entry(opcode).or_default() += 1;
-        self.refusals = self.refusals.saturating_add(1);
         let joins = &self.shared.joins;
-        if refusal == Refusal::Allowance || self.refusals >= joins.limits().per_connection {
-            self.close_after_reply = true;
+        if counted {
+            self.refusals = self.refusals.saturating_add(1);
+            if refusal == Refusal::Allowance || self.refusals >= joins.limits().per_connection {
+                self.close_after_reply = true;
+            }
         }
         joins.refused(&self.peer, session_id, opcode, refusal);
         exception(id, "BAD_PARAM")
     }
 
-    /// Apply the join rule to a request naming session `session_id`; when
-    /// it passes, the transport has a seat in the session, taken at its
-    /// first request there, and the file it names as the session has it
-    /// open now comes back.
+    /// Apply the join rule to a request naming session `session_id`, within
+    /// its address's allowance: the allowance is looked at, the rule
+    /// applied and a refusal charged in one section under the address's
+    /// lock (`Joins::admit`), so that connections from one address trying
+    /// at once get no more looks than the allowance between them. When it
+    /// passes, the transport has a seat in the session, taken at its first
+    /// request there, and the file it names as the session has it open now
+    /// comes back.
     fn join(&mut self, session_id: u32, header: &Header) -> Result<FileGrant, Refusal> {
-        #[cfg(debug_assertions)]
-        if let Some(delay) = self.shared.join_lookup_delay.get() {
-            std::thread::sleep(*delay);
-        }
-        let lookup =
-            self.shared
-                .joins
-                .lookup(self.transport.certificate, session_id, header.file_id);
-        joins::decide(&lookup.inputs(header.opcode, self.transport))?;
-        let (Some(grant), Some(file)) = (lookup.grant, lookup.file) else {
-            return Err(Refusal::NoSession);
-        };
-        // An earlier session of the same id is let go.
-        if self
-            .joined
-            .get(&session_id)
-            .is_some_and(|joined| !Arc::ptr_eq(joined.seat.grant(), &grant))
-        {
-            self.leave(session_id);
-        }
-        if !self.joined.contains_key(&session_id) {
-            if self.joined.len() >= joins::MAX_SESSIONS_PER_TRANSPORT {
-                return Err(Refusal::TooManySessions);
+        let shared = Arc::clone(&self.shared);
+        let address = crate::admission::client_key(self.address.ip());
+        shared.joins.admit(address, || {
+            #[cfg(debug_assertions)]
+            if let Some(delay) = shared.join_lookup_delay.get() {
+                std::thread::sleep(*delay);
             }
-            let client = crate::admission::client_key(self.address.ip());
-            let transfers = Arc::new(Mutex::new(Transfers::new(
-                &self.shared.upload_memory,
-                &self.shared.download_memory,
-                client,
-            )));
-            let seat = grant.take_seat(transfers).ok_or(Refusal::Full)?;
-            info!(
-                "{}: joined session 0x{session_id:08x} of {} for its reads",
-                self.peer,
-                grant.owner_name()
-            );
-            self.joined.insert(
-                session_id,
-                Joined {
-                    seat,
-                    logins: HashMap::new(),
-                    served: Default::default(),
-                },
-            );
-        }
-        Ok(file)
+            let lookup =
+                shared
+                    .joins
+                    .lookup(self.transport.certificate, session_id, header.file_id);
+            joins::decide(&lookup.inputs(header.opcode, self.transport))?;
+            let (Some(grant), Some(file)) = (lookup.grant, lookup.file) else {
+                return Err(Refusal::NoSession);
+            };
+            // An earlier session of the same id is let go.
+            if self
+                .joined
+                .get(&session_id)
+                .is_some_and(|joined| !Arc::ptr_eq(joined.seat.grant(), &grant))
+            {
+                self.leave(session_id);
+            }
+            if !self.joined.contains_key(&session_id) {
+                if self.joined.len() >= joins::MAX_SESSIONS_PER_TRANSPORT {
+                    return Err(Refusal::TooManySessions);
+                }
+                let transfers = Arc::new(Mutex::new(Transfers::new(
+                    &shared.upload_memory,
+                    &shared.download_memory,
+                    address,
+                )));
+                let seat = grant.take_seat(transfers)?;
+                info!(
+                    "{}: joined session 0x{session_id:08x} of {} for its reads",
+                    self.peer,
+                    grant.owner_name()
+                );
+                self.joined.insert(
+                    session_id,
+                    Joined {
+                        seat,
+                        served: Default::default(),
+                    },
+                );
+            }
+            Ok(file)
+        })
     }
 
     /// Give up the seat in session `session_id`, if this transport has one.
@@ -2286,7 +2323,8 @@ fn close_file(shared: &Shared, peer: &str, session: &mut Session, file_id: u32) 
 fn clear_file_session(shared: &Shared, session: &mut Session, file_id: u32) {
     // First, before the session lets go of the account: the session's other
     // transports lose it in the same step, never later (`joins::Grant`).
-    session.grant.revoke(file_id);
+    let login = session.open.get(&file_id).map_or(0, |file| file.login);
+    session.grant.revoke(file_id, login);
     if let Some(file) = session.open.get_mut(&file_id) {
         // What the old account was served withheld is its own.
         withheld(file).records.clear();
@@ -2297,6 +2335,8 @@ fn clear_file_session(shared: &Shared, session: &mut Session, file_id: u32) {
                 &account.name,
             ));
         }
+        #[cfg(test)]
+        joins::model::point(joins::Section::Release);
         let release = Operation::ReleaseSessionLocks(ReleaseSessionLocks {
             connection: session.connection_id,
         });
@@ -2313,6 +2353,21 @@ fn clear_file_session(shared: &Shared, session: &mut Session, file_id: u32) {
         session.transfers.drop_file(file_id);
         shared.clients.logged_out(session.connection_id, file_id);
     }
+}
+
+/// The session is logged in to `file` as `account` from now on, under a new
+/// Login ([`joins::next_login`]). The records withheld go with the old
+/// account, under the lock a read noting them takes, so that a read
+/// admitted under it adds none for the new one (`note_withheld`).
+fn logged_in(file: &mut OpenFile, account: Arc<FileAccount>) {
+    let login = joins::next_login();
+    {
+        let mut withheld = withheld(file);
+        withheld.records.clear();
+        withheld.login = login;
+    }
+    file.account = Some(account);
+    file.login = login;
 }
 
 /// op80 Login from `client`: recover the credentials and check them against
@@ -2497,17 +2552,7 @@ fn login(
                 &file.hosted.name,
                 &account.name,
             ));
-            // The records withheld go with the old account, under the lock
-            // a read noting them takes, so that a read admitted under it
-            // adds none for the new one (`note_withheld`).
-            let login = joins::next_login();
-            {
-                let mut withheld = withheld(file);
-                withheld.records.clear();
-                withheld.login = login;
-            }
-            file.account = Some(account);
-            file.login = login;
+            logged_in(file, account);
             if shared.local {
                 // Deferred work the local file holds is finished and saved
                 // now that an account it admits has logged in.

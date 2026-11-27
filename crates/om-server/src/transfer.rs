@@ -592,6 +592,12 @@ impl Transfers {
         cursors.len()
     }
 
+    /// Whether the transfer `cursor` names is held.
+    #[cfg(test)]
+    pub fn holds(&self, cursor: u64) -> bool {
+        self.by_cursor.contains_key(&cursor)
+    }
+
     /// Let go of every transfer and what it holds of the server's budgets:
     /// the session they read for ended (`crate::joins`). A continuation of
     /// one is then refused, as one dropped at a limit is.

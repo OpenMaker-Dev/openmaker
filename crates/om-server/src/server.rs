@@ -1065,10 +1065,7 @@ impl ServerHandle {
     /// were. For a host that is going away ([`crate::LocalHost`]); a
     /// server's [`ServerHandle::shutdown`] leaves open connections open.
     pub fn close_connections(&self) -> usize {
-        // Every session's other transports read nothing more from now on,
-        // before any connection's thread gets to end its session.
-        self.shared.joins.end_all();
-        self.shared.sockets.close_all()
+        self.shared.close_connections()
     }
 
     /// Shut down: record it in the event log, stop the schedules (no run

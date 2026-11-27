@@ -39,8 +39,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 
 use log::info;
@@ -51,6 +51,9 @@ use crate::config::JoinRefusals;
 use crate::hosting::{FileAccount, Hosted};
 use crate::transfer::Transfers;
 use crate::views::SessionWithheld;
+
+#[cfg(test)]
+pub(crate) mod model;
 
 /// The operations a joined transport may send: those FileMaker Pro was
 /// seen sending on its second connection. Everything else is refused as
@@ -128,47 +131,86 @@ pub(crate) fn next_login() -> u64 {
 }
 
 struct State {
-    ended: bool,
     files: HashMap<u32, FileGrant>,
+    /// The transfer tables of the transports that joined ([`Seat`]), at
+    /// most [`MAX_JOINED`]: what they page for the session, let go when it
+    /// loses a file or ends, not at their next request. None is added once
+    /// the grant has ended.
+    joined: Vec<Arc<Mutex<Transfers>>>,
 }
 
 /// What a session lets joined transports read. It loses an authority in
-/// the same step in which the session does, never later: a file's account
-/// when the owning transport takes it away (`Grant::revoke`), everything
-/// when the session ends or the administrator disconnects it (`Grant::end`,
-/// or the owner's disconnect flag, which the rule reads). What it gains, a
-/// Login that succeeded, it publishes after the request (`Grant::publish`).
+/// the step that begins taking it away, before anything that can wait, the
+/// grant's own lock included: a file's account when the owning transport
+/// takes it away ([`Grant::revoke`]), everything when the session ends
+/// ([`Grant::stop`], the first thing `Connection::end_session` does), when
+/// the administrator disconnects it (the owner's disconnect flag) and when
+/// the server closes every connection ([`Joins::stop_all`]). Each is a flag
+/// the rule reads, set without waiting for a read that holds the grant's
+/// lock, so that no read is admitted once it is set, whatever the lock lets
+/// in while a writer waits. What the joined transports page for it goes
+/// after that, in a step that may wait for a read under way
+/// ([`Grant::drain`]). What it gains, a Login that succeeded, it publishes
+/// after the request ([`Grant::publish`]).
 pub(crate) struct Grant {
     id: u32,
+    /// Which grant opened this was, counting from the server's start.
+    serial: u64,
     owner: Peer,
     /// The owning transport's address and port, for the log.
     owner_name: String,
     /// The owning transport's controls: once the administrator has told it
     /// to disconnect, the session's reads end, whatever its thread is doing.
     control: Arc<Control>,
+    /// How many times the server had closed every connection when the
+    /// grant was opened, and how many times it has now: one more ended it.
+    epoch: u64,
+    closes: Arc<AtomicU64>,
+    /// The session ended ([`Grant::stop`]).
+    stopped: AtomicBool,
+    /// The Login whose account the owning transport is taking away from a
+    /// file, or took away last ([`Grant::revoke`]; 0 for none). One is
+    /// enough: the owner takes them away one at a time, and each is gone
+    /// from `state` before the next.
+    revoked: AtomicU64,
     state: RwLock<State>,
-    seats: AtomicUsize,
-    /// What the transports that joined page for the session: let go when
-    /// it loses a file or ends, not at their next request.
-    joined: Mutex<Vec<Arc<Mutex<Transfers>>>>,
 }
 
 impl Grant {
     /// The state, also after a thread panicked holding it: each change
     /// replaces it whole, and a session's end must still end it.
-    fn read(&self) -> std::sync::RwLockReadGuard<'_, State> {
-        self.state.read().unwrap_or_else(PoisonError::into_inner)
+    fn read(&self) -> RwLockReadGuard<'_, State> {
+        read(Section::Grant, &self.state)
     }
 
-    fn write(&self) -> std::sync::RwLockWriteGuard<'_, State> {
-        self.state.write().unwrap_or_else(PoisonError::into_inner)
+    fn write(&self) -> RwLockWriteGuard<'_, State> {
+        write(Section::Grant, &self.state)
+    }
+
+    /// The session ended, the administrator told its transport to
+    /// disconnect, or the server closed every connection: no transport
+    /// reads through it, and what one holds for it can go.
+    pub fn ended(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
+            || self.control.disconnecting()
+            || self.closes.load(Ordering::Acquire) != self.epoch
+    }
+
+    /// The file `file_id` as the session has it open, logged in only while
+    /// its Login is not being taken away.
+    fn file(&self, state: &State, file_id: u32) -> Option<FileGrant> {
+        let mut file = state.files.get(&file_id).cloned()?;
+        if file.login == self.revoked.load(Ordering::Acquire) {
+            file.account = None;
+        }
+        Some(file)
     }
 
     /// The files the session has open now, replacing what was published.
     pub fn publish(&self, files: impl IntoIterator<Item = (u32, FileGrant)>) {
         let files = files.into_iter().collect();
         let mut state = self.write();
-        if !state.ended {
+        if !self.stopped.load(Ordering::Acquire) {
             state.files = files;
         }
     }
@@ -177,82 +219,168 @@ impl Grant {
         &self.owner_name
     }
 
-    /// The session ended, or the administrator told its transport to
-    /// disconnect: no transport reads through it, and what one holds for it
-    /// can go.
-    pub fn ended(&self) -> bool {
-        self.read().ended || self.control.disconnecting()
-    }
-
     /// What [`decide`] needs of the session, and the file `file_id` as it
     /// has it open. The lock is let go before this returns.
     fn facts(&self, file_id: u32) -> (Session, Option<FileGrant>) {
         let state = self.read();
+        #[cfg(test)]
+        model::saw_facts();
         let session = Session {
             owner: self.owner,
-            ended: state.ended || self.control.disconnecting(),
+            ended: self.ended(),
         };
-        (session, state.files.get(&file_id).cloned())
+        (session, self.file(&state, file_id))
     }
 
-    /// The session's account of file `file_id` is going (Logout, a new
-    /// Login, the file opened again or closed): from now on no transport
-    /// reads the file through the session until a Login publishes one, and
-    /// what joined transports page of it goes. Called before the session
-    /// itself lets go of the account, so that the grant never holds it
-    /// longer (a read already admitted finishes, as one a moment earlier
-    /// would).
-    pub fn revoke(&self, file_id: u32) {
-        if let Some(file) = self.write().files.get_mut(&file_id) {
-            file.account = None;
+    /// Whether the session still grants reads of file `file_id` under Login
+    /// `login`: it has not ended, and the account it has the file logged in
+    /// with is still that Login's. A read checks it under its transfer
+    /// table's lock, before it keeps anything there ([`Seat::table`]).
+    fn check(&self, file_id: u32, login: u64) -> Result<(), Refusal> {
+        let state = self.read();
+        if self.ended() {
+            return Err(Refusal::Ended);
         }
-        for transfers in self.joined_transfers() {
-            lock(&transfers).drop_file(file_id);
+        match self.file(&state, file_id) {
+            Some(file) if file.account.is_some() && file.login == login => Ok(()),
+            Some(_) => Err(Refusal::NotLoggedIn),
+            None => Err(Refusal::FileNotOpen),
         }
     }
 
-    /// End the grant: no transport reads through it from now on, and what
-    /// joined transports page for it goes. A flag and a release; the
-    /// session's own locks are its transport's to let go
-    /// (`Connection::end_session`).
-    pub fn end(&self) {
-        {
+    /// The session's account of file `file_id`, that of Login `login`, is
+    /// going (Logout, a new Login, the file opened again or closed): from
+    /// now on no transport reads the file through the session until a
+    /// Login publishes one, and what joined transports page of it goes.
+    /// Called before the session itself lets go of the account, so that
+    /// the grant never holds it longer. The flag comes first, before the
+    /// grant's lock; each table is let go of after it, under the table's
+    /// own lock, so that a read either keeps a page before (and it goes
+    /// here) or checks the flag after (and keeps nothing).
+    pub fn revoke(&self, file_id: u32, login: u64) {
+        self.revoked.store(login, Ordering::Release);
+        let tables = {
             let mut state = self.write();
-            state.ended = true;
-            state.files.clear();
-        }
-        for transfers in self.joined_transfers() {
-            lock(&transfers).clear();
+            if let Some(file) = state.files.get_mut(&file_id) {
+                file.account = None;
+            }
+            state.joined.clone()
+        };
+        for table in tables {
+            lock(Section::Table, &table).drop_file(file_id);
         }
     }
 
-    /// The transfer tables of the transports that joined, the list's lock
-    /// let go before any of them is taken.
-    fn joined_transfers(&self) -> Vec<Arc<Mutex<Transfers>>> {
-        lock(&self.joined).clone()
+    /// The first step of the session's end, before anything that can wait:
+    /// no transport reads through the grant from now on. A read already
+    /// admitted finishes and keeps nothing ([`Seat::table`]); what is kept
+    /// goes with [`Grant::drain`].
+    pub fn stop(&self) {
+        self.stopped.store(true, Ordering::Release);
+        self.write().files.clear();
+    }
+
+    /// Let go of what the joined transports page for the grant, once it has
+    /// ended ([`Grant::stop`], the administrator's flag, a bulk close): the
+    /// last step of its end, which waits for a read under way.
+    pub fn drain(&self) {
+        let tables = self.read().joined.clone();
+        for table in tables {
+            lock(Section::Table, &table).clear();
+        }
     }
 
     /// A place among the session's [`MAX_JOINED`] joined transports for a
     /// transport paging into `transfers`, kept until the [`Seat`] is
-    /// dropped; `None` when they are all taken.
-    pub fn take_seat(self: &Arc<Self>, transfers: Arc<Mutex<Transfers>>) -> Option<Seat> {
-        self.seats
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |taken| {
-                (taken < MAX_JOINED).then_some(taken + 1)
-            })
-            .ok()?;
-        lock(&self.joined).push(Arc::clone(&transfers));
-        Some(Seat {
+    /// dropped; refused when they are all taken or the grant ended. The
+    /// flags are read under the grant's lock, which [`Grant::drain`] takes
+    /// after them: a table added before the drain is drained, and none is
+    /// added after.
+    pub fn take_seat(self: &Arc<Self>, transfers: Arc<Mutex<Transfers>>) -> Result<Seat, Refusal> {
+        let mut state = self.write();
+        if self.ended() {
+            return Err(Refusal::Ended);
+        }
+        if state.joined.len() >= MAX_JOINED {
+            return Err(Refusal::Full);
+        }
+        state.joined.push(Arc::clone(&transfers));
+        drop(state);
+        Ok(Seat {
             grant: Arc::clone(self),
             transfers,
+            logins: HashMap::new(),
         })
     }
 }
 
+/// The locks of joined reads, by what they guard. Each is let go before
+/// any taken earlier: an address's allowance ([`Section::Address`]) is
+/// held while the rule looks at [`Section::Grants`] and then at a
+/// [`Section::Grant`] (`Joins::admit`), and a transfer table
+/// ([`Section::Table`]) while its grant is checked ([`Seat::table`]).
+/// Nothing else is taken under another: [`Section::Addresses`] and
+/// [`Section::Grants`] are let go before anything else is taken, and a
+/// [`Section::Grant`] before any table, so no two threads can wait on each
+/// other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Section {
+    /// The table of client addresses' allowances.
+    Addresses,
+    /// One address's allowance.
+    Address,
+    /// The grants, by certificate and session id.
+    Grants,
+    /// One session's grant.
+    Grant,
+    /// A joined transport's transfer table.
+    Table,
+    /// Not a lock: a session's locks released in the engine, a step of its
+    /// end and of losing a file ([`model`]).
+    #[cfg(test)]
+    Release,
+    /// Not a lock: a Login's password check ([`model`]).
+    #[cfg(test)]
+    Login,
+}
+
 /// `mutex`'s value, also after a thread panicked holding it: each user
-/// replaces or removes whole entries.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+/// replaces or removes whole entries. Under test, a step of the
+/// [`model`]'s orders.
+pub(crate) fn lock<T>(section: Section, mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    #[cfg(test)]
+    if let Some(guard) = model::lock(section, mutex) {
+        return guard;
+    }
+    let _ = section;
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn read<T>(section: Section, lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    #[cfg(test)]
+    if let Some(guard) = model::read(section, lock) {
+        return guard;
+    }
+    let _ = section;
+    lock.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn write<T>(section: Section, lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    #[cfg(test)]
+    if let Some(guard) = model::write(section, lock) {
+        return guard;
+    }
+    let _ = section;
+    lock.write().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Now, or under test the [`model`]'s clock.
+fn now() -> Instant {
+    #[cfg(test)]
+    if let Some(now) = model::now() {
+        return now;
+    }
+    Instant::now()
 }
 
 /// A joined transport's place in a session ([`Grant::take_seat`]), and the
@@ -260,6 +388,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) struct Seat {
     grant: Arc<Grant>,
     transfers: Arc<Mutex<Transfers>>,
+    /// Per file, the Login its transfers were started under.
+    logins: HashMap<u32, u64>,
 }
 
 impl Seat {
@@ -267,15 +397,37 @@ impl Seat {
         &self.grant
     }
 
+    #[cfg(test)]
     pub fn transfers(&self) -> &Arc<Mutex<Transfers>> {
         &self.transfers
+    }
+
+    /// The table, locked, for a read of file `file_id` admitted under Login
+    /// `login`, once the session still grants it ([`Grant::check`], under
+    /// the table's lock: what the read keeps there is let go by a revoke or
+    /// an end that comes after, and one that came before refuses it here).
+    /// What was paged of the file under an earlier Login goes, as the
+    /// session's own transfers go at Logout.
+    pub fn table(
+        &mut self,
+        file_id: u32,
+        login: u64,
+    ) -> Result<MutexGuard<'_, Transfers>, Refusal> {
+        let mut transfers = lock(Section::Table, &self.transfers);
+        self.grant.check(file_id, login)?;
+        if self.logins.insert(file_id, login) != Some(login) {
+            transfers.drop_file(file_id);
+        }
+        Ok(transfers)
     }
 }
 
 impl Drop for Seat {
     fn drop(&mut self) {
-        lock(&self.grant.joined).retain(|held| !Arc::ptr_eq(held, &self.transfers));
-        self.grant.seats.fetch_sub(1, Ordering::AcqRel);
+        self.grant
+            .write()
+            .joined
+            .retain(|held| !Arc::ptr_eq(held, &self.transfers));
     }
 }
 
@@ -286,10 +438,18 @@ impl Drop for Seat {
 #[derive(Default)]
 pub(crate) struct Joins {
     grants: Mutex<HashMap<(CertificateHash, u32), Arc<Grant>>>,
+    /// How many times the server has closed every connection
+    /// ([`Joins::stop_all`]).
+    closes: Arc<AtomicU64>,
+    /// Grants opened so far.
+    opened: AtomicU64,
     limits: RwLock<JoinRefusals>,
-    allowances: Mutex<HashMap<IpAddr, Allowance>>,
+    allowances: Mutex<HashMap<IpAddr, Arc<Mutex<Allowance>>>>,
     refusal_log: Mutex<LogAllowance>,
     served_log: Mutex<LogAllowance>,
+    /// Under test, fewer addresses than [`MAX_ADDRESSES`] (0: that many).
+    #[cfg(test)]
+    capacity: std::sync::atomic::AtomicUsize,
 }
 
 /// The refusals an address may still meet, and when it last earned one.
@@ -380,13 +540,7 @@ impl LogAllowance {
 
 impl Joins {
     fn grants(&self) -> MutexGuard<'_, HashMap<(CertificateHash, u32), Arc<Grant>>> {
-        self.grants.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn allowances(&self) -> MutexGuard<'_, HashMap<IpAddr, Allowance>> {
-        self.allowances
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        lock(Section::Grants, &self.grants)
     }
 
     /// What refused joins cost ([`JoinRefusals`]).
@@ -411,15 +565,18 @@ impl Joins {
     ) -> Arc<Grant> {
         let grant = Arc::new(Grant {
             id,
+            serial: self.opened.fetch_add(1, Ordering::Relaxed),
             owner,
             owner_name: owner_name.to_owned(),
             control,
+            epoch: self.closes.load(Ordering::Acquire),
+            closes: Arc::clone(&self.closes),
+            stopped: AtomicBool::new(false),
+            revoked: AtomicU64::new(0),
             state: RwLock::new(State {
-                ended: false,
                 files: HashMap::new(),
+                joined: Vec::new(),
             }),
-            seats: AtomicUsize::new(0),
-            joined: Mutex::new(Vec::new()),
         });
         if let Some(certificate) = owner.certificate {
             self.grants().insert((certificate, id), Arc::clone(&grant));
@@ -427,22 +584,24 @@ impl Joins {
         grant
     }
 
-    /// End `grant`: from now on no transport may read through it, and a
-    /// read already under way finishes. Never panics (a session's end runs
-    /// while a panic unwinds).
+    /// The last step of a session's end: `grant` is no longer listed, and
+    /// what joined transports page for it goes, which waits for a read
+    /// under way. The session stopped it first of all
+    /// (`Connection::end_session`); a grant still live is stopped here.
+    /// Never panics (a session's end runs while a panic unwinds).
     pub fn close(&self, grant: &Grant) {
-        grant.end();
-        let Some(certificate) = grant.owner.certificate else {
-            return;
-        };
-        let key = (certificate, grant.id);
-        let mut grants = self.grants();
-        if grants
-            .get(&key)
-            .is_some_and(|live| std::ptr::eq(Arc::as_ptr(live), grant))
-        {
-            grants.remove(&key);
+        grant.stop();
+        if let Some(certificate) = grant.owner.certificate {
+            let key = (certificate, grant.id);
+            let mut grants = self.grants();
+            if grants
+                .get(&key)
+                .is_some_and(|live| std::ptr::eq(Arc::as_ptr(live), grant))
+            {
+                grants.remove(&key);
+            }
         }
+        grant.drain();
     }
 
     /// What the rule needs to decide on a request naming session `id` for
@@ -468,54 +627,90 @@ impl Joins {
         }
     }
 
-    /// Take one attempt from `address`'s allowance (`admission::client_key`)
-    /// before a request naming a session is looked at; `false`, taking
-    /// nothing, when it has none left, and the request is then refused
-    /// unexamined. Deciding and charging are one step under one lock, so
-    /// that however many connections from the address try at once, they get
-    /// no more looks than the allowance. An address the table has no room
-    /// for is refused only once entries whose allowance has refilled are
-    /// reclaimed.
-    pub fn take_attempt(&self, address: IpAddr) -> bool {
+    /// Look at a request from `address` (`admission::client_key`) naming a
+    /// session, by `look` (the lookup and the rule), within the address's
+    /// allowance: in one section under the address's own lock, the
+    /// allowance is refilled and looked at, `look` runs, and a refusal is
+    /// charged. However many connections from the address try at once,
+    /// they get no more refused looks than the allowance and what refilled
+    /// since; an admitted one costs nothing. With nothing left the request
+    /// is refused unexamined ([`Refusal::Allowance`]), as it is when the
+    /// table has no room for a new address once the entries no request
+    /// holds and whose allowance is whole again are forgotten.
+    pub fn admit<T>(
+        &self,
+        address: IpAddr,
+        look: impl FnOnce() -> Result<T, Refusal>,
+    ) -> Result<T, Refusal> {
         let limits = self.limits();
-        let now = Instant::now();
-        let mut allowances = self.allowances();
-        if !allowances.contains_key(&address) && allowances.len() >= MAX_ADDRESSES {
-            allowances
-                .retain(|_, allowance| allowance.refilled(limits, now).left < limits.per_address);
-            if allowances.len() >= MAX_ADDRESSES {
-                return false;
-            }
-        }
-        let allowance = allowances.entry(address).or_insert(Allowance {
-            left: limits.per_address,
-            earned: now,
-        });
-        let refilled = allowance.refilled(limits, now);
-        if refilled.left == 0 {
-            *allowance = refilled;
-            return false;
-        }
-        *allowance = Allowance {
-            left: refilled.left - 1,
-            ..refilled
+        let Some(entry) = self.allowance(address, limits) else {
+            return Err(Refusal::Allowance);
         };
-        true
+        let mut allowance = lock(Section::Address, &entry);
+        let now = now();
+        *allowance = allowance.refilled(limits, now);
+        if allowance.left == 0 {
+            return Err(Refusal::Allowance);
+        }
+        let looked = look();
+        if looked.is_err() {
+            allowance.left -= 1;
+        }
+        #[cfg(test)]
+        model::looked(address, now, looked.is_err());
+        looked
     }
 
-    /// Give back the attempt [`Joins::take_attempt`] took for a request the
-    /// rule admitted: a correct join costs its address nothing.
-    pub fn give_back(&self, address: IpAddr) {
-        let limits = self.limits();
-        if let Some(allowance) = self.allowances().get_mut(&address) {
-            allowance.left = allowance.left.saturating_add(1).min(limits.per_address);
+    /// `address`'s entry in the table of allowances, added whole if it has
+    /// none; `None` when the table has no room for it. Making room forgets
+    /// only entries no request holds (`Arc::get_mut`, exact under the
+    /// table's lock, through which alone they are handed out).
+    fn allowance(&self, address: IpAddr, limits: JoinRefusals) -> Option<Arc<Mutex<Allowance>>> {
+        let now = now();
+        let capacity = self.capacity();
+        let mut allowances = lock(Section::Addresses, &self.allowances);
+        if !allowances.contains_key(&address) && allowances.len() >= capacity {
+            allowances.retain(|_, entry| {
+                Arc::get_mut(entry).is_none_or(|entry| {
+                    let allowance = entry.get_mut().unwrap_or_else(PoisonError::into_inner);
+                    allowance.refilled(limits, now).left < limits.per_address
+                })
+            });
+            if allowances.len() >= capacity {
+                return None;
+            }
         }
+        let entry = allowances.entry(address).or_insert_with(|| {
+            Arc::new(Mutex::new(Allowance {
+                left: limits.per_address,
+                earned: now,
+            }))
+        });
+        Some(Arc::clone(entry))
+    }
+
+    fn capacity(&self) -> usize {
+        #[cfg(test)]
+        match self.capacity.load(Ordering::Relaxed) {
+            0 => {}
+            capacity => return capacity,
+        }
+        MAX_ADDRESSES
+    }
+
+    /// Under test: room for `capacity` addresses, and none counted.
+    #[cfg(test)]
+    pub fn reset_allowances(&self, capacity: usize) {
+        self.capacity.store(capacity, Ordering::Relaxed);
+        lock(Section::Addresses, &self.allowances).clear();
     }
 
     /// End at once the reads of session `id`, whatever its own transport is
     /// doing: the administrator disconnected it
-    /// (`ServerHandle::disconnect_client`). The session's transport ends it
-    /// and lets go of its locks when it gets there.
+    /// (`Shared::disconnect_session`, after the owner's disconnect flag,
+    /// which ended them already). Each grant is stopped before any is
+    /// drained. The session's transport ends it and lets go of its locks
+    /// when it gets there.
     pub fn end(&self, id: u32) {
         let grants: Vec<Arc<Grant>> = self
             .grants()
@@ -523,18 +718,23 @@ impl Joins {
             .filter(|((_, grant_id), _)| *grant_id == id)
             .map(|(_, grant)| Arc::clone(grant))
             .collect();
-        for grant in grants {
-            grant.end();
+        for grant in &grants {
+            grant.stop();
+        }
+        for grant in &grants {
+            grant.drain();
         }
     }
 
-    /// End at once the reads of every session: the server closes every
-    /// connection (`ServerHandle::close_connections`).
-    pub fn end_all(&self) {
-        let grants: Vec<Arc<Grant>> = self.grants().values().cloned().collect();
-        for grant in grants {
-            grant.end();
-        }
+    /// End at once the reads of every session, in one step: the server
+    /// closes every connection (`Shared::close_connections`). Returns the
+    /// grants, in the order they were opened, to [`Grant::drain`] once the
+    /// sockets are shut. A grant opened after this is not ended by it.
+    pub fn stop_all(&self) -> Vec<Arc<Grant>> {
+        self.closes.fetch_add(1, Ordering::AcqRel);
+        let mut grants: Vec<Arc<Grant>> = self.grants().values().cloned().collect();
+        grants.sort_by_key(|grant| grant.serial);
+        grants
     }
 
     /// Log one refused join, with the transport, the operation, the id it
@@ -860,7 +1060,8 @@ mod tests {
     /// A session's joined transports are capped, a seat given back is
     /// free again, a grant is found only with its owner's certificate, and
     /// a closed grant can be joined by no one; the administrator's
-    /// disconnect of the owning transport ends it at once.
+    /// disconnect of the owning transport ends it at once, and so does a
+    /// bulk close, for the grants opened before it alone.
     #[test]
     fn seats_are_capped_and_a_closed_grant_is_gone() {
         let joins = Joins::default();
@@ -870,9 +1071,9 @@ mod tests {
         let seats: Vec<Seat> = (0..MAX_JOINED)
             .map(|_| grant.take_seat(transfers()).unwrap())
             .collect();
-        assert!(grant.take_seat(transfers()).is_none());
+        assert_eq!(grant.take_seat(transfers()).err(), Some(Refusal::Full));
         drop(seats);
-        assert!(grant.take_seat(transfers()).is_some());
+        assert!(grant.take_seat(transfers()).is_ok());
 
         let lookup = joins.lookup(Some([1; 32]), 7, 3);
         assert!(lookup.grant.is_some() && !lookup.session.unwrap().ended);
@@ -881,15 +1082,21 @@ mod tests {
         assert!(joins.lookup(None, 7, 3).grant.is_none());
         control.disconnect_now();
         assert!(joins.lookup(Some([1; 32]), 7, 3).session.unwrap().ended);
+        assert_eq!(grant.take_seat(transfers()).err(), Some(Refusal::Ended));
         joins.close(&grant);
         let lookup = joins.lookup(Some([1; 32]), 7, 3);
         assert!(lookup.grant.is_none() && lookup.session.is_none());
         assert!(grant.ended());
+
+        let before = joins.open(8, owner, "before", Arc::new(Control::default()));
+        assert_eq!(joins.stop_all().len(), 1);
+        let after = joins.open(9, owner, "after", Arc::new(Control::default()));
+        assert!(before.ended() && !after.ended());
     }
 
-    /// An address's attempts are counted: when they are spent it may try
-    /// no more until it earns one back, an admitted join gives its attempt
-    /// back, and another address is not touched.
+    /// An address's refused looks are counted: when they are spent it may
+    /// be looked at no more until it earns one back, an admitted look costs
+    /// nothing, and another address is not touched.
     #[test]
     fn an_address_that_spent_its_attempts_waits_for_one_more() {
         let joins = Joins::default();
@@ -900,15 +1107,17 @@ mod tests {
         });
         let (here, there): (IpAddr, IpAddr) =
             ("192.0.2.7".parse().unwrap(), "192.0.2.8".parse().unwrap());
-        assert!(joins.take_attempt(here));
-        joins.give_back(here);
-        assert!(joins.take_attempt(here));
-        assert!(joins.take_attempt(here));
-        assert!(!joins.take_attempt(here));
-        assert!(joins.take_attempt(there));
+        let admitted = |address| joins.admit(address, || Ok(()));
+        let refused = |address| joins.admit(address, || Err::<(), _>(Refusal::NoSession));
+        assert_eq!(admitted(here), Ok(()));
+        assert_eq!(refused(here), Err(Refusal::NoSession));
+        assert_eq!(refused(here), Err(Refusal::NoSession));
+        assert_eq!(refused(here), Err(Refusal::Allowance));
+        assert_eq!(admitted(here), Err(Refusal::Allowance), "not looked at");
+        assert_eq!(refused(there), Err(Refusal::NoSession));
         std::thread::sleep(Duration::from_millis(250));
-        assert!(joins.take_attempt(here));
-        assert!(!joins.take_attempt(here));
+        assert_eq!(refused(here), Err(Refusal::NoSession));
+        assert_eq!(refused(here), Err(Refusal::Allowance));
     }
 
     /// What a joined transport pages for a session goes when the session
@@ -943,72 +1152,59 @@ mod tests {
             let mut header = om_rctransaction::Header::new(Opcode::DownloadWithLock as u8);
             header.file_id = file_id;
             let owner = crate::transfer::Owner::of(&header);
-            let (_, resume) = lock(&table).start(owner, stream.clone(), 512, || {
-                handles += 1;
-                handles
-            });
+            let (_, resume) =
+                lock(Section::Table, &table).start(owner, stream.clone(), 512, || {
+                    handles += 1;
+                    handles
+                });
             assert!(resume.has_more(), "held for its next page");
         };
         page(3);
         page(4);
         let one = downloads.in_use() / 2;
-        grant.revoke(3);
+        grant.revoke(3, 0);
         assert_eq!(
             downloads.in_use(),
             one,
             "file 3's page went, file 4's stayed"
         );
-        grant.end();
+        grant.stop();
+        grant.drain();
         assert_eq!(downloads.in_use(), 0);
     }
 
-    /// The last attempt goes to one request, however many try at once: the
-    /// decision and the charge are one step.
-    #[test]
-    fn the_last_attempt_is_taken_once() {
-        let joins = Arc::new(Joins::default());
-        joins.set_limits(JoinRefusals {
-            per_address: 1,
-            refill: Duration::from_secs(3600),
-            per_connection: 16,
-        });
-        let here: IpAddr = "192.0.2.7".parse().unwrap();
-        let barrier = Arc::new(std::sync::Barrier::new(8));
-        let taken: usize = (0..8)
-            .map(|_| {
-                let (joins, barrier) = (Arc::clone(&joins), Arc::clone(&barrier));
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    joins.take_attempt(here)
-                })
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .map(|thread| usize::from(thread.join().unwrap()))
-            .sum();
-        assert_eq!(taken, 1);
-        assert!(!joins.take_attempt(here));
-    }
-
-    /// A full table takes a new address once it has reclaimed the entries
+    /// A full table takes a new address once it has forgotten the entries
     /// whose allowance refilled.
     #[test]
     fn a_full_table_reclaims_refilled_addresses_before_refusing_one() {
         let joins = Joins::default();
+        joins.reset_allowances(4);
         let limits = |refill| JoinRefusals {
             per_address: 1,
             refill,
             per_connection: 16,
         };
         joins.set_limits(limits(Duration::from_secs(3600)));
-        for n in 0..MAX_ADDRESSES as u32 {
-            assert!(joins.take_attempt(IpAddr::from(n.to_be_bytes())));
+        let refused = |address| joins.admit(address, || Err::<(), _>(Refusal::NoSession));
+        for n in 0..4u32 {
+            assert_eq!(
+                refused(IpAddr::from(n.to_be_bytes())),
+                Err(Refusal::NoSession)
+            );
         }
         let new: IpAddr = "2001:db8::1".parse().unwrap();
-        assert!(!joins.take_attempt(new), "a full table of spent addresses");
+        assert_eq!(
+            refused(new),
+            Err(Refusal::Allowance),
+            "a full table of spent addresses"
+        );
         // Every entry earns its attempt back.
         joins.set_limits(limits(Duration::from_millis(1)));
         std::thread::sleep(Duration::from_millis(5));
-        assert!(joins.take_attempt(new), "refilled entries reclaimed first");
+        assert_eq!(
+            refused(new),
+            Err(Refusal::NoSession),
+            "refilled entries forgotten first"
+        );
     }
 }
