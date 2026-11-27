@@ -4744,3 +4744,128 @@ fn a_vote_asked_before_the_opening_election_is_not_held_to_its_timing() {
     }
     w.steady().unwrap();
 }
+
+/// The core of member `me` of five, with an election timeout of 4.
+fn core_of_five(me: u8, plant: Option<Plant>) -> Core {
+    let cfg = Config {
+        me: id(me),
+        members: (1..=5).map(id).collect(),
+        election: 4,
+        heartbeat: 1,
+        batch: 2,
+        batch_bytes: 1 << 10,
+        max_entry: 1 << 10,
+        seed: 5,
+        plant,
+    };
+    let rec = Recovered {
+        server: id(me),
+        start_count: 1,
+        term: 0,
+        vote: None,
+        base: Pos::default(),
+        terms: Vec::new(),
+        committed: 0,
+        published: 0,
+        largest: None,
+    };
+    Core::new(cfg, &rec).unwrap()
+}
+
+/// Issue #1188, 3: section 7.1's timing rule at its boundary, five
+/// members, an election timeout of 4 and one tick a leg (an ask goes out
+/// on a tick, or when the member stands, and its answer is processed after
+/// the second tick from then). Answers from a quorum count when they are
+/// processed before the tick on which the timeout falls due, for the
+/// pre-vote as for the vote. On that tick a pre-candidate asks again,
+/// having forgotten its grants, and a candidate turns to a new pre-vote,
+/// its votes lost. One round trip, two ticks, fits in a timeout of 4. The
+/// pre-vote's and the vote's together, four ticks, fit only because
+/// standing restarts the timer: without that (planted), the votes are
+/// processed after the tick the one timeout falls due.
+#[test]
+fn answers_count_only_before_the_tick_the_timeout_falls_due() {
+    let me = 1;
+    // A pre-candidate that asked on the tick its timer fell due, its next
+    // timeout 4.
+    let asking = |plant| {
+        let mut c = core_of_five(me, plant);
+        for _ in 0..100 {
+            if c.role() == Role::PreCandidate {
+                break;
+            }
+            c.tick();
+        }
+        assert_eq!(c.role(), Role::PreCandidate);
+        c.timeout = 4;
+        c
+    };
+    let ticks = |c: &mut Core, n| {
+        for _ in 0..n {
+            c.tick();
+        }
+    };
+    let answer = |c: &Core, from: u8, body| Message {
+        from: id(from),
+        to: id(me),
+        term: c.term(),
+        start: 1,
+        body,
+    };
+    let grant = |c: &Core, from| {
+        let round = c.term() + 1;
+        answer(
+            c,
+            from,
+            Body::PreVoteReply {
+                round,
+                granted: true,
+            },
+        )
+    };
+    let vote = |c: &Core, from| answer(c, from, Body::VoteReply { granted: true });
+    // The pre-vote: a quorum's grants (two and its own) after the third
+    // tick, and it stands.
+    let mut c = asking(None);
+    ticks(&mut c, 3);
+    c.receive(grant(&c, 2));
+    c.receive(grant(&c, 3));
+    assert_eq!(c.role(), Role::Candidate);
+    // One after the third tick and one after the fourth: the fourth asked
+    // again and forgot the first, and one grant is no quorum.
+    let mut c = asking(None);
+    ticks(&mut c, 3);
+    c.receive(grant(&c, 2));
+    ticks(&mut c, 1);
+    c.receive(grant(&c, 3));
+    assert_eq!(c.role(), Role::PreCandidate);
+    // The vote, on a timeout of 4 from standing, after the pre-vote's round
+    // trip of two ticks.
+    let standing = |plant| {
+        let mut c = asking(plant);
+        ticks(&mut c, 2);
+        c.receive(grant(&c, 2));
+        c.receive(grant(&c, 3));
+        assert_eq!(c.role(), Role::Candidate);
+        if plant.is_none() {
+            c.timeout = 4;
+        }
+        c
+    };
+    let voted = |mut c: Core, n| {
+        ticks(&mut c, n);
+        c.receive(vote(&c, 2));
+        c.receive(vote(&c, 3));
+        c.role()
+    };
+    // Votes after the third tick: it leads; after the fourth, it has turned
+    // to a new pre-vote and they are lost.
+    assert_eq!(voted(standing(None), 3), Role::Leader);
+    assert_eq!(voted(standing(None), 4), Role::PreCandidate);
+    // Both round trips at one tick a leg, the votes two ticks after it
+    // stood: within the vote's own timeout, it leads. Planted, the timer
+    // not restarted, they come after the fourth tick of the pre-vote's.
+    assert_eq!(voted(standing(None), 2), Role::Leader);
+    let planted = Some(Plant::StandWithoutRestart);
+    assert_eq!(voted(standing(planted), 2), Role::PreCandidate);
+}
