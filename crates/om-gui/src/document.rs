@@ -1972,6 +1972,27 @@ impl DocumentState {
             .any(|((_, _, name), b)| name == field && b.value != b.original)
     }
 
+    /// Keep the draft and its record version while restoring an auto-entry.
+    pub(crate) fn restore_cleared_text(
+        &mut self,
+        layout: u32,
+        record: i64,
+        field: &str,
+        default: &str,
+    ) -> bool {
+        let Some(buffer) = self
+            .buffers
+            .get_mut(&(u64::from(layout), record, field.to_owned()))
+        else {
+            return false;
+        };
+        if !buffer.ui_edited || !buffer.value.is_empty() || default.is_empty() {
+            return false;
+        }
+        buffer.value.push_str(default);
+        true
+    }
+
     /// What the editor of related field `field` holds, once it was drawn.
     pub fn related_text(&self, field: &RelatedField) -> Option<&str> {
         self.related
