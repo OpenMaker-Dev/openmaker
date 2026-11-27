@@ -1131,6 +1131,12 @@ writable.
 - **A write that doesn't check it is written:** a script's write, for a
   field validated only during data entry (s18), and a related record's
   untyped cells, which the window commits with a script's rules.
+- The measured local scalar Text definition with option word 0 and
+  validation word `0x00000104` also stays writable when the stored
+  one-byte list reference points to an unavailable list. Writes
+  that would check membership return 3. A definition with no reference
+  member remains unsupported.
+  [Native list deletion](https://github.com/OpenMaker-Dev/openmaker/issues/1136#issuecomment-7204267134)
 - **Such lists are not evaluated.** What FileMaker's membership check
   gives for them is not claimed. An auto-entered or validation calculation may read a
 global field of its own table, one repetition and not a container: it
