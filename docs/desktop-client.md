@@ -2637,9 +2637,13 @@ for sides that draw no border, and Styles can list names the cascade skips
 ([#886](https://github.com/OpenMaker-Dev/openmaker/issues/886)). Position
 shows the stored name of a single decoded object as read-only, or a dash
 when the object has no name. Renaming and object tooltips are unavailable
-([#887](https://github.com/OpenMaker-Dev/openmaker/issues/887)). Autosizing
-information is unavailable. Data Formatting shows OpenMaker's
-read-only summary of the decoded number, date, time or graphic format for
+([#887](https://github.com/OpenMaker-Dev/openmaker/issues/887)). The
+Autosizing section lists the selected object's stored edge anchors as
+read-only. The list shows the saved flags before constraints from enclosing
+objects. Changing anchors is unavailable
+([#888](https://github.com/OpenMaker-Dev/openmaker/issues/888)). Data
+Formatting shows OpenMaker's read-only summary of the decoded number,
+date, time or graphic format for
 a stored field whose type is known to the window. Its wording has not been
 compared with FileMaker Pro's Inspector
 ([#891](https://github.com/OpenMaker-Dev/openmaker/issues/891)). Layouts
