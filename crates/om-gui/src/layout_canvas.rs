@@ -1192,8 +1192,21 @@ pub(crate) fn show(
             let (design, scroll) = document.design_surface(session);
             zoom::show(ui, ui.available_size() / factor, factor, |ui| {
                 let unsaved = state.unsaved();
-                let visible =
-                    |key| contents.is_none_or(|panels| panels.visible(key, &state.front_panels));
+                let previewed_popovers =
+                    contents
+                        .map(|panels| {
+                            panels.containing_popovers(
+                                state.selected.0.iter().filter_map(|&index| {
+                                    geometry.objects.get(index).map(|o| o.key)
+                                }),
+                            )
+                        })
+                        .unwrap_or_default();
+                let visible = |key| {
+                    contents.is_none_or(|panels| {
+                        panels.visible(key, &state.front_panels, &previewed_popovers)
+                    })
+                };
                 let dropped = draw(
                     ui,
                     geometry,

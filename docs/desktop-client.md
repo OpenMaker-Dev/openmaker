@@ -2207,7 +2207,11 @@ outlines. Borderless fields and text have a faint editing boundary.
 FileMaker Pro 26.1.1 can toggle field and text boundaries separately, and
 its field boundaries include dotted baselines. OpenMaker uses fixed faint
 outlines ([client-ui.md](re/client-ui.md#artwork-and-boundaries)).
-Contents of closed popovers still appear on the canvas
+Closed popovers and their contents are hidden from the canvas. Selecting
+a popover or one of its objects from Objects previews it at its stored
+position while that selection remains. This is OpenMaker's inspection
+behavior. Opening from the button or the Format menu and positioning the
+open popover as FileMaker does are unavailable
 ([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
 
 The Objects pane is 220 pt wide, lists the layout's objects front to back,
