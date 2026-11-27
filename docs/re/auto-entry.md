@@ -173,13 +173,30 @@ Contacts::Initial has kind 2 and option word 0, so its result is stored.
 
 `0x80` (`kOverwriteExisting`, the auto-entry "replace existing value" bit)
 is set on an unstored Date calculation (`0x00060080`) in a solution FileMaker
-Server hosts, in production use [O, PM relay, sanitized]. No other
-calculation field carries it: none of the 110 in the 66 `.fmp12` files
-FileMaker Pro 26 for macOS ships, nor the 402 in the maintainer's other test
-files [O]. It has no
-auto-entry for it to qualify; that it is left over from an earlier
-definition of the field, and changes nothing, is [I]. What FileMaker Pro's
-dialogs show for it is unmeasured.
+Server hosts, in production use [O, PM relay, sanitized]. The earlier
+survey found no other instances among the 110 calculation fields in the
+66 `.fmp12` files shipped with FileMaker Pro 26 for macOS or the 402
+calculation fields in the maintainer's other test files [O]. The unstored
+field has no auto-entry for the bit to qualify. That the bit survived
+an earlier definition of this field is [I]. Its dialog behavior is
+unmeasured.
+
+FileMaker Pro 26.1.1 converted a replacing Number auto-enter calculation
+`Year ( Issued )` (`0x00000088`) to a stored indexed Number calculation.
+The converted field kept the replacement bit (`0x80000080`), while the
+fresh stored calculation had `0x80000000`. Both had one repetition and
+no validation flags. Both accepted New Record, an unrelated Text
+assignment, and Date assignments with the calculated years 2024 and
+2025 visible before commit and retained on reopen. [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204266349)
+
+The same conversion with a Text result and `MonthName ( Issued )`
+retained `0x80`. The converted option word was `0x80000080` with
+automatic indexes on and `0xc0000080` with them off. The fresh control
+with automatic indexes off used `0xc0000000`. All three had one
+repetition, zero validation flags, a value index and no word index.
+Assigning the date immediately produced December and then January, and
+each result survived commit and reopen. The closed copies confirm that
+`0x40000000` can coexist with an existing value index. [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204722695)
 
 ## Built-in variables and Get() expressions
 
@@ -275,6 +292,14 @@ second Text cell and kept the first. A separate Text edit left both
 repetitions as they were. Each write returned 0 with no alert, and
 closed copies confirmed the stored cells.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39)
+
+FileMaker Pro 26.1.1 also accepted 4 and 25 repetitions on both fields
+in local files. The embedded Container had option word zero and the
+Text field had `0x88`, both with no validation flags. Empty creation and
+an unrelated Label edit left all filename cells absent. Inserting,
+replacing or clearing the last attachment affected only its matching
+filename cell. Earlier filenames remained stored after reopen. Every
+step returned 0. [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1134#issuecomment-7204266608)
 
 Entering a value directly in the result field, preparing a new record
 with a nonempty source, other formulas and hosted writes are unmeasured.
@@ -946,6 +971,23 @@ records had no cell for the global field. This measures the counter
 persisted at close. The timing of the counter write before close and
 the result of reverting a newly created record were not measured.
 [O, closed-file readback](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7185027447).
+
+### A calculated global reading another global
+
+FileMaker Pro 26.1.1 on a local file measured global Text `Input` with
+option word `0x00010000` and replacing calculated global Text `Output`
+with word `0x00010088`. Both had one repetition and no validation.
+The calculation read `Input` into one `Let` binding, then returned the
+binding or an empty Text literal.
+
+Set Field on Input updates Output at once, including a same-value
+assignment or a clear. The record stays closed. An edit to a separate
+ordinary field opens the record and keeps both globals. Ordinary unsorted
+New Record re-evaluates Output from the current Input before commit.
+The input stays as it was. The global values appear in the file-global
+cells on close, and an empty output has no stored cell. No row contains
+either global. Each tested step returned 0 with no alert.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1138#issuecomment-7204722907)
 
 ### Self in a calculated global Text auto-entry
 

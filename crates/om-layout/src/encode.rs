@@ -19,6 +19,8 @@ pub const FIELD: u32 = 1;
 pub const TEXT: u32 = 2;
 pub const PORTAL: u32 = 9;
 pub const BUTTON: u32 = 10;
+/// A web viewer, chart or plug-in object (`externalObj`).
+pub const EXTERNAL: u32 = 13;
 
 /// Style object types (`ObjectStyle.objectTypeId`, layout-model.md 6.2):
 /// an edit box, and a text box.
@@ -26,6 +28,7 @@ pub const EDIT_BOX_STYLE: u64 = 61;
 pub const TEXT_BOX_STYLE: u64 = 70;
 pub const BUTTON_STYLE: u64 = 80;
 pub const PORTAL_STYLE: u64 = 83;
+pub const WEB_VIEWER_STYLE: u64 = 86;
 
 /// `PortalLayoutObject.portalFlags` of a portal FileMaker Pro 26.0.3 drew
 /// with Portal Setup's defaults: `0x10` alone (layout-model.md 5.3.2; the
@@ -317,6 +320,30 @@ pub fn text_object(key: u64, bounds: &Rect) -> Vec<u8> {
     bytes(4, &rect(bounds), &mut out);
     bytes(5, &default_style(TEXT_BOX_STYLE), &mut out);
     bytes(7, &text, &mut out);
+    out
+}
+
+/// A web viewer `key` at `bounds` with Web Viewer Setup's `flags`
+/// (`externalObj.flags`, layout-model.md 9.6): object type 13, the
+/// `externalObj` `WEBV` with subtype 0, and the default style of style
+/// type 86, as FileMaker Pro 26.1.1's Web Viewer tool wrote it (#896), but
+/// for Pro's `kSelected` bit, which no placement writes (5.2.1, 10.5).
+pub fn web_viewer_object(key: u64, bounds: &Rect, flags: u32) -> Vec<u8> {
+    let mut external = Vec::new();
+    uint(
+        1,
+        u64::from(crate::object::ExternalObject::WEB_VIEWER),
+        &mut external,
+    );
+    uint(2, 0, &mut external);
+    uint(3, u64::from(flags), &mut external);
+    let mut out = Vec::new();
+    uint(1, u64::from(EXTERNAL), &mut out);
+    uint(2, key, &mut out);
+    uint(3, ANCHOR_LEFT_TOP, &mut out);
+    bytes(4, &rect(bounds), &mut out);
+    bytes(5, &default_style(WEB_VIEWER_STYLE), &mut out);
+    bytes(11, &external, &mut out);
     out
 }
 
@@ -878,6 +905,32 @@ mod tests {
             .step_by(2)
             .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
             .collect()
+    }
+
+    /// A web viewer is the object FileMaker Pro 26.1.1's Web Viewer tool
+    /// wrote (#896, W2: key 51 at 40/300/440/500 points, Custom Web Address
+    /// with the default options, `0x800d`), but for Pro's `kSelected` bit
+    /// `0x400000` in its flags, which placements do not write.
+    #[test]
+    fn a_web_viewer_is_the_object_filemaker_pro_wrote() {
+        let pro = unhex(
+            "08 0d 10 33 18 8080808203 22 24 09 0000000000c07240 11 0000000000004440 \
+             19 0000000000407f40 21 0000000000807b40 2a 13 0a 0f 0a 0d 08 01 10 01 1a 07 0a 05 \
+             08 e504 18 00 18 56 5a 0c 08 d68495ba05 10 00 18 8d8002",
+        );
+        let ours = web_viewer_object(51, &frame(300.0, 40.0, 500.0, 440.0), 0x800d);
+        let mut selected = Vec::new();
+        uint(3, ANCHOR_LEFT_TOP | 0x40_0000, &mut selected);
+        let mut placed = Vec::new();
+        uint(3, ANCHOR_LEFT_TOP, &mut placed);
+        assert_eq!(selected, unhex("18 8080808203"));
+        assert_eq!(
+            ours,
+            [&pro[..4], &placed[..], &pro[4 + selected.len()..]].concat()
+        );
+        let decoded = LayoutObject::decode(&ours).unwrap();
+        assert_eq!(decoded.kind(), ObjectKind::External);
+        assert_eq!(decoded.web_viewer().map(|options| options.0), Some(0x800d));
     }
 
     /// Layout Setup's fixed page margins replace `customMargins` (field 12)

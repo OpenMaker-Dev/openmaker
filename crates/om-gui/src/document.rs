@@ -293,6 +293,9 @@ pub(crate) struct DocumentState {
     /// The web viewers Browse painted this frame, and what of the layout
     /// floats above them (open popovers), in window points.
     pub web_viewers: Vec<crate::web_viewer::Placement>,
+    /// The pages Browse paints itself, with their newest pictures
+    /// (`web_viewer::composited`), set before the window is drawn.
+    pub web_pages: Vec<crate::web_viewer::PageTexture>,
     pub overlays: Vec<Rect>,
     /// Why web viewers show no page in this window, painted in their place.
     pub web_note: Option<&'static str>,
@@ -5856,6 +5859,8 @@ fn paint_object_repetition(
                     .flatten();
                 match media {
                     Some(Some(address)) => {
+                        let (input, hovered) =
+                            paint_page(ui, &state.web_pages, object.id, None, frame, true);
                         state.web_viewers.push(crate::web_viewer::Placement {
                             object: object.id,
                             // Interaction only: the player's own controls.
@@ -5867,6 +5872,8 @@ fn paint_object_repetition(
                             record: None,
                             current: true,
                             zoom: state.zoom.factor(),
+                            input,
+                            hovered,
                         });
                     }
                     Some(None) => {}
@@ -6384,6 +6391,14 @@ fn paint_object_repetition(
                             // Without calculations only an empty address is known.
                             _ => object.calcs.web_address.is_none().then(String::new),
                         };
+                        let (input, hovered) = paint_page(
+                            ui,
+                            &state.web_pages,
+                            object.id,
+                            row,
+                            rect,
+                            options.allows_interaction(),
+                        );
                         state.web_viewers.push(crate::web_viewer::Placement {
                             object: object.id,
                             options,
@@ -6393,6 +6408,8 @@ fn paint_object_repetition(
                             record: row,
                             current: record_index == session.current,
                             zoom: state.zoom.factor(),
+                            input,
+                            hovered,
                         });
                     }
                     None => {}
@@ -8342,6 +8359,131 @@ const MAX_WEB_VIEWERS: usize = 32;
 /// The text is rasterized at the window's zoom (`layer_galley`), so it stays
 /// as sharp as the layout's own text; a note cut short with an ellipsis
 /// keeps the unzoomed raster, which `scaled_text` does not rebuild.
+/// A page Browse paints itself (`web_viewer::composited`): its newest
+/// picture over `rect`, where it lies among the layout's objects, so that
+/// the objects after it, and whatever egui draws above the document, cover
+/// it. With `interactive`, the pointer's input over it this frame, in the
+/// page's points (the window's), and whether the pointer is on it; scrolling
+/// over it scrolls the page, not the document. Native views paint nothing.
+fn paint_page(
+    ui: &mut Ui,
+    pages: &[crate::web_viewer::PageTexture],
+    object: u64,
+    record: Option<i64>,
+    rect: Rect,
+    interactive: bool,
+) -> (Vec<crate::web_viewer::PageInput>, bool) {
+    use crate::web_viewer::PageInput;
+    if !crate::web_viewer::composited() {
+        return (Vec::new(), false);
+    }
+    if let Some(page) = pages
+        .iter()
+        .find(|p| p.object == object && p.record == record)
+    {
+        let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        ui.painter().image(page.texture, rect, uv, Color32::WHITE);
+    }
+    if !interactive {
+        return (Vec::new(), false);
+    }
+    let response = ui.interact(
+        rect,
+        ui.scope_id().with(("web viewer page", object, record)),
+        Sense::click_and_drag(),
+    );
+    // Input comes in the window's points, as the page counts (its size is
+    // the object's in the window).
+    let window = to_window(ui, rect);
+    let at = |p: egui::Pos2| (p.x - window.min.x, p.y - window.min.y);
+    let on = response.hovered() || response.dragged();
+    // A press the page took: its release goes to the page wherever the
+    // pointer is, in whichever frame it comes.
+    let held_id = response.id.with("pressed");
+    // The buttons it holds, one bit each.
+    let mut held = ui.data(|d| d.get_temp::<u8>(held_id)).unwrap_or(0);
+    let mut input = Vec::new();
+    let events = ui.input(|i| i.events.clone());
+    for event in events.iter().cloned() {
+        match event {
+            egui::Event::PointerMoved(p) if on => {
+                let (x, y) = at(p);
+                input.push(PageInput::Move { x, y });
+            }
+            egui::Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                ..
+            } => {
+                let button = match button {
+                    egui::PointerButton::Primary => 0,
+                    egui::PointerButton::Secondary => 1,
+                    egui::PointerButton::Middle => 2,
+                    _ => continue,
+                };
+                // A press on the page, and the release of a press it took.
+                let bit = 1u8 << button;
+                if (pressed && response.hovered()) || (!pressed && (on || held & bit != 0)) {
+                    if pressed {
+                        held |= bit;
+                    } else {
+                        held &= !bit;
+                    }
+                    let (x, y) = at(pos);
+                    input.push(PageInput::Button {
+                        x,
+                        y,
+                        button,
+                        pressed,
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    let pointer = ui.input(|i| i.pointer.hover_pos());
+    if let (true, Some(pointer)) = (response.hovered(), pointer) {
+        let line = ui.ctx().options(|o| o.input_options.line_scroll_speed);
+        let delta = events_delta(&events, line, window.height());
+        if delta != egui::Vec2::ZERO {
+            let (x, y) = at(pointer);
+            input.push(PageInput::Wheel {
+                x,
+                y,
+                dx: delta.x,
+                dy: delta.y,
+            });
+        }
+        // The document's scroll area leaves what the page scrolls.
+        ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+    }
+    ui.data_mut(|d| {
+        if held != 0 {
+            d.insert_temp(held_id, held);
+        } else {
+            d.remove::<u8>(held_id);
+        }
+    });
+    (input, on)
+}
+
+/// The wheel's scroll in this frame's `events`, in points (a line is
+/// `line` points, a page `page`).
+fn events_delta(events: &[egui::Event], line: f32, page: f32) -> egui::Vec2 {
+    events
+        .iter()
+        .map(|event| match event {
+            egui::Event::MouseWheel { unit, delta, .. } => match unit {
+                egui::MouseWheelUnit::Point => *delta,
+                egui::MouseWheelUnit::Line => *delta * line,
+                egui::MouseWheelUnit::Page => *delta * page,
+            },
+            _ => egui::Vec2::ZERO,
+        })
+        .fold(egui::Vec2::ZERO, |sum, delta| sum + delta)
+}
+
 fn paint_web_viewer_note(ui: &Ui, rect: Rect, note: &str) {
     /// The plate's inset from the viewer's edges.
     const MARGIN: f32 = 4.0;

@@ -13,7 +13,8 @@ use om_author::api::{
     DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, FieldControlParams, FieldType,
     FrameParams, InspectParams, LabelParams, LayoutParams, LayoutSetupParams, LayoutWidthParams,
     MoveObjectsParams, ObjectFrameParams, ObjectFramesParams, PageMargins, Part, PartOptionsParams,
-    PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlacementParams, TextParams,
+    PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlaceWebViewerParams, PlacementParams,
+    TextParams,
 };
 use om_author::{Command, Service};
 use om_data::DataProvider;
@@ -322,6 +323,68 @@ fn a_text_is_placed_on_its_own_and_lasts_a_restart() {
     let mut service = Service::new(target(&reopened, ACCOUNT, PASSWORD));
     let kept = get_layout(&mut service);
     assert_eq!(kept["objects"].as_array().unwrap().last(), Some(top));
+    reopened.stop();
+}
+
+/// place_web_viewer (#896) puts a web viewer reading the Name field on the
+/// layout's body at the revision get_layout gave: get_layout then lists it
+/// on top with its frame; repeated, it reports already_applied; options
+/// FileMaker Pro was not seen to store are refused before anything is sent;
+/// and the viewer, its options and its address are there after the server
+/// restarts, as the desktop client decodes them.
+#[test]
+fn a_web_viewer_is_placed_and_lasts_a_restart() {
+    let file = TempFile::from_tree("author-web-viewer", &form_tree());
+    let host = host(&file, "OpenMaker Server test");
+    let mut service = Service::new(target(&host, ACCOUNT, PASSWORD));
+    let before = get_layout(&mut service);
+    let base = text(&before["revision"]).to_owned();
+    let place = |options: Option<&[(&str, bool)]>, expected: &str| {
+        Command::PlaceWebViewer(PlaceWebViewerParams {
+            layout: Some(TASKS_LAYOUT.into()),
+            layout_name: None,
+            address: "\"https://example.com/?q=\" & Name".into(),
+            options: options.map(|o| o.iter().map(|(n, on)| (n.to_string(), *on)).collect()),
+            frame: frame(20.0, 120.0, 200.0, 60.0),
+            expected_revision: expected.into(),
+        })
+    };
+    let unmeasured = error(service.handle(&place(Some(&[("encode_url", false)]), &base)));
+    assert_eq!(unmeasured["kind"], "unsupported", "{unmeasured:#}");
+    let placed = ok(service.handle(&place(None, &base)));
+    assert_eq!(placed["status"], "placed", "{placed:#}");
+    assert_eq!(placed["options"], "0x800d");
+    assert_eq!(placed["verified"]["fresh_connection"], true);
+    let after = get_layout(&mut service);
+    let top = after["objects"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!(top["ref"], placed["object"], "{after:#}");
+    assert_eq!(top["kind"], "web_viewer");
+    assert_eq!(
+        top["frame"],
+        json!({"left": 20.0, "top": 120.0, "width": 200.0, "height": 60.0})
+    );
+    let again = ok(service.handle(&place(None, &base)));
+    assert_eq!(again["status"], "already_applied", "{again:#}");
+    host.stop();
+
+    let reopened = common::host(&file, "OpenMaker Server test restart");
+    let mut service = Service::new(target(&reopened, ACCOUNT, PASSWORD));
+    let kept = get_layout(&mut service);
+    assert_eq!(kept["objects"].as_array().unwrap().last(), Some(&top));
+    let mut opened = common::provider(&reopened);
+    let layout =
+        om_data::DataProvider::render_layout(&mut opened, fixture::LAYOUT.try_into().unwrap())
+            .unwrap()
+            .unwrap()
+            .layout;
+    let viewer = layout
+        .objects
+        .get(*layout.objects.root.last().unwrap())
+        .unwrap();
+    assert_eq!(viewer.web_viewer().map(|o| o.0), Some(0x800d));
+    let address = viewer.calcs.web_address.as_ref().expect("the web address");
+    assert_eq!(address.polish.field_references().len(), 1);
+    om_data::DataProvider::close(&mut opened);
     reopened.stop();
 }
 

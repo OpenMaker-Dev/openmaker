@@ -1283,6 +1283,12 @@ struct PartsHold {
     answered: bool,
 }
 
+impl PartsHold {
+    fn layout(&self) -> u32 {
+        self.sent.at().0
+    }
+}
+
 impl LayoutWorkspace {
     pub(crate) fn clear_history(&mut self) {
         self.canvas.clear_history();
@@ -1348,10 +1354,10 @@ impl LayoutWorkspace {
     pub(crate) fn nudge_selection(
         &mut self,
         session: &Session,
-        direction: crate::layout_canvas::NudgeDirection,
+        delta: om_data::layout_move::Delta,
     ) {
         let before = self.canvas.checkpoint();
-        if self.canvas.nudge_selection(session, direction) {
+        if self.canvas.nudge_selection(session, delta) {
             self.canvas.record_command(before);
         }
     }
@@ -1398,6 +1404,17 @@ impl LayoutWorkspace {
     /// A part's height dragged to with the Selection tool, to send.
     pub(crate) fn take_part_resize(&mut self) -> Option<crate::layout_canvas::PartResize> {
         self.canvas.take_part_resize()
+    }
+
+    /// Whether a read found unsaved changes to objects the layout no longer
+    /// has, since the last call; the changes stay until Revert Layout.
+    pub(crate) fn take_orphaned_drafts(&mut self) -> bool {
+        self.canvas.take_orphaned_drafts()
+    }
+
+    /// Whether the Part tool was used on the layout since the last call.
+    pub(crate) fn take_part_tool(&mut self) -> bool {
+        self.canvas.take_part_tool()
     }
 
     /// The portal drawn with the Portal tool and not yet saved.
@@ -1627,21 +1644,46 @@ impl LayoutWorkspace {
 
     /// The host answered `sent`, leaving the layout at `revision` when it
     /// saved it: when it is this window's held change, the hold ends now if
-    /// the layout is not read again (`rereads` false: refused, or the
-    /// connection is gone) or is where it was, else once it is read again.
+    /// the layout cannot have changed (`changed` false: refused without
+    /// writing, or the connection is gone) or is where it was, else once it
+    /// is read again at another revision. A refusal that wrote nothing is
+    /// read again at the revision the hold waits to leave, so it ends now.
     pub(crate) fn parts_answered(
         &mut self,
         sent: &PartsSent,
-        rereads: bool,
+        changed: bool,
         revision: Option<om_data::layout_placement::Revision>,
     ) {
         let Some(hold) = self.parts_hold.as_mut().filter(|h| h.sent == *sent) else {
             return;
         };
-        if rereads && revision != Some(sent.at().1) {
+        if changed && revision != Some(sent.at().1) {
             hold.answered = true;
         } else {
             self.parts_hold = None;
+            self.saving = false;
+        }
+    }
+
+    /// The window read layout `layout` again: an answered hold on it ends,
+    /// whatever revision the read gave. A refusal (306) whose read could
+    /// not reach the host's new catalog still shows the old revision, which
+    /// [`Self::release_parts`] would wait on for good.
+    /// A window that went to another layout meanwhile reads that one; its
+    /// read ends the hold too (`shows`: the layout the window shows now).
+    pub(crate) fn layout_read(&mut self, layout: u32, shows: Option<u32>) {
+        if self.parts_hold.as_ref().is_some_and(|hold| {
+            hold.answered && (hold.layout() == layout || shows != Some(hold.layout()))
+        }) {
+            self.parts_hold = None;
+            self.saving = false;
+        }
+    }
+
+    /// No answer or read will come for a held change (the connection or
+    /// the worker is gone): the hold ends.
+    pub(crate) fn abandon_parts(&mut self) {
+        if self.parts_hold.take().is_some() {
             self.saving = false;
         }
     }
