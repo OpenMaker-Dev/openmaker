@@ -1122,6 +1122,14 @@ checked by the desktop at the commit (`om-provider` `related_lists.rs`).
 - **OpenMaker Server's scripts** refuse with 3 a value the rules check
   against such a list.
 
+For a local normal one-repetition Text field with option word `0` and
+validation word `0x00000100`, an absent list reference (`07`) leaves
+the field and table writable. Browse accepts typed text without a
+membership check, and record writes preserve the field definition.
+The comparison covered this exact combination of validation flags and
+reference storage.
+[Absent-reference comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1136#issuecomment-7214224232)
+
 **A field validated against a value list the rules cannot check yet**
 (another file's, a calculation, or a second field) leaves the table
 writable.
