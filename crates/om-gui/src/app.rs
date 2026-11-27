@@ -5444,6 +5444,9 @@ impl OpenMakerApp {
             Action::SetMode(mode) => {
                 if self.w.session.is_some() && mode != self.w.mode {
                     self.w.layout_workspace.clear_history();
+                    if self.w.mode == Mode::Layout {
+                        self.w.layout_workspace.dismiss_deselected_popovers();
+                    }
                     self.w.document.cancel_pending_focus();
                     if mode == Mode::Preview {
                         if let Some(session) = &mut self.w.session {

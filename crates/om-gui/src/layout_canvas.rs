@@ -399,6 +399,8 @@ pub(crate) struct CanvasState {
     geometry: Option<LayoutGeometry>,
     history: history::History,
     front_panels: BTreeMap<u64, u64>,
+    /// Popovers left visible by a blank click that cleared their selection.
+    deselected_popovers: BTreeSet<u64>,
     panel_generation: u64,
     new_text_editor: Option<egui::Id>,
     selected: Selection,
@@ -833,6 +835,7 @@ impl CanvasState {
     /// canvas. Invalid indices leave the canvas without a selection.
     pub(crate) fn select_object(&mut self, session: &Session, index: usize, shift: bool) {
         self.synchronize(session);
+        self.dismiss_deselected_popovers();
         let index = self
             .geometry
             .as_ref()
@@ -849,10 +852,15 @@ impl CanvasState {
     }
 
     pub(crate) fn clear_selection(&mut self) {
+        self.dismiss_deselected_popovers();
         self.selected.set(None);
         self.selection_drag = None;
         self.box_from = None;
         self.drag = None;
+    }
+
+    pub(crate) fn dismiss_deselected_popovers(&mut self) {
+        self.deselected_popovers.clear();
     }
 
     /// Replace the window's selection using the active tool's selection rule.
@@ -880,6 +888,7 @@ impl CanvasState {
             },
         );
         self.scroll_to_selected = false;
+        self.dismiss_deselected_popovers();
     }
 
     /// Stage one arrow-key move on the current layout. Like a drag, this
@@ -1192,7 +1201,7 @@ pub(crate) fn show(
             let (design, scroll) = document.design_surface(session);
             zoom::show(ui, ui.available_size() / factor, factor, |ui| {
                 let unsaved = state.unsaved();
-                let previewed_popovers =
+                let selected_popovers =
                     contents
                         .map(|panels| {
                             panels.containing_popovers(
@@ -1202,9 +1211,15 @@ pub(crate) fn show(
                             )
                         })
                         .unwrap_or_default();
+                let had_selection = !state.selected.0.is_empty();
+                let previewed_popovers = if had_selection {
+                    &selected_popovers
+                } else {
+                    &state.deselected_popovers
+                };
                 let visible = |key| {
                     contents.is_none_or(|panels| {
-                        panels.visible(key, &state.front_panels, &previewed_popovers)
+                        panels.visible(key, &state.front_panels, previewed_popovers)
                     })
                 };
                 let stack = contents
@@ -1214,14 +1229,14 @@ pub(crate) fn show(
                             .partition(|&index| {
                                 !panels.in_previewed_popover(
                                     geometry.objects[index].key,
-                                    &previewed_popovers,
+                                    previewed_popovers,
                                 )
                             });
                         let first_popover = layout.len();
                         layout.extend(popovers);
                         (layout, first_popover)
                     });
-                let dropped = draw(
+                let (dropped, clicked_blank) = draw(
                     ui,
                     geometry,
                     tool,
@@ -1271,6 +1286,12 @@ pub(crate) fn show(
                     design.as_ref(),
                     scroll,
                 );
+                if clicked_blank && had_selection && state.selected.0.is_empty() {
+                    state.deselected_popovers = selected_popovers;
+                } else if !state.selected.0.is_empty() && !state.deselected_popovers.is_empty() {
+                    state.dismiss_deselected_popovers();
+                    ui.request_repaint();
+                }
                 if let Some(field) = dropped {
                     state.stage_field(session, field);
                 }
@@ -1415,9 +1436,10 @@ fn draw(
     stack: Option<(&[usize], usize)>,
     design: Option<&crate::document::design::Surface<'_>>,
     scroll_state: &mut crate::document::scroll::Scroll,
-) -> Option<NewField> {
+) -> (Option<NewField>, bool) {
     let order = stack.map(|(order, _)| order);
     let mut dropped = None;
+    let mut clicked_blank = false;
     let width = finite_extent(new_width.map_or(geometry.width, |w| w.width));
     let height = finite_extent(geometry.height);
     let frame = scroll_state.begin(ui, "layout_canvas", None);
@@ -1924,6 +1946,7 @@ fn draw(
                 let index = response
                     .interact_pointer_pos()
                     .and_then(|point| hit_test(geometry, order, shown, point - origin.to_vec2()));
+                clicked_blank = index.is_none();
                 selected.click(index, ui.input(|i| i.modifiers.shift));
             }
 
@@ -2305,7 +2328,7 @@ fn draw(
             frame.hold(ui);
         });
     scroll_state.finish(frame, &output);
-    dropped
+    (dropped, clicked_blank)
 }
 
 /// A frame in layout points as `om_layout` holds one.
@@ -3366,7 +3389,7 @@ mod tests {
     }
 
     #[test]
-    fn a_drag_on_a_raised_popover_does_not_move_the_covered_object() {
+    fn a_raised_popover_blocks_drags_and_stays_open_on_blank_click() {
         use egui_kittest::kittest::Queryable;
         use om_layout::{Layout, LayoutObject, ObjectStore};
 
@@ -3393,7 +3416,7 @@ mod tests {
                     key: 2,
                     kind_name: "Rectangle".into(),
                     movable: true,
-                    ..object([20.0, 20.0, 130.0, 80.0])
+                    ..object([20.0, 20.0, 205.0, 80.0])
                 },
             ],
             ..Default::default()
@@ -3450,6 +3473,41 @@ mod tests {
         app.step();
         assert_eq!(app.state().0.selected_index(), Some(0));
         assert!(app.state().0.selection_drag.is_none());
+
+        app.event(egui::Event::PointerButton {
+            pos: start + vec2(15.0, 0.0),
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        app.step();
+        let click = |app: &mut egui_kittest::Harness<'_, (CanvasState, DocumentState)>, pos| {
+            app.event(egui::Event::PointerMoved(pos));
+            for pressed in [true, false] {
+                app.event(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                });
+                app.step();
+            }
+            app.run_steps(2);
+        };
+        let blank = start + vec2(120.0, 50.0);
+        let popover = "Popover (object 1)";
+        for _ in 0..2 {
+            click(&mut app, blank);
+            assert!(app.state().0.selected.0.is_empty());
+            assert!(app.query_by_label(popover).is_some());
+        }
+        click(&mut app, start);
+        assert_eq!(app.state().0.selected_index(), Some(0));
+
+        click(&mut app, blank);
+        click(&mut app, start + vec2(90.0, 0.0));
+        assert_eq!(app.state().0.selected_index(), Some(1));
+        assert!(app.query_by_label(popover).is_none());
     }
 
     #[test]
