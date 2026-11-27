@@ -66,6 +66,9 @@ pub(crate) struct RelatedDraft {
     /// Child match cell of the measured first-related Set Field creation.
     /// The window rechecks that the row is still the sole match at save.
     pub first_related_key: Option<u64>,
+    /// Computed reading of a proposed Number on an existing related row.
+    /// The commit still takes the original assignment from `cells`.
+    pub related_self: Option<RelatedSelfPreview>,
     /// Delete Portal Row deleted the record.
     pub deleted: bool,
     /// The cells of `typed` whose field object's OnObjectSave already ran,
@@ -76,6 +79,13 @@ pub(crate) struct RelatedDraft {
     /// For a record to create: what its own file's rules enter, computed
     /// before its commit (#1047, [`PreparedDraft`]).
     pub prepared: Option<PreparedDraft>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RelatedSelfPreview {
+    pub cell: u64,
+    pub input: Option<String>,
+    pub value: Option<String>,
 }
 
 /// A record to create as its file's provider previewed it before the

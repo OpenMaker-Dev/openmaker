@@ -295,7 +295,9 @@ impl Inspector {
                         }
                         match self.tab {
                             Tab::Position => {
-                                changed.frame = self.position(ui, object, frame, editable)
+                                let stored =
+                                    stored_object(session, object).map(|(_, object)| object);
+                                changed.frame = self.position(ui, object, stored, frame, editable);
                             }
                             Tab::Styles => {
                                 show_style(ui, object, stored_object(session, object));
@@ -564,11 +566,22 @@ impl Inspector {
         &mut self,
         ui: &mut Ui,
         object: Option<&ObjectGeom>,
+        stored: Option<&om_layout::LayoutObject>,
         frame: Option<om_data::GeomRect>,
         editable: bool,
     ) -> Option<om_data::GeomRect> {
         let mut changed = None;
         section(ui, "Position", |ui| {
+            if let Some(stored) = stored {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Name").font(theme::small()));
+                    ui.add(
+                        egui::Label::new(stored.name.as_deref().unwrap_or("—"))
+                            .truncate()
+                            .selectable(false),
+                    );
+                });
+            }
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(object.map_or("No object selected", |o| o.kind_name.as_str()))

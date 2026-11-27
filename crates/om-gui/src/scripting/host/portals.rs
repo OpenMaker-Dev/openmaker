@@ -50,12 +50,12 @@ use om_data::formula::Expr;
 use om_data::host::session::selector;
 use om_data::host::{CalcNeed, CalcSchema, FieldClass, Hop};
 use om_data::meta::{relation_option, JoinOp};
-use om_data::rules::RecordNumber;
+use om_data::rules::{related_number_self, stores_record_number, RecordNumber, RelatedNumberSelf};
 use om_data::runtime::{ErrorCode, FieldRef, HostError, HostResult, RecordMove};
 use om_data::specs::SortSpec;
 use om_layout::ObjectKind;
 
-use super::super::window::{Cells, PreparedDraft, RelatedDraft};
+use super::super::window::{Cells, PreparedDraft, RelatedDraft, RelatedSelfPreview};
 use super::super::PortalRow;
 use super::writes::cell_of;
 use super::{data_error, note_failure, Act, WorkerHost, BEGUN_RECORD};
@@ -1201,6 +1201,7 @@ impl WorkerHost<'_> {
                     matched: false,
                     creation_parent: None,
                     first_related_key: None,
+                    related_self: None,
                     deleted: true,
                     saved: BTreeMap::new(),
                     prepared: None,
@@ -1301,6 +1302,11 @@ impl WorkerHost<'_> {
                 }
             }
             Target::Record(record) => {
+                let related_self = if direct_set_field {
+                    self.preview_related_self(occurrence, table, record, cell, &value)?
+                } else {
+                    None
+                };
                 // Mixed recovery needs the row accepted before
                 // this first script edit, not a read made while saving later.
                 let capture = self.s.file.window.state.uncommitted.session
@@ -1343,6 +1349,14 @@ impl WorkerHost<'_> {
                 {
                     Some(draft) => {
                         draft.cells.insert(cell, value);
+                        if related_self.is_some()
+                            || draft
+                                .related_self
+                                .as_ref()
+                                .is_some_and(|known| known.cell == cell)
+                        {
+                            draft.related_self = related_self;
+                        }
                         // The script's value replaces what the user typed.
                         draft.typed.remove(&cell);
                     }
@@ -1360,6 +1374,7 @@ impl WorkerHost<'_> {
                         matched: false,
                         creation_parent: None,
                         first_related_key: None,
+                        related_self,
                         deleted: false,
                         saved: BTreeMap::new(),
                         prepared: None,
@@ -1399,6 +1414,7 @@ impl WorkerHost<'_> {
                         matched: true,
                         creation_parent: parent,
                         first_related_key,
+                        related_self: None,
                         deleted: false,
                         saved: BTreeMap::new(),
                         prepared,
@@ -1419,6 +1435,63 @@ impl WorkerHost<'_> {
         *self.s.file.cache.borrow_mut() = Default::default();
         self.s.file.window.touch();
         Ok(())
+    }
+
+    /// Evaluate the measured replacing Self assignment to the stored match
+    /// after an intermediate Commit. Preview through the same record rules
+    /// that will write it, leaving the proposed cell untouched for Commit.
+    fn preview_related_self(
+        &mut self,
+        occurrence: u64,
+        table: u64,
+        record: u64,
+        cell: u64,
+        input: &Option<String>,
+    ) -> HostResult<Option<RelatedSelfPreview>> {
+        let Some(definitions) = self.schema().and_then(|schema| schema.table(table)) else {
+            return Ok(None);
+        };
+        if definitions.fields.get(&cell).and_then(related_number_self)
+            != Some(RelatedNumberSelf::Replace)
+            || definitions.fields.values().any(stores_record_number)
+            || !self.has_stored_related_parent()
+            || self.first_related_match_fields(occurrence, table).is_none()
+            || self.p().local_path().is_none()
+        {
+            return Ok(None);
+        }
+        let layout = self
+            .s
+            .file
+            .window
+            .state
+            .layout
+            .ok_or(ErrorCode::UNAVAILABLE)?;
+        let write = om_data::ScriptWrite {
+            layout,
+            table: Some(table),
+            record: Some(i64::try_from(record).map_err(|_| ErrorCode::RECORD_MISSING)?),
+            cells: Cells::from([(cell, input.clone())]),
+            privilege_set: self.current_set_name(),
+            single_field_step: true,
+            ..Default::default()
+        };
+        let pending = self
+            .p()
+            .compute_pending(&write, &[])
+            .map_err(|error| self.failed(error))?
+            .filter(|pending| pending.proposed_self.contains(&cell))
+            .ok_or(ErrorCode::UNAVAILABLE)?;
+        let value = pending
+            .values
+            .get(&cell)
+            .cloned()
+            .ok_or(ErrorCode::UNAVAILABLE)?;
+        Ok(Some(RelatedSelfPreview {
+            cell,
+            input: input.clone(),
+            value,
+        }))
     }
 
     /// The match fields of the measured local, direct unsorted equality
@@ -1470,18 +1543,20 @@ impl WorkerHost<'_> {
         if !plain_key && !replacing_uuid {
             return None;
         }
-        // The UUID key was measured together with an indexed Position.
-        let has_position = schema.table(table)?.fields.values().any(|field| {
-            field.class == FieldClass::Calculation
-                && field.stored
-                && field.value_type == om_data::calc::ValueType::Number
-                && field.formula.as_ref().is_some_and(|formula| {
-                    matches!(formula.polish, Expr::Get(selector::RECORD_NUMBER))
-                })
+        let fields = &schema.table(table)?.fields;
+        let has_position = fields.values().any(|field| {
+            stores_record_number(field)
                 && (!replacing_uuid
                     || field.options == 0x8008_0000 && field.validation_options == 0)
         });
-        has_position.then_some((from.id, to.id))
+        // The UUID key also occurs in the separately measured indexed
+        // Number default case, with no stored Position on the table.
+        let has_self_default = replacing_uuid
+            && !fields.values().any(stores_record_number)
+            && fields
+                .values()
+                .any(|field| related_number_self(field).is_some());
+        (has_position || has_self_default).then_some((from.id, to.id))
     }
 
     fn has_stored_related_parent(&self) -> bool {

@@ -134,6 +134,8 @@ const CHANGE_PARTS: u8 = 22;
 /// Layout Setup with fixed page margins: operation 16's request and the
 /// margins, in one commit.
 const LAYOUT_SETUP_MARGINS: u8 = 23;
+/// 28 onward: web viewers.
+const PLACE_WEB_VIEWER: u8 = 28;
 
 /// Bits of [`Described::operations`].
 pub const OP_REPLACE_SCRIPT_STEPS: u32 = 1 << REPLACE_SCRIPT_STEPS;
@@ -151,6 +153,10 @@ pub const MAX_STEP_DATA_BYTES: usize = 64 * 1024;
 /// The largest stream of a button's script parameter a request carries
 /// (each of its formatted and Polish streams).
 pub const MAX_PARAMETER_BYTES: usize = 64 * 1024;
+
+/// The most bytes of a web viewer's address a request carries: its
+/// formatted and Polish streams together, as the planner bounds them.
+pub const MAX_WEB_ADDRESS_BYTES: usize = 64 * 1024;
 pub const OP_SAVE: u32 = 1 << SAVE;
 pub const OP_SET_OBJECT_FRAMES: u32 = 1 << SET_OBJECT_FRAMES;
 pub const OP_DELETE_OBJECTS: u32 = 1 << DELETE_OBJECTS;
@@ -164,6 +170,7 @@ pub const OP_FIELD_CONTROL: u32 = 1 << FIELD_CONTROL;
 pub const OP_PART_OPTIONS: u32 = 1 << PART_OPTIONS;
 pub const OP_SET_TEXT: u32 = 1 << SET_TEXT;
 pub const OP_VALUE_LIST_VALUES: u32 = 1 << VALUE_LIST_VALUES;
+pub const OP_PLACE_WEB_VIEWER: u32 = 1 << PLACE_WEB_VIEWER;
 /// The most items, and characters in all, a value list's values request
 /// carries.
 pub const MAX_VALUES: usize = 10_000;
@@ -237,6 +244,7 @@ pub enum Request {
     ValueListValues(ValueListValues),
     PlacePortal(PlacePortal),
     ChangeParts(ChangeParts),
+    PlaceWebViewer(PlaceWebViewer),
     /// Write the file to disk now if it has changes the disk lacks, and
     /// answer [`Reply::Saved`] only when the disk holds them all. A client
     /// that changed the file with FileMaker's op13, whose reply says
@@ -273,6 +281,7 @@ pub enum Operation {
     PartOptions,
     SetText,
     ValueListValues,
+    PlaceWebViewer,
     PlacePortal,
     ChangeParts,
     Save,
@@ -550,6 +559,25 @@ pub struct DeleteObjects {
     pub layout: u64,
     pub expected: Revision,
     pub objects: Vec<u64>,
+}
+
+/// Place a web viewer at `frame` on layout `layout`'s body, on top of the
+/// layout's objects, as the Web Viewer tool and Web Viewer Setup place one
+/// (#896), with Setup's options `flags` (`externalObj.flags`) and a
+/// custom web address (a calculation's formatted stream, empty for none,
+/// and its Polish stream), if the layout member `[4, 5, L]` is at revision
+/// `expected`. The host checks the options and the address, allocates the
+/// viewer's key and UUID and writes the stamp (`docs/authoring.md`, "Web
+/// viewers on layouts"). The reply is [`Reply::Placed`], the viewer's key
+/// as its `field_object`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlaceWebViewer {
+    pub layout: u64,
+    pub expected: Revision,
+    pub frame: Frame,
+    pub flags: u32,
+    pub formatted: Vec<u8>,
+    pub polish: Vec<u8>,
 }
 
 /// Place a button on layout `layout`'s body that performs script
@@ -902,6 +930,29 @@ pub fn build_request(
                 .push_raw(&place.expected)
                 .push_u64(place.layout);
             (b, PLACE_BUTTON, VERSION)
+        }
+        Request::PlaceWebViewer(place) => {
+            if place.formatted.len() + place.polish.len() > MAX_WEB_ADDRESS_BYTES {
+                return Err(format!(
+                    "A web address's calculation is at most {} KB.",
+                    MAX_WEB_ADDRESS_BYTES / 1024
+                ));
+            }
+            let b = place
+                .frame
+                .iter()
+                .rev()
+                .fold(
+                    b.push_raw(&place.polish)
+                        .push_u32(place.polish.len() as u32)
+                        .push_raw(&place.formatted)
+                        .push_u32(place.formatted.len() as u32)
+                        .push_u32(place.flags),
+                    |b, edge| b.push_u64(edge.to_bits()),
+                )
+                .push_raw(&place.expected)
+                .push_u64(place.layout);
+            (b, PLACE_WEB_VIEWER, VERSION)
         }
         Request::PlaceButtonStep(place) => {
             if place.label.chars().count() > MAX_LABEL_CHARS {
@@ -1257,6 +1308,32 @@ pub fn parse_request_within(
                 parameter,
             })
         }
+        Operation::PlaceWebViewer => {
+            let layout = r.pop_u64()?;
+            let expected: Revision = r.pop_raw(32)?.try_into().expect("32 bytes");
+            let frame = pop_frame(&mut r)?;
+            let flags = r.pop_u32()?;
+            // Both streams within one bound, before either is read.
+            let mut left = MAX_WEB_ADDRESS_BYTES;
+            let mut stream = || -> Result<Vec<u8>, PerformError> {
+                let len = r.pop_u32()? as usize;
+                if len > left {
+                    return Err(PerformError::Truncated);
+                }
+                left -= len;
+                Ok(r.pop_raw(len)?.to_vec())
+            };
+            let formatted = stream()?;
+            let polish = stream()?;
+            Request::PlaceWebViewer(PlaceWebViewer {
+                layout,
+                expected,
+                frame,
+                flags,
+                formatted,
+                polish,
+            })
+        }
         Operation::PlaceButtonStep => {
             let layout = r.pop_u64()?;
             let expected: Revision = r.pop_raw(32)?.try_into().expect("32 bytes");
@@ -1317,6 +1394,7 @@ fn request_header(transaction: &[u8]) -> Result<(Reader<'_>, Operation), Perform
         (VERSION, PLACE_FIELD) => Operation::PlaceField,
         (VERSION, PLACE_BUTTON) => Operation::PlaceButton,
         (VERSION, PLACE_BUTTON_STEP) => Operation::PlaceButtonStep,
+        (VERSION, PLACE_WEB_VIEWER) => Operation::PlaceWebViewer,
         (VERSION, DESCRIBE_SECURITY) => Operation::DescribeSecurity,
         (VERSION, CREATE_LAYOUT) => Operation::CreateLayout,
         (VERSION, SET_OBJECT_FRAMES) => Operation::SetObjectFrames,
@@ -1568,7 +1646,8 @@ pub fn parse_reply(request: &Request, result: &[u8]) -> Result<Reply, PerformErr
             | Request::PlaceButton(_)
             | Request::PlaceButtonStep(_)
             | Request::PlaceText(_)
-            | Request::PlacePortal(_) => {
+            | Request::PlacePortal(_)
+            | Request::PlaceWebViewer(_) => {
                 let changed = r.pop_bool()?;
                 let field_object = r.pop_u64()?;
                 let label_object = r.pop_u64()?;
@@ -1860,7 +1939,16 @@ mod tests {
             values: vec!["Two\rlines".into()],
         });
         assert!(build_request(9, 1, &returns).is_err());
+        let viewer = Request::PlaceWebViewer(PlaceWebViewer {
+            layout: 3,
+            expected: [8; 32],
+            frame: [300.0, 40.0, 500.0, 440.0],
+            flags: 0x800d,
+            formatted: vec![0x13, 1, b'x' ^ 0x5a, 0],
+            polish: vec![0x13, 1, b'x' ^ 0x5a],
+        });
         for request in [
+            viewer,
             values,
             no_values,
             parts.clone(),

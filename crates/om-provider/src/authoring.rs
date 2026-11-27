@@ -1096,6 +1096,29 @@ impl NativeProvider {
         self.authoring(authoring::OP_PLACE_PORTAL, "placing portals on layouts")
     }
 
+    /// Place a web viewer on a layout's body ([`authoring::PlaceWebViewer`],
+    /// #896), where the host offers it. The reply's `field_object` is the
+    /// viewer's key.
+    pub fn place_web_viewer(
+        &mut self,
+        place: authoring::PlaceWebViewer,
+    ) -> Result<authoring::Placed, AuthoringError> {
+        self.place_object(
+            authoring::OP_PLACE_WEB_VIEWER,
+            "web viewers",
+            Request::PlaceWebViewer(place),
+        )
+    }
+
+    /// Whether this connection may place web viewers on layouts on its
+    /// host, as [`NativeProvider::script_authoring`].
+    pub fn web_viewer_placement(&mut self) -> Result<Authoring, DataError> {
+        self.authoring(
+            authoring::OP_PLACE_WEB_VIEWER,
+            "placing web viewers on layouts",
+        )
+    }
+
     /// Send a placement of `what` ("buttons") that operation `operation`
     /// makes, if the host offers it; the reply is [`Reply::Placed`].
     fn place_object(

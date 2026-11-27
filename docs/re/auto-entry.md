@@ -91,6 +91,17 @@ assignment, and 0 immediately on clear, with the last value stored.
 Writing an unrelated field left Amount alone. Every step returned 0.
 The off option was unmeasured in a sorted window.
 
+In a local scripted related create with a global Text match and an indexed
+replacing UUID key on the child, FileMaker Pro 26.1.1 kept the copied key.
+The child Number field with value-indexed, nonreplacing
+`If ( IsEmpty ( Self ) ; 0 ; Self )` (`0x80000008`) showed 0 immediately
+after Set Field on another child field. Setting the Number field to 25
+before Commit showed and stored 25. An unindexed, replacing
+`If ( IsEmpty ( Self ) ; 0 ; Self + 1 )` (`0x00000088`) showed and stored
+26 after the assignment, with or without an intermediate Commit. The
+tested steps all returned 0 without alerts.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1059#issuecomment-7204905093)
+
 ### GetField in a local custom auto-enter helper
 
 FileMaker Pro 26.1.1 evaluated a Text field with the formula
@@ -149,6 +160,17 @@ The validation word masks `0x4`, `0x8`, `0x10` correspond to XML children
 `XMLField::GetValidationNode` (`0x2f2dc`, `0x2f0fc`, `0x2f150`). Other bits
 remain raw. In particular, timestamp validation `0x2000` is not interpreted.
 These flags describe requirements; recognizing them does not perform them.
+
+When the Data checkbox is on and its Text box is blank, FileMaker Pro
+26.1.1 saves the constant bit with no member `0d`. In a local,
+single-repetition field with validation off, New Record leaves its cell
+absent and keeps later explicit text. This holds with indexing None
+(`0x00000004`) and All (`0xa0000004`). With All, a closed copy made before
+any Find held the blank row under the value index's empty key. An
+explicit value appeared in both indexes, and an exact Find for it
+returned that row without changing the file.
+[Unindexed comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1132#issuecomment-7204266062),
+[Indexed comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1132#issuecomment-7209355458)
 
 ## Index bits
 

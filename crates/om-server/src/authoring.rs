@@ -76,13 +76,14 @@ use om_protocol::authoring::{
     legacy_content_revision, status, ChangeParts, CreateField, CreateLayout, Created, DeleteLayout,
     DeleteObjects, Deleted, Described, DuplicateLayout, FieldControl, Frame, Framed, LayoutCreated,
     LayoutSetup, LayoutWidth, Operation, PartOptions, PlaceButton, PlaceButtonStep, PlaceField,
-    PlacePortal, PlaceText, Placed, ReplaceScriptSteps, Replaced, Reply, Request, Revision,
-    SetObjectFrames, SetText, ValueListValues, MAX_DEFINITION_BYTES, MOD_ACCOUNT, MOD_COUNT,
-    MOD_TIME, MOD_USER, OP_CHANGE_PARTS, OP_CREATE_FIELD, OP_CREATE_LAYOUT, OP_DELETE_LAYOUT,
-    OP_DELETE_OBJECTS, OP_DESCRIBE_SECURITY, OP_DUPLICATE_LAYOUT, OP_FIELD_CONTROL,
-    OP_LAYOUT_SETUP, OP_LAYOUT_SETUP_MARGINS, OP_LAYOUT_WIDTH, OP_PART_OPTIONS, OP_PLACE_BUTTON,
-    OP_PLACE_BUTTON_STEP, OP_PLACE_FIELD, OP_PLACE_PORTAL, OP_PLACE_TEXT, OP_REPLACE_SCRIPT_STEPS,
-    OP_SAVE, OP_SET_OBJECT_FRAMES, OP_SET_TEXT, OP_VALUE_LIST_VALUES,
+    PlacePortal, PlaceText, PlaceWebViewer, Placed, ReplaceScriptSteps, Replaced, Reply, Request,
+    Revision, SetObjectFrames, SetText, ValueListValues, MAX_DEFINITION_BYTES, MOD_ACCOUNT,
+    MOD_COUNT, MOD_TIME, MOD_USER, OP_CHANGE_PARTS, OP_CREATE_FIELD, OP_CREATE_LAYOUT,
+    OP_DELETE_LAYOUT, OP_DELETE_OBJECTS, OP_DESCRIBE_SECURITY, OP_DUPLICATE_LAYOUT,
+    OP_FIELD_CONTROL, OP_LAYOUT_SETUP, OP_LAYOUT_SETUP_MARGINS, OP_LAYOUT_WIDTH, OP_PART_OPTIONS,
+    OP_PLACE_BUTTON, OP_PLACE_BUTTON_STEP, OP_PLACE_FIELD, OP_PLACE_PORTAL, OP_PLACE_TEXT,
+    OP_PLACE_WEB_VIEWER, OP_REPLACE_SCRIPT_STEPS, OP_SAVE, OP_SET_OBJECT_FRAMES, OP_SET_TEXT,
+    OP_VALUE_LIST_VALUES,
 };
 use om_protocol::PerformError;
 use om_scripts::{Script, ScriptKind};
@@ -198,6 +199,7 @@ pub(crate) fn perform(
         | Operation::SetText
         | Operation::ValueListValues
         | Operation::PlacePortal
+        | Operation::PlaceWebViewer
         | Operation::Save => authorized(caller, true),
     };
     let (file, signed_in) = match authorization {
@@ -242,6 +244,7 @@ pub(crate) fn perform(
                 | OP_SET_TEXT
                 | OP_VALUE_LIST_VALUES
                 | OP_PLACE_PORTAL
+                | OP_PLACE_WEB_VIEWER
                 | OP_SAVE,
             can_author: signed_in.privileges() == Privileges::FullAccess,
             max_definition_bytes: MAX_DEFINITION_BYTES as u32,
@@ -316,6 +319,7 @@ pub(crate) fn perform(
         Request::PlaceField(request) => author(DesignEdit::PlaceField(request))?,
         Request::PlaceText(request) => author(DesignEdit::PlaceText(request))?,
         Request::PlacePortal(request) => author(DesignEdit::PlacePortal(request))?,
+        Request::PlaceWebViewer(request) => author(DesignEdit::PlaceWebViewer(request))?,
         Request::CreateLayout(request) => author(DesignEdit::CreateLayout(request))?,
         Request::DuplicateLayout(request) => author(DesignEdit::DuplicateLayout(request))?,
         Request::DeleteLayout(request) => author(DesignEdit::DeleteLayout(request))?,
@@ -419,6 +423,7 @@ pub(crate) fn edit(
         DesignEdit::PlaceField(request) => place_field(ed, request),
         DesignEdit::PlaceText(request) => place_text(ed, request),
         DesignEdit::PlacePortal(request) => place_portal(ed, request),
+        DesignEdit::PlaceWebViewer(request) => place_web_viewer(ed, request),
         DesignEdit::CreateLayout(request) => create_layout(ed, request),
         DesignEdit::DuplicateLayout(request) => duplicate_layout(ed, request),
         DesignEdit::DeleteLayout(request) => delete_layout(ed, request),
@@ -2410,6 +2415,204 @@ fn place_text(ed: &mut Editor<'_, '_, '_>, request: &PlaceText) -> Reply {
     })
 }
 
+/// A web viewer on a layout's body (#896): Web Viewer Setup's options, as
+/// FileMaker Pro stores the combinations measured, and a custom web
+/// address whose streams decode and whose fields are fields of this file's
+/// tables. The viewer gets one UUID `d8`, as Pro's had (no `d9`).
+fn place_web_viewer(ed: &mut Editor<'_, '_, '_>, request: &PlaceWebViewer) -> Reply {
+    let id = request.layout;
+    if ed.tx.is_read_only() {
+        return refused(
+            status::SAVE_FAILED[2],
+            format!("The file is open read-only; layout {id} is unchanged."),
+        );
+    }
+    let viewer = layout_placement::WebViewerPlacement {
+        frame: rect(&request.frame),
+        flags: request.flags,
+        formatted: request.formatted.clone(),
+        polish: request.polish.clone(),
+    };
+    // The address's fields: each of a table of this file.
+    let Ok(expr) = om_data::formula::polish::decode(&viewer.polish) else {
+        return refused(
+            status::INVALID,
+            "The web address is not a calculation this host reads.".to_owned(),
+        );
+    };
+    // And the file's names, as Web Viewer Setup resolves them, for the
+    // planner's check that the address's text reads back as what it
+    // stores; a binding whose name another occurrence or field shares is
+    // refused, as its text could resolve to either.
+    let names = {
+        let derived = ed.tx.derived();
+        let catalog = derived.catalog();
+        let fields: Vec<(u64, u64)> = expr
+            .field_references()
+            .iter()
+            .filter_map(|field| field.occurrence.id().zip(field.field.id()))
+            .collect();
+        if fields.len() != expr.field_references().len() {
+            return refused(
+                status::FIELD_MISSING,
+                "The web address reads a field this file's tables do not have.".to_owned(),
+            );
+        }
+        match address_names(catalog, &fields) {
+            Ok(names) => names,
+            Err(AddressNames::Missing) => {
+                return refused(
+                    status::FIELD_MISSING,
+                    "The web address reads a field this file's tables do not have.".to_owned(),
+                )
+            }
+            Err(AddressNames::Ambiguous(binding)) => {
+                return refused(
+                    status::UNSUPPORTED,
+                    format!(
+                        "The web address reads {binding}, a name another occurrence or field of \
+                         this file shares; its text could stand for either, so it is not placed."
+                    ),
+                )
+            }
+        }
+    };
+    let key = uint_segment(id);
+    let member_path = vec![vec![LAYOUTS], vec![LAYOUT_MEMBERS], key.clone()];
+    let Some(current) = ed
+        .node(&[&[LAYOUTS], &[LAYOUT_MEMBERS], &key])
+        .map(Cow::into_owned)
+    else {
+        return refused(
+            status::LAYOUT_MISSING,
+            format!("The file has no layout {id}."),
+        );
+    };
+    let current_revision = layout_revision(&current);
+    let (expected, older) = expected_now(
+        &request.expected,
+        &current,
+        layout_revision,
+        legacy_catalog_revision,
+    );
+    if current_revision != expected {
+        // Placed by an earlier request whose answer was lost: nothing to do.
+        if let Some(placed) = layout_placement::already_placed_web_viewer(&current, &viewer) {
+            return Reply::Placed(Placed {
+                changed: false,
+                field_object: placed,
+                label_object: 0,
+                revision: answer(older, &current, layout_revision, legacy_catalog_revision),
+            });
+        }
+        return Reply::Refused {
+            status: status::CONFLICT,
+            message: format!("Layout {id} was changed since the revision the request was made to."),
+            current: Some(current_revision),
+        };
+    }
+    let planned = match layout_placement::plan_web_viewer(&current, &viewer, &names) {
+        Ok(planned) => planned,
+        Err(refusal) => {
+            let code = match refusal {
+                layout_placement::Refusal::Invalid(_) => status::INVALID,
+                layout_placement::Refusal::Unsupported(_) => status::UNSUPPORTED,
+            };
+            return refused(code, refusal.to_string());
+        }
+    };
+    let locks = [(member_path.clone(), LOCK_EXCLUSIVE)];
+    if let Err(users) = ed.lock_all(&locks) {
+        return refused(
+            status::LAYOUT_IN_USE,
+            format!("Layout {id} is in use by {users}."),
+        );
+    }
+    let time = ed.time();
+    let mut member = planned.member;
+    if let Some(record) = member.at_mut(&[&[OBJECT_ATTRIBUTES], &serial::encode(planned.viewer)]) {
+        record.set_child(OwnedNode::leaf(vec![UNIQUE_ID], ed.uuid()));
+    }
+    let member = ed.stamped(member, &time);
+    let revision = answer(older, &member, layout_revision, legacy_catalog_revision);
+    ed.write(member_path.clone(), Some(member));
+    let account = ed.account;
+    // The address itself stays out of the log.
+    ed.once_stored(
+        vec![member_path],
+        format!(
+            "a web viewer placed on layout {id} as object {} by {account}",
+            planned.viewer
+        ),
+        format!("web viewer not placed on layout {id}"),
+        format!("layout {id} is unchanged"),
+    );
+    Reply::Placed(Placed {
+        changed: true,
+        field_object: planned.viewer,
+        label_object: 0,
+        revision,
+    })
+}
+
+/// Why a web viewer's address has no names to be checked with.
+#[derive(Debug, PartialEq)]
+enum AddressNames {
+    /// A field it reads is not one of this file's tables'.
+    Missing,
+    /// A field it reads is named `Occurrence::Field` as another one of the
+    /// file is (names compared without case), so its text is ambiguous.
+    Ambiguous(String),
+}
+
+/// The file's names for checking a web viewer's address that reads
+/// `fields` (occurrence and field ids): every occurrence of this file and
+/// every field of its tables, as the address's text is resolved.
+fn address_names(
+    catalog: &om_hbam::Catalog,
+    fields: &[(u64, u64)],
+) -> Result<om_data::formula::NameTable, AddressNames> {
+    let mut names = om_data::formula::NameTable::default();
+    for occurrence in &catalog.table_occurrences {
+        if let Some(table) = occurrence.base_table() {
+            names.add_occurrence(occurrence.id, &occurrence.name, table);
+        }
+    }
+    for table in &catalog.tables {
+        for field in &table.fields {
+            names.add_field(table.id, field.id, &field.name);
+        }
+    }
+    let same = |a: &str, b: &str| a.to_lowercase() == b.to_lowercase();
+    for &(occurrence_id, field_id) in fields {
+        let occurrence = catalog
+            .table_occurrences
+            .iter()
+            .find(|o| o.id == occurrence_id)
+            .ok_or(AddressNames::Missing)?;
+        let table = occurrence
+            .base_table()
+            .and_then(|table| catalog.table(table))
+            .ok_or(AddressNames::Missing)?;
+        let field = table.field(field_id).ok_or(AddressNames::Missing)?;
+        let shared_occurrence = catalog
+            .table_occurrences
+            .iter()
+            .any(|o| o.id != occurrence.id && same(&o.name, &occurrence.name));
+        let shared_field = table
+            .fields
+            .iter()
+            .any(|f| f.id != field.id && same(&f.name, &field.name));
+        if shared_occurrence || shared_field {
+            return Err(AddressNames::Ambiguous(format!(
+                "{}::{}",
+                occurrence.name, field.name
+            )));
+        }
+    }
+    Ok(names)
+}
+
 /// Whether table occurrences `a` and `b` are joined in the file's
 /// relationship graph `[3]`, directly or through other occurrences.
 fn related(schema: &Schema<'_>, a: u64, b: u64) -> bool {
@@ -2852,6 +3055,54 @@ mod tests {
     use super::*;
     use crate::config::{ServerConfig, ServerIdentity};
     use crate::{Identity, Server};
+
+    /// A web viewer's address is checked with every name of the file, and
+    /// a field whose `Occurrence::Field` another occurrence or field shares
+    /// is refused: files with older name indexes can hold two fields named
+    /// alike (schema-path.md), and the text would read back as the first.
+    #[test]
+    fn a_web_address_reading_a_shared_name_is_refused() {
+        use om_hbam::catalog::{DataType, Field, FieldKind, Table, TableOccurrence};
+        let field = |id, name: &str| Field {
+            id,
+            name: name.into(),
+            kind: FieldKind::Normal,
+            data_type: DataType::Text,
+            options: Vec::new(),
+        };
+        let occurrence = |id, name: &str, table: u8| TableOccurrence {
+            id,
+            name: name.into(),
+            definition: vec![2, 1, 0, 2, 1, table],
+        };
+        let catalog = om_hbam::Catalog {
+            tables: vec![Table {
+                id: 0x81,
+                name: "Contacts".into(),
+                fields: vec![field(6, "Name"), field(7, "Website"), field(8, "website")],
+            }],
+            table_occurrences: vec![
+                occurrence(0xd0_0002, "Contacts", 0x81),
+                occurrence(0xd0_0003, "Leads", 0x81),
+                occurrence(0xd0_0004, "LEADS", 0x81),
+            ],
+            layouts: Vec::new(),
+        };
+        assert!(address_names(&catalog, &[(0xd0_0002, 6)]).is_ok());
+        for fields in [[(0xd0_0002, 7)], [(0xd0_0002, 8)], [(0xd0_0003, 6)]] {
+            assert!(
+                matches!(
+                    address_names(&catalog, &fields),
+                    Err(AddressNames::Ambiguous(_))
+                ),
+                "{fields:?}"
+            );
+        }
+        assert_eq!(
+            address_names(&catalog, &[(0xd0_0002, 9)]).err(),
+            Some(AddressNames::Missing)
+        );
+    }
 
     #[test]
     fn stamps_count_up_from_none_and_keep_other_children() {

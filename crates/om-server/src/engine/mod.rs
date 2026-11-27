@@ -714,6 +714,7 @@ pub enum DesignEdit {
     PlaceField(design::PlaceField),
     PlaceText(design::PlaceText),
     PlacePortal(design::PlacePortal),
+    PlaceWebViewer(design::PlaceWebViewer),
     PlaceButton(design::PlaceButton),
     PlaceButtonStep(design::PlaceButtonStep),
     SetObjectFrames(design::SetObjectFrames),

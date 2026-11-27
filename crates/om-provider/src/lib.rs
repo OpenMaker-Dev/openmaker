@@ -1619,6 +1619,61 @@ impl NativeProvider {
         })
     }
 
+    fn place_web_viewer_on_layout(
+        &mut self,
+        place: &om_data::layout_placement::LayoutWebViewerPlacement,
+    ) -> Result<om_data::layout_placement::PlacedLayoutWebViewer, DataError> {
+        use om_data::layout_placement::{self, PlacedLayoutWebViewer, Refusal};
+        use om_protocol::authoring::{layout_revision, status};
+        let layout = u64::from(place.layout);
+        let member = self.layout_member(layout)?.ok_or_else(|| {
+            DataError::with_code(
+                i32::from(status::LAYOUT_MISSING),
+                format!("The host has no layout {layout}."),
+            )
+        })?;
+        if place.expected != layout_revision(&member) {
+            // A lost answer's viewer may already be there; only the host
+            // can tell, so the request goes with the expected revision.
+            if layout_placement::already_placed_web_viewer(&member, &place.viewer).is_none() {
+                return Err(DataError::with_code(
+                    layout_placement::CONFLICT,
+                    "The layout changed since it was shown; nothing was saved. It is read \
+                     again: place the web viewer on it again.",
+                ));
+            }
+        } else {
+            // The file's names show the address as Web Viewer Setup does.
+            let schema = self.calc_schema_cached()?;
+            layout_placement::plan_web_viewer(&member, &place.viewer, schema.names()).map_err(
+                |refusal| match refusal {
+                    Refusal::Invalid(reason) => {
+                        DataError::with_code(i32::from(status::INVALID), reason)
+                    }
+                    Refusal::Unsupported(reason) => {
+                        DataError::with_code(i32::from(status::UNSUPPORTED), reason)
+                    }
+                },
+            )?;
+        }
+        let frame = &place.viewer.frame;
+        let placed = self
+            .place_web_viewer(om_protocol::authoring::PlaceWebViewer {
+                layout,
+                expected: place.expected,
+                frame: [frame.top, frame.left, frame.bottom, frame.right],
+                flags: place.viewer.flags,
+                formatted: place.viewer.formatted.clone(),
+                polish: place.viewer.polish.clone(),
+            })
+            .map_err(|error| object_edit_error(error, "The web viewer was"))?;
+        Ok(PlacedLayoutWebViewer {
+            changed: placed.changed,
+            viewer: placed.field_object,
+            revision: placed.revision,
+        })
+    }
+
     fn place_portal_on_layout(
         &mut self,
         place: &om_data::layout_placement::LayoutPortalPlacement,
@@ -5271,6 +5326,19 @@ impl DataProvider for NativeProvider {
     ) -> Result<om_data::layout_placement::PlacedLayoutPortal, DataError> {
         self.require_writable()?;
         let placed = self.place_portal_on_layout(&place);
+        // As for the other placements: read again whatever the answer.
+        let refreshed = self.refresh_layout_downloads();
+        let placed = placed?;
+        refreshed?;
+        Ok(placed)
+    }
+
+    fn place_layout_web_viewer(
+        &mut self,
+        place: om_data::layout_placement::LayoutWebViewerPlacement,
+    ) -> Result<om_data::layout_placement::PlacedLayoutWebViewer, DataError> {
+        self.require_writable()?;
+        let placed = self.place_web_viewer_on_layout(&place);
         // As for the other placements: read again whatever the answer.
         let refreshed = self.refresh_layout_downloads();
         let placed = placed?;

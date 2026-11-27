@@ -48,8 +48,8 @@ use crate::meta::{ValueList, ValueSource};
 
 use crate::host::session::selector;
 use crate::host::{
-    stored_value, CalcSchema, CalcSource, FileCalc, FileHost, MemorySource, RecordValues,
-    SessionInfo,
+    stored_value, CalcSchema, CalcSource, FieldClass, FieldDef, FileCalc, FileHost, MemorySource,
+    RecordValues, SessionInfo,
 };
 use crate::DataError;
 
@@ -410,6 +410,77 @@ impl RecordNumber {
             Self::LocalSortedNewRecord { position, .. } => position,
             Self::LocalFirstRelated => 1,
         }
+    }
+}
+
+/// A stored Number calculation consisting of `Get ( RecordNumber )`.
+pub fn stores_record_number(field: &FieldDef) -> bool {
+    field.class == FieldClass::Calculation
+        && field.stored
+        && field.value_type == ValueType::Number
+        && field
+            .formula
+            .as_ref()
+            .is_some_and(|formula| matches!(formula.polish, Expr::Get(selector::RECORD_NUMBER)))
+}
+
+/// Number defaults measured on the first related record made by Set Field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelatedNumberSelf {
+    KeepIndexed,
+    Replace,
+}
+
+/// Recognize the exact definitions from the related Number Self trials.
+pub fn related_number_self(field: &FieldDef) -> Option<RelatedNumberSelf> {
+    if field.class != FieldClass::Data
+        || field.value_type != ValueType::Number
+        || field.global
+        || field.repetitions != 1
+        || field.validation_options != 0
+    {
+        return None;
+    }
+    let Some(Expr::Call {
+        op: Opcode::IF,
+        args,
+    }) = field.auto_enter.as_ref().map(|formula| &formula.polish)
+    else {
+        return None;
+    };
+    let [Expr::Call { op, args: tested }, Expr::Number(om_formula::Number::Decimal(zero)), fallback] =
+        args.as_slice()
+    else {
+        return None;
+    };
+    let self_value =
+        |expr: &Expr| matches!(expr, Expr::Call { op: Opcode::SELF, args } if args.is_empty());
+    let literal = |number: &om_formula::Decimal, whole| {
+        !number.negative
+            && number.whole.as_slice() == [whole]
+            && number.fraction.iter().all(|word| *word == 0)
+    };
+    if op.name() != Some("IsEmpty")
+        || !matches!(tested.as_slice(), [value] if self_value(value))
+        || !literal(zero, 0)
+    {
+        return None;
+    }
+    match (field.options, fallback) {
+        (0x8000_0008, value) if self_value(value) => Some(RelatedNumberSelf::KeepIndexed),
+        (
+            0x0000_0088,
+            Expr::Call {
+                op: Opcode::ADD,
+                args,
+            },
+        ) if matches!(args.as_slice(),
+                [value, Expr::Number(om_formula::Number::Decimal(one))]
+                if self_value(value) && literal(one, 1)) =>
+        {
+            Some(RelatedNumberSelf::Replace)
+        }
+        _ => None,
     }
 }
 
@@ -2316,13 +2387,25 @@ impl RecordPlan {
                 None
             };
             let constant = if options.auto_entry_constant() {
-                Some(
-                    field_node
-                        .and_then(|n| n.get(FIELD_CONSTANT))
-                        .and_then(|n| n.text())
-                        .and_then(Result::ok)
-                        .ok_or_else(|| error("auto-entered constant data is missing."))?,
-                )
+                match field_node.and_then(|n| n.get(FIELD_CONSTANT)) {
+                    Some(node) => Some(
+                        node.text()
+                            .and_then(Result::ok)
+                            .ok_or_else(|| error("auto-entered constant data is unreadable."))?,
+                    ),
+                    // FileMaker leaves out member 0d when Data is checked
+                    // with blank Text. There is no value to add to the row.
+                    None if local
+                        && kind == FieldKind::Normal
+                        && field.data_type == DataType::Text
+                        && options.max_repetitions == 1
+                        && options.validation_options == 0
+                        && matches!(options.options, 0x0000_0004 | 0xa000_0004) =>
+                    {
+                        None
+                    }
+                    None => return Err(error("auto-entered constant data is missing.")),
+                }
             } else {
                 None
             };
@@ -4188,14 +4271,27 @@ impl RecordPlan {
                 ));
             }
         }
-        if let Some(field) = self.fields.values().find(|field| {
+        // The related Self trial did not also have a stored record number.
+        let related_self_table = if first_related && entry.script && !entry.imported {
+            self.schema
+                .table(self.table)
+                .filter(|table| !table.fields.values().any(stores_record_number))
+        } else {
+            None
+        };
+        if let Some((_, field)) = self.fields.iter().find(|(id, field)| {
             (!entry.skip_auto_enter || field.stored_calculation())
                 && match field.auto_enter_self {
                     AutoEntrySelf::Unused => false,
                     AutoEntrySelf::ProposedNumber => {
                         // The replacing option with the empty-input guard
                         // off was measured in unsorted New Record only.
-                        !unsorted && (!sorted || field.options.options & ALWAYS_EVALUATE != 0)
+                        !unsorted
+                            && (!sorted || field.options.options & ALWAYS_EVALUATE != 0)
+                            && !related_self_table
+                                .and_then(|table| table.fields.get(*id))
+                                .and_then(related_number_self)
+                                .is_some()
                     }
                     AutoEntrySelf::Unsupported => true,
                 }
@@ -4203,7 +4299,7 @@ impl RecordPlan {
             return Err(DataError::with_code(
                 error::UNAVAILABLE,
                 format!(
-                    "Field {}: Self requires a supported formula and local New Record context.",
+                    "Field {}: Self requires a supported formula and local creation context.",
                     field.name
                 ),
             ));
@@ -9888,6 +9984,63 @@ mod tests {
     }
 
     #[test]
+    fn first_related_create_keeps_the_assigned_value_of_an_indexed_self_default() {
+        let mut table = Table {
+            id: 0x8002,
+            name: "Items".into(),
+            fields: vec![
+                field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(20, FieldKind::Normal, DataType::Number, 0, 0x8000_0008, 0),
+            ],
+        };
+        let mut formulas = vec![(20, 5, "If ( IsEmpty ( Self ) ; 0 ; Self )")];
+        let entry = Entry {
+            keep_written: true,
+            ..Entry::script(false, false)
+        };
+        let mut env = environment();
+        env.context.record_number = Some(RecordNumber::LocalFirstRelated);
+        env.context.sequence = WriteSequence::Local;
+        for (options, source, assigned_result) in [
+            (0x0000_0088, "If ( IsEmpty ( Self ) ; 0 ; Self + 1 )", "26"),
+            (0x8000_0008, "If ( IsEmpty ( Self ) ; 0 ; Self )", "25"),
+        ] {
+            table.fields[1] = field(20, FieldKind::Normal, DataType::Number, 0, options, 0);
+            formulas[0] = (20, 5, source);
+            let plan = plan_of(&table, &formulas, &[]).unwrap();
+            plan.check_creation_context(&env.context, Entry::script(false, false))
+                .unwrap();
+            for (assigned, expected) in [(None, "0"), (Some("25"), assigned_result)] {
+                let mut changes = BTreeMap::from([(1, Some("linked".into()))]);
+                if let Some(value) = assigned {
+                    changes.insert(20, Some(value.into()));
+                }
+                let computed = plan
+                    .compute(WriteMode::Create, &BTreeMap::new(), &changes, &env, entry)
+                    .unwrap();
+                assert_eq!(computed[&20].as_deref(), Some(expected));
+            }
+        }
+        table.fields.push(field(
+            21,
+            FieldKind::Calculation,
+            DataType::Number,
+            0,
+            0x8008_0000,
+            0,
+        ));
+        formulas.push((21, 5, "Get ( RecordNumber )"));
+        let combined = plan_of(&table, &formulas, &[]).unwrap();
+        assert_eq!(
+            combined
+                .check_creation_context(&env.context, entry)
+                .unwrap_err()
+                .code,
+            Some(error::UNAVAILABLE)
+        );
+    }
+
+    #[test]
     fn auto_entered_self_reference_reads_current_value_and_keeps_its_triggers() {
         let mut table = table();
         table.fields.retain(|f| f.id <= 2);
@@ -10759,6 +10912,23 @@ mod tests {
             )
             .unwrap();
         assert!(!updated.values.contains_key(&23));
+    }
+
+    #[test]
+    fn checked_blank_data_leaves_the_text_cell_absent_until_assigned() {
+        for options in [0x0000_0004, 0xa000_0004] {
+            let mut table = table();
+            table
+                .fields
+                .push(field(23, FieldKind::Normal, DataType::Text, 0, options, 0));
+            let plan = plan_of(&table, &base_formulas(), &[]).unwrap();
+            assert!(plan.editable_fields().contains("Field23"));
+            let unassigned = create(&plan, &[(1, "First")]).unwrap();
+            assert!(!unassigned.values.contains_key(&23));
+            let assigned = create(&plan, &[(23, "Explicit")]).unwrap();
+            assert_eq!(decoded(&assigned, 23).as_deref(), Some("Explicit"));
+            assert!(plan_with(&table, &base_formulas(), &[], Vec::new(), false).is_err());
+        }
     }
 
     #[test]

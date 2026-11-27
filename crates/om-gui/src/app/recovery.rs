@@ -2210,6 +2210,7 @@ mod tests {
             matched: false,
             creation_parent: None,
             first_related_key: None,
+            related_self: None,
             deleted,
             saved: Default::default(),
             prepared: None,
