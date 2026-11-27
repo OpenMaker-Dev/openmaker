@@ -4866,6 +4866,9 @@ fn exception(request_id: u32, name: &str) -> Vec<u8> {
 }
 
 #[cfg(test)]
+mod join_orders;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
