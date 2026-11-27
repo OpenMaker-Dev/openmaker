@@ -15,6 +15,7 @@
 mod display;
 mod keymap;
 mod shm;
+mod transfer;
 
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};

@@ -216,6 +216,12 @@ pub(crate) struct PagePopup {
     pub frame: Option<PageFrame>,
 }
 
+/// The most pop-ups the app shows at once, and the most bytes their
+/// textures hold together: a host that opens more, or larger, gets the
+/// rest left out, not the app's memory.
+const MAX_POPUPS: usize = 8;
+const MAX_POPUP_BYTES: usize = 64 * 1024 * 1024;
+
 /// A pop-up the app shows, over everything in its view's window.
 struct Popup {
     view: u64,
@@ -667,6 +673,9 @@ pub(crate) struct WebViewers {
     /// The pages' pop-ups, and whether one took a press this frame.
     popups: std::collections::HashMap<u32, Popup>,
     popup_pressed: bool,
+    /// The pop-up a press went to: it has the pointer's input until the
+    /// release, wherever the pointer goes.
+    popup_held: Option<u32>,
 }
 
 impl Default for WebViewers {
@@ -751,6 +760,7 @@ impl WebViewers {
             page_focus: None,
             popups: std::collections::HashMap::new(),
             popup_pressed: false,
+            popup_held: None,
             hovered: None,
         }
     }
@@ -1053,17 +1063,28 @@ impl WebViewers {
             Some(Ok(backend)) => (backend.frames(), backend.copied(), backend.popups()),
             _ => return,
         };
-        // The pop-ups there are now, with their new pictures.
+        // The pop-ups there are now, with their new pictures, within the
+        // count and the bytes the app gives them (the oldest first).
+        let mut popups = popups;
+        popups.sort_by_key(|popup| popup.id);
         let mut kept = std::collections::HashMap::new();
-        for popup in popups {
+        let mut bytes = 0;
+        for popup in popups.into_iter().take(MAX_POPUPS) {
             let mut texture = self
                 .popups
                 .remove(&popup.id)
                 .and_then(|known| known.texture);
-            if let Some(frame) = popup
+            let frame = popup
                 .frame
-                .filter(|f| f.rgba.len() == f.size[0] * f.size[1] * 4)
-            {
+                .filter(|f| f.rgba.len() == f.size[0] * f.size[1] * 4);
+            let size = |texture: &egui::TextureHandle| texture.size()[0] * texture.size()[1] * 4;
+            let held = frame
+                .as_ref()
+                .map_or_else(|| texture.as_ref().map_or(0, size), |f| f.rgba.len());
+            if bytes + held > MAX_POPUP_BYTES {
+                // Left out: not shown, and its texture freed.
+                texture = None;
+            } else if let Some(frame) = frame {
                 let image = egui::ColorImage::from_rgba_premultiplied(frame.size, &frame.rgba);
                 match texture.as_mut() {
                     Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
@@ -1073,6 +1094,7 @@ impl WebViewers {
                     }
                 }
             }
+            bytes += texture.as_ref().map_or(0, size);
             kept.insert(
                 popup.id,
                 Popup {
@@ -1084,6 +1106,12 @@ impl WebViewers {
             );
         }
         self.popups = kept;
+        if self
+            .popup_held
+            .is_some_and(|held| !self.popups.contains_key(&held))
+        {
+            self.popup_held = None;
+        }
         // What a page copied is the app's clipboard's.
         if let Some(text) = copied {
             ctx.copy_text(text);
@@ -1323,6 +1351,7 @@ impl WebViewers {
     pub fn paint_popups(&mut self, ctx: &egui::Context, window: u32) {
         let events = ctx.input(|i| i.events.clone());
         let mut inputs = Vec::new();
+        let mut held = self.popup_held;
         for (id, popup) in &self.popups {
             let Some(view) = self
                 .views
@@ -1348,8 +1377,13 @@ impl WebViewers {
                 ui.allocate_rect(rect, egui::Sense::click_and_drag())
             });
             let response = shown.inner;
-            if !(response.hovered() || response.dragged()) {
-                continue;
+            // A pop-up a press went to has the input until the release,
+            // also outside it; while it does, no other pop-up gets any.
+            match held {
+                Some(holder) if holder != *id => continue,
+                Some(_) => {}
+                None if !(response.hovered() || response.dragged()) => continue,
+                None => {}
             }
             let local = |p: egui::Pos2| (p.x - rect.min.x, p.y - rect.min.y);
             for event in &events {
@@ -1371,6 +1405,7 @@ impl WebViewers {
                             _ => continue,
                         };
                         let (x, y) = local(*pos);
+                        held = pressed.then_some(*id);
                         PageInput::Button {
                             x,
                             y,
@@ -1383,6 +1418,7 @@ impl WebViewers {
                 inputs.push((*id, input));
             }
         }
+        self.popup_held = held;
         if inputs
             .iter()
             .any(|(_, input)| matches!(input, PageInput::Button { pressed: true, .. }))

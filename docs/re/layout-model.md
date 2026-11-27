@@ -2451,17 +2451,28 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
     display's pop-ups. The app draws each one over everything in the
     window, at its place from its view's corner, so it can lie beyond the
     object (`WebViewers::paint_popups`), and the pointer's input over it
-    goes to it. A press in the page, or anywhere outside the pages' pop-ups,
-    closes them. While a menu is open, the keys reach it through its page.
+    goes to it; a press in one keeps the input until its release, wherever
+    the pointer goes. A press in the page, or anywhere outside the pages'
+    pop-ups, closes them, and the app stops showing them at once. While a
+    menu is open, the keys reach it through its page. A page has at most 8
+    pop-ups open at once, within 16384 points of its view's corner, and
+    their pictures hold at most 64 MiB in the app: one more, or one
+    farther, is closed as it opens, and one beyond the bytes is not shown.
     Limits: a pop-up stays within the app's window, and a pop-up the page
     moves after it opened keeps its first place.
   - **Cursor.** The cursor over a page follows WebKit's hit test: a hand
     over a link, a text cursor over editable text, the arrow elsewhere. A
     page's own CSS cursors are not followed.
-  - **Clipboard.** Text a page copies becomes the app's clipboard's: it is
-    read from the page's selection through a pipe, at most 16 MiB of it.
-    The app's clipboard's text is pasted in the page as above. Text is all
-    that is bridged: no images, no rich text, no primary selection.
+  - **Clipboard.** The clipboard follows the keyboard: the page with it may
+    set the display's selection and is offered the one a paste puts there.
+    Text a page copies becomes the app's clipboard's, read from the page's
+    selection through a pipe once the display has taken it; a newer copy
+    replaces one still being read, and a copy of more than 16 MiB is left
+    out whole. The app's clipboard's text is pasted in the page as above,
+    written to at most 4 pages' pipes at once. Both ways run on the
+    display's loop without blocking, and a page that has not finished in
+    5 s loses its transfer. Text is all that is bridged: no images, no
+    rich text, no primary selection.
   - **The host is another process.** Both ways are bounded. A command
     line longer than 16 MiB (a page's address, a function's parameters) is
     refused as it is written, and that load or call fails; the Set Web
