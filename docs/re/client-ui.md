@@ -461,6 +461,10 @@ move is stored.
 [O] FileMaker Pro 26.1.1 on macOS, Actual Size, on a synthetic form with a
 locked rectangle, a group of two rectangles and a tab control with a
 rectangle on each panel ([#884](https://github.com/OpenMaker-Dev/openmaker/issues/884)).
+With nothing selected, the two grouped rectangles drew without an enclosing
+group rule or caption. Selecting the group showed its enclosing frame.
+The ordinary group in this fixture stored a script step descriptor with ID
+zero and had no button action.
 With the Selection tool active, Edit > Select All selected the standalone
 and locked rectangles, the group as a unit, both tab panels and the
 rectangles on both panels. Objects highlighted the panel rows and the group

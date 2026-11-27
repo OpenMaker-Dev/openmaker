@@ -2616,6 +2616,12 @@ The revision is the one the window read when it opened the file or after
 its last placement: a layout another client changed since is refused at
 Save Layout, not shown changed before.
 
+Within the artwork region, an ordinary group with decoded member frames
+takes its appearance from its members and shows its enclosing frame on
+selection. Grouped buttons and groups without a decoded member frame
+still show a placeholder
+([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).
+
 On a decoded layout, the canvas draws saved tab labels and the styled
 front tab panel even with nothing selected. Only the front tab or
 slide's contents draw and take canvas input. The canvas starts with the

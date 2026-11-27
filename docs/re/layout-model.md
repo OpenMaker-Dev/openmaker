@@ -574,7 +574,7 @@ Style object type resolution is `ObjectStyle::GetObjectType(LayoutObject const&)
 | 5 | Rectangle | `ShapeLayoutObject` | `rectangle` (51) | same | self, inner_border |
 | 6 | Rounded rectangle | `ShapeLayoutObject` | `rounded` (52) | same | self, inner_border |
 | 7 | Oval | `ShapeLayoutObject` | `oval` (53) | same | self, inner_border |
-| 8 | Group (and grouped button) | `GroupLayoutObject` | `group` (87) | `groupObj`: scriptStep (present when the group acts as a button) | - |
+| 8 | Group (and grouped button) | `GroupLayoutObject` | `group` (87) | `groupObj`: scriptStep (a nonzero step ID gives the group an action) | - |
 | 9 | Portal | `PortalLayoutObject` | `portal` (83) | `portalObj`: tableContextKey, tableAliasKey, portalFlags (5.3.2), oldNumRows, initialRow, numRows (double), scrollbarStyle | self, contents, row, row_alt, row_active, scrollbar_track, inner_border |
 | 10 | Button, also each button bar segment | `ScriptStepButtonLayoutObject` | `button` (80); `button_bar_segment` (79) inside a button bar | `buttonObj`: flags, textFlags, scriptStep {id, value, flags, reserved}, libraryKey (icon), iconSize, displayType | self, text, icon, inner_border |
 | 11 | Tab control | `TabLayoutObject` | `tab_control` (81) | `tabObj`: flags, tabWidth, tabHeight, tabStyle, defaultPanelKey, currentPanelKey | self, tab_header |
