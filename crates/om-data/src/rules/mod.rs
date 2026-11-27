@@ -577,6 +577,8 @@ impl std::fmt::Debug for OtherGlobalValues {
 pub struct WriteContext {
     /// Evidence for auto-entry whose result depends on entry order.
     pub sequence: WriteSequence,
+    /// The local record draft's ordered direct Set Field assignments.
+    pub assignments: Option<crate::ScriptAssignments>,
     /// `Get ( LayoutNumber )`.
     pub layout: WriteLayout,
     /// `Get ( CurrentPrivilegeSetName )`: the session's current set, the
@@ -5347,10 +5349,16 @@ impl RecordPlan {
                 .is_some_and(|lookup| self.fires(*id, lookup, mode, &dirty, changes, entry))
         });
         let assigned_groups: BTreeSet<_> = self.replacing_groups_assigned(changes).collect();
+        let ordered_entries: BTreeSet<_> = if entry.skip_auto_enter {
+            BTreeSet::new()
+        } else {
+            self.ordered_auto_entries(changes).collect()
+        };
         if mode == WriteMode::Update
             && dirty.is_empty()
             && !fires_lookup
             && assigned_groups.is_empty()
+            && ordered_entries.is_empty()
         {
             return Ok(Computed {
                 row,
@@ -5506,6 +5514,46 @@ impl RecordPlan {
             let Some(expression) = &field.expression else {
                 continue;
             };
+            if field.named_auto_entry.is_some() {
+                if entry.skip_auto_enter
+                    || mode == WriteMode::Update && !ordered_entries.contains(id)
+                    || mode == WriteMode::Create
+                        && entry.keeps(changes, *id)
+                        && !ordered_entries.contains(id)
+                {
+                    continue;
+                }
+                let result = if entry.script && !entry.imported {
+                    self.ordered_named_value(
+                        (*id, field, expression),
+                        mode,
+                        existing,
+                        changes,
+                        &session,
+                        &environment.context,
+                    )
+                } else {
+                    Err(DataError::with_code(
+                        error::UNAVAILABLE,
+                        format!(
+                            "Field {}: GetField auto-entry requires a scripted write.",
+                            field.name
+                        ),
+                    ))
+                };
+                match result {
+                    Ok(Some(value)) => {
+                        evaluated.insert(*id);
+                        assign(&mut row, &mut dirty, *id, value);
+                    }
+                    Ok(None) => {}
+                    Err(_) if !validate => {
+                        deferred.insert(*id);
+                    }
+                    Err(error) => return Err(error),
+                }
+                continue;
+            }
             let combined_create = field.creation_date_with_calculation && mode == WriteMode::Create;
             let uses_self = field.auto_enter_self != AutoEntrySelf::Unused;
             let keeps = entry.keeps_calculated(changes, *id, uses_self);
@@ -5556,15 +5604,6 @@ impl RecordPlan {
             if !should_evaluate || !can_replace {
                 continue;
             }
-            if field.named_auto_entry.is_some() && (!entry.script || entry.imported) {
-                return Err(DataError::with_code(
-                    error::UNAVAILABLE,
-                    format!(
-                        "Field {}: GetField auto-entry requires a scripted write.",
-                        field.name
-                    ),
-                ));
-            }
             if combined_create {
                 // New Record alone uses the creation date. A held create
                 // can also carry later edits before the first commit. Only
@@ -5613,23 +5652,6 @@ impl RecordPlan {
             let globals = self.session_globals(*id, expression, &session)?;
             let mut remaining = session.calculation_budget();
             let result = (|| {
-                if mode == WriteMode::Create
-                    && field.named_auto_entry.is_some()
-                    && !field.options.calculation_replaces_existing()
-                {
-                    // A scripted New Record first evaluates with empty inputs.
-                    // Later changes in that held record keep the resulting text.
-                    return self
-                        .evaluate_repetition(
-                            *id,
-                            1,
-                            expression,
-                            &BTreeMap::new(),
-                            &session,
-                            &mut remaining,
-                        )
-                        .map(Some);
-                }
                 if let Some(
                     evaluate @ StoredEvaluate {
                         source: Some(source),
@@ -9319,7 +9341,8 @@ mod tests {
             (20, "one:A1".into()),
         ]
         .into();
-        let env = environment();
+        let mut env = environment();
+        env.context.sequence = WriteSequence::Local;
         let named = BTreeMap::from([(3, Some("A2".into()))]);
         assert_eq!(
             plan.compute(WriteMode::Update, &row, &named, &env, entry)
@@ -9327,12 +9350,26 @@ mod tests {
             named
         );
         row.insert(3, "A2".into());
-        let trigger = BTreeMap::from([(1, Some("two".into()))]);
-        let changed = plan
-            .compute(WriteMode::Update, &row, &trigger, &env, entry)
-            .unwrap();
-        assert_eq!(changed[&20].as_deref(), Some("two:A2"));
-        let qualified = BTreeMap::from([(2, Some("Example::Field3".into()))]);
+        for (assignments, expected) in [
+            (vec![(1, "one")], "one:A2"),
+            (vec![(1, "three"), (3, "A3")], "three:A2"),
+            (vec![(3, "A3"), (1, "three")], "three:A3"),
+            (vec![(1, "three"), (3, "A3"), (1, "three")], "three:A3"),
+        ] {
+            let assignments: Vec<_> = assignments
+                .into_iter()
+                .map(|(cell, value)| (cell, Some(value.into())))
+                .collect();
+            let changes = assignments.iter().cloned().collect();
+            env.context.assignments = Some(Arc::new(assignments));
+            let changed = plan
+                .compute(WriteMode::Update, &row, &changes, &env, entry)
+                .unwrap();
+            assert_eq!(changed[&20].as_deref(), Some(expected));
+        }
+        let qualified_value = Some("Example::Field3".into());
+        env.context.assignments = Some(Arc::new(vec![(2, qualified_value.clone())]));
+        let qualified = BTreeMap::from([(2, qualified_value)]);
         assert_eq!(
             plan.compute(WriteMode::Update, &row, &qualified, &env, entry)
                 .unwrap_err()
@@ -9344,22 +9381,38 @@ mod tests {
         let keep = RecordPlan::from_desktop_file_schema(&keep_table, &tree, &schema, true).unwrap();
         let mut creation = env;
         creation.context.record_number = Some(RecordNumber::LocalNewRecord(1));
-        creation.context.sequence = WriteSequence::Local;
-        let edits = BTreeMap::from([
-            (1, Some("one".into())),
+        let assignments = vec![
             (2, Some("Field3".into())),
+            (1, Some("one".into())),
             (3, Some("A1".into())),
-        ]);
-        let saved = keep
-            .compute(
+        ];
+        let edits = assignments.iter().cloned().collect();
+        creation.context.assignments = Some(Arc::new(assignments));
+        for (plan, expected) in [(&keep, ":"), (&plan, "one:")] {
+            let saved = plan
+                .compute(
+                    WriteMode::Create,
+                    &BTreeMap::new(),
+                    &edits,
+                    &creation,
+                    entry,
+                )
+                .unwrap();
+            assert_eq!(saved[&20].as_deref(), Some(expected));
+        }
+        creation.context.assignments = None;
+        assert_eq!(
+            plan.compute(
                 WriteMode::Create,
                 &BTreeMap::new(),
                 &edits,
                 &creation,
-                entry,
+                entry
             )
-            .unwrap();
-        assert_eq!(saved[&20].as_deref(), Some(":"));
+            .unwrap_err()
+            .code,
+            Some(error::UNAVAILABLE)
+        );
     }
 
     #[test]
@@ -9710,6 +9763,7 @@ mod tests {
             record_number: Some(RecordNumber::Window(3)),
             creation_utc_clock: None,
             sequence: WriteSequence::Unmeasured,
+            assignments: None,
             file_variables: None,
             other_globals: None,
         };

@@ -2110,6 +2110,7 @@ impl WorkerHost<'_> {
             record_number: numbers.get(&index).copied(),
             prepared: draft.prepared.as_ref().map(|prepared| prepared.id),
             single_field_step: false,
+            assignments: None,
         };
         let preview_over = |host: &mut Self, write: &om_data::ScriptWrite| match &context {
             Some(pending) => host.p().preview_new_record_over(write, pending),

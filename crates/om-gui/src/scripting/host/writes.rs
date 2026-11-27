@@ -174,10 +174,37 @@ impl WorkerHost<'_> {
         if related {
             return self.set_related(field.occurrence, table, cell, text, direct_set_field);
         }
+        let (ordered, force_edit) =
+            if direct_set_field && Some(field.occurrence) == self.s.file.occurrence {
+                self.p().ordered_script_entry(table, cell)
+            } else {
+                (false, false)
+            };
+        let state = &self.s.file.window.state;
+        // A typed or self-related draft value could be read by Set Field
+        // before a later script step overwrites it in the current row.
+        let record = state.record.and_then(|id| u64::try_from(id).ok());
+        let ordered = ordered
+            && !record.is_some_and(|record| {
+                state
+                    .uncommitted
+                    .related
+                    .iter()
+                    .any(|draft| draft.table == table && draft.record == Some(record))
+            })
+            && schema.table(table).is_some_and(|table| {
+                state.drafts.iter().all(|(name, value)| {
+                    table
+                        .fields
+                        .values()
+                        .find(|def| def.name == *name)
+                        .is_some_and(|def| state.uncommitted.cells.get(&def.id) == Some(value))
+                })
+            });
         let name = (repetition == 1).then_some(def.name.as_str());
         let (window, provider) = self.wp();
         window
-            .set_cell(provider, name, cell, text)
+            .set_cell(provider, name, cell, text, (ordered, force_edit && ordered))
             .map_err(data_error)
     }
 
@@ -237,6 +264,6 @@ impl WorkerHost<'_> {
     /// A Find mode criterion of the current request.
     fn set_criterion(&mut self, name: &str, text: String) -> HostResult {
         let (window, provider) = self.wp();
-        window.set(provider, name, text).map_err(data_error)
+        window.set(provider, name, text, false).map_err(data_error)
     }
 }

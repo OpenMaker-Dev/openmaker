@@ -118,6 +118,16 @@ step. Other helper bodies and dynamic target types were not part of
 this run.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7205073084)
 
+In a second local run, a same-value Set Field on Trigger changed
+`one:A1` to `one:A2` immediately. Starting with Alpha at `A2`, setting
+Trigger to `three` then Alpha to `A3` kept `three:A2`. Reversing those
+steps gave `three:A3`. Both results survived Commit and reopen. On a new
+record, setting FieldName, Trigger, then Alpha kept `one:`, the value
+produced by the Trigger step. A change only to the field reached through
+GetField left the result alone before and after Commit. This measured
+scripted Set Field. Interactive edits were outside the run.
+[Set Field ordering](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7209664301)
+
 ## Fixed field definition
 
 The definition is at `<base-table>/3/5/<field>/2`. The decoder accepts exactly

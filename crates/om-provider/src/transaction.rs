@@ -1610,7 +1610,12 @@ impl NativeProvider {
         // A new record's values computed again over its changed cells, as
         // the commit will: a stored calculation follows the typed inputs.
         let created = match &change {
-            Change::New(cells) => self.created_again((table.id, record), cells, script)?,
+            Change::New(cells) => self.created_again(
+                (table.id, record),
+                cells,
+                script,
+                context.assignments.clone(),
+            )?,
             _ => None,
         };
         self.hold(table.id, record, change, script, context);
@@ -1673,6 +1678,7 @@ impl NativeProvider {
         key: (u64, u64),
         cells: &Cells,
         script: bool,
+        assignments: Option<om_data::ScriptAssignments>,
     ) -> Result<Option<crate::preview::Created>, DataError> {
         let Some(transaction) = &self.transaction else {
             return Ok(None);
@@ -1683,7 +1689,11 @@ impl NativeProvider {
         let Some(created) = &held.created else {
             return Ok(None);
         };
-        let (stamp, context) = (created.stamp.clone(), held.context.clone());
+        let stamp = created.stamp.clone();
+        let context = WriteContext {
+            assignments,
+            ..held.context.clone()
+        };
         let script = script || held.script;
         let serials = transaction.serials.get(&key).cloned().unwrap_or_default();
         let (_, plan) = self.table_plan(key.0)?;

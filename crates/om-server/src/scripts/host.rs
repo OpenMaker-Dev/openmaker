@@ -2169,6 +2169,7 @@ impl ServerHost {
             record_number: None,
             creation_utc_clock: None,
             sequence: om_data::rules::WriteSequence::Unmeasured,
+            assignments: None,
             file_variables: None,
             other_globals: None,
         }

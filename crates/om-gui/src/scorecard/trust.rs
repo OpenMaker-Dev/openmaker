@@ -470,6 +470,7 @@ fn create(
                     record_number: None,
                     prepared: None,
                     single_field_step: false,
+                    assignments: None,
                 })
                 .map_err(|e| format!("typing into the creation row: {}", e.message))?;
             Ok(record.id)
@@ -499,6 +500,7 @@ fn edit(
             record_number: None,
             prepared: None,
             single_field_step: false,
+            assignments: None,
         })
     } else {
         provider.update_record(

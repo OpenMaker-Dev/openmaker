@@ -921,6 +921,7 @@ impl NativeProvider {
         }
         let mut context = self.write_context(plan, origin.layout, origin.set)?;
         context.record_number = origin.record_number;
+        context.assignments = origin.assignments;
         if origin.single_field_step && context.sequence == WriteSequence::Local {
             context.sequence = WriteSequence::SingleLocalFieldStep;
         }
@@ -2652,6 +2653,8 @@ pub(crate) struct Origin {
     /// The window proved a single field-setting step, with no other
     /// staged edits to the record.
     pub single_field_step: bool,
+    /// Ordered Set Field assignments from an ordinary local record draft.
+    pub assignments: Option<om_data::ScriptAssignments>,
 }
 
 /// Whose privilege set a write's formulas read as current
