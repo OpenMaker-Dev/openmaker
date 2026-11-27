@@ -150,8 +150,9 @@ enum Check {
     Progress,
     /// In the steady phase, no leader was in office within the bound of the
     /// phase's start or of the last leader's fall; or, in its opening
-    /// election, a candidate's timer ran out while the answers to its vote
-    /// were on their way, on a network fast enough for them.
+    /// election, a candidate's timer ran out while the answer to a vote
+    /// request it sent under that election's delay was on its way, on a
+    /// network fast enough for it.
     Election,
     /// The cluster did not settle once the faults stopped.
     Settle,
@@ -305,8 +306,6 @@ struct Node {
     appended: Option<Appended>,
     /// The tick it last opened.
     up_since: u64,
-    /// The term and tick at which it last asked for votes.
-    stood: Option<(u64, u64)>,
 }
 
 /// The simulator's own record (module docs): the committed entries, entry
@@ -471,10 +470,11 @@ struct World {
     closing: Option<Vec<bool>>,
     /// In the steady phase, since when no leader has been in office.
     leaderless: Option<u64>,
-    /// The steady phase's opening election is under way, since this tick:
-    /// every message takes [`World::electing_delay`] ticks.
+    /// The steady phase's opening election is under way: every message
+    /// takes [`World::electing_delay`] ticks.
     electing: bool,
-    elect_from: u64,
+    /// The vote requests sent under that rule: candidate, voter and term.
+    ruled: BTreeSet<(ServerId, ServerId, u64)>,
     /// The campaigns (candidate and term) under way when the steady phase
     /// opened: one of them that wins was not elected under that rule.
     begun: BTreeSet<(ServerId, u64)>,
@@ -557,7 +557,7 @@ impl World {
             closing: None,
             leaderless: None,
             electing: false,
-            elect_from: 0,
+            ruled: BTreeSet::new(),
             begun: BTreeSet::new(),
             small,
             after_answer: 0,
@@ -597,7 +597,6 @@ impl World {
                 asked: None,
                 appended: None,
                 up_since: 0,
-                stood: None,
             });
         }
         Ok(w)
@@ -702,7 +701,7 @@ impl World {
             .map(|i| (self.ids[i], self.core_of(i).term()))
             .collect();
         self.electing = true;
-        self.elect_from = self.now;
+        self.ruled.clear();
         self.run_until(1000 * election, |w| !w.electing)?;
         // The member given a smaller largest entry keeps it a while under
         // that leader, which reports it blocked, then starts again with the
@@ -899,9 +898,6 @@ impl World {
                 let mut answered = 0;
                 let mut appended = None;
                 if let Some(m) = done.sent {
-                    if matches!(m.body, Body::Vote { .. }) {
-                        self.nodes[i].stood = Some((m.term, self.now));
-                    }
                     if matches!(m.body, Body::AppendTooLarge { .. }) {
                         self.cov.size_refusals += 1;
                     }
@@ -1361,7 +1357,11 @@ impl World {
             } else if self.writing && self.electing {
                 // The steady phase's opening election: every message takes
                 // the same time, a round trip less than the shortest
-                // timeout.
+                // timeout. The vote requests sent so are the ones its
+                // timing check judges.
+                if matches!(m.body, Body::Vote { .. }) {
+                    self.ruled.insert((m.from, m.to, m.term));
+                }
                 self.electing_delay()
             } else if self.writing {
                 // The rest of the steady phase: one or two ticks, so that
@@ -1426,13 +1426,13 @@ impl World {
         }
         if self.electing && matches!(m.body, Body::VoteReply { granted: true }) {
             // A vote's round trip is shorter than the shortest timeout here:
-            // a candidate that asked for votes in this election is still
-            // standing in that term when a grant arrives (section 7.1). A
-            // vote asked before it, on the faults' network, may come late.
+            // a candidate whose request to this voter went under the opening
+            // election's delay is still standing in that term when the grant
+            // arrives (section 7.1). A request sent before, on the faults'
+            // network, may come back late, even if the phase opened on the
+            // tick it was sent.
             let core = &self.nodes[i].member.as_ref().unwrap().core;
-            let asked = self.nodes[i]
-                .stood
-                .is_some_and(|(t, at)| t == m.term && at >= self.elect_from);
+            let asked = self.ruled.contains(&(m.to, m.from, m.term));
             if asked && core.term() == m.term && core.role() == Role::PreCandidate {
                 return Err(self.fail(
                     Check::Election,
@@ -4686,4 +4686,61 @@ fn the_steady_phase_opens_with_an_election_under_its_rule() {
     w.steady().unwrap();
     let terms = led_terms(&w);
     assert!(terms.iter().any(|t| *t > 1), "leaders of terms {terms:?}");
+}
+
+/// Issue #1188, 2 (the review's schedule, seed 22's settings: a timeout of
+/// 10, so a delay of 4 in the opening election): a vote asked just before
+/// the steady phase opens, delayed as the faults' network may delay it,
+/// comes back granted after its candidate's timer ran out in the phase.
+/// That breaks no rule: the opening election's timing check judges only
+/// the vote requests sent under its delay, and every check holds.
+#[test]
+fn a_vote_asked_before_the_opening_election_is_not_held_to_its_timing() {
+    let mut w = World::scripted_seed(22, 3, None);
+    let election = w.timing.0;
+    assert_eq!((election, w.electing_delay()), (10, 4));
+    let ballot = |m: &Message| {
+        matches!(
+            m.body,
+            Body::PreVote { .. }
+                | Body::Vote { .. }
+                | Body::PreVoteReply { .. }
+                | Body::VoteReply { .. }
+        )
+    };
+    // Member 0's pre-vote is granted by member 1, and it stands.
+    for _ in 0..4 * election {
+        if w.core_of(0).role() == Role::PreCandidate {
+            break;
+        }
+        w.tick_member(0, 1).unwrap();
+    }
+    w.pass(|m, f, t| {
+        matches!(m.body, Body::PreVote { .. } | Body::PreVoteReply { .. })
+            && ((f == 0 && t == 1) || (f == 1 && t == 0))
+    })
+    .unwrap();
+    assert_eq!(w.core_of(0).role(), Role::Candidate);
+    // Only its vote request to member 1 is left on the network.
+    w.take(|m, f, t| ballot(m) && !(f == 0 && t == 1));
+    assert_eq!(w.flight.iter().filter(|f| ballot(&f.2)).count(), 1);
+    // Its timer runs out after the shortest timeout, the others' later.
+    let set = |w: &mut World, i: usize, timeout| {
+        let core = &mut w.nodes[i].member.as_mut().unwrap().core;
+        core.elapsed = 0;
+        core.timeout = timeout;
+    };
+    set(&mut w, 0, election);
+    set(&mut w, 1, 2 * election - 1);
+    set(&mut w, 2, 2 * election - 1);
+    // The request takes 6 ticks, as the faults' network may delay it, and
+    // the grant the opening election's 4: it arrives on the tick member 0's
+    // timer runs out, after it.
+    let due = w.now + election - w.electing_delay();
+    for f in w.flight.iter_mut() {
+        if matches!(f.2.body, Body::Vote { .. }) {
+            f.0 = due;
+        }
+    }
+    w.steady().unwrap();
 }
