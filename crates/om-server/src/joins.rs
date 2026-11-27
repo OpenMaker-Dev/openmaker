@@ -28,6 +28,20 @@
 //! every 10 s. Which kind of certificate FileMaker Pro presents is not
 //! measured yet.
 //!
+//! How a session's authority goes, in order. The step that begins taking
+//! it away first sets a flag the rule reads, an atomic set before anything
+//! that can wait, the grant's own lock included ([`Grant::stop`],
+//! [`Grant::revoke`], the owner's disconnect flag, [`Joins::stop_all`]);
+//! the session's locks are released next; what the joined transports page
+//! goes last ([`Grant::drain`]), as that waits for a read under way. A read
+//! keeps a page only once it has checked the grant again under its
+//! transfer table's lock ([`Seat::table`]), which the drain takes after
+//! the flag. An address's allowance is looked at, the rule applied and a
+//! refusal charged in one section ([`Joins::admit`]). How the locks nest is
+//! in [`Section`]. Under test, every order of these steps among a few
+//! actors runs against this code with three invariants checked after each
+//! (`model`; the scenarios are in `connection::join_orders`).
+//!
 //! What a refusal reveals by its timing: the reply's bytes are the same for
 //! every refusal, and so is what it costs the transport and its address. A
 //! grant is found by (certificate, id), so a transport without the owner's
@@ -336,17 +350,17 @@ pub(crate) enum Section {
     /// A joined transport's transfer table.
     Table,
     /// Not a lock: a session's locks released in the engine, a step of its
-    /// end and of losing a file ([`model`]).
+    /// end and of losing a file (`model`).
     #[cfg(test)]
     Release,
-    /// Not a lock: a Login's password check ([`model`]).
+    /// Not a lock: a Login's password check (`model`).
     #[cfg(test)]
     Login,
 }
 
 /// `mutex`'s value, also after a thread panicked holding it: each user
 /// replaces or removes whole entries. Under test, a step of the
-/// [`model`]'s orders.
+/// `model`'s orders.
 pub(crate) fn lock<T>(section: Section, mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     #[cfg(test)]
     if let Some(guard) = model::lock(section, mutex) {
@@ -374,7 +388,7 @@ fn write<T>(section: Section, lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
     lock.write().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Now, or under test the [`model`]'s clock.
+/// Now, or under test the `model`'s clock.
 fn now() -> Instant {
     #[cfg(test)]
     if let Some(now) = model::now() {

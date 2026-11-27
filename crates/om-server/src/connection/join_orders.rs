@@ -7,12 +7,13 @@
 //! Driven as they run: `Connection::end_session`, `clear_file_session`,
 //! `logged_in`, `Session::publish`, `Shared::disconnect_session`,
 //! `Shared::close_connections`, `Connection::join` (with `Joins::admit`, the
-//! lookup and the rule) and `Seat::table`. Stubbed: a Login's password
-//! check (a step of its own, `Section::Login`), the engine's work in a
-//! joined read (each read pages a fixed stream into the transport's real
-//! table, as `download` does), and the parsing of requests. A scenario's
-//! points are the sections more than one of its actors takes, which the
-//! model checks.
+//! lookup and the rule) and `Seat::table`; the engine releases the
+//! session's locks for real, a step of its own (`Section::Release`).
+//! Stubbed: a Login's password check (a step of its own,
+//! `Section::Login`), the engine's work in a joined read (each read pages
+//! a fixed stream into the transport's real table, as `download` does),
+//! and the parsing of requests. A scenario's points are the sections more
+//! than one of its actors takes, which the model checks.
 
 use std::any::Any;
 

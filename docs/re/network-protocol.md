@@ -356,12 +356,13 @@ OpenMaker Server does with them, its own choices throughout (`om-server`'s
   key. If one certificate is shared, by every copy of a product or by a
   site's users, it proves nothing between those who share it; what is left
   is the session's id (32 random bits, in the server's log and the Admin
-  API's client list), the address, and what guessing costs: each read on a
-  connection without a session takes an attempt from its address's
-  allowance (an IPv6 /64 as one) before it is looked at, in the same step
-  that decides whether any is left, and gives it back when admitted, so
-  that however many connections an address opens at once they get no
-  more looks than the allowance; each refusal also counts against the
+  API's client list), the address, and what guessing costs: a read on a
+  connection without a session is looked at only while its address (an
+  IPv6 /64 as one) has refusals left in its allowance, and a refusal is
+  charged in the same step as the look, under that address's own lock,
+  so that however many connections an address opens at once they get no
+  more refused looks than the allowance and what it earned back; an
+  admitted read costs nothing. Each refusal also counts against the
   connection. The allowance is 16 per address and per connection by
   default (`JoinRefusals`). An address that has used its 16 has every such
   read refused without being looked at, and the connection closed after
@@ -377,16 +378,20 @@ OpenMaker Server does with them, its own choices throughout (`om-server`'s
   view limits withhold to the session's own record of it. It changes
   nothing else of the session: no Login, lock, staged record, file close
   or Disconnect, and the session's change notifications wait for its own
-  connection's replies. It loses a file in the same step in which the
-  session does, before the session's own request goes on: at Logout, at
-  a new Login before its password is checked, and when the file is opened
+  connection's replies. It loses a file in the step in which the session
+  begins to let go of it, before anything that can wait: at Logout, at a
+  new Login before its password is checked, and when the file is opened
   again or closed; a Login that succeeds gives it the new account once the
-  Login is answered. It loses everything at once when the session ends,
-  when the administrator disconnects the client and when the server closes
-  its connections, whatever the session's own connection is doing (a read
-  already admitted finishes). A download it pages is continued on it alone,
-  and goes when the session loses the file or ends. While the file is
-  paused its reads wait, as the session's own do.
+  Login is answered. It loses everything in one step, set before anything
+  that can wait, when the session ends (Disconnect, a Connect on its
+  connection, that connection closing for any reason), when the
+  administrator disconnects the client and when the server closes its
+  connections (one step for every session at once), whatever the
+  session's own connection is doing. A read already admitted finishes,
+  and keeps nothing to page once the session has lost the file. A
+  download it pages is continued on it alone, and goes when the session
+  loses the file or ends, after the session's locks are released. While
+  the file is paused its reads wait, as the session's own do.
 - Its requests do not keep the session alive, and it is closed after 145 s
   of silence, as a connection without a session (6.2). At most nine
   connections join one session, since FileMaker Pro opens at most 10 to a
