@@ -707,6 +707,75 @@ fn close_file(handle: &ServerHandle, id: u32) {
     }
 }
 
+/// Retention keeps the newest backup of a schedule that holds a hosted
+/// file no newer backup that stays holds: a run that left a closed file out
+/// does not retire the last backup of it (#1115). Once the file is copied
+/// again, the old backup goes at the next run; and a backup that holds only
+/// files the server no longer hosts goes as before.
+#[cfg(unix)]
+#[test]
+fn retention_keeps_the_last_backup_of_a_closed_file() {
+    let folder = Folder::new("retention-closed");
+    let file = hosted_file(&folder);
+    let elsewhere = folder.0.join("other");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let built = TempFile::new("backup-closed-other", &[], true);
+    let other = TempFile(elsewhere.join("Other.fmp12"));
+    std::fs::rename(&built.0, &other.0).unwrap();
+    let backups = folder.0.join("Backups");
+    let gone = plant_backup(&backups, "Every", "0800");
+    std::fs::create_dir_all(gone.join("Databases/gone")).unwrap();
+    std::fs::write(gone.join("Databases/gone/Gone.fmp12"), b"not hosted").unwrap();
+
+    let clock = ManualClock::new(at(8, 59));
+    let (_, handle) =
+        server::start_hosting(&[(fixture::FILE, &file), ("Other", &other)], |server| {
+            server
+                .with_clock(clock.clone())
+                .with_backup_folder(&backups)
+                .unwrap()
+                .with_schedules(vec![backup_schedule("Every", 1)])
+                .unwrap()
+        });
+    assert!(
+        handle.wait_for_schedules(WAIT),
+        "the scheduler did not start"
+    );
+    let other_id = handle
+        .files()
+        .iter()
+        .find(|info| info.name == "Other")
+        .unwrap()
+        .id;
+    let both = backups.join("Every_2026-10-29_0900");
+
+    // Both files copied; the planted backup holds only a file no longer
+    // hosted, and goes as before.
+    move_to(&handle, &clock, at(9, 0));
+    assert!(both.join("Databases/other/Other.fmp12").exists());
+    assert!(
+        !gone.exists(),
+        "a backup of files no longer hosted is deleted"
+    );
+
+    // Other closed: the run copies Sample alone, and the backup that holds
+    // Other stays past the keep count.
+    close_file(&handle, other_id);
+    move_to(&handle, &clock, at(9, 1));
+    let alone = backups.join("Every_2026-10-29_0901");
+    assert!(alone.join("Databases/db/Sample.fmp12").exists());
+    assert!(!alone.join("Databases/other").exists());
+    assert!(both.exists(), "the last backup of a closed file is kept");
+
+    // Other open again and copied: both older backups go.
+    handle.open_file(other_id).unwrap();
+    move_to(&handle, &clock, at(9, 2));
+    let again = backups.join("Every_2026-10-29_0902");
+    assert!(again.join("Databases/other/Other.fmp12").exists());
+    assert!(!alone.exists(), "{alone:?} kept");
+    assert!(!both.exists(), "{both:?} kept once Other was copied again");
+}
+
 #[cfg(unix)]
 #[test]
 fn a_backup_folder_never_holds_a_hosted_file() {
