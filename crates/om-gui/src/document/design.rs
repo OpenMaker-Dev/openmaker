@@ -222,6 +222,7 @@ impl<'a> Surface<'a> {
                 | ObjectKind::Line
                 | ObjectKind::Button
                 | ObjectKind::PopoverButton
+                | ObjectKind::Popover
                 | ObjectKind::Graphic
         ) {
             return false;
@@ -233,6 +234,12 @@ impl<'a> Surface<'a> {
             return true;
         }
         let style = self.cache.formatted_style(self.layout, object, &[], 1, 1);
+        if kind == ObjectKind::Popover
+            && style.background.is_none()
+            && (0..4).all(|side| super::border_width(&style, side).is_none())
+        {
+            return false;
+        }
         if kind == ObjectKind::Line {
             line::paint(ui.painter(), rect, object.flags, &style);
             return true;

@@ -926,6 +926,16 @@ result. Exact Finds after reopen returned the new row from both indexes.
 The closed indexes already contained the new entries before the Finds.
 [Combined comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7205174459)
 
+With those two indexed Number fields, the replacing UUID key also kept
+its copied value when the key validated Always, Not empty and Unique
+with override disabled (validation word `0x0000041c`). Both a fresh UUID
+and distinct plain text worked as the copied key. Position 1 and Amount 0
+were visible at creation, and assigning 25 persisted. The UUID tests with
+and without an intermediate Commit both returned 0 and gave the same
+exact Find results after reopen. The comparison did not time validation
+on a duplicate edit.
+[Validated-key comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7205531644)
+
 ## Serial numbers
 
 Option `0x2` generates a serial number when the record is created, `0x200`
@@ -992,6 +1002,24 @@ records had no cell for the global field. This measures the counter
 persisted at close. The timing of the counter write before close and
 the result of reverting a newly created record were not measured.
 [O, closed-file readback](https://github.com/OpenMaker-Dev/openmaker/issues/987#issuecomment-7185027447).
+
+### A global calculation discarding an Evaluate result
+
+FileMaker Pro 26.1.1 tested a local global Text field with the rule
+`Let ( result = Evaluate ( ExpressionText ) ; "" )` and option words
+`0x00010088` (replace) and `0x00010008` (keep). An unrelated field
+edit leaves the global and file variables alone. On New Record with
+no input default, the replacing rule clears a prior global and the
+keeping rule preserves it. Neither changes the trace variable.
+
+With a valid input default or a scripted assignment to the input,
+the trace changed immediately when the rule ran, even though the
+outer calculation returned empty text. Keeping a nonempty global
+suppressed the side effect. A malformed default persisted as text
+without a trace change or an error. The trial's scripted global
+assignments did not survive reopen, unlike the separate global-input
+trial below. The cause was not measured.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1057#issuecomment-7209580006)
 
 ### A calculated global reading another global
 

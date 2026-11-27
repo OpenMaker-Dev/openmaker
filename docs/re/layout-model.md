@@ -1359,6 +1359,35 @@ and 4 (portable-pdf.md, Buttons and groups).
 most common value in the templates). Observed combinations: `0x70000000`,
 `0xf0000000`, `0x60000000`, `0x90000000`, `0xb0000000`.
 
+[O, FileMaker Pro 26.1.1 on macOS] Autosizing edits saved on four copies of
+one starter layout changed these bits in field 3 (`flags`) of the target
+`LayoutObject` in the layout member's `07` object store. A no-edit
+open/close copy matched the baseline byte for byte. Each edit was saved
+and checked by reopening the file:
+
+| Individually selected target | Stored anchor bits before | Stored anchor bits after |
+|---|---:|---:|
+| Ungrouped edit box | `0xd0000000` (Left, Right, Bottom) | `0x70000000` (Left, Top, Right) |
+| Ungrouped text | `0x30000000` (Left, Top) | `0xc0000000` (Right, Bottom) |
+| Text inside a Left+Top group | `0x30000000` | `0x70000000` |
+| Pop-up field inside an all-edges portal | `0x30000000` | `0x70000000` |
+
+Right was enabled for both nested targets, and the enclosing objects kept
+their own anchor bits. Comparing raw messages by object key found no other
+field changes. In each save FileMaker moved the `0x00400000` selection bit
+(5.2.1) from the previously selected object to the edited top-level object
+or, for the nested cases, to its group or portal. It also serialized the
+same object definitions in reverse order. Root keys, child keys and all
+other bytes within each object definition stayed as stored, apart from the
+flag changes. Within `[4, 5, L]`, only `07` and stamps `fc` and `fc03`
+changed. File history and modification counts elsewhere also changed.
+[Native run and method](https://github.com/OpenMaker-Dev/openmaker/issues/888#issuecomment-7214357808).
+
+**Unknowns:** Whether the definition order reverses on every subsequent
+save, how the Inspector handles multiple selected objects or all four
+anchors unchecked, and effective Browse resizing of the edited nested
+objects.
+
 [O] `LayoutObject::GetConstrainedAutoresizingFlags` @0x3939a4 and
 `Draco::GetConstrainedFlagsForObject` @0x2ce93d: effective anchors are
 constrained by ancestors. Walking up from the object, if an enclosing container
