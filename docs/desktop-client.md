@@ -2424,6 +2424,32 @@ a script or a single step, with `DataProvider::place_layout_button`
   OpenMaker does not run fails as in a script), and it stays after the
   file is closed and opened again.
 
+**Placing a web viewer.** The Web Viewer tool places a web viewer with a
+custom web address, with `DataProvider::place_layout_web_viewer`, the
+operation `om-author`'s `place_web_viewer` uses ([authoring](authoring.md),
+"Web viewers on layouts").
+- **Drawing.** A drag on the canvas draws its frame, in whole points, as a
+  dashed box. When the drag ends, **Web Viewer Setup** opens: Custom Web
+  Address, the only website offered; the Web Address, typed as a
+  calculation; and the six options with the titles and order FileMaker
+  Pro 26.1.1 gave them, at Pro's defaults for a new viewer
+  (re/client-ui.md, "Web Viewer Setup").
+- **OK** compiles the address against the file's names, with unqualified
+  field names read as the layout's occurrence's and stored qualified. A
+  calculation that does not compile shows FileMaker's message for its
+  error under the options. OK is disabled for an option combination
+  FileMaker Pro was not seen to store, with a note saying so. Cancel drops
+  a viewer not set up yet; a double click on the new viewer opens the
+  dialog again.
+- **Save Layout** places it as it places a new portal, with the layout's
+  revision, and the answers are handled the same way. One new object at a
+  time, as for the other tools.
+
+Limits: no website templates, no Specify button (the address is typed in
+the dialog), and a stored viewer's setup cannot be opened or changed. The
+dialog's look is OpenMaker's, not compared with a FileMaker Pro
+screenshot.
+
 **Placing a portal.** The Portal tool places a portal of related records
 with fields in its first row, with `DataProvider::place_layout_portal`
 ([authoring](authoring.md), "Portals on layouts").
@@ -2595,7 +2621,7 @@ look is OpenMaker's.
 Limits: a stored object cannot be moved between parts or restyled;
 groups, portals, tab and slide controls, popovers and button bars and the
 objects inside them do not move and cannot be deleted, nor can objects
-showing a library image, a field's label or a popover button; only a stored text of one line of plain text can be retyped; and the Text tool places one line of plain text in the theme's text style, with no character styles. The Field, Text, Button and Portal tools place objects and the Part tool adds a part; the other tool buttons only select a tool. For a stored object, the Inspector shows its
+showing a library image, a field's label or a popover button; only a stored text of one line of plain text can be retyped; and the Text tool places one line of plain text in the theme's text style, with no character styles. The Field, Text, Button, Portal and Web Viewer tools place objects and the Part tool adds a part; the other tool buttons only select a tool. For a stored object, the Inspector shows its
 named style and calls out local styling beyond the object's stored
 rotation. Appearance shows known
 normal-state fill, border and text colors and the base font from Browse's

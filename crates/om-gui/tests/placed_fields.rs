@@ -971,6 +971,103 @@ fn a_portal_drawn_in_layout_mode_is_set_up_and_saved() {
     );
 }
 
+/// Layout mode's Web Viewer tool draws a web viewer (#896); Web Viewer
+/// Setup, which opens as the drawing ends, takes a custom web address and
+/// refuses options FileMaker Pro was not seen to store; Save Layout places
+/// it with the operation `om-author`'s `place_web_viewer` uses, and a new
+/// connection reads it with its options and address.
+#[test]
+fn a_web_viewer_drawn_in_layout_mode_is_set_up_and_saved() {
+    use egui::accesskit::Role;
+    let file = form_file_with(NAME);
+    let hosted = hosted::host_file(
+        "place-web-viewer",
+        Path::new(&file.0),
+        fixture::FILE,
+        (ACCOUNT, PASSWORD),
+    );
+    let mut app = open_window(&hosted);
+    common::click(&mut app, "Edit Layout");
+    common::wait_until(&mut app, "the layout canvas", |app| {
+        app.query_by_label("Field: Name (object 1)").is_some()
+    });
+    common::click(&mut app, "Web Viewer");
+    let canvas = app.get_by_label("Layout canvas").rect();
+    let origin = canvas.min + egui::vec2(22.0, 0.0);
+    drag(
+        &mut app,
+        origin + egui::vec2(20.0, 60.0),
+        origin + egui::vec2(320.0, 170.0),
+    );
+    common::wait_until(&mut app, "Web Viewer Setup", |app| {
+        app.query_by_role_and_label(Role::MultilineTextInput, "Web Address")
+            .is_some()
+    });
+    app.get_by_role_and_label(Role::MultilineTextInput, "Web Address")
+        .click();
+    app.run_steps(2);
+    app.get_by_role_and_label(Role::MultilineTextInput, "Web Address")
+        .type_text("\"https://example.com/?q=\" & Name");
+    app.run_steps(2);
+    // An option combination Pro was not seen to store: OK waits.
+    app.get_by_role_and_label(Role::CheckBox, "Automatically encode URL")
+        .click();
+    app.run_steps(2);
+    assert!(app.get_by_label("OK").accesskit_node().is_disabled());
+    app.get_by_role_and_label(Role::CheckBox, "Automatically encode URL")
+        .click();
+    app.run_steps(2);
+    shot(
+        &mut app,
+        "web-viewer-setup",
+        "Web Viewer Setup for the drawn web viewer",
+    );
+    ok(&mut app);
+    let drafted = "New web viewer \"https://example.com/?q=\" & Name";
+    common::wait_for_label(&mut app, drafted);
+    // Setup's OK is a step of the draft's history: Undo drops the set-up
+    // viewer and Redo brings it back (#1076's review).
+    common::open_menu(&mut app, "Edit");
+    common::click(&mut app, "Undo");
+    assert!(app.query_by_label(drafted).is_none());
+    app.key_press_modifiers(
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        egui::Key::Z,
+    );
+    app.run_steps(3);
+    common::wait_for_label(&mut app, drafted);
+    save_layout(&mut app);
+    common::wait_until(&mut app, "the layout saved", |app| {
+        assert!(app.state().error().is_none(), "{:?}", app.state().error());
+        app.state().is_settled()
+            && app
+                .query_by_role_and_label(Role::MultilineTextInput, "Web Address")
+                .is_none()
+            && app
+                .query_by_label("New web viewer \"https://example.com/?q=\" & Name")
+                .is_none()
+    });
+    shot(&mut app, "web-viewer-saved", "the web viewer saved");
+    drop(app);
+
+    let mut reader = hosted.opened();
+    let member = reader.layout_member(fixture::LAYOUT).unwrap().unwrap();
+    reader.close();
+    let layout = om_data::layout_placement::decode(&member).unwrap();
+    let viewer = layout
+        .objects
+        .get(*layout.objects.root.last().unwrap())
+        .unwrap();
+    assert_eq!(viewer.web_viewer().map(|o| o.0), Some(0x800d));
+    let bounds = viewer.bounds.as_ref().unwrap();
+    assert_eq!(
+        (bounds.left, bounds.top, bounds.right, bounds.bottom),
+        (20.0, 60.0, 320.0, 170.0)
+    );
+    let address = viewer.calcs.web_address.as_ref().expect("the web address");
+    assert_eq!(address.polish.field_references().len(), 1);
+}
+
 /// Layout mode's New Layout / Report adds a Form layout on the occurrence
 /// chosen, named as typed, with the operation `om-author`'s
 /// `create_layout` uses (`DataProvider::create_layout`): the window opens
