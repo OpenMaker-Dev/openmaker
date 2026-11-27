@@ -1328,6 +1328,7 @@ fn imported_layout_rules_check_custom_function_record_context_before_writes() {
                 record_number: None,
                 prepared: None,
                 single_field_step: false,
+                assignments: None,
             };
             assert!(provider.write_record(&write).is_err());
             let error = provider.create_record(2, Default::default()).unwrap_err();
@@ -1432,6 +1433,7 @@ fn imported_layout_edits_commit_on_the_owner_and_return_fresh_calculations() {
         record_number: None,
         prepared: None,
         single_field_step: false,
+        assignments: None,
     };
     let edited = provider.write_record(&write).unwrap();
     assert_eq!(value(&edited, "Count"), "41");
@@ -1750,6 +1752,7 @@ fn imported_layout_creation_uses_the_owner_engine_and_caller_found_set() {
         record_number: None,
         prepared: None,
         single_field_step: false,
+        assignments: None,
     };
 
     // New Record from the menu inside a script's transaction is refused
@@ -2215,6 +2218,7 @@ fn a_held_related_file_record_and_its_part_stay_with_their_window() {
             record_number: None,
             prepared: None,
             single_field_step: false,
+            assignments: None,
         })
         .unwrap();
     assert_eq!(ids(&mut provider), [&shown[..], &[held.id]].concat());
@@ -2298,6 +2302,7 @@ fn writes_checked_against_a_related_files_value_list_are_refused_first() {
         record_number: None,
         prepared: None,
         single_field_step: false,
+        assignments: None,
     };
     assert_eq!(
         provider.check_entry(TABLE, CODE, "Ship").unwrap_err().code,
@@ -9499,6 +9504,7 @@ fn create_through_related(provider: &mut NativeProvider) -> Result<Option<String
             record_number: None,
             prepared: None,
             single_field_step: false,
+            assignments: None,
         })
         .map_err(|e| e.message)?;
     let page = provider.records(layout, 0, 10).unwrap();

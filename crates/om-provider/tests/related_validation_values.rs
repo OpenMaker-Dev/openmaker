@@ -102,6 +102,7 @@ fn script(
         record_number: None,
         prepared: None,
         single_field_step: false,
+        assignments: None,
     })
 }
 #[test]

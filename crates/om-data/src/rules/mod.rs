@@ -21,6 +21,7 @@
 //! ([`DataError::code`]).
 mod global_text_input;
 mod global_text_self;
+mod named_auto_entry;
 pub use global_text_input::global_text_input_changes;
 pub use global_text_self::global_text_assignment;
 pub mod recalc;
@@ -578,6 +579,8 @@ impl std::fmt::Debug for OtherGlobalValues {
 pub struct WriteContext {
     /// Evidence for auto-entry whose result depends on entry order.
     pub sequence: WriteSequence,
+    /// The local record draft's ordered direct Set Field assignments.
+    pub assignments: Option<crate::ScriptAssignments>,
     /// `Get ( LayoutNumber )`.
     pub layout: WriteLayout,
     /// `Get ( CurrentPrivilegeSetName )`: the session's current set, the
@@ -1217,6 +1220,8 @@ struct PlannedField {
     editable: bool,
     /// A stored calculation or an auto-enter calculation.
     expression: Option<Expression>,
+    /// Direct input naming a field for the measured local GetField helper.
+    named_auto_entry: Option<u64>,
     /// How this formula uses the field's proposed value.
     auto_enter_self: AutoEntrySelf,
     /// This local global's auto-entry reads Self.
@@ -2570,6 +2575,24 @@ impl RecordPlan {
             } else {
                 None
             };
+            let named_auto_entry = if local
+                && kind == FieldKind::Normal
+                && field.data_type == DataType::Text
+                && matches!(options.options, 0x28 | 0xa8)
+                && options.validation_options == 0
+                && options.max_repetitions == 1
+            {
+                expression.as_ref().and_then(|expression| {
+                    named_auto_entry::classify(
+                        &schema,
+                        table,
+                        &expression.formula.context.as_ref()?.0,
+                        &expression.formula.polish,
+                    )
+                })
+            } else {
+                None
+            };
             let mut auto_enter_self = AutoEntrySelf::Unused;
             if let Some(formula) = expression.as_ref().filter(|_| !global) {
                 let mut uses_self = false;
@@ -2783,6 +2806,7 @@ impl RecordPlan {
                 data_type: field.data_type,
                 editable,
                 expression,
+                named_auto_entry,
                 auto_enter_self,
                 global_text_self,
                 global_text_input,
@@ -2999,14 +3023,16 @@ impl RecordPlan {
                 // How many times it reads each field, counted once a
                 // dependency is an unstored calculation.
                 let mut counts = None;
-                check_custom_functions(
-                    &schema,
-                    &expression.formula.polish,
-                    !calculation,
-                    false,
-                    &mut BTreeSet::new(),
-                )
-                .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
+                if !own || field.named_auto_entry.is_none() {
+                    check_custom_functions(
+                        &schema,
+                        &expression.formula.polish,
+                        !calculation,
+                        false,
+                        &mut BTreeSet::new(),
+                    )
+                    .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
+                }
                 if context_selectors(&schema, &expression.formula.polish)
                     .contains(&selector::CURRENT_TIME_UTC_MILLISECONDS)
                     && !(local
@@ -4291,6 +4317,18 @@ impl RecordPlan {
                 "Global Evaluate auto-entry requires scripted New Record in an unsorted local window.",
             ));
         }
+        if !entry.skip_auto_enter && (!unsorted || !entry.script || entry.imported) {
+            if let Some(field) = self
+                .fields
+                .values()
+                .find(|field| field.named_auto_entry.is_some())
+            {
+                return Err(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!("Field {}: GetField auto-entry requires scripted New Record in an unsorted local window.", field.name),
+                ));
+            }
+        }
         if !entry.skip_auto_enter && !unsorted {
             if let Some(field) = self
                 .fields
@@ -5436,10 +5474,16 @@ impl RecordPlan {
                 .is_some_and(|lookup| self.fires(*id, lookup, mode, &dirty, changes, entry))
         });
         let assigned_groups: BTreeSet<_> = self.replacing_groups_assigned(changes).collect();
+        let ordered_entries: BTreeSet<_> = if entry.skip_auto_enter {
+            BTreeSet::new()
+        } else {
+            self.ordered_auto_entries(changes).collect()
+        };
         if mode == WriteMode::Update
             && dirty.is_empty()
             && !fires_lookup
             && assigned_groups.is_empty()
+            && ordered_entries.is_empty()
         {
             return Ok(Computed {
                 row,
@@ -5595,6 +5639,46 @@ impl RecordPlan {
             let Some(expression) = &field.expression else {
                 continue;
             };
+            if field.named_auto_entry.is_some() {
+                if entry.skip_auto_enter
+                    || mode == WriteMode::Update && !ordered_entries.contains(id)
+                    || mode == WriteMode::Create
+                        && entry.keeps(changes, *id)
+                        && !ordered_entries.contains(id)
+                {
+                    continue;
+                }
+                let result = if entry.script && !entry.imported {
+                    self.ordered_named_value(
+                        (*id, field, expression),
+                        mode,
+                        existing,
+                        changes,
+                        &session,
+                        &environment.context,
+                    )
+                } else {
+                    Err(DataError::with_code(
+                        error::UNAVAILABLE,
+                        format!(
+                            "Field {}: GetField auto-entry requires a scripted write.",
+                            field.name
+                        ),
+                    ))
+                };
+                match result {
+                    Ok(Some(value)) => {
+                        evaluated.insert(*id);
+                        assign(&mut row, &mut dirty, *id, value);
+                    }
+                    Ok(None) => {}
+                    Err(_) if !validate => {
+                        deferred.insert(*id);
+                    }
+                    Err(error) => return Err(error),
+                }
+                continue;
+            }
             let combined_create = field.creation_date_with_calculation && mode == WriteMode::Create;
             let uses_self = field.auto_enter_self != AutoEntrySelf::Unused;
             let keeps = entry.keeps_calculated(changes, *id, uses_self);
@@ -6238,6 +6322,24 @@ impl RecordPlan {
         repetition: InRepetition,
         remaining: &mut u64,
     ) -> Result<(Value, String), RunError> {
+        let named = self.fields.get(&field).and_then(|field| {
+            field
+                .expression
+                .as_ref()
+                .filter(|entry| std::ptr::eq(*entry, expression))
+                .and(field.named_auto_entry)
+        });
+        if let Some(input) = named {
+            let occurrence = expression.formula.occurrence().unwrap_or_default();
+            let name = row.get(&input).map_or("", String::as_str);
+            if !named_auto_entry::can_read(&self.schema, occurrence, field, name) {
+                let output = &self.fields[&field].name;
+                return Err(RunError::Unread(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!("Field {output}: GetField auto-entry only reads a plain local Text field by name."),
+                )));
+            }
+        }
         // An answer the write's operation did not supply is never read as
         // empty: the write is refused.
         if let Some(missing) = context_selectors(&self.schema, &expression.formula.polish)
@@ -9339,6 +9441,139 @@ mod tests {
     }
 
     #[test]
+    fn a_named_auto_entry_reads_an_indirect_field_only_on_its_direct_trigger() {
+        let table = Table {
+            id: 0x8002,
+            name: "Example".into(),
+            fields: vec![
+                field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(2, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(3, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(20, FieldKind::Normal, DataType::Text, 0, 0xa8, 0),
+            ],
+        };
+        let mut schema = CalcSchema::new("Example", Locale::en_us());
+        schema.add_table(table.id, &table.name);
+        schema.add_occurrence(0xd0_0002, &table.name, table.id);
+        for field in &table.fields {
+            schema.add_field(
+                table.id,
+                crate::host::FieldDef::data(field.id, &field.name, ValueType::Text),
+            );
+        }
+        schema.add_custom_function(
+            1,
+            om_calc::eval::CustomFunction {
+                name: "ReadNamed".into(),
+                parameters: vec!["name".into()],
+                body: Expr::GetField {
+                    arg: Box::new(Expr::Local(0)),
+                    need_field_ref: 0,
+                },
+            },
+        );
+        let mut context = om_formula::Context::new(schema.names());
+        context.occurrence = Some(0xd0_0002);
+        let formula = om_formula::compile("Field1 & \":\" & ReadNamed ( Field2 )", &context)
+            .unwrap()
+            .expr;
+        let polish = om_formula::polish::encode(&formula);
+        let mut tree = KeyTree::default();
+        let entries = [(4, CONTEXT), (6, polish.as_slice())].map(|(key, bytes)| {
+            (
+                [table.id, 3, 5, 20, 5, key].map(om_hbam::slot::uint_segment),
+                bytes,
+            )
+        });
+        for (path, bytes) in &entries {
+            let segments = path.each_ref().map(|part| KeySegment(part));
+            tree.insert(&segments, om_hbam::slot::ChunkKind::Leaf, Some(bytes))
+                .unwrap();
+        }
+        let plan = RecordPlan::from_desktop_file_schema(&table, &tree, &schema, true).unwrap();
+        let entry = Entry::script(false, false);
+        let mut row = [
+            (1, "one".into()),
+            (2, "Field3".into()),
+            (3, "A1".into()),
+            (20, "one:A1".into()),
+        ]
+        .into();
+        let mut env = environment();
+        env.context.sequence = WriteSequence::Local;
+        let named = BTreeMap::from([(3, Some("A2".into()))]);
+        assert_eq!(
+            plan.compute(WriteMode::Update, &row, &named, &env, entry)
+                .unwrap(),
+            named
+        );
+        row.insert(3, "A2".into());
+        for (assignments, expected) in [
+            (vec![(1, "one")], "one:A2"),
+            (vec![(1, "three"), (3, "A3")], "three:A2"),
+            (vec![(3, "A3"), (1, "three")], "three:A3"),
+            (vec![(1, "three"), (3, "A3"), (1, "three")], "three:A3"),
+        ] {
+            let assignments: Vec<_> = assignments
+                .into_iter()
+                .map(|(cell, value)| (cell, Some(value.into())))
+                .collect();
+            let changes = assignments.iter().cloned().collect();
+            env.context.assignments = Some(Arc::new(assignments));
+            let changed = plan
+                .compute(WriteMode::Update, &row, &changes, &env, entry)
+                .unwrap();
+            assert_eq!(changed[&20].as_deref(), Some(expected));
+        }
+        let qualified_value = Some("Example::Field3".into());
+        env.context.assignments = Some(Arc::new(vec![(2, qualified_value.clone())]));
+        let qualified = BTreeMap::from([(2, qualified_value)]);
+        assert_eq!(
+            plan.compute(WriteMode::Update, &row, &qualified, &env, entry)
+                .unwrap_err()
+                .code,
+            Some(error::UNAVAILABLE)
+        );
+        let mut keep_table = table;
+        keep_table.fields[3] = field(20, FieldKind::Normal, DataType::Text, 0, 0x28, 0);
+        let keep = RecordPlan::from_desktop_file_schema(&keep_table, &tree, &schema, true).unwrap();
+        let mut creation = env;
+        creation.context.record_number = Some(RecordNumber::LocalNewRecord(1));
+        let assignments = vec![
+            (2, Some("Field3".into())),
+            (1, Some("one".into())),
+            (3, Some("A1".into())),
+        ];
+        let edits = assignments.iter().cloned().collect();
+        creation.context.assignments = Some(Arc::new(assignments));
+        for (plan, expected) in [(&keep, ":"), (&plan, "one:")] {
+            let saved = plan
+                .compute(
+                    WriteMode::Create,
+                    &BTreeMap::new(),
+                    &edits,
+                    &creation,
+                    entry,
+                )
+                .unwrap();
+            assert_eq!(saved[&20].as_deref(), Some(expected));
+        }
+        creation.context.assignments = None;
+        assert_eq!(
+            plan.compute(
+                WriteMode::Create,
+                &BTreeMap::new(),
+                &edits,
+                &creation,
+                entry
+            )
+            .unwrap_err()
+            .code,
+            Some(error::UNAVAILABLE)
+        );
+    }
+
+    #[test]
     fn creation_date_is_used_with_a_calculated_auto_entry_value() {
         // The closed FileMaker Pro copies held both option words with
         // selector 0 and a saved formula.
@@ -9686,6 +9921,7 @@ mod tests {
             record_number: Some(RecordNumber::Window(3)),
             creation_utc_clock: None,
             sequence: WriteSequence::Unmeasured,
+            assignments: None,
             file_variables: None,
             other_globals: None,
         };
