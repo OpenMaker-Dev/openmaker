@@ -90,6 +90,17 @@ assignment, and 0 immediately on clear, with the last value stored.
 Writing an unrelated field left Amount alone. Every step returned 0.
 The off option was unmeasured in a sorted window.
 
+In a local scripted related create with a global Text match and an indexed
+replacing UUID key on the child, FileMaker Pro 26.1.1 kept the copied key.
+The child Number field with value-indexed, nonreplacing
+`If ( IsEmpty ( Self ) ; 0 ; Self )` (`0x80000008`) showed 0 immediately
+after Set Field on another child field. Setting the Number field to 25
+before Commit showed and stored 25. An unindexed, replacing
+`If ( IsEmpty ( Self ) ; 0 ; Self + 1 )` (`0x00000088`) showed and stored
+26 after the assignment, with or without an intermediate Commit. The
+tested steps all returned 0 without alerts.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1059#issuecomment-7204905093)
+
 ## Fixed field definition
 
 The definition is at `<base-table>/3/5/<field>/2`. The decoder accepts exactly

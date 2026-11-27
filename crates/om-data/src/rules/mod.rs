@@ -47,8 +47,8 @@ use crate::meta::{ValueList, ValueSource};
 
 use crate::host::session::selector;
 use crate::host::{
-    stored_value, CalcSchema, CalcSource, FileCalc, FileHost, MemorySource, RecordValues,
-    SessionInfo,
+    stored_value, CalcSchema, CalcSource, FieldClass, FieldDef, FileCalc, FileHost, MemorySource,
+    RecordValues, SessionInfo,
 };
 use crate::DataError;
 
@@ -410,6 +410,52 @@ impl RecordNumber {
             Self::LocalFirstRelated => 1,
         }
     }
+}
+
+/// A stored Number calculation consisting of `Get ( RecordNumber )`.
+pub fn stores_record_number(field: &FieldDef) -> bool {
+    field.class == FieldClass::Calculation
+        && field.stored
+        && field.value_type == ValueType::Number
+        && field
+            .formula
+            .as_ref()
+            .is_some_and(|formula| matches!(formula.polish, Expr::Get(selector::RECORD_NUMBER)))
+}
+
+/// The value-indexed Number default measured on a first related create.
+pub fn keeps_indexed_related_self(field: &FieldDef) -> bool {
+    if field.class != FieldClass::Data
+        || field.value_type != ValueType::Number
+        || field.global
+        || field.repetitions != 1
+        || field.options != 0x8000_0008
+        || field.validation_options != 0
+    {
+        return false;
+    }
+    let Some(Expr::Call {
+        op: Opcode::IF,
+        args,
+    }) = field.auto_enter.as_ref().map(|formula| &formula.polish)
+    else {
+        return false;
+    };
+    let [Expr::Call { op, args: tested }, Expr::Number(om_formula::Number::Decimal(zero)), fallback] =
+        args.as_slice()
+    else {
+        return false;
+    };
+    let self_value =
+        |expr: &Expr| matches!(expr, Expr::Call { op: Opcode::SELF, args } if args.is_empty());
+    op.name() == Some("IsEmpty")
+        && matches!(tested.as_slice(), [value] if self_value(value))
+        && zero
+            .whole
+            .iter()
+            .chain(&zero.fraction)
+            .all(|word| *word == 0)
+        && self_value(fallback)
 }
 
 /// The UTC millisecond samples a new record's formulas have drawn. Clones
@@ -4152,14 +4198,26 @@ impl RecordPlan {
                 ));
             }
         }
-        if let Some(field) = self.fields.values().find(|field| {
+        // The related Self trial did not also have a stored record number.
+        let related_self_table = if first_related && entry.script && !entry.imported {
+            self.schema
+                .table(self.table)
+                .filter(|table| !table.fields.values().any(stores_record_number))
+        } else {
+            None
+        };
+        if let Some((_, field)) = self.fields.iter().find(|(id, field)| {
             (!entry.skip_auto_enter || field.stored_calculation())
                 && match field.auto_enter_self {
                     AutoEntrySelf::Unused => false,
                     AutoEntrySelf::ProposedNumber => {
                         // The replacing option with the empty-input guard
                         // off was measured in unsorted New Record only.
-                        !unsorted && (!sorted || field.options.options & ALWAYS_EVALUATE != 0)
+                        !unsorted
+                            && (!sorted || field.options.options & ALWAYS_EVALUATE != 0)
+                            && !related_self_table
+                                .and_then(|table| table.fields.get(*id))
+                                .is_some_and(keeps_indexed_related_self)
                     }
                     AutoEntrySelf::Unsupported => true,
                 }
@@ -4167,7 +4225,7 @@ impl RecordPlan {
             return Err(DataError::with_code(
                 error::UNAVAILABLE,
                 format!(
-                    "Field {}: Self requires a supported formula and local New Record context.",
+                    "Field {}: Self requires a supported formula and local creation context.",
                     field.name
                 ),
             ));
@@ -9699,6 +9757,56 @@ mod tests {
                     &env,
                     entry
                 )
+                .unwrap_err()
+                .code,
+            Some(error::UNAVAILABLE)
+        );
+    }
+
+    #[test]
+    fn first_related_create_keeps_the_assigned_value_of_an_indexed_self_default() {
+        let mut table = Table {
+            id: 0x8002,
+            name: "Items".into(),
+            fields: vec![
+                field(1, FieldKind::Normal, DataType::Text, 0, 0, 0),
+                field(20, FieldKind::Normal, DataType::Number, 0, 0x8000_0008, 0),
+            ],
+        };
+        let mut formulas = vec![(20, 5, "If ( IsEmpty ( Self ) ; 0 ; Self )")];
+        let entry = Entry {
+            keep_written: true,
+            ..Entry::script(false, false)
+        };
+        let mut env = environment();
+        env.context.record_number = Some(RecordNumber::LocalFirstRelated);
+        env.context.sequence = WriteSequence::Local;
+        let plan = plan_of(&table, &formulas, &[]).unwrap();
+        plan.check_creation_context(&env.context, Entry::script(false, false))
+            .unwrap();
+        for (assigned, expected) in [(None, "0"), (Some("25"), "25")] {
+            let mut changes = BTreeMap::from([(1, Some("linked".into()))]);
+            if let Some(value) = assigned {
+                changes.insert(20, Some(value.into()));
+            }
+            let computed = plan
+                .compute(WriteMode::Create, &BTreeMap::new(), &changes, &env, entry)
+                .unwrap();
+            assert_eq!(computed[&20].as_deref(), Some(expected));
+        }
+        table.fields.push(field(
+            21,
+            FieldKind::Calculation,
+            DataType::Number,
+            0,
+            0x8008_0000,
+            0,
+        ));
+        formulas.push((21, 5, "Get ( RecordNumber )"));
+        let combined = plan_of(&table, &formulas, &[]).unwrap();
+        assert_eq!(
+            combined
+                .check_creation_context(&env.context, entry)
                 .unwrap_err()
                 .code,
             Some(error::UNAVAILABLE)

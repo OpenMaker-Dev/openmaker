@@ -50,7 +50,7 @@ use om_data::formula::Expr;
 use om_data::host::session::selector;
 use om_data::host::{CalcNeed, CalcSchema, FieldClass, Hop};
 use om_data::meta::{relation_option, JoinOp};
-use om_data::rules::RecordNumber;
+use om_data::rules::{keeps_indexed_related_self, stores_record_number, RecordNumber};
 use om_data::runtime::{ErrorCode, FieldRef, HostError, HostResult, RecordMove};
 use om_data::specs::SortSpec;
 use om_layout::ObjectKind;
@@ -1470,18 +1470,18 @@ impl WorkerHost<'_> {
         if !plain_key && !replacing_uuid {
             return None;
         }
-        // The UUID key was measured together with an indexed Position.
-        let has_position = schema.table(table)?.fields.values().any(|field| {
-            field.class == FieldClass::Calculation
-                && field.stored
-                && field.value_type == om_data::calc::ValueType::Number
-                && field.formula.as_ref().is_some_and(|formula| {
-                    matches!(formula.polish, Expr::Get(selector::RECORD_NUMBER))
-                })
+        let fields = &schema.table(table)?.fields;
+        let has_position = fields.values().any(|field| {
+            stores_record_number(field)
                 && (!replacing_uuid
                     || field.options == 0x8008_0000 && field.validation_options == 0)
         });
-        has_position.then_some((from.id, to.id))
+        // The UUID key also occurs in the separately measured indexed
+        // Number default case, with no stored Position on the table.
+        let has_self_default = replacing_uuid
+            && !fields.values().any(stores_record_number)
+            && fields.values().any(keeps_indexed_related_self);
+        (has_position || has_self_default).then_some((from.id, to.id))
     }
 
     fn has_stored_related_parent(&self) -> bool {
