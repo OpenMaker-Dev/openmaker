@@ -853,6 +853,11 @@ in memory for the session. See the native
 observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
 and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
 
+A local single-repetition global Text field with option word
+`0x00010080` and no validation stays writable. The replacement bit and
+any retained calculation are inactive. New Record keeps the current
+session value. The field definition is preserved.
+
 A local single-repetition replacing global Text calculation
 (`0x00010088`) can read one plain global Text field of the same
 occurrence (`0x00010000`). Both fields have zero validation flags. The
