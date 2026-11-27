@@ -119,6 +119,9 @@ pub(crate) struct MenuContext<'a> {
     /// holds no unsaved change, nothing is with the host, and it lacks a
     /// kind of part Part Definition adds (`OpenMakerApp::can_insert_part`).
     pub insert_part: bool,
+    /// Insert > Field... can add an edit box now
+    /// (`OpenMakerApp::can_insert_field`).
+    pub insert_field: bool,
 }
 
 impl MenuContext<'_> {
@@ -850,7 +853,9 @@ fn layout_insert_rows(
     actions: &mut Vec<Action>,
 ) {
     let alt_cmd = |key| command(CMD.plus(Modifiers::ALT), key);
-    pending(rows, "Field...", None);
+    if rows.item("Field...", None, false, context.insert_field) {
+        actions.push(Action::InsertField);
+    }
     if rows.item("Part...", None, false, context.insert_part) {
         actions.push(Action::InsertPart(None));
     }

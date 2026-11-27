@@ -202,6 +202,7 @@ struct Operation {
     set: CurrentSet,
     record_number: Option<RecordNumber>,
     single_field_step: bool,
+    assignments: Option<om_data::ScriptAssignments>,
 }
 
 /// The fields of the window's unsaved records whose values may not be what
@@ -311,6 +312,7 @@ impl NativeProvider {
                         set: CurrentSet::Step(write.privilege_set.clone()),
                         record_number: None,
                         single_field_step: false,
+                        assignments: None,
                     };
                     // Held records of the opened file's tables the owner
                     // reads are read too.
@@ -370,6 +372,7 @@ impl NativeProvider {
                             set: CurrentSet::Account,
                             record_number: None,
                             single_field_step: false,
+                            assignments: None,
                         };
                         let none = BTreeSet::new();
                         owner.pending_overlay((Some(wire), &none), &rows, operation, unknown)?
@@ -413,6 +416,7 @@ impl NativeProvider {
                     set: CurrentSet::Step(write.privilege_set.clone()),
                     record_number: None,
                     single_field_step: false,
+                    assignments: None,
                 };
                 let (none, unknown) = (BTreeSet::new(), Unknown::new());
                 self.pending_overlay((Some(table), &none), &all, operation, unknown)?
@@ -493,14 +497,9 @@ impl NativeProvider {
         let mut any = overlay != HeldRecords::default();
         let mut named = None;
         for (at, record) in ordered {
-            let single_field_step = Some(at) == own && operation.single_field_step;
-            let Some((id, row, fields)) = self.pending_one(
-                record,
-                at,
-                (&overlay, &unknown),
-                &operation,
-                single_field_step,
-            )?
+            let is_own = Some(at) == own;
+            let Some((id, row, fields)) =
+                self.pending_one(record, at, (&overlay, &unknown), &operation, is_own)?
             else {
                 return Ok(None);
             };
@@ -600,6 +599,7 @@ impl NativeProvider {
             set: CurrentSet::Account,
             record_number: None,
             single_field_step: false,
+            assignments: None,
         };
         let computed = self.pending_overlay((None, &reading), &[], operation, elsewhere)?;
         let owner_of = |root: u64| {
@@ -657,6 +657,7 @@ impl NativeProvider {
         if !write.cells.is_empty() {
             let (_, plan) = self.table_plan(table)?;
             affected.extend(plan.replacing_groups_assigned(&write.cells));
+            affected.extend(plan.ordered_auto_entries(&write.cells));
             proposed_self.extend(write.cells.keys().copied().filter(|cell| {
                 !write.typed.contains(cell) && plan.auto_enters_proposed_self(*cell)
             }));
@@ -694,6 +695,10 @@ impl NativeProvider {
             set: CurrentSet::Step(write.privilege_set.clone()),
             record_number: write.record_number,
             single_field_step: write.single_field_step && write.table.is_none(),
+            assignments: write
+                .assignments
+                .clone()
+                .filter(|_| write.table.is_none() && write.typed.is_empty()),
         };
         let at = all.len() - 1;
         let computed = self.pending_computed(
@@ -742,7 +747,7 @@ impl NativeProvider {
         at: usize,
         (overlay, unknown): (&HeldRecords, &Unknown),
         operation: &Operation,
-        single_field_step: bool,
+        is_own: bool,
     ) -> Result<Option<(u64, BTreeMap<u64, String>, BTreeSet<u64>)>, DataError> {
         use crate::transaction::HeldBasis;
         use om_data::rules::Written;
@@ -763,7 +768,8 @@ impl NativeProvider {
                 record_number: operation.record_number,
                 prepared: None,
                 creation: om_data::RecordCreation::Other,
-                single_field_step,
+                single_field_step: is_own && operation.single_field_step,
+                assignments: is_own.then(|| operation.assignments.clone()).flatten(),
             };
             provider.origin_context(&plan, origin)
         };
@@ -954,6 +960,7 @@ impl NativeProvider {
             prepared: write.prepared,
             creation: om_data::RecordCreation::Other,
             single_field_step: false,
+            assignments: None,
         };
         let context = self.origin_context(&plan, origin)?;
         plan.check_creation_context(&context, entry)?;

@@ -145,6 +145,8 @@ pub(crate) struct Uncommitted {
     pub cells: Cells,
     /// Exactly one script step set a field in an otherwise clean edit.
     pub single_field_step: bool,
+    /// Direct Set Field order for the file's local GetField entry rule.
+    pub assignments: Option<om_data::ScriptAssignments>,
     /// Related records changed, created or deleted through the record.
     pub related: Vec<RelatedDraft>,
     /// New Record made the record: Revert Record removes it. The fields
@@ -627,6 +629,7 @@ impl Window {
         name: Option<&str>,
         cell: u64,
         text: String,
+        (ordered, force_edit): (bool, bool),
     ) -> Result<(), DataError> {
         if self.current(provider)?.is_none() {
             return Err(DataError::with_code(101, "There is no current record."));
@@ -643,14 +646,19 @@ impl Window {
             }
         }
         if let Some(name) = name {
-            self.set(provider, name, text.clone())?;
+            self.set(provider, name, text.clone(), force_edit)?;
         } else {
             self.state.uncommitted.single_field_step = false;
         }
-        self.state
-            .uncommitted
-            .cells
-            .insert(cell, (!text.is_empty()).then_some(text));
+        let value = (!text.is_empty()).then_some(text);
+        let open = &mut self.state.uncommitted;
+        if ordered && (open.cells.is_empty() || open.assignments.is_some()) {
+            std::sync::Arc::make_mut(open.assignments.get_or_insert_with(Default::default))
+                .push((cell, value.clone()));
+        } else {
+            open.assignments = None;
+        }
+        open.cells.insert(cell, value);
         if let Some(table) = self.table {
             self.forget_typed_cell(table, cell);
         }
@@ -690,6 +698,7 @@ impl Window {
         provider: &mut dyn DataProvider,
         field: &str,
         text: String,
+        force_edit: bool,
     ) -> Result<(), DataError> {
         if self.state.mode == Mode::Find {
             let index = self
@@ -723,7 +732,7 @@ impl Window {
             && self.state.drafts.is_empty()
             && open.cells.is_empty()
             && open.related.is_empty();
-        if same_value && !self.state.drafts.contains_key(field) {
+        if same_value && !force_edit && !self.state.drafts.contains_key(field) {
             // Set Field still supplies its cell to the commit. It can
             // trigger entry rules without opening a draft for the text.
             self.state.uncommitted.single_field_step = single_field_step;
@@ -956,6 +965,7 @@ impl Window {
                 record_number: open.new.then_some(open.record_number).flatten(),
                 prepared: None,
                 single_field_step,
+                assignments: open.assignments.clone(),
             });
             if let Some((table, _)) = pinned {
                 provider.release_related_record(table, id);
@@ -1030,6 +1040,7 @@ impl Window {
                     .filter(|_| reserved.is_none())
                     .map(|prepared| prepared.id),
                 single_field_step: false,
+                assignments: None,
             };
             let mut written = provider.write_record(&write);
             if write.prepared.is_some()
@@ -1552,6 +1563,7 @@ impl Window {
             record_number,
             prepared: None,
             single_field_step: false,
+            assignments: None,
         };
         let (record, saved) = match provider.write_record_with_creation(&write, creation) {
             Ok(record) => (record, !session && !provider.transaction_open()),
