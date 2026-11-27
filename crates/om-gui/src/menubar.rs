@@ -852,7 +852,7 @@ fn layout_insert_rows(
     let alt_cmd = |key| command(CMD.plus(Modifiers::ALT), key);
     pending(rows, "Field...", None);
     if rows.item("Part...", None, false, context.insert_part) {
-        actions.push(Action::InsertPart);
+        actions.push(Action::InsertPart(None));
     }
     rows.separator();
     // The submenus open on their items, none offered yet.

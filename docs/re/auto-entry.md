@@ -144,6 +144,17 @@ The validation word masks `0x4`, `0x8`, `0x10` correspond to XML children
 remain raw. In particular, timestamp validation `0x2000` is not interpreted.
 These flags describe requirements; recognizing them does not perform them.
 
+When the Data checkbox is on and its Text box is blank, FileMaker Pro
+26.1.1 saves the constant bit with no member `0d`. In a local,
+single-repetition field with validation off, New Record leaves its cell
+absent and keeps later explicit text. This holds with indexing None
+(`0x00000004`) and All (`0xa0000004`). With All, a closed copy made before
+any Find held the blank row under the value index's empty key. An
+explicit value appeared in both indexes, and an exact Find for it
+returned that row without changing the file.
+[Unindexed comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1132#issuecomment-7204266062),
+[Indexed comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1132#issuecomment-7209355458)
+
 ## Index bits
 
 schema-path.md 5.5 names the option word's index bits: `0x80000000` value
@@ -906,6 +917,15 @@ copied match value. Ordinary New Record in the Child table generated
 a UUID and stored its own position, 3.
 [FileMaker Pro 26.1.1 comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7204904879)
 
+FileMaker Pro also combined the indexed Position and replacing UUID
+key with a value-indexed Number using the nonreplacing
+`If ( IsEmpty ( Self ) ; 0 ; Self )` (`0x80000008`). The first related
+write showed Position 1 and Number 0, and setting the Number to 25
+showed and stored 25. An intermediate Commit did not change either
+result. Exact Finds after reopen returned the new row from both indexes.
+The closed indexes already contained the new entries before the Finds.
+[Combined comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1011#issuecomment-7205174459)
+
 ## Serial numbers
 
 Option `0x2` generates a serial number when the record is created, `0x200`
@@ -934,6 +954,16 @@ when a script or the user sets the field before an on-commit serial is
 generated, text without digits, and increments below 1.
 
 ## Auto-entry into global storage
+
+Disabling replacing calculated auto-entry on a global Text field can
+retain the replacement bit `0x80` and the inactive calculation. FileMaker
+Pro 26.1.1 saved that definition as `0x00010080` after disabling the
+calculation either before or after enabling global storage. In both
+cases the local single-repetition field had no validation. New Record,
+an ordinary field edit and an explicit global assignment behaved like
+the plain `0x00010000` control. A second New Record kept the explicitly
+assigned global.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1137#issuecomment-7204267381)
 
 FileMaker Pro 26.1.1 kept a Text field's Auto-Enter setting when its
 storage changed to global. In each disposable file the option word gained

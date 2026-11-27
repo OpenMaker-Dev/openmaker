@@ -789,6 +789,11 @@ stored-calculation options keep the table read-only.
 [Number comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204266349),
 [Text comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204722695)
 
+In a local desktop file, a single-repetition Text field with Data
+enabled, no validation, and absent constant data leaves its new cell
+empty. The measured option words are `0x00000004` and `0xa0000004`.
+Explicit assignments and index maintenance use the ordinary write path.
+
 An ordinary local Number auto-entry calculation can use `Self` as its
 only field input. It reads the proposed value at ordinary New Record in
 an unsorted or sorted local desktop window with a known insertion
@@ -847,6 +852,11 @@ remain unsupported for global auto-entry. OpenMaker keeps local globals
 in memory for the session. See the native
 observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
 and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
+
+A local single-repetition global Text field with option word
+`0x00010080` and no validation stays writable. The replacement bit and
+any retained calculation are inactive. New Record keeps the current
+session value. The field definition is preserved.
 
 A local single-repetition replacing global Text calculation
 (`0x00010088`) can read one plain global Text field of the same
@@ -1190,14 +1200,16 @@ record's place in what the rules read:
   key with replacing `Get ( UUID )` (`0xa0000088`, no validation).
   Related creation uses the copied global as the match value. Direct New
   Record on the related table still evaluates its UUID default.
-  A separate first-match case with that UUID key and no stored Position
-  supports the value-indexed Number default
+  A first-match case with that UUID key also supports the value-indexed Number default
   `If ( IsEmpty ( Self ) ; 0 ; Self )` (`0x80000008`, no validation).
   The related draft shows 0 on creation and keeps a nonempty assignment
-  made before Commit.
+  made before or after an intermediate Commit. This also works with the
+  measured indexed Position. Both stored values can be found after
+  reopen through their indexes.
   The measured unindexed, replacing
   `If ( IsEmpty ( Self ) ; 0 ; Self + 1 )` (`0x00000088`, no validation)
-  also starts at 0 in this relationship. An assigned 25 shows and stores
+  also starts at 0 in this relationship when there is no stored Position.
+  An assigned 25 shows and stores
   26, including when the script commits the new match before assigning
   the Number. The pending read evaluates the proposed value, and Commit
   uses that same proposal to avoid applying the increment twice.

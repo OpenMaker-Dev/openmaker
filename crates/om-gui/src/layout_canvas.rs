@@ -174,6 +174,28 @@ pub(crate) struct NewPortal {
     pub revision: Option<om_data::layout_placement::Revision>,
 }
 
+/// A web viewer being placed with the Web Viewer tool: its frame, dragged
+/// on the canvas, what Web Viewer Setup set for it (`None` until it has),
+/// and the revision of the layout it was drawn on. Nothing is stored until
+/// Save Layout places it (`DataProvider::place_layout_web_viewer`,
+/// authoring operation 28).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NewWebViewer {
+    /// The frame in layout coordinates, whole points.
+    pub left: f64,
+    pub top: f64,
+    pub width: f64,
+    pub height: f64,
+    pub setup: Option<crate::web_viewer_setup::WebViewerChoice>,
+    pub revision: Option<om_data::layout_placement::Revision>,
+}
+
+impl NewWebViewer {
+    pub(crate) fn frame(&self) -> om_layout::Rect {
+        frame(self.left, self.top, self.width, self.height)
+    }
+}
+
 impl NewPortal {
     pub(crate) fn frame(&self) -> om_layout::Rect {
         frame(self.left, self.top, self.width, self.height)
@@ -391,6 +413,8 @@ pub(crate) struct CanvasState {
     new_text: Option<NewText>,
     /// The Portal tool's new portal.
     new_portal: Option<NewPortal>,
+    /// The Web Viewer tool's new web viewer.
+    new_web_viewer: Option<NewWebViewer>,
     /// Where a Field or Button tool drag began, in layout coordinates.
     drag_from: Option<Pos2>,
     /// The Button tool finished drawing, or the new button was double
@@ -399,6 +423,9 @@ pub(crate) struct CanvasState {
     /// The Portal tool finished drawing, or the new portal was double
     /// clicked: Portal Setup opens.
     portal_setup: bool,
+    /// The Web Viewer tool finished drawing, or the new viewer was double
+    /// clicked: Web Viewer Setup opens.
+    web_viewer_setup: bool,
     moved: MovedObjects,
     deleted: DeletedObjects,
     controls: ControlChanges,
@@ -413,8 +440,9 @@ pub(crate) struct CanvasState {
     /// height dragged to, for the window to send.
     part_drag: Option<PartDrag>,
     part_resize: Option<PartResize>,
-    /// The Part tool was used on the layout: Part Definition opens.
-    part_tool: bool,
+    /// The Part tool was used on the layout, at this layout point's y (in
+    /// points): Part Definition opens.
+    part_tool: Option<f64>,
     /// A layout read again no longer has objects that unsaved control or
     /// text changes were made to; the changes are kept.
     orphaned_drafts: bool,
@@ -448,7 +476,7 @@ struct PartEdges<'a> {
     enabled: bool,
     drag: &'a mut Option<PartDrag>,
     resize: &'a mut Option<PartResize>,
-    tool: &'a mut bool,
+    tool: &'a mut Option<f64>,
 }
 
 /// The Part tool's button dragged from the status toolbar: dropped on the
@@ -468,10 +496,11 @@ impl CanvasState {
         std::mem::take(&mut self.orphaned_drafts)
     }
 
-    /// Whether the Part tool was used on the layout since the last call:
-    /// a click with it, or its button dropped there.
-    pub(crate) fn take_part_tool(&mut self) -> bool {
-        std::mem::take(&mut self.part_tool)
+    /// Where the Part tool was used on the layout since the last call (a
+    /// click with it, or its button dropped there): the layout point's y,
+    /// in points.
+    pub(crate) fn take_part_tool(&mut self) -> Option<f64> {
+        self.part_tool.take()
     }
 
     /// Whether the layout holds changes not saved yet: a part boundary is
@@ -488,6 +517,7 @@ impl CanvasState {
             || self.new_button.is_some()
             || self.new_text.is_some()
             || self.new_portal.is_some()
+            || self.new_web_viewer.is_some()
     }
 
     /// The layout's new width, not saved yet.
@@ -559,6 +589,19 @@ impl CanvasState {
         self.new_portal.as_mut()
     }
 
+    pub(crate) fn new_web_viewer(&self) -> Option<&NewWebViewer> {
+        self.new_web_viewer.as_ref()
+    }
+
+    pub(crate) fn new_web_viewer_mut(&mut self) -> Option<&mut NewWebViewer> {
+        self.new_web_viewer.as_mut()
+    }
+
+    /// Whether Web Viewer Setup was asked for since the last call.
+    pub(crate) fn take_web_viewer_setup(&mut self) -> bool {
+        std::mem::take(&mut self.web_viewer_setup) && self.new_web_viewer.is_some()
+    }
+
     /// Whether Portal Setup was asked for since the last call.
     pub(crate) fn take_portal_setup(&mut self) -> bool {
         std::mem::take(&mut self.portal_setup) && self.new_portal.is_some()
@@ -578,9 +621,11 @@ impl CanvasState {
         self.new_button = None;
         self.new_text = None;
         self.new_portal = None;
+        self.new_web_viewer = None;
         self.drag_from = None;
         self.button_setup = false;
         self.portal_setup = false;
+        self.web_viewer_setup = false;
     }
 
     /// Open Button Setup for the new button.
@@ -773,6 +818,9 @@ impl CanvasState {
         }
         if let Some(portal) = self.new_portal.as_mut() {
             rebase(&mut portal.revision);
+        }
+        if let Some(viewer) = self.new_web_viewer.as_mut() {
+            rebase(&mut viewer.revision);
         }
     }
 
@@ -1144,8 +1192,21 @@ pub(crate) fn show(
             let (design, scroll) = document.design_surface(session);
             zoom::show(ui, ui.available_size() / factor, factor, |ui| {
                 let unsaved = state.unsaved();
-                let visible =
-                    |key| contents.is_none_or(|panels| panels.visible(key, &state.front_panels));
+                let previewed_popovers =
+                    contents
+                        .map(|panels| {
+                            panels.containing_popovers(
+                                state.selected.0.iter().filter_map(|&index| {
+                                    geometry.objects.get(index).map(|o| o.key)
+                                }),
+                            )
+                        })
+                        .unwrap_or_default();
+                let visible = |key| {
+                    contents.is_none_or(|panels| {
+                        panels.visible(key, &state.front_panels, &previewed_popovers)
+                    })
+                };
                 let dropped = draw(
                     ui,
                     geometry,
@@ -1161,9 +1222,11 @@ pub(crate) fn show(
                         text: &mut state.new_text,
                         text_editor: &mut state.new_text_editor,
                         portal: &mut state.new_portal,
+                        web_viewer: &mut state.new_web_viewer,
                         drag_from: &mut state.drag_from,
                         setup: &mut state.button_setup,
                         portal_setup: &mut state.portal_setup,
+                        web_viewer_setup: &mut state.web_viewer_setup,
                     },
                     (
                         &mut state.moved,
@@ -1219,6 +1282,8 @@ pub(crate) fn show(
                     drag_from: &mut None,
                     setup: &mut false,
                     portal_setup: &mut false,
+                    web_viewer: &mut None,
+                    web_viewer_setup: &mut false,
                 },
                 (
                     &mut MovedObjects::default(),
@@ -1238,7 +1303,7 @@ pub(crate) fn show(
                     enabled: false,
                     drag: &mut None,
                     resize: &mut None,
-                    tool: &mut false,
+                    tool: &mut None,
                 },
                 false,
                 &|_| true,
@@ -1276,8 +1341,8 @@ struct Texts<'a> {
     stored: &'a dyn Fn(u64) -> Option<String>,
 }
 
-/// What the Field, Button, Text and Portal tools draw: one new object at a
-/// time.
+/// What the Field, Button, Text, Portal and Web Viewer tools draw: one new
+/// object at a time.
 struct New<'a> {
     fields: &'a mut Vec<NewField>,
     field_drag: &'a mut Option<usize>,
@@ -1286,9 +1351,11 @@ struct New<'a> {
     text: &'a mut Option<NewText>,
     text_editor: &'a mut Option<egui::Id>,
     portal: &'a mut Option<NewPortal>,
+    web_viewer: &'a mut Option<NewWebViewer>,
     drag_from: &'a mut Option<Pos2>,
     setup: &'a mut bool,
     portal_setup: &'a mut bool,
+    web_viewer_setup: &'a mut bool,
 }
 
 impl New<'_> {
@@ -1297,6 +1364,7 @@ impl New<'_> {
             self.button.as_ref().map(NewButton::frame),
             self.text.as_ref().map(NewText::frame),
             self.portal.as_ref().map(NewPortal::frame),
+            self.web_viewer.as_ref().map(NewWebViewer::frame),
         ]
         .into_iter()
         .flatten()
@@ -1357,22 +1425,19 @@ fn draw(
             );
             // Fields accumulate in the draft; other tools keep their existing
             // single unfinished-object setup until Save Layout.
+            // The tool draws when no other tool's new object waits.
+            let waiting = [
+                (LayoutTool::Field, !new.fields.is_empty()),
+                (LayoutTool::Button, new.button.is_some()),
+                (LayoutTool::Text, new.text.is_some()),
+                (LayoutTool::Portal, new.portal.is_some()),
+                (LayoutTool::WebViewer, new.web_viewer.is_some()),
+            ];
             let drawing = selectable
-                && match tool {
-                    LayoutTool::Field => {
-                        new.button.is_none() && new.text.is_none() && new.portal.is_none()
-                    }
-                    LayoutTool::Button => {
-                        new.fields.is_empty() && new.text.is_none() && new.portal.is_none()
-                    }
-                    LayoutTool::Text => {
-                        new.fields.is_empty() && new.button.is_none() && new.portal.is_none()
-                    }
-                    LayoutTool::Portal => {
-                        new.fields.is_empty() && new.button.is_none() && new.text.is_none()
-                    }
-                    _ => false,
-                };
+                && waiting.iter().any(|(drawer, _)| *drawer == tool)
+                && !waiting
+                    .iter()
+                    .any(|(drawer, waits)| *drawer != tool && *waits);
             let selection_tool = selectable && tool == LayoutTool::Selection;
             let (area, background) = ui.allocate_exact_size(
                 size,
@@ -1407,7 +1472,12 @@ fn draw(
                     Sense::click_and_drag(),
                 )
             });
-            if selectable && new.button.is_none() && new.text.is_none() && new.portal.is_none() {
+            if selectable
+                && new.button.is_none()
+                && new.text.is_none()
+                && new.portal.is_none()
+                && new.web_viewer.is_none()
+            {
                 if let Some(payload) = incoming {
                     if let Some(pointer) = pointer
                         .filter(|point| surface.contains(*point) && ui.clip_rect().contains(*point))
@@ -1435,14 +1505,20 @@ fn draw(
             // The Part tool's button dropped on the layout, as Claris
             // documents it ("drag the Part tool ... to the layout"), or a
             // click on the layout with the tool chosen (OpenMaker's): Part
-            // Definition opens. The point does not matter, as the parts it
-            // adds go at their kind's place in the order of parts. Also on
-            // a frozen canvas, where the window refuses it with the reason.
-            let on_layout = pointer
-                .is_some_and(|point| surface.contains(point) && ui.clip_rect().contains(point));
+            // Definition opens for the point, which may be below the parts,
+            // where FileMaker Pro 26.1.1 adds a part reaching down to it.
+            // Also on a frozen canvas, where the window refuses it with the
+            // reason.
+            let on_layout = pointer.filter(|point| {
+                surface.x_range().contains(point.x)
+                    && area.contains(*point)
+                    && ui.clip_rect().contains(*point)
+            });
             let dropped_tool = background.dnd_release_payload::<PartToolDrag>().is_some();
-            if on_layout && (dropped_tool || (tool == LayoutTool::Part && background.clicked())) {
-                *edges.tool = true;
+            if let Some(point) = on_layout {
+                if dropped_tool || (tool == LayoutTool::Part && background.clicked()) {
+                    *edges.tool = Some(f64::from(point.y - origin.y));
+                }
             }
             let painter = ui.painter().clone();
             painter.rect_filled(
@@ -1612,6 +1688,16 @@ fn draw(
                                     revision,
                                     focus: true,
                                 });
+                            } else if tool == LayoutTool::WebViewer {
+                                let setup = new.web_viewer.take().and_then(|v| v.setup);
+                                *new.web_viewer = Some(NewWebViewer {
+                                    left,
+                                    top,
+                                    width,
+                                    height,
+                                    setup,
+                                    revision,
+                                });
                             } else if tool == LayoutTool::Portal {
                                 let setup = new.portal.take().and_then(|p| p.setup);
                                 *new.portal = Some(NewPortal {
@@ -1672,6 +1758,13 @@ fn draw(
                     }
                     if drawn && tool == LayoutTool::Portal {
                         *new.portal_setup = true;
+                    }
+                    // Also when the drag ended on an empty frame after drawing
+                    // one: the viewer drawn last waits for its setup.
+                    if tool == LayoutTool::WebViewer
+                        && (drawn || new.web_viewer.as_ref().is_some_and(|v| v.setup.is_none()))
+                    {
+                        *new.web_viewer_setup = true;
                     }
                 }
                 // A click with the Text tool starts a text where it is.
@@ -2008,6 +2101,11 @@ fn draw(
             if let Some(portal) = new.portal.as_ref() {
                 if draw_new_portal(ui, &painter, origin, portal, selectable) {
                     *new.portal_setup = true;
+                }
+            }
+            if let Some(viewer) = new.web_viewer.as_ref() {
+                if draw_new_web_viewer(ui, &painter, origin, viewer, selectable) {
+                    *new.web_viewer_setup = true;
                 }
             }
 
@@ -2809,6 +2907,51 @@ fn draw_new_portal(
     let response = ui.interact(
         rect,
         ui.scope_id().with("new_portal"),
+        if setup {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, setup, &label));
+    setup && response.double_clicked()
+}
+
+/// A new web viewer: its frame, dashed, with its web address once Web
+/// Viewer Setup has set one. A double click opens Web Viewer Setup again.
+fn draw_new_web_viewer(
+    ui: &Ui,
+    painter: &egui::Painter,
+    origin: Pos2,
+    viewer: &NewWebViewer,
+    setup: bool,
+) -> bool {
+    let rect = Rect::from_min_size(
+        origin + vec2(viewer.left as f32, viewer.top as f32),
+        vec2(viewer.width as f32, viewer.height as f32),
+    );
+    if !rect.is_finite() || !rect.is_positive() {
+        return false;
+    }
+    painter.rect_filled(rect, CornerRadius::ZERO, theme::CURRENT_ROW);
+    draw_dashed(painter, rect);
+    let address = viewer.setup.as_ref().map(|choice| choice.address.as_str());
+    painter
+        .with_clip_rect(rect.shrink(2.0).intersect(ui.clip_rect()))
+        .text(
+            rect.left_top() + vec2(5.0, 4.0),
+            Align2::LEFT_TOP,
+            address.unwrap_or("Web Viewer"),
+            theme::small(),
+            theme::SELECTED,
+        );
+    let label = match address {
+        Some(address) => format!("New web viewer {address}"),
+        None => "New web viewer".to_owned(),
+    };
+    let response = ui.interact(
+        rect,
+        ui.scope_id().with("new_web_viewer"),
         if setup {
             Sense::click()
         } else {
