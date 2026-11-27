@@ -79,6 +79,7 @@ mod theme;
 mod toolbar;
 mod value_lists;
 mod web_viewer;
+mod web_viewer_setup;
 mod widgets;
 mod worker;
 
@@ -180,6 +181,22 @@ pub(crate) fn app_icon() -> Option<std::sync::Arc<egui::IconData>> {
 pub fn prepare_web_viewers() {
     static PREPARED: std::sync::Once = std::sync::Once::new();
     PREPARED.call_once(web_viewer::prepare_environment);
+}
+
+/// The page host of web viewers in native Wayland windows: the
+/// `om-gui-webview` program, which `om-gui` runs from beside itself with
+/// `OPENMAKER_WEB_VIEWER_BACKEND=wayland` (`web_viewer::host`). It fails
+/// where that backend does not exist.
+pub fn web_viewer_host() -> std::process::ExitCode {
+    #[cfg(all(feature = "web-viewer", target_os = "linux"))]
+    {
+        web_viewer::host::serve()
+    }
+    #[cfg(not(all(feature = "web-viewer", target_os = "linux")))]
+    {
+        eprintln!("om-gui-webview: this build has no Wayland web viewers");
+        std::process::ExitCode::FAILURE
+    }
 }
 
 /// Install the logger [`run`] reads the error that ends its event loop

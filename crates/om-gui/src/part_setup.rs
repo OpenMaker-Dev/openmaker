@@ -24,6 +24,8 @@ pub(crate) struct PartRow {
     pub part_type: i32,
     pub flags: u64,
     pub page_break_after: u32,
+    /// Its height, in points.
+    pub height: f64,
     /// A sub-summary's sort field: its field id and name.
     pub sorted_by: Option<(u64, String)>,
     /// How many of the layout's objects it holds.
@@ -106,7 +108,25 @@ pub(crate) struct PartSetup {
     creating: Option<Option<i32>>,
     /// A part added or deleted is with the host.
     waiting_parts: Option<PartsChange>,
+    /// Opened by the Part tool or Insert > Part: Part Definition alone,
+    /// without Part Setup's list. It stays, taking no input, while its OK is
+    /// with the host, and closes with Cancel or once the host has answered.
+    alone: bool,
+    /// Opened by the Part tool dropped below the layout's parts: the new
+    /// part's height, from the layout's bottom to the drop point, and the
+    /// rank (`part_rank`) of the last part, which the kinds offered follow.
+    dropped: Option<(f64, Option<u8>)>,
 }
+
+/// FileMaker Pro 26.1.1's alert for the Part tool dropped where it adds no
+/// part (re/client-ui.md, "The Part tool").
+const CANNOT_POSITION: &str = "This part cannot be positioned here.";
+
+/// The farthest below the layout's last part the Part tool adds a part:
+/// the farthest FileMaker Pro 26.1.1 was seen to add one (25 points below a
+/// Form's Body). It added none 50 points below that Body, nor about 22
+/// below a List's Footer, so its own limit is not known.
+const MAX_DROP_HEIGHT: f64 = 25.0;
 
 /// Why a control is shown but not offered.
 const NOT_YET: &str = "OpenMaker does not change this yet.";
@@ -146,7 +166,63 @@ impl PartSetup {
             waiting: None,
             creating: None,
             waiting_parts: None,
+            alone: false,
+            dropped: None,
         }
+    }
+
+    /// This dialog as Insert > Part (`dropped_at` None) or the Part tool
+    /// opens it: Part Definition alone. Insert > Part offers the kinds of
+    /// part Create adds that the layout lacks. The Part tool, dropped at
+    /// layout point `dropped_at` (its y), adds a part below the layout's
+    /// last part reaching down to that point, and offers the kinds that go
+    /// after the last part, as FileMaker Pro 26.1.1's did; a drop within
+    /// the parts is refused, as Pro added a part at none it was tried at
+    /// (re/client-ui.md, "The Part tool"). Refused, with the reason, when no
+    /// kind is offered (OpenMaker adds no sub-summaries, which FileMaker Pro
+    /// adds any number of).
+    pub(crate) fn creating_alone(mut self, dropped_at: Option<f64>) -> Result<Self, &'static str> {
+        if let Some(y) = dropped_at {
+            let bottom: f64 = self.parts.iter().map(|p| p.height).sum();
+            // Not a number when a stored height is not one: refused.
+            let below = y - bottom;
+            let height = below.round();
+            // The host puts a new part before the first part ranked after
+            // it, which is after the last part only when the parts are in
+            // FileMaker's order.
+            let ranks: Option<Vec<u8>> =
+                self.parts.iter().map(|p| part_rank(p.part_type)).collect();
+            let Some(ranks) = ranks.filter(|ranks| ranks.is_sorted()) else {
+                return Err(CANNOT_POSITION);
+            };
+            let last = ranks.last().copied();
+            // Nothing goes after a Bottom Navigation part.
+            if !(1.0..=MAX_DROP_HEIGHT).contains(&height)
+                || below > MAX_DROP_HEIGHT
+                || last == part_rank(13)
+            {
+                return Err(CANNOT_POSITION);
+            }
+            self.dropped = Some((height, last));
+        }
+        // The first kind offered is chosen, as FileMaker Pro 26.1.1's chose
+        // Title Header for Insert > Part, and the first kind that follows
+        // the last part for the Part tool (re/client-ui.md, "The Part
+        // tool").
+        let Some(first) = TYPES
+            .iter()
+            .find(|(_, types, _)| types.len() == 1 && self.offered(types[0]))
+            .map(|(_, types, _)| types[0])
+        else {
+            return Err(if self.dropped.is_some() {
+                "The layout has every kind of part OpenMaker adds below its last part."
+            } else {
+                "The layout has every kind of part OpenMaker adds."
+            });
+        };
+        self.creating = Some(Some(first));
+        self.alone = true;
+        Ok(self)
     }
 
     /// The host's answer to `sent`, a part added or deleted: saved, the
@@ -163,13 +239,17 @@ impl PartSetup {
             return false;
         }
         self.waiting_parts = None;
+        if self.alone {
+            // Part Definition alone closes with the answer.
+            self.creating = None;
+        }
         let Some(revision) = revision else {
             return true;
         };
         self.expected = revision;
         self.selected = None;
         match sent.change {
-            PartChange::Add { part_type, .. } => {
+            PartChange::Add { part_type, size } => {
                 let at = self
                     .parts
                     .iter()
@@ -182,6 +262,7 @@ impl PartSetup {
                         part_type,
                         flags: 0,
                         page_break_after: 0,
+                        height: size,
                         sorted_by: None,
                         objects: 0,
                     },
@@ -196,9 +277,18 @@ impl PartSetup {
         true
     }
 
-    /// The part types Create offers: those it adds that the layout lacks.
+    /// The part types Create adds: those it adds that the layout lacks.
     fn creatable(&self, part_type: i32) -> bool {
         ADDABLE_PARTS.contains(&part_type) && !self.parts.iter().any(|p| p.part_type == part_type)
+    }
+
+    /// The part types Part Definition offers: those Create adds, and for
+    /// the Part tool only those that go after the layout's last part.
+    fn offered(&self, part_type: i32) -> bool {
+        self.creatable(part_type)
+            && self.dropped.is_none_or(|(_, last)| {
+                last.is_none_or(|last| part_rank(part_type).is_some_and(|rank| rank > last))
+            })
     }
 
     /// Delete's part: the one chosen, if it is empty, of a type deleted, and
@@ -233,6 +323,10 @@ impl PartSetup {
     pub(crate) fn show(&mut self, ctx: &egui::Context) -> PartSetupAnswer {
         if self.creating.is_some() {
             return self.show_create(ctx);
+        }
+        if self.alone {
+            // Part Definition was the whole dialog, and has been answered.
+            return PartSetupAnswer::Done;
         }
         if self.definition.is_some() {
             return self.show_definition(ctx);
@@ -394,14 +488,18 @@ impl PartSetup {
         let mut pick = chosen;
         let offered: Vec<bool> = TYPES
             .iter()
-            .map(|(_, types, _)| types.len() == 1 && self.creatable(types[0]))
+            .map(|(_, types, _)| types.len() == 1 && self.offered(types[0]))
             .collect();
+        let waiting = self.waiting_parts.is_some();
         let escaped = dialog(
             ctx,
             "part_create",
             "Part Definition",
             vec2(458.0, 449.0),
             |ui, at| {
+                if waiting {
+                    ui.disable();
+                }
                 let place = |ui: &mut egui::Ui, rect: Rect, add: &mut dyn FnMut(&mut egui::Ui)| {
                     ui.scope_builder(UiBuilder::new().max_rect(rect), add);
                 };
@@ -439,7 +537,10 @@ impl PartSetup {
                                     expected: self.expected,
                                     change: PartChange::Add {
                                         part_type,
-                                        size: new_part_height(part_type),
+                                        size: self.dropped.map_or_else(
+                                            || new_part_height(part_type),
+                                            |(height, _)| height,
+                                        ),
                                     },
                                 };
                                 answer = PartSetupAnswer::Parts(change);
@@ -458,9 +559,13 @@ impl PartSetup {
         );
         if let PartSetupAnswer::Parts(change) = &answer {
             self.waiting_parts = Some(change.clone());
-            close = true;
+            // Alone, it waits for the answer (`parts_answered`); over Part
+            // Setup, the list waits.
+            close = !self.alone;
         }
-        if close || escaped {
+        if waiting {
+            // Not closed while its OK is with the host.
+        } else if close || escaped {
             self.creating = None;
         } else {
             self.creating = Some(pick);
@@ -728,4 +833,53 @@ pub(crate) fn dialog(
             add(ui, &at);
         })
         .should_close()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dialog(parts: &[(i32, f64)]) -> PartSetup {
+        let rows = parts
+            .iter()
+            .enumerate()
+            .map(|(i, &(part_type, height))| PartRow {
+                id: i as u64 + 1,
+                part_type,
+                flags: 0,
+                page_break_after: 0,
+                height,
+                sorted_by: None,
+                objects: 0,
+            })
+            .collect();
+        PartSetup::new(1, (1, [0; 32]), (1, 1), Vec::new(), rows)
+    }
+
+    /// The Part tool adds a part only below the last part, at most
+    /// `MAX_DROP_HEIGHT` below, and only where the host appends it: not on
+    /// a stored height that is not a number, which no answer would match,
+    /// nor on parts out of FileMaker's order, where the host would put it
+    /// above others.
+    #[test]
+    fn the_part_tool_adds_a_part_only_after_the_last_one() {
+        let footer = [(4, 240.0), (7, 22.0)];
+        let opened = dialog(&footer).creating_alone(Some(279.0)).ok().unwrap();
+        assert_eq!(opened.dropped, Some((17.0, part_rank(7))));
+        assert_eq!(opened.creating, Some(Some(8)), "Title Footer chosen");
+        for at in [100.0, 262.0, 262.0 + 25.25] {
+            assert_eq!(
+                dialog(&footer).creating_alone(Some(at)).err(),
+                Some(CANNOT_POSITION),
+                "{at}"
+            );
+        }
+        for parts in [[(4, f64::NAN), (7, 22.0)], [(7, 22.0), (4, 240.0)]] {
+            assert_eq!(
+                dialog(&parts).creating_alone(Some(279.0)).err(),
+                Some(CANNOT_POSITION),
+                "{parts:?}"
+            );
+        }
+    }
 }

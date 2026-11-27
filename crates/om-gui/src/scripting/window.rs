@@ -63,6 +63,12 @@ pub(crate) struct RelatedDraft {
     /// The stored parent (base table and record) of a script-created
     /// draft reached through an intermediate occurrence.
     pub creation_parent: Option<(u64, u64)>,
+    /// Child match cell of the measured first-related Set Field creation.
+    /// The window rechecks that the row is still the sole match at save.
+    pub first_related_key: Option<u64>,
+    /// Computed reading of a proposed Number on an existing related row.
+    /// The commit still takes the original assignment from `cells`.
+    pub related_self: Option<RelatedSelfPreview>,
     /// Delete Portal Row deleted the record.
     pub deleted: bool,
     /// The cells of `typed` whose field object's OnObjectSave already ran,
@@ -73,6 +79,13 @@ pub(crate) struct RelatedDraft {
     /// For a record to create: what its own file's rules enter, computed
     /// before its commit (#1047, [`PreparedDraft`]).
     pub prepared: Option<PreparedDraft>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RelatedSelfPreview {
+    pub cell: u64,
+    pub input: Option<String>,
+    pub value: Option<String>,
 }
 
 /// A record to create as its file's provider previewed it before the
@@ -230,7 +243,7 @@ struct CommitWrite<'a> {
     cell_of: &'a dyn Fn(&str) -> Option<u64>,
     skip_validation: bool,
     privilege_set: Option<String>,
-    record_numbers: &'a BTreeMap<usize, u64>,
+    record_numbers: &'a BTreeMap<usize, RecordNumber>,
     transaction: Option<&'a mut Staged>,
 }
 
@@ -770,7 +783,7 @@ impl Window {
         cell_of: &dyn Fn(&str) -> Option<u64>,
         skip_validation: bool,
         privilege_set: Option<String>,
-        record_numbers: &BTreeMap<usize, u64>,
+        record_numbers: &BTreeMap<usize, RecordNumber>,
         transaction: Option<&mut Staged>,
     ) -> Result<Vec<Committed>, DataError> {
         // The record session the window's entry opened for its record
@@ -1009,10 +1022,7 @@ impl Window {
                 typed: draft.typed.clone(),
                 skip_validation,
                 privilege_set: privilege_set.clone(),
-                record_number: record_numbers
-                    .get(&index)
-                    .copied()
-                    .map(RecordNumber::Window),
+                record_number: record_numbers.get(&index).copied(),
                 // Its preview's values went into the record it holds.
                 prepared: draft
                     .prepared

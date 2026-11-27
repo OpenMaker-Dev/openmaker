@@ -22,6 +22,8 @@ install -m 755 -s "$bin/om-server" "$deb/usr/bin/om-server"
 # Each reads PDF data in containers with its worker, beside it (#566).
 install -m 755 -s "$bin/om-gui-pdf-worker" "$deb/usr/bin/om-gui-pdf-worker"
 install -m 755 -s "$bin/om-server-pdf-worker" "$deb/usr/bin/om-server-pdf-worker"
+# The page host of web viewers in native Wayland windows, beside om-gui.
+install -m 755 -s "$bin/om-gui-webview" "$deb/usr/bin/om-gui-webview"
 install -D -m 644 tools/package/openmaker.desktop "$deb/usr/share/applications/openmaker.desktop"
 install -D -m 644 favicon.svg "$deb/usr/share/icons/hicolor/scalable/apps/openmaker.svg"
 install -D -m 644 favicon.png "$deb/usr/share/icons/hicolor/256x256/apps/openmaker.png"
@@ -47,7 +49,8 @@ install -D -m 644 -t "$doc/egui-fonts" "$egui_fonts"/*.txt
 mkdir -p "$deb/DEBIAN"
 printf 'Source: openmaker\n\nPackage: openmaker\nArchitecture: any\n' >"$work/debian/control"
 linked=$(cd "$work" && dpkg-shlibdeps -O debian/openmaker/usr/bin/om-gui debian/openmaker/usr/bin/om-server \
-    debian/openmaker/usr/bin/om-gui-pdf-worker debian/openmaker/usr/bin/om-server-pdf-worker |
+    debian/openmaker/usr/bin/om-gui-pdf-worker debian/openmaker/usr/bin/om-server-pdf-worker \
+    debian/openmaker/usr/bin/om-gui-webview |
     sed -n 's/^shlibs:Depends=//p')
 
 # Libraries om-gui opens at run time, which the ELF headers do not name (it

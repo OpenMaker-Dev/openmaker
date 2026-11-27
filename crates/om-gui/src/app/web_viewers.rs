@@ -16,6 +16,11 @@ impl OpenMakerApp {
         self.w.document.web_note = reason.map(web_viewer::unavailable_note);
         // Interactive containers' audio and video play in the same engine.
         self.w.document.media_note = reason.map(web_viewer::media_note);
+        // The pages Browse paints itself, with their newest pictures.
+        let layout = self.w.session.as_ref().and_then(|s| s.layout);
+        self.w.document.web_pages =
+            self.web
+                .pages(self.w.id, &self.w.uuid, self.w.file_id, self.epoch, layout);
     }
 
     /// Reconcile the web viewers the window painted this frame with their
@@ -86,6 +91,7 @@ impl OpenMakerApp {
 
     /// Answer the worker and start the scripts pages asked for.
     pub(super) fn web_viewer_outcomes(&mut self, ctx: &egui::Context) {
+        self.web.frames(ctx);
         for outcome in self.web.poll() {
             match outcome {
                 Outcome::Answer { prompt, result } => {

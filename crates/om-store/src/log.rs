@@ -2402,6 +2402,21 @@ impl Log {
             .map_or_else(|| self.durable.index.saturating_add(1), |s| s.header.first)
     }
 
+    /// The entry before the first one the log holds, as the header of its
+    /// first segment names it (the durable entry when it holds none): the
+    /// oldest entry a reader can compare against, since every entry after
+    /// it is in the log (server-storage.md 7.1).
+    pub fn base(&self) -> Position {
+        match self.segs.first() {
+            Some(seg) => Position {
+                index: seg.header.first - 1,
+                term: seg.header.prev_term,
+                hash: seg.header.prev_hash,
+            },
+            None => self.durable,
+        }
+    }
+
     /// The segments in use, as `state` lists them.
     pub fn segments(&self) -> Segments {
         self.state.values().segments

@@ -17,14 +17,24 @@
 //! a new one, and a callback runs a script of the view's own file only.
 //!
 //! Native views come from a [`Backend`]: with the `web-viewer` feature,
-//! WebKitGTK on Linux/X11 and WKWebView on macOS. Without one, web viewers
-//! show a note and the script steps fail instead of reporting success.
+//! WebKitGTK on Linux and WKWebView on macOS. On Linux the views are X11
+//! child windows of the app's windows (`gtk.rs`), or, with
+//! `OPENMAKER_WEB_VIEWER_BACKEND=wayland`, pages drawn by a process of their
+//! own that Browse paints as textures in native Wayland windows
+//! (`wayland.rs`, [`composited`]). Without a backend, web viewers show a note
+//! and the script steps fail instead of reporting success.
 
 #[cfg(all(feature = "web-viewer", target_os = "macos"))]
 mod appkit;
 #[cfg(all(feature = "web-viewer", target_os = "linux"))]
 mod gtk;
+#[cfg(all(feature = "web-viewer", target_os = "linux"))]
+pub(crate) mod host;
 mod viewports;
+#[cfg(all(feature = "web-viewer", target_os = "linux"))]
+mod wayland;
+#[cfg(all(feature = "web-viewer", target_os = "linux"))]
+mod webkit;
 
 pub(crate) use viewports::ViewportWindows;
 
@@ -34,6 +44,10 @@ use om_layout::WebViewerOptions;
 /// a page still loading, a function that failed; no live web viewer of that
 /// name on the window's layout.
 pub(crate) const INVALID: i32 = 5;
+/// "Command is unavailable": the page's browser went away, with the page
+/// host that drew it [I, OpenMaker's choice; FileMaker's error for a web
+/// viewer whose engine ended is unmeasured].
+pub(crate) const UNAVAILABLE: i32 = 3;
 pub(crate) const OBJECT_MISSING: i32 = 116;
 
 /// How long Perform JavaScript in Web Viewer waits for its function before
@@ -118,6 +132,71 @@ pub(crate) struct Placement {
     pub current: bool,
     /// The document's zoom factor, which the page's zoom follows.
     pub zoom: f32,
+    /// The pointer's input over the page this frame, in the page's points
+    /// ([`composited`] views only: a native view takes its own).
+    pub input: Vec<PageInput>,
+    /// The pointer is over the page, and nothing egui draws covers it there.
+    pub hovered: bool,
+}
+
+/// Pointer input for a page, at points from its top left corner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum PageInput {
+    Move {
+        x: f32,
+        y: f32,
+    },
+    /// Button 0 primary, 1 secondary, 2 middle.
+    Button {
+        x: f32,
+        y: f32,
+        button: u8,
+        pressed: bool,
+    },
+    /// A scroll by `dx`, `dy` points (egui's direction: positive moves the
+    /// content right and down).
+    Wheel {
+        x: f32,
+        y: f32,
+        dx: f32,
+        dy: f32,
+    },
+    Leave,
+}
+
+/// A view's newest picture ([`composited`] backends): `size` pixels of
+/// premultiplied RGBA.
+pub(crate) struct PageFrame {
+    pub view: u64,
+    pub size: [usize; 2],
+    pub rgba: Vec<u8>,
+}
+
+/// A page Browse paints in the window being drawn: its object, its List
+/// row's record, and its newest frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PageTexture {
+    pub object: u64,
+    pub record: Option<i64>,
+    pub texture: egui::TextureId,
+}
+
+/// Whether pages are textures Browse paints (the Wayland backend) rather
+/// than native views over the window: decided once, from the environment
+/// (`OPENMAKER_WEB_VIEWER_BACKEND=wayland`, on Linux with the `web-viewer`
+/// feature).
+pub(crate) fn composited() -> bool {
+    #[cfg(all(feature = "web-viewer", target_os = "linux"))]
+    {
+        static COMPOSITED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *COMPOSITED.get_or_init(|| {
+            std::env::var("OPENMAKER_WEB_VIEWER_BACKEND").as_deref() == Ok("wayland")
+        })
+    }
+    #[cfg(not(all(feature = "web-viewer", target_os = "linux")))]
+    {
+        false
+    }
 }
 
 /// Whether this build has a native backend for its platform.
@@ -134,6 +213,9 @@ pub(crate) enum NativeParent {
     /// An AppKit window's number (`NSWindow.windowNumber`).
     #[cfg(all(feature = "web-viewer", target_os = "macos"))]
     AppKit(isize),
+    /// None: Browse paints the window's pages itself ([`composited`]).
+    #[cfg(all(feature = "web-viewer", target_os = "linux"))]
+    Composited,
 }
 
 impl NativeParent {
@@ -145,6 +227,10 @@ impl NativeParent {
     )]
     pub fn of(handle: &impl raw_window_handle::HasWindowHandle) -> Result<Self, Unavailable> {
         use raw_window_handle::RawWindowHandle;
+        #[cfg(all(feature = "web-viewer", target_os = "linux"))]
+        if composited() {
+            return Ok(Self::Composited);
+        }
         match handle.window_handle().map(|h| h.as_raw()) {
             Ok(RawWindowHandle::Xlib(h)) => Ok(Self::X11(u64::from(h.window))),
             Ok(RawWindowHandle::Xcb(h)) => Ok(Self::X11(u64::from(h.window.get()))),
@@ -167,6 +253,8 @@ pub(crate) struct Geometry {
     pub frame: [i32; 4],
     pub content: [i32; 4],
     pub zoom: f64,
+    /// The window's pixels per point.
+    pub pixels_per_point: f32,
 }
 
 impl Geometry {
@@ -193,6 +281,7 @@ impl Geometry {
                 (px(rect.max.y) - px(rect.min.y)).max(1),
             ],
             zoom: f64::from(zoom),
+            pixels_per_point,
         }
     }
 
@@ -231,7 +320,7 @@ pub(crate) struct ViewSpec {
     pub scripts: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Navigation {
     Load(String),
     Reload,
@@ -240,7 +329,7 @@ pub(crate) enum Navigation {
 }
 
 /// What a backend reports about its views, in the order it happened.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(
     not(all(feature = "web-viewer", any(target_os = "linux", target_os = "macos"))),
     allow(dead_code, reason = "only a native backend reports events")
@@ -279,13 +368,30 @@ pub(crate) enum Event {
 pub(crate) trait Backend {
     fn create(&mut self, view: u64, parent: NativeParent, spec: ViewSpec);
     fn place(&mut self, view: u64, geometry: Geometry, visible: bool);
-    fn navigate(&mut self, view: u64, generation: u64, navigation: Navigation);
-    fn evaluate(&mut self, view: u64, call: u64, script: String);
+    /// Whether the backend took the navigation; `false` when it could not
+    /// send it (its page host ended, or the command was too long), and the
+    /// view's load fails.
+    fn navigate(&mut self, view: u64, generation: u64, navigation: Navigation) -> bool;
+    /// Whether the backend took the call; `false` when it could not send
+    /// it, and no result comes.
+    fn evaluate(&mut self, view: u64, call: u64, script: String) -> bool;
     fn destroy(&mut self, view: u64);
     /// The app's window took a click: keyboard focus a view has goes back
     /// to `parent`.
     fn release_focus(&mut self, parent: NativeParent);
     fn poll(&mut self) -> Vec<Event>;
+    /// Whether the backend can still carry out commands (the Wayland
+    /// backend's page host has not ended).
+    fn available(&mut self) -> bool {
+        true
+    }
+    /// Pointer input over a view's page ([`composited`] backends).
+    fn input(&mut self, _view: u64, _input: PageInput) {}
+    /// The views' new pictures since the last time ([`composited`]
+    /// backends).
+    fn frames(&mut self) -> Vec<PageFrame> {
+        Vec::new()
+    }
     /// The end of the app's frame, with the root viewport's window: a
     /// backend whose views must be made on the main thread, with a window
     /// to make them in, applies its commands now.
@@ -456,6 +562,10 @@ pub(crate) struct WebViewers {
     deferred: Vec<Deferred>,
     next: u64,
     outcomes: Vec<Outcome>,
+    /// Each painted view's newest frame ([`composited`] backends).
+    textures: std::collections::HashMap<u64, egui::TextureHandle>,
+    /// The window and view the pointer was over last.
+    hovered: Option<(u32, u64)>,
 }
 
 impl Default for WebViewers {
@@ -467,8 +577,12 @@ impl Default for WebViewers {
 /// Prepare the process for web viewers before any other thread starts
 /// (`om_gui::prepare_web_viewers`).
 pub(crate) fn prepare_environment() {
+    // The page host's WebKitGTK draws in shared memory on the app's own
+    // display, whatever the session's X server would allow.
     #[cfg(all(feature = "web-viewer", target_os = "linux"))]
-    gtk::prepare_environment();
+    if !composited() {
+        gtk::prepare_environment();
+    }
 }
 
 /// How the app's event loop must be built for this build's web viewers, if
@@ -477,7 +591,13 @@ pub(crate) fn prepare_environment() {
 pub(crate) fn event_loop_hook() -> Option<eframe::EventLoopBuilderHook> {
     #[cfg(all(feature = "web-viewer", target_os = "linux"))]
     {
-        gtk::event_loop_hook()
+        // Painted pages need no X11 window: winit chooses as it would
+        // without the feature (Wayland on a Wayland session).
+        if composited() {
+            None
+        } else {
+            gtk::event_loop_hook()
+        }
     }
     #[cfg(not(all(feature = "web-viewer", target_os = "linux")))]
     {
@@ -490,7 +610,11 @@ pub(crate) fn event_loop_hook() -> Option<eframe::EventLoopBuilderHook> {
 fn native_backend(ctx: &egui::Context) -> Result<Box<dyn Backend>, Unavailable> {
     #[cfg(all(feature = "web-viewer", target_os = "linux"))]
     {
-        gtk::GtkBackend::start(ctx).map(|b| Box::new(b) as Box<dyn Backend>)
+        if composited() {
+            wayland::WaylandBackend::start(ctx).map(|b| Box::new(b) as Box<dyn Backend>)
+        } else {
+            gtk::GtkBackend::start(ctx).map(|b| Box::new(b) as Box<dyn Backend>)
+        }
     }
     #[cfg(all(feature = "web-viewer", target_os = "macos"))]
     {
@@ -521,6 +645,8 @@ impl WebViewers {
             deferred: Vec::new(),
             next: 0,
             outcomes: Vec::new(),
+            textures: std::collections::HashMap::new(),
+            hovered: None,
         }
     }
 
@@ -574,6 +700,8 @@ impl WebViewers {
         for view in &mut self.views {
             view.seen = false;
         }
+        // The page the pointer is over in this window.
+        let mut hovered = None;
         let parent = frame.parent;
         for placement in frame.placements {
             let Some(layout) = frame.layout else {
@@ -642,6 +770,12 @@ impl WebViewers {
                         view.placed = (geometry, visible);
                     }
                 }
+                for input in &placement.input {
+                    backend.input(id, *input);
+                }
+                if placement.hovered {
+                    hovered = Some(id);
+                }
                 continue;
             }
             let (Some(parent), Some(address)) = (parent, placement.address.clone()) else {
@@ -676,7 +810,29 @@ impl WebViewers {
                 seen: true,
             });
         }
-        if let (true, Some(parent)) = (frame.pressed, parent) {
+        // A page the pointer leaves hears so (a painted page sees only
+        // the input Browse gives it).
+        let left = match (self.hovered, hovered) {
+            (Some((_, before)), Some(now)) if before != now => Some(before),
+            (Some((window, before)), None) if window == frame.window => Some(before),
+            _ => None,
+        };
+        if let (Some(view), Some(Ok(backend))) = (left, self.backend.as_mut()) {
+            backend.input(view, PageInput::Leave);
+        }
+        match hovered {
+            Some(view) => self.hovered = Some((frame.window, view)),
+            None if left.is_some() => self.hovered = None,
+            None => {}
+        }
+        // A press in a painted page gives it the keyboard; any other press
+        // in the window takes the keyboard back from its pages.
+        let pressed_page = frame.placements.iter().any(|p| {
+            p.input
+                .iter()
+                .any(|i| matches!(i, PageInput::Button { pressed: true, .. }))
+        });
+        if let (true, false, Some(parent)) = (frame.pressed, pressed_page, parent) {
             let hosts = self
                 .views
                 .iter()
@@ -752,7 +908,84 @@ impl WebViewers {
         }
     }
 
+    /// Take in the views' new pictures ([`composited`] backends) as the
+    /// textures [`Self::pages`] gives Browse.
+    pub fn frames(&mut self, ctx: &egui::Context) {
+        let frames = match self.backend.as_mut() {
+            Some(Ok(backend)) => backend.frames(),
+            _ => return,
+        };
+        // Only each view's newest.
+        let mut newest: std::collections::HashMap<u64, PageFrame> =
+            std::collections::HashMap::new();
+        for frame in frames {
+            newest.insert(frame.view, frame);
+        }
+        // A frame larger than a texture can be is not shown (egui would
+        // panic): the backend sizes its pages below that.
+        let max = ctx.input(|i| i.max_texture_side);
+        for (view, frame) in newest {
+            // A failed view's late frame paints nothing.
+            if !self
+                .views
+                .iter()
+                .any(|v| v.id == view && v.state != LoadState::Failed)
+                || frame.rgba.len() != frame.size[0] * frame.size[1] * 4
+                || frame.size.iter().any(|side| *side > max || *side == 0)
+            {
+                continue;
+            }
+            let image = egui::ColorImage::from_rgba_premultiplied(frame.size, &frame.rgba);
+            match self.textures.get_mut(&view) {
+                Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
+                None => {
+                    let texture = ctx.load_texture(
+                        format!("web viewer page {view}"),
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    );
+                    self.textures.insert(view, texture);
+                }
+            }
+        }
+    }
+
+    /// The pages of window `window`'s layout `layout` that have a picture.
+    pub fn pages(
+        &self,
+        window: u32,
+        uuid: &str,
+        file: u64,
+        epoch: u64,
+        layout: Option<u32>,
+    ) -> Vec<PageTexture> {
+        let Some(layout) = layout else {
+            return Vec::new();
+        };
+        self.views
+            .iter()
+            .filter(|v| {
+                v.key.window == window
+                    && v.key.uuid == uuid
+                    && v.key.file == file
+                    && v.key.epoch == epoch
+                    && v.key.layout == layout
+            })
+            .filter_map(|v| {
+                Some(PageTexture {
+                    object: v.key.object,
+                    record: v.key.record,
+                    texture: self.textures.get(&v.id)?.id(),
+                })
+            })
+            .collect()
+    }
+
     fn destroy(&mut self, id: u64) {
+        self.textures.remove(&id);
+        if self.hovered.is_some_and(|(_, view)| view == id) {
+            self.hovered = None;
+        }
         self.views.retain(|v| v.id != id);
         if let Some(Ok(backend)) = self.backend.as_mut() {
             backend.destroy(id);
@@ -813,7 +1046,18 @@ impl WebViewers {
                 && v.current
         });
         let answer = |result| Outcome::Answer { prompt, result };
-        let Some(view) = view else {
+        let Some(id) = view.map(|v| v.id) else {
+            return Err(command);
+        };
+        // A backend that can no longer draw pages: the step fails as an
+        // unavailable command.
+        if let Some(Ok(backend)) = self.backend.as_mut() {
+            if !backend.available() {
+                self.outcomes.push(answer(Err(UNAVAILABLE)));
+                return Ok(());
+            }
+        }
+        let Some(view) = self.views.iter().find(|v| v.id == id) else {
             return Err(command);
         };
         if view.state == LoadState::Failed {
@@ -845,13 +1089,18 @@ impl WebViewers {
                 view.state = LoadState::Loading;
                 let generation = view.generation;
                 self.fail_calls(id, INVALID);
-                self.backend
+                let taken = self
+                    .backend
                     .as_mut()
                     .unwrap()
                     .as_mut()
                     .unwrap()
                     .navigate(id, generation, navigation);
-                self.outcomes.push(answer(Ok(())));
+                // One the backend could not send fails as the step of an
+                // engine that went (OpenMaker's choice; FileMaker
+                // unmeasured).
+                self.outcomes
+                    .push(answer(if taken { Ok(()) } else { Err(UNAVAILABLE) }));
             }
             Command::Perform {
                 function,
@@ -870,12 +1119,17 @@ impl WebViewers {
                 };
                 self.next += 1;
                 let call = self.next;
-                self.backend
+                let taken = self
+                    .backend
                     .as_mut()
                     .unwrap()
                     .as_mut()
                     .unwrap()
                     .evaluate(id, call, script);
+                if !taken {
+                    self.outcomes.push(answer(Err(UNAVAILABLE)));
+                    return Ok(());
+                }
                 self.calls.push(Call {
                     id: call,
                     prompt,
@@ -905,6 +1159,8 @@ impl WebViewers {
                         .find(|v| v.id == view && v.generation == generation)
                     {
                         v.state = LoadState::Failed;
+                        // A painted page that failed shows no longer.
+                        self.textures.remove(&view);
                         self.fail_calls(view, OBJECT_MISSING);
                     }
                 }

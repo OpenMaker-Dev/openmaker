@@ -46,16 +46,22 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use om_data::calc::eval::{CalcHost, Context};
 use om_data::calc::Value;
+use om_data::formula::Expr;
+use om_data::host::session::selector;
 use om_data::host::{CalcNeed, CalcSchema, FieldClass, Hop};
 use om_data::meta::{relation_option, JoinOp};
+use om_data::rules::{
+    related_number_self, stores_record_number, RecordNumber, RelatedNumberSelf,
+    COPIED_UUID_KEY_VALIDATION,
+};
 use om_data::runtime::{ErrorCode, FieldRef, HostError, HostResult, RecordMove};
 use om_data::specs::SortSpec;
 use om_layout::ObjectKind;
 
-use super::super::window::{Cells, PreparedDraft, RelatedDraft};
+use super::super::window::{Cells, PreparedDraft, RelatedDraft, RelatedSelfPreview};
 use super::super::PortalRow;
 use super::writes::cell_of;
-use super::{data_error, note_failure, Act, WorkerHost};
+use super::{data_error, note_failure, Act, WorkerHost, BEGUN_RECORD};
 use crate::scripting::PortalIdentity as Row;
 
 /// A portal on the window's layout.
@@ -1197,6 +1203,8 @@ impl WorkerHost<'_> {
                     begun: None,
                     matched: false,
                     creation_parent: None,
+                    first_related_key: None,
+                    related_self: None,
                     deleted: true,
                     saved: BTreeMap::new(),
                     prepared: None,
@@ -1260,9 +1268,10 @@ impl WorkerHost<'_> {
         table: u64,
         cell: u64,
         text: String,
+        direct_set_field: bool,
     ) -> HostResult {
         let target = self.related_target(occurrence)?;
-        self.set_related_target(target, occurrence, table, cell, text)
+        self.set_related_target(target, occurrence, table, cell, text, direct_set_field)
     }
 
     pub(super) fn set_related_target(
@@ -1272,15 +1281,39 @@ impl WorkerHost<'_> {
         table: u64,
         cell: u64,
         text: String,
+        direct_set_field: bool,
     ) -> HostResult {
         let value = (!text.is_empty()).then_some(text);
         match target {
             Target::Draft(i) => {
-                self.s.file.window.state.uncommitted.related[i]
-                    .cells
-                    .insert(cell, value);
+                let draft = &self.s.file.window.state.uncommitted.related[i];
+                if let Some(key) = draft.first_related_key {
+                    if !direct_set_field || key == cell {
+                        return Err(ErrorCode::UNAVAILABLE.into());
+                    }
+                    let mut cells = draft.cells.clone();
+                    cells.insert(cell, value);
+                    let id = draft.prepared.as_ref().map(|prepared| prepared.id);
+                    let (_, _, position) = self
+                        .first_related_match_fields(occurrence, table)
+                        .filter(|(_, match_key, _)| *match_key == key)
+                        .ok_or(ErrorCode::UNAVAILABLE)?;
+                    let prepared = self.preview_first_related(table, &cells, id, position)?;
+                    let draft = &mut self.s.file.window.state.uncommitted.related[i];
+                    draft.cells = cells;
+                    draft.prepared = Some(prepared);
+                } else {
+                    self.s.file.window.state.uncommitted.related[i]
+                        .cells
+                        .insert(cell, value);
+                }
             }
             Target::Record(record) => {
+                let related_self = if direct_set_field {
+                    self.preview_related_self(occurrence, table, record, cell, &value)?
+                } else {
+                    None
+                };
                 // Mixed recovery needs the row accepted before
                 // this first script edit, not a read made while saving later.
                 let capture = self.s.file.window.state.uncommitted.session
@@ -1323,6 +1356,14 @@ impl WorkerHost<'_> {
                 {
                     Some(draft) => {
                         draft.cells.insert(cell, value);
+                        if related_self.is_some()
+                            || draft
+                                .related_self
+                                .as_ref()
+                                .is_some_and(|known| known.cell == cell)
+                        {
+                            draft.related_self = related_self;
+                        }
                         // The script's value replaces what the user typed.
                         draft.typed.remove(&cell);
                     }
@@ -1339,6 +1380,8 @@ impl WorkerHost<'_> {
                         begun: None,
                         matched: false,
                         creation_parent: None,
+                        first_related_key: None,
+                        related_self,
                         deleted: false,
                         saved: BTreeMap::new(),
                         prepared: None,
@@ -1347,7 +1390,15 @@ impl WorkerHost<'_> {
             }
             Target::Create => {
                 let CreationMatch { mut cells, parent } = self.match_cells(occurrence)?;
+                let first_related = if direct_set_field {
+                    self.first_related_key(occurrence, table, &cells, cell)
+                } else {
+                    None
+                };
                 cells.insert(cell, value);
+                let prepared = first_related
+                    .map(|(_, position)| self.preview_first_related(table, &cells, None, position))
+                    .transpose()?;
                 // An active creation row is now the new record's (a new
                 // creation row follows it).
                 self.s
@@ -1369,9 +1420,11 @@ impl WorkerHost<'_> {
                         begun: None,
                         matched: true,
                         creation_parent: parent,
+                        first_related_key: first_related.map(|(key, _)| key),
+                        related_self: None,
                         deleted: false,
                         saved: BTreeMap::new(),
-                        prepared: None,
+                        prepared,
                     });
                 // A clicked creation row, active by its identity, is the new
                 // record's row now: later steps reach that record.
@@ -1389,6 +1442,286 @@ impl WorkerHost<'_> {
         *self.s.file.cache.borrow_mut() = Default::default();
         self.s.file.window.touch();
         Ok(())
+    }
+
+    /// Evaluate the measured replacing Self assignment to the stored match
+    /// after an intermediate Commit. Preview through the same record rules
+    /// that will write it, leaving the proposed cell untouched for Commit.
+    fn preview_related_self(
+        &mut self,
+        occurrence: u64,
+        table: u64,
+        record: u64,
+        cell: u64,
+        input: &Option<String>,
+    ) -> HostResult<Option<RelatedSelfPreview>> {
+        let Some(definitions) = self.schema().and_then(|schema| schema.table(table)) else {
+            return Ok(None);
+        };
+        if definitions.fields.get(&cell).and_then(related_number_self)
+            != Some(RelatedNumberSelf::Replace)
+            || definitions.fields.values().any(stores_record_number)
+            || !self.has_stored_related_parent()
+            || self.first_related_match_fields(occurrence, table).is_none()
+            || self.p().local_path().is_none()
+        {
+            return Ok(None);
+        }
+        let layout = self
+            .s
+            .file
+            .window
+            .state
+            .layout
+            .ok_or(ErrorCode::UNAVAILABLE)?;
+        let write = om_data::ScriptWrite {
+            layout,
+            table: Some(table),
+            record: Some(i64::try_from(record).map_err(|_| ErrorCode::RECORD_MISSING)?),
+            cells: Cells::from([(cell, input.clone())]),
+            privilege_set: self.current_set_name(),
+            single_field_step: true,
+            ..Default::default()
+        };
+        let pending = self
+            .p()
+            .compute_pending(&write, &[])
+            .map_err(|error| self.failed(error))?
+            .filter(|pending| pending.proposed_self.contains(&cell))
+            .ok_or(ErrorCode::UNAVAILABLE)?;
+        let value = pending
+            .values
+            .get(&cell)
+            .cloned()
+            .ok_or(ErrorCode::UNAVAILABLE)?;
+        Ok(Some(RelatedSelfPreview {
+            cell,
+            input: input.clone(),
+            value,
+        }))
+    }
+
+    /// The match fields of the measured local, direct unsorted equality
+    /// relationship. The child must belong to a different table in this
+    /// file. The copied global value wins even over the measured replacing
+    /// UUID default: the provider keeps explicit cells on a scripted create.
+    fn first_related_match_fields(
+        &self,
+        occurrence: u64,
+        table: u64,
+    ) -> Option<(u64, u64, RecordNumber)> {
+        let schema = self.schema()?;
+        let current = self.s.file.occurrence?;
+        let own = schema.table_of(current)?;
+        if table == own.id
+            || schema.table_file(table).unwrap_or(0) != 0
+            || schema.table_file(own.id).unwrap_or(0) != 0
+            || self.limits_viewing(table)
+        {
+            return None;
+        }
+        let path = schema.path(current, occurrence)?;
+        let [hop] = path.as_slice() else {
+            return None;
+        };
+        let [predicate] = hop.predicates.as_slice() else {
+            return None;
+        };
+        if hop.sorted() || predicate.op != JoinOp::Equal || !creates_through(schema, hop) {
+            return None;
+        }
+        let from = schema.field(current, predicate.left)?;
+        let to = schema.field(occurrence, predicate.right)?;
+        if from.class != FieldClass::Data
+            || from.value_type != om_data::calc::ValueType::Text
+            || from.options != 0x0001_0000
+            || from.repetitions != 1
+            || to.class != FieldClass::Data
+            || to.value_type != om_data::calc::ValueType::Text
+            || to.global
+            || to.repetitions != 1
+        {
+            return None;
+        }
+        let replacing_uuid = to.options == 0xa000_0088
+            && from.validation_options == 0
+            && matches!(to.validation_options, 0 | COPIED_UUID_KEY_VALIDATION)
+            && to
+                .auto_enter
+                .as_ref()
+                .is_some_and(|formula| matches!(formula.polish, Expr::Get(selector::UUID)));
+        let plain_key = to.auto_enter.is_none() && to.options & 0x0000_07ff == 0;
+        if !plain_key && !replacing_uuid {
+            return None;
+        }
+        let fields = &schema.table(table)?.fields;
+        let has_position = fields.values().any(|field| {
+            stores_record_number(field)
+                && (!replacing_uuid
+                    || field.options == 0x8008_0000 && field.validation_options == 0)
+        });
+        // The UUID key also occurs in the separately measured indexed
+        // Number default case, with no stored Position on the table.
+        let has_self_default = replacing_uuid
+            && !fields.values().any(stores_record_number)
+            && fields
+                .values()
+                .any(|field| related_number_self(field).is_some());
+        // The validated UUID key was measured with both indexed fields.
+        // The normal write path still checks the copied key's validation.
+        let supported = if replacing_uuid && to.validation_options != 0 {
+            has_position
+                && fields
+                    .values()
+                    .any(|field| related_number_self(field) == Some(RelatedNumberSelf::KeepIndexed))
+        } else {
+            has_position || has_self_default
+        };
+        let position = if replacing_uuid {
+            RecordNumber::LocalFirstRelatedUuid { key: to.id }
+        } else {
+            RecordNumber::LocalFirstRelated
+        };
+        supported.then_some((from.id, to.id, position))
+    }
+
+    fn has_stored_related_parent(&self) -> bool {
+        let state = &self.s.file.window.state;
+        state.record.is_some()
+            && state.portal.is_none()
+            && !state.uncommitted.new
+            && state.drafts.is_empty()
+            && state.uncommitted.cells.is_empty()
+            && self.s.file.transaction.is_none()
+    }
+
+    /// Prepare the early read only for the measured first related creation.
+    fn first_related_key(
+        &mut self,
+        occurrence: u64,
+        table: u64,
+        cells: &Cells,
+        target: u64,
+    ) -> Option<(u64, RecordNumber)> {
+        let (_, key, position) = self.first_related_match_fields(occurrence, table)?;
+        if target == key
+            || !self.has_stored_related_parent()
+            || !self.s.file.window.state.uncommitted.related.is_empty()
+        {
+            return None;
+        }
+        let value = cells.get(&key)?.as_ref()?;
+        if value.is_empty() || value.contains(['\r', '\n']) {
+            return None;
+        }
+        self.p().local_path().is_some().then_some((key, position))
+    }
+
+    fn preview_first_related(
+        &mut self,
+        table: u64,
+        cells: &Cells,
+        prepared: Option<om_data::PreparedId>,
+        position: RecordNumber,
+    ) -> HostResult<PreparedDraft> {
+        let layout = self
+            .s
+            .file
+            .window
+            .state
+            .layout
+            .ok_or(ErrorCode::UNAVAILABLE)?;
+        let write = om_data::ScriptWrite {
+            layout,
+            table: Some(table),
+            cells: cells.clone(),
+            privilege_set: self.current_set_name(),
+            record_number: Some(position),
+            prepared,
+            ..Default::default()
+        };
+        let preview = self
+            .p()
+            .preview_new_record(&write)
+            .map_err(|error| self.failed(error))?
+            .ok_or(ErrorCode::UNAVAILABLE)?;
+        Ok(PreparedDraft {
+            id: preview.id,
+            values: preview.values,
+            over: cells.clone(),
+            context: None,
+        })
+    }
+
+    /// Pending first match for the window's current record. The current
+    /// global key still has to match the one copied into the draft.
+    pub(super) fn first_related_draft(
+        &self,
+        occurrence: u64,
+        record: u64,
+        related: u64,
+    ) -> Option<usize> {
+        let state = &self.s.file.window.state;
+        if Some(occurrence) != self.s.file.occurrence || state.record != i64::try_from(record).ok()
+        {
+            return None;
+        }
+        let (index, draft) = state
+            .uncommitted
+            .related
+            .iter()
+            .enumerate()
+            .find(|(_, draft)| {
+                draft.occurrence == related
+                    && draft.first_related_key.is_some()
+                    && draft.record.is_none()
+                    && !draft.deleted
+            })?;
+        let (source, key, _) = self.first_related_match_fields(related, draft.table)?;
+        if draft.first_related_key != Some(key) {
+            return None;
+        }
+        let value = draft.cells.get(&key)?.as_deref()?;
+        let global = self
+            .file(|f| f.field_value(occurrence, record, source, 1))?
+            .ok()?;
+        matches!(global, Value::Text(text) if text.as_str() == value).then_some(index)
+    }
+
+    pub(super) fn related_creation_numbers(&mut self) -> BTreeMap<usize, RecordNumber> {
+        let mut numbers = self.begun_record_numbers();
+        let state = &self.s.file.window.state;
+        let [draft] = state.uncommitted.related.as_slice() else {
+            return numbers;
+        };
+        if draft.first_related_key.is_none()
+            || !self.has_stored_related_parent()
+            || !draft
+                .prepared
+                .as_ref()
+                .is_some_and(|prepared| prepared.over == draft.cells)
+        {
+            return numbers;
+        }
+        if let Some((occurrence, record)) = self
+            .s
+            .file
+            .occurrence
+            .zip(state.record.and_then(|record| u64::try_from(record).ok()))
+        {
+            if self.first_related_draft(occurrence, record, draft.occurrence) == Some(0)
+                && self
+                    .file(|f| f.related_records(occurrence, record, draft.occurrence))
+                    .is_some_and(|rows| rows.is_ok_and(|rows| rows.is_empty()))
+            {
+                if let Some((_, _, position)) =
+                    self.first_related_match_fields(draft.occurrence, draft.table)
+                {
+                    numbers.insert(0, position);
+                }
+            }
+        }
+        numbers
     }
 
     /// The draft cell of the target resolved before an Insert upload.
@@ -1487,6 +1820,12 @@ impl WorkerHost<'_> {
             .first()
             .copied();
         if let Some(first) = first {
+            if let Some(index) = first
+                .checked_sub(BEGUN_RECORD)
+                .and_then(|index| usize::try_from(index).ok())
+            {
+                return Ok(Target::Draft(index));
+            }
             return Ok(Target::Record(first));
         }
         let pending = self
@@ -1497,7 +1836,9 @@ impl WorkerHost<'_> {
             .uncommitted
             .related
             .iter()
-            .position(|d| d.occurrence == occurrence && d.record.is_none());
+            .position(|d| {
+                d.occurrence == occurrence && d.record.is_none() && d.first_related_key.is_none()
+            });
         Ok(pending.map_or(Target::Create, Target::Draft))
     }
 
@@ -1556,7 +1897,7 @@ impl WorkerHost<'_> {
     ///
     /// Any other record has none, which refuses only a write whose formula
     /// evaluates the selector.
-    pub(super) fn begun_record_numbers(&mut self) -> BTreeMap<usize, u64> {
+    fn begun_record_numbers(&mut self) -> BTreeMap<usize, RecordNumber> {
         let mut numbers = BTreeMap::new();
         let open = &self.s.file.window.state.uncommitted;
         if open.new {
@@ -1581,7 +1922,7 @@ impl WorkerHost<'_> {
             .collect();
         for (index, occurrence, table) in begun {
             if let Some(number) = self.begun_record_number(occurrence, table) {
-                numbers.insert(index, number);
+                numbers.insert(index, RecordNumber::Window(number));
             }
         }
         numbers
@@ -1758,7 +2099,7 @@ impl WorkerHost<'_> {
         &mut self,
         index: usize,
         layout: u32,
-        numbers: &BTreeMap<usize, u64>,
+        numbers: &BTreeMap<usize, RecordNumber>,
         set: &Option<String>,
     ) -> bool {
         let context = self.pending_records(index);
@@ -1779,10 +2120,7 @@ impl WorkerHost<'_> {
             typed: draft.typed.clone(),
             skip_validation: false,
             privilege_set: set.clone(),
-            record_number: numbers
-                .get(&index)
-                .copied()
-                .map(om_data::rules::RecordNumber::Window),
+            record_number: numbers.get(&index).copied(),
             prepared: draft.prepared.as_ref().map(|prepared| prepared.id),
             single_field_step: false,
         };

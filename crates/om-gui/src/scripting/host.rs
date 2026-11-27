@@ -1513,7 +1513,7 @@ impl<'a> WorkerHost<'a> {
         // match fields of the rows begun in portals.
         let unmatched = self.s.file.window.state.uncommitted.related.clone();
         self.match_begun_records()?;
-        let numbers = self.begun_record_numbers();
+        let numbers = self.related_creation_numbers();
         let ids = self.layout_field_ids();
         let table = self.s.file.window.table;
         // Deleted related records' trigger field is read before they go.
@@ -2318,17 +2318,17 @@ impl<'a> WorkerHost<'a> {
     /// Field `field` (repetition `repetition`) of occurrence `occurrence`
     /// of `record` when it is a record a related draft is creating
     /// ([`BEGUN_RECORD`]): what was typed or set into it, else what its
-    /// rules enter as previewed for an ordinary commit
-    /// (`RelatedDraft::prepared`, #1047), read in the field's type; empty
-    /// for a field neither gives (its auto-entry is not known before then);
-    /// `None` for any other record. It never reaches the provider.
+    /// rules enter as previewed (`RelatedDraft::prepared`), read in the
+    /// field's type. A scripted first match sees its preview as soon as
+    /// Set Field succeeds. `None` for any other record; the temporary
+    /// record number never reaches the provider.
     fn begun_value(
         &self,
         occurrence: u64,
         record: u64,
         field: u64,
         repetition: u32,
-    ) -> Option<Value> {
+    ) -> Option<Result<Value, CalcError>> {
         if record == NO_RECORD {
             return None;
         }
@@ -2341,17 +2341,32 @@ impl<'a> WorkerHost<'a> {
         }
         let def = table.fields.get(&field)?;
         let cell = writes::cell_of(field, repetition.max(1));
-        // What was typed or set, over what its rules entered before an
-        // ordinary commit's OnObjectSave script (#1047).
-        let text = draft
-            .cells
-            .get(&cell)
-            .or_else(|| draft.prepared.as_ref()?.values.get(&cell))
-            .cloned()
-            .flatten()
-            .unwrap_or_default();
+        // A script-created first match has its preview after each Set
+        // Field. When a different edit changed its inputs, computed
+        // cells cannot answer from that old preview.
+        let prepared = draft.prepared.as_ref();
+        let shown = if draft.first_related_key.is_some() {
+            let preview = prepared
+                .filter(|prepared| prepared.over == draft.cells)
+                .and_then(|prepared| prepared.values.get(&cell));
+            let value = preview.or_else(|| draft.cells.get(&cell));
+            if value.is_none()
+                && (def.class != om_data::host::FieldClass::Data || def.auto_enter.is_some())
+            {
+                return Some(Err(CalcError::NOT_SUPPORTED));
+            }
+            value
+        } else {
+            // What was typed or set, over what its rules entered before an
+            // ordinary commit's OnObjectSave script (#1047).
+            draft
+                .cells
+                .get(&cell)
+                .or_else(|| prepared?.values.get(&cell))
+        };
+        let text = shown.and_then(|value| value.as_deref()).unwrap_or_default();
         let cx = Ctx::new(&schema.locale, self.today);
-        Some(stored_value(&text, def.value_type, &cx))
+        Some(Ok(stored_value(text, def.value_type, &cx)))
     }
 
     /// The records with unsaved values, as calculations see them: the
@@ -2460,6 +2475,16 @@ impl<'a> WorkerHost<'a> {
             };
             if let Some(mut values) = self.stored_values(table.id, record) {
                 apply_cells(&mut values, table, &draft.cells, &cx);
+                if let Some(known) = &draft.related_self {
+                    if draft.cells.get(&known.cell) == Some(&known.input)
+                        && !draft.typed.contains(&known.cell)
+                    {
+                        if let Some(field) = table.fields.get(&known.cell) {
+                            let text = known.value.as_deref().unwrap_or_default();
+                            values.set(known.cell, 1, stored_value(text, field.value_type, &cx));
+                        }
+                    }
+                }
                 out.push((table.id, record, Arc::new(values)));
             }
         }
@@ -3589,7 +3614,7 @@ impl CalcHost for WorkerHost<'_> {
         repetition: u32,
     ) -> Result<Value, CalcError> {
         if let Some(value) = self.begun_value(occurrence, record, field, repetition) {
-            return Ok(value);
+            return value;
         }
         if record == NO_RECORD {
             if let Some(criterion) = self.criterion(occurrence, field, repetition) {
@@ -3634,7 +3659,7 @@ impl CalcHost for WorkerHost<'_> {
         repetition: u32,
     ) -> Result<Value, CalcError> {
         if let Some(value) = self.begun_value(occurrence, record, field, repetition) {
-            return Ok(value);
+            return value;
         }
         // Find mode's criterion, as `field_value` reads it.
         if record == NO_RECORD {
@@ -3694,6 +3719,12 @@ impl CalcHost for WorkerHost<'_> {
         ) {
             let open = &self.s.file.window.state.uncommitted;
             records.retain(|r| !open.deletes(table, *r));
+            if records.is_empty() {
+                records.extend(
+                    self.first_related_draft(occurrence, record, related)
+                        .and_then(|index| BEGUN_RECORD.checked_add(index as u64)),
+                );
+            }
         }
         Ok(records)
     }
@@ -5083,15 +5114,11 @@ impl Fields for WorkerHost<'_> {
     }
 
     fn set_field(&mut self, field: FieldRef, value: Value) -> HostResult {
-        self.write_field(field, &value)?;
-        // A step's value is no longer being typed (6.3 O2).
-        if let Ok(name) = self.field_name(field) {
-            let state = &mut self.s.file.window.state;
-            if state.typing.as_deref() == Some(name.as_str()) {
-                state.typing = None;
-            }
-        }
-        Ok(())
+        self.assign_script_field(field, &value, true)
+    }
+
+    fn set_dialog_field(&mut self, field: FieldRef, value: Value) -> HostResult {
+        self.assign_script_field(field, &value, false)
     }
 
     fn set_field_by_name(&mut self, name: &str, value: Value) -> HostResult {
@@ -5101,7 +5128,7 @@ impl Fields for WorkerHost<'_> {
             return self.write_named(&field, text);
         }
         let field = self.field_by_name(name)?;
-        self.write_field(field, &value)
+        self.write_field(field, &value, false)
     }
 
     fn field_by_name(&mut self, name: &str) -> HostResult<FieldRef> {

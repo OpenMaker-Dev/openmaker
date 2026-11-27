@@ -4538,9 +4538,9 @@ fn commit(
         // A record this commit of the transaction deleted is no longer one
         // whose lost upload a commit of it could name.
         for path in &deleted {
-            temp.forget_lost(path, Some(user.txn));
+            temp.forget_lost(path, user.txn);
         }
-        Taken::Stored
+        Taken::Stored { txn: user.txn }
     } else {
         lost
     };

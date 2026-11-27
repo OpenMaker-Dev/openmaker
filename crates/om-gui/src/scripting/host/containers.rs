@@ -407,7 +407,9 @@ impl WorkerHost<'_> {
             .unwrap_or_else(|| container.text.as_str().to_owned());
         let cell = super::writes::cell_of(def.id, 1);
         let replaced = self.related_draft_cell_at(target, table, cell);
-        if let Err(error) = self.set_related_target(target, field.occurrence, table, cell, text) {
+        if let Err(error) =
+            self.set_related_target(target, field.occurrence, table, cell, text, false)
+        {
             if let Some(reference) = &reference {
                 let _ = self.p().adjust_related_container(table, reference, -1);
             }

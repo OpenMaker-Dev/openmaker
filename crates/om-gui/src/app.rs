@@ -10,6 +10,7 @@ use egui::{
     vec2, CornerRadius, Id, Key, KeyboardShortcut, Modifiers, RichText, Ui, ViewportCommand,
 };
 use om_data::found::FindRequest;
+use om_data::layout_move::{Delta, NudgeDirection, NudgeStep};
 use om_data::scripts::save_records::{Format as SaveFormat, SaveRecords};
 use om_data::{DataError, DataProvider, LocalOpen};
 
@@ -18,7 +19,6 @@ use crate::content;
 use crate::content::PartsSent;
 use crate::icons::{self, Icon};
 use crate::layout_bar::{self, LayoutBarContext};
-use crate::layout_canvas::NudgeDirection;
 use crate::layout_setup::{LayoutSetup, LayoutSetupAnswer};
 use crate::licensing::{LicenseAction, LicenseDialog, LicenseKey, LicenseOperation};
 use crate::manage_layouts::{ManageLayouts, ManageLayoutsResult};
@@ -647,6 +647,10 @@ pub(crate) enum Action {
     SetUpLayout(om_data::layout_catalog::LayoutSetupChange),
     /// Layouts > Part Setup...: its dialog, and Part Definition's change.
     PartSetup,
+    /// Insert > Part... (None), or the Part tool used at the layout point
+    /// with this y (in points): Part Definition alone, whose OK adds a part
+    /// as Part Setup's Create does (`PartSetup::creating_alone`).
+    InsertPart(Option<f64>),
     SetPartOptions(om_data::layout_placement::PartOptionsChange),
     ConfirmDeleteLayout,
     CancelDeleteLayout,
@@ -660,7 +664,7 @@ pub(crate) enum Action {
     /// Edit > Select All in Layout mode changes the window's selection.
     SelectAllLayoutObjects,
     /// An arrow key moves the selection in the current layout draft.
-    NudgeLayoutObjects(NudgeDirection),
+    NudgeLayoutObjects(Delta),
     /// Delete or Edit > Clear in Layout mode: delete the selected object,
     /// as a change Save Layout stores.
     DeleteLayoutObject,
@@ -1372,13 +1376,24 @@ impl OpenMakerApp {
     /// Sends a change of the layout's parts from this window, holding its
     /// canvas until the host answers and the layout is read again
     /// (`LayoutWorkspace::hold_parts`).
+    /// A request the worker does not take holds nothing, and the dialog
+    /// that sent it stops waiting: no answer will come.
     fn send_parts(&mut self, ctx: &egui::Context, sent: PartsSent) {
-        self.w.layout_workspace.hold_parts(sent.clone());
-        let request = match sent {
-            PartsSent::Parts(change) => Request::SetLayoutParts(change),
-            PartsSent::Options(change) => Request::SetPartOptions(change),
+        let request = match &sent {
+            PartsSent::Parts(change) => Request::SetLayoutParts(change.clone()),
+            PartsSent::Options(change) => Request::SetPartOptions(*change),
         };
-        self.request(ctx, request);
+        if self.enqueue_request(ctx, request) {
+            self.w.layout_workspace.hold_parts(sent);
+            return;
+        }
+        let window = self.w.id;
+        if let Some(dialog) = self.part_setup.as_mut().filter(|d| d.window == window) {
+            match &sent {
+                PartsSent::Parts(change) => dialog.parts_answered(change, None),
+                PartsSent::Options(change) => dialog.answered(change, None),
+            };
+        }
     }
 
     /// After the host answers a change Part Setup or a part boundary sent:
@@ -1967,6 +1982,7 @@ impl OpenMakerApp {
                     !self.w.layout_workspace.saving
                         && self.w.layout_workspace.selection_count(session) > 0
                 }),
+            insert_part: self.can_insert_part(),
             layout_arrange: match self.w.session.as_ref() {
                 Some(session)
                     if self.w.mode == Mode::Layout
@@ -2926,6 +2942,28 @@ impl OpenMakerApp {
             self.w
                 .layout_workspace
                 .show_portal_setup(&ctx, self.w.calcs.schema().cloned(), own);
+            self.w.layout_workspace.show_web_viewer_setup(
+                &ctx,
+                self.w.calcs.schema().cloned(),
+                own,
+            );
+            // Changes another client's deletion made impossible to save
+            // stay as unsaved changes (closing and quitting wait for Save
+            // or Revert Layout); the window says why they cannot be saved.
+            // After an alert already shown, on a later frame.
+            if self.error.is_none() && self.w.layout_workspace.take_orphaned_drafts() {
+                self.error = Some(
+                    "Another user deleted objects of this layout that you had changed. Your \
+                     changes to them cannot be saved; choose Revert Layout to discard them."
+                        .into(),
+                );
+            }
+            // The Part tool, single use as the Field tool is: Part
+            // Definition opens, and the tool goes back to Selection.
+            if let Some(at) = self.w.layout_workspace.take_part_tool() {
+                self.w.tool = LayoutTool::Selection;
+                actions.push(Action::InsertPart(Some(at)));
+            }
             // A part boundary dragged with the Selection tool goes to the
             // host at once, as Part Setup's changes do.
             if let Some(resize) = self.w.layout_workspace.take_part_resize() {
@@ -4048,7 +4086,16 @@ impl OpenMakerApp {
                         {
                             Action::EditLayoutDraft(DraftEdit::Undo)
                         }
-                        _ if layout_keys && has_selection && modifiers.is_none() => {
+                        Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown
+                            if layout_keys && has_selection =>
+                        {
+                            let step = match *modifiers {
+                                Modifiers::NONE => NudgeStep::OnePoint,
+                                Modifiers::SHIFT => NudgeStep::TenPoints,
+                                #[cfg(target_os = "macos")]
+                                Modifiers::ALT => NudgeStep::OnePoint,
+                                _ => return true,
+                            };
                             let direction = match key {
                                 Key::ArrowLeft => NudgeDirection::Left,
                                 Key::ArrowRight => NudgeDirection::Right,
@@ -4056,7 +4103,7 @@ impl OpenMakerApp {
                                 Key::ArrowDown => NudgeDirection::Down,
                                 _ => return true,
                             };
-                            Action::NudgeLayoutObjects(direction)
+                            Action::NudgeLayoutObjects(direction.delta(step))
                         }
                         _ => return true,
                     };
@@ -5445,7 +5492,7 @@ impl OpenMakerApp {
 
             // A change with the host: Part Setup would read the layout as
             // it was.
-            Action::PartSetup if self.w.layout_workspace.saving => {
+            Action::PartSetup | Action::InsertPart(_) if self.w.layout_workspace.saving => {
                 self.error = Some(
                     "This layout's last change is still being saved; try again when it is.".into(),
                 );
@@ -5461,6 +5508,7 @@ impl OpenMakerApp {
             | Action::DeleteLayout(_)
             | Action::LayoutSetup
             | Action::PartSetup
+            | Action::InsertPart(_)
                 if self.w.layout_workspace.has_changes() =>
             {
                 self.error = Some(LAYOUT_UNSAVED.into());
@@ -5487,6 +5535,23 @@ impl OpenMakerApp {
             Action::CancelDeleteLayout => self.w.delete_layout = None,
             Action::LayoutSetup => self.open_layout_setup(),
             Action::PartSetup => self.open_part_setup(),
+            Action::InsertPart(at) => {
+                // Not over a Part Setup already open, whose request may be
+                // with the host.
+                if self.w.mode != Mode::Layout
+                    || !self.design_allowed()
+                    || self.part_setup.is_some()
+                {
+                    return;
+                }
+                self.open_part_setup();
+                if let Some(dialog) = self.part_setup.take() {
+                    match dialog.creating_alone(at) {
+                        Ok(dialog) => self.part_setup = Some(dialog),
+                        Err(refusal) => self.error = Some(refusal.into()),
+                    }
+                }
+            }
             Action::SetPartOptions(change) => self.send_parts(ctx, PartsSent::Options(change)),
             Action::SetUpLayout(change) => self.request(ctx, Request::LayoutSetup(change)),
             Action::ConfirmDeleteLayout => {
@@ -5547,10 +5612,10 @@ impl OpenMakerApp {
                     ctx.request_repaint();
                 }
             }
-            Action::NudgeLayoutObjects(direction) => {
+            Action::NudgeLayoutObjects(delta) => {
                 if self.layout_selection_session(ctx).is_some() {
                     let session = self.w.session.as_ref().expect("checked layout");
-                    self.w.layout_workspace.nudge_selection(session, direction);
+                    self.w.layout_workspace.nudge_selection(session, delta);
                     ctx.request_repaint();
                 }
             }
@@ -6303,6 +6368,10 @@ impl OpenMakerApp {
             self.save_layout_portal(ctx, new_portal);
             return;
         }
+        if let Some(viewer) = self.w.layout_workspace.new_web_viewer().cloned() {
+            self.save_layout_web_viewer(ctx, viewer);
+            return;
+        }
         if let Some(new_text) = self.w.layout_workspace.new_text().cloned() {
             self.save_layout_text(ctx, new_text);
             return;
@@ -6498,6 +6567,44 @@ impl OpenMakerApp {
     /// Save Layout with a new portal: the records, rows and fields Portal
     /// Setup and Add Fields to Portal set, at the revision of the layout it
     /// was drawn on.
+    fn save_layout_web_viewer(
+        &mut self,
+        ctx: &egui::Context,
+        viewer: crate::layout_canvas::NewWebViewer,
+    ) {
+        let Some(setup) = viewer.setup.as_ref() else {
+            self.error = Some(
+                "Set the web viewer's address in Web Viewer Setup, then save the layout.".into(),
+            );
+            return;
+        };
+        let Some(expected) = viewer.revision else {
+            self.error = Some(
+                "This layout cannot be saved here: the window does not know which version of \
+                 it is shown."
+                    .into(),
+            );
+            return;
+        };
+        let Some(layout) = self.w.session.as_ref().and_then(|session| session.layout) else {
+            self.error = Some("The layout has not loaded yet; save it again when it has.".into());
+            return;
+        };
+        self.request_layout_save(
+            ctx,
+            Request::PlaceLayoutWebViewer(om_data::layout_placement::LayoutWebViewerPlacement {
+                layout,
+                viewer: om_data::layout_placement::WebViewerPlacement {
+                    frame: viewer.frame(),
+                    flags: setup.flags,
+                    formatted: setup.formatted.clone(),
+                    polish: setup.polish.clone(),
+                },
+                expected,
+            }),
+        );
+    }
+
     fn save_layout_portal(&mut self, ctx: &egui::Context, portal: crate::layout_canvas::NewPortal) {
         let Some(setup) = portal.setup.as_ref() else {
             self.error = Some(
@@ -6597,12 +6704,11 @@ impl OpenMakerApp {
             self.w.layout_workspace.drop_moves();
             if result.is_err() {
                 self.w.layout_workspace.drop_deletions();
-                self.w.layout_workspace.drop_controls();
-                self.w.layout_workspace.drop_words();
             }
         }
         if let Err(err) = &result {
             self.fail(err);
+            self.note_kept_drafts(err);
         }
         if done {
             self.reread_file_layouts(ctx);
@@ -6641,10 +6747,9 @@ impl OpenMakerApp {
     /// The host's answer to Save Layout's control for the first field object
     /// in [`crate::layout_canvas::ControlChanges`], as
     /// [`Self::objects_framed`]: saved, the next object's control (or the
-    /// new object) is sent on the layout as now stored; refused because the
-    /// layout changed (306), every control change is dropped; either way
-    /// every window of the file reads the layout again. Another refusal
-    /// keeps them, to be changed.
+    /// new object) is sent on the layout as now stored; refused, the control
+    /// and text changes are kept (`note_kept_drafts`), and after a 306 every
+    /// window of the file reads the layout again.
     fn control_set(
         &mut self,
         ctx: &egui::Context,
@@ -6655,16 +6760,12 @@ impl OpenMakerApp {
         let sent = controls.revision;
         let object = controls.objects.keys().next().copied();
         let done = layout_change_done(&result);
-        match (&result, object) {
-            (Ok(_), Some(object)) => self.w.layout_workspace.control_sent(object),
-            (Err(_), _) if done => {
-                self.w.layout_workspace.drop_controls();
-                self.w.layout_workspace.drop_words();
-            }
-            _ => {}
+        if let (Ok(_), Some(object)) = (&result, object) {
+            self.w.layout_workspace.control_sent(object);
         }
         if let Err(err) = &result {
             self.fail(err);
+            self.note_kept_drafts(err);
         }
         if done {
             self.reread_file_layouts(ctx);
@@ -6677,8 +6778,8 @@ impl OpenMakerApp {
     /// The host's answer to Save Layout's words for the first text object
     /// in [`crate::layout_canvas::WordChanges`], as [`Self::control_set`]:
     /// saved, the next text's words (or the new object) are sent on the
-    /// layout as now stored; refused because the layout changed (306),
-    /// every retyped text is dropped; another refusal keeps them.
+    /// layout as now stored; refused, the retyped texts are kept, as the
+    /// controls are.
     fn words_set(
         &mut self,
         ctx: &egui::Context,
@@ -6689,13 +6790,12 @@ impl OpenMakerApp {
         let sent = words.revision;
         let object = words.objects.keys().next().copied();
         let done = layout_change_done(&result);
-        match (&result, object) {
-            (Ok(_), Some(object)) => self.w.layout_workspace.words_sent(object),
-            (Err(_), _) if done => self.w.layout_workspace.drop_words(),
-            _ => {}
+        if let (Ok(_), Some(object)) = (&result, object) {
+            self.w.layout_workspace.words_sent(object);
         }
         if let Err(err) = &result {
             self.fail(err);
+            self.note_kept_drafts(err);
         }
         if done {
             self.reread_file_layouts(ctx);
@@ -6719,13 +6819,10 @@ impl OpenMakerApp {
         let done = layout_change_done(&result);
         if done {
             self.w.layout_workspace.drop_deletions();
-            if result.is_err() {
-                self.w.layout_workspace.drop_controls();
-                self.w.layout_workspace.drop_words();
-            }
         }
         if let Err(err) = &result {
             self.fail(err);
+            self.note_kept_drafts(err);
         }
         if done {
             self.reread_file_layouts(ctx);
@@ -6826,6 +6923,39 @@ impl OpenMakerApp {
         ));
     }
 
+    /// Whether Insert > Part... can open Part Definition now: Layout mode
+    /// with design access, the layout read with its revision, no unsaved
+    /// change and nothing with the host, no Part Setup open, and a kind of
+    /// part Part Definition adds that the layout lacks. `InsertPart` checks
+    /// again when it runs.
+    fn can_insert_part(&self) -> bool {
+        let Some(session) = self.w.session.as_ref() else {
+            return false;
+        };
+        let (
+            crate::session::Geometry::Loaded(geometry),
+            crate::session::RenderState::Loaded(document),
+        ) = (&session.geometry, &session.render)
+        else {
+            return false;
+        };
+        self.w.mode == Mode::Layout
+            && self.design_allowed()
+            // As `apply` refuses it: no connection, edits held for a
+            // reconnect, or a script running.
+            && self.w.connection_lost.is_none()
+            && !self.recovery_holds()
+            && !self.script.busy()
+            && session.layout.is_some()
+            && geometry.revision.is_some()
+            && !self.w.layout_workspace.saving
+            && !self.w.layout_workspace.has_changes()
+            && self.part_setup.is_none()
+            && om_data::layout_placement::ADDABLE_PARTS
+                .iter()
+                .any(|kind| !document.layout.parts.iter().any(|p| p.part_type == *kind))
+    }
+
     /// Part Setup over the layout the window shows in Layout mode: its
     /// parts as the window read them, and the fields of the layout's table a
     /// sub-summary may be sorted by.
@@ -6867,6 +6997,7 @@ impl OpenMakerApp {
                 part_type: part.part_type,
                 flags: part.flags,
                 page_break_after: part.page_break_after,
+                height: part.height,
                 sorted_by: part
                     .break_field()
                     .ok()
@@ -6961,6 +7092,23 @@ impl OpenMakerApp {
 
     /// Show an error and stop waiting on whatever the Hosts dialog was doing.
     /// A lost connection shows as the banner instead.
+    /// After Save Layout's refusal: text and control changes are never what
+    /// a refused save drops. They stay unsaved (closing waits for Save or
+    /// Revert Layout), and the alert says so.
+    fn note_kept_drafts(&mut self, err: &DataError) {
+        let workspace = &self.w.layout_workspace;
+        let kept =
+            !workspace.words().objects.is_empty() || !workspace.controls().objects.is_empty();
+        if kept && !err.lost {
+            if let Some(error) = self.error.as_mut() {
+                error.push_str(
+                    " Your unsaved text and control changes are kept; Revert Layout discards \
+                     them.",
+                );
+            }
+        }
+    }
+
     fn fail(&mut self, err: &DataError) {
         if err.lost && self.w.session.is_some() {
             self.lose_connection(err);
@@ -7008,6 +7156,13 @@ impl OpenMakerApp {
                 Err(PollError::Stopped) => {
                     if !self.worker_stopped {
                         self.worker_stopped = true;
+                        // No answer will come for what waits on one.
+                        self.part_setup = None;
+                        // Hidden windows too, which Quit counts.
+                        let ids: Vec<u32> = self.docs().map(|d| d.id).collect();
+                        for id in ids {
+                            self.with_window(id, |app| app.w.layout_workspace.abandon_parts());
+                        }
                         self.fail(&worker::stopped_error());
                     }
                     break;
@@ -7042,12 +7197,22 @@ impl OpenMakerApp {
             .filter(|d| d.file_id == file)
             .map(|d| d.id)
             .collect();
+        // Part Setup waits on an answer that will not come.
+        if self
+            .part_setup
+            .as_ref()
+            .is_some_and(|dialog| ids.contains(&dialog.window))
+        {
+            self.part_setup = None;
+        }
         for id in ids {
             self.with_window(id, |app| {
                 if app.w.file_id != file {
                     return;
                 }
                 app.w.connection_lost = Some(err.message.clone());
+                // Nor does a held parts change get its answer or read.
+                app.w.layout_workspace.abandon_parts();
                 let doc = &mut app.w;
                 let restored = doc
                     .session
@@ -7448,7 +7613,11 @@ impl OpenMakerApp {
                 let Some(session) = self.w.session.as_mut() else {
                     return;
                 };
-                if let Err(err) = session.accept_geometry(layout_id, result) {
+                let read = session.accept_geometry(layout_id, result);
+                let shows = session.layout;
+                // The read a parts change's answer asked for has come.
+                self.w.layout_workspace.layout_read(layout_id, shows);
+                if let Err(err) = read {
                     self.fail(&err);
                 }
             }
@@ -7898,6 +8067,9 @@ impl OpenMakerApp {
             }
             Reply::LayoutButtonPlaced(result) => self.layout_object_placed(ctx, result.map(|_| ())),
             Reply::LayoutPortalPlaced(result) => self.layout_object_placed(ctx, result.map(|_| ())),
+            Reply::LayoutWebViewerPlaced(result) => {
+                self.layout_object_placed(ctx, result.map(|_| ()))
+            }
             Reply::LayoutTextPlaced(result) => self.layout_object_placed(ctx, result.map(|_| ())),
             Reply::ObjectsFramed(result) => self.objects_framed(ctx, result),
             Reply::LayoutWidthSet(result) => self.width_set(ctx, result),
@@ -7913,7 +8085,7 @@ impl OpenMakerApp {
                 let revision = result.as_ref().ok().map(|set| set.revision);
                 self.w.layout_workspace.parts_answered(
                     &PartsSent::Options(sent),
-                    layout_change_done(&result),
+                    layout_may_have_changed(&result),
                     revision,
                 );
                 let window = self.w.id;
@@ -7930,7 +8102,7 @@ impl OpenMakerApp {
                 let revision = result.as_ref().ok().map(|set| set.revision);
                 self.w.layout_workspace.parts_answered(
                     &PartsSent::Parts(sent.clone()),
-                    layout_change_done(&result),
+                    layout_may_have_changed(&result),
                     revision,
                 );
                 let window = self.w.id;
@@ -8020,6 +8192,17 @@ impl eframe::App for OpenMakerApp {
 /// answer (no code): the change is dropped and the layout read again,
 /// showing what the host stores. Another refusal keeps the change, to be
 /// changed.
+/// Whether the layout may have changed with a layout change's answer:
+/// saved, or refused because it changed meanwhile (306). Any other refusal
+/// wrote nothing (the host saves a change whole or not at all), so the
+/// layout is read again at the same revision.
+fn layout_may_have_changed<T>(result: &Result<T, DataError>) -> bool {
+    match result {
+        Ok(_) => true,
+        Err(err) => !err.lost && err.code == Some(om_data::layout_placement::CONFLICT),
+    }
+}
+
 fn layout_change_done<T>(result: &Result<T, DataError>) -> bool {
     match result {
         Ok(_) => true,
@@ -8048,6 +8231,52 @@ mod tests {
         fn remove(&mut self) -> Result<(), DataError> {
             Ok(())
         }
+    }
+
+    /// A parts change the host refuses without writing (no code, or a
+    /// code other than 306) leaves the layout at the revision the window
+    /// shows, so the canvas hold ends with the answer instead of waiting
+    /// for a new revision that never comes (#1048's review); a change that
+    /// may have changed it waits for the read its answer asks for.
+    #[test]
+    fn a_parts_change_refused_without_writing_ends_the_canvas_hold() {
+        use om_data::layout_placement::{PartChange, PartsChange, CONFLICT};
+        let sent = PartsSent::Parts(PartsChange {
+            layout: 1,
+            expected: [1; 32],
+            change: PartChange::Add {
+                part_type: 1,
+                size: 110.0,
+            },
+        });
+        for (result, holds) in [
+            (Err(DataError::new("refused")), false),
+            (Err(DataError::with_code(3, "refused")), false),
+            (Err(DataError::connection_lost("gone")), false),
+            (Err(DataError::with_code(CONFLICT, "changed")), true),
+            (Ok(()), true),
+        ] {
+            let mut workspace = crate::content::LayoutWorkspace::default();
+            workspace.hold_parts(sent.clone());
+            let revision = result.as_ref().ok().map(|()| [2; 32]);
+            workspace.parts_answered(&sent, layout_may_have_changed(&result), revision);
+            assert_eq!(workspace.saving, holds, "{result:?}");
+            // The read the answer asks for ends the hold, at whatever
+            // revision: a 306 whose read could not reach the host's new
+            // catalog shows the old one (#1048's second review).
+            workspace.layout_read(1, Some(1));
+            assert!(!workspace.saving, "{result:?}");
+        }
+        // A window that went to another layout before the answer reads
+        // that one: its read ends the hold too, and another layout's read
+        // while it still shows the changed one does not.
+        let mut workspace = crate::content::LayoutWorkspace::default();
+        workspace.hold_parts(sent.clone());
+        workspace.parts_answered(&sent, true, None);
+        workspace.layout_read(2, Some(1));
+        assert!(workspace.saving);
+        workspace.layout_read(2, Some(2));
+        assert!(!workspace.saving);
     }
 
     #[test]
@@ -9549,8 +9778,16 @@ mod tests {
             events: vec![
                 key(Key::A, Modifiers::COMMAND),
                 key(Key::ArrowRight, Modifiers::NONE),
-                key(Key::ArrowRight, Modifiers::NONE),
+                key(
+                    Key::ArrowRight,
+                    if cfg!(target_os = "macos") {
+                        Modifiers::ALT
+                    } else {
+                        Modifiers::NONE
+                    },
+                ),
                 key(Key::ArrowUp, Modifiers::SHIFT),
+                key(Key::ArrowLeft, Modifiers::CTRL),
             ],
             ..Default::default()
         };
@@ -9576,18 +9813,21 @@ mod tests {
         assert_eq!(app.w.layout_workspace.selection_count(session), 1);
         assert!(app.w.layout_workspace.moved().frames.is_empty());
         assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 50.0);
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().top, 30.0);
 
         ctx.memory_mut(|m| m.surrender_focus(editor));
         frame(&mut app, input(), false);
         let session = app.w.session.as_ref().unwrap();
         assert_eq!(app.w.layout_workspace.selection_count(session), 2);
         assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 52.0);
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().top, 20.0);
         assert_eq!(
             app.w.layout_workspace.moved().frames[&1],
             om_data::GeomRect {
                 left: 22.0,
+                top: 20.0,
                 right: 42.0,
-                ..old_frame
+                bottom: 50.0,
             }
         );
         let undo = key(Key::Z, shortcuts::UNDO.modifiers);
@@ -9600,8 +9840,9 @@ mod tests {
             },
             false,
         );
-        assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 51.0);
-        assert_eq!(app.w.layout_workspace.moved().frames[&1].left, 21.0);
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().top, 30.0);
+        assert_eq!(app.w.layout_workspace.moved().frames[&1].top, 30.0);
+        assert_eq!(app.w.layout_workspace.moved().frames[&1].left, 22.0);
         frame(
             &mut app,
             egui::RawInput {
@@ -9611,7 +9852,9 @@ mod tests {
             false,
         );
         assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 52.0);
+        assert_eq!(app.w.layout_workspace.new_field().unwrap().top, 20.0);
         assert_eq!(app.w.layout_workspace.moved().frames[&1].left, 22.0);
+        assert_eq!(app.w.layout_workspace.moved().frames[&1].top, 20.0);
 
         app.apply(&ctx, Action::RevertLayout);
         assert!(!app.w.layout_workspace.has_changes());
@@ -9630,7 +9873,7 @@ mod tests {
                 actions,
                 [
                     Action::SelectAllLayoutObjects,
-                    Action::NudgeLayoutObjects(NudgeDirection::Right),
+                    Action::NudgeLayoutObjects(Delta { dx: 1.0, dy: 0.0 }),
                     Action::SaveLayout
                 ]
             );
@@ -9677,7 +9920,7 @@ mod tests {
             },
         );
         for _ in 0..2 {
-            app.apply(&ctx, Action::NudgeLayoutObjects(NudgeDirection::Right));
+            app.apply(&ctx, Action::NudgeLayoutObjects(Delta { dx: 1.0, dy: 0.0 }));
         }
         assert_eq!(app.w.layout_workspace.new_field().unwrap().left, 22.0);
         app.apply(&ctx, Action::SaveLayout);

@@ -780,16 +780,30 @@ written. Globals and repeating fields may be present too; Browse edits
 them as described below (globals as session values, later repetitions in
 their own cells). An unstored calculation's option bits are not checked
 but for a lookup's, which would write into it: a stray `0x80`
-(auto-entry.md) leaves the table writable. A stored calculation's unknown
-bits keep it read-only.
+(auto-entry.md) leaves the table writable. In a local file a stored
+calculation with one repetition and no validation follows the ordinary
+stored calculation rules for Number with option word `0x80000080` and
+Text with `0x80000080` or `0xc0000080`. The field definition retains
+the replacement bit and keeps its existing value index. Other unknown
+stored-calculation options keep the table read-only.
+[Number comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204266349),
+[Text comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1133#issuecomment-7204722695)
+
+In a local desktop file, a single-repetition Text field with Data
+enabled, no validation, and absent constant data leaves its new cell
+empty. The measured option words are `0x00000004` and `0xa0000004`.
+Explicit assignments and index maintenance use the ordinary write path.
 
 An ordinary local Number auto-entry calculation can use `Self` as its
 only field input. It reads the proposed value at ordinary New Record in
 an unsorted or sorted local desktop window with a known insertion
-position, or on an explicit write, including an empty value on a clear. A nonempty explicit
-assignment keeps its value when replacement is disabled. This covers
-stored results and new-record previews. Script calculations read the
-auto-entered result of a pending Set Field before Commit. During typing
+position, or on an explicit write, including an empty value on a clear.
+The sorted trial used "Keep records in sorted order" on. OpenMaker
+currently uses the same creation rule for both settings. A nonempty
+explicit assignment keeps its value when replacement is disabled.
+This covers stored results and new-record previews. For supported
+Number `Self` auto-entry, script calculations read the auto-entered
+result of a pending Set Field before Commit. During typing
 in an existing record, calculations keep reading the entered value
 until save. Other creation paths with auto-entry active and unmeasured
 Self formulas refuse an evaluation with error 3. Unrelated edits are
@@ -809,14 +823,16 @@ and hosted use remain outside this support.
 [Open storage comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1060)
 [Secure storage comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1083)
 
-In a local file, a replacing 24-repetition Text auto-enter calculation
-can read the filename of the same occurrence's 24-repetition Container.
-With the measured formula and option word, a new empty record has no
-filename cells, and editing an existing source changes only its matching
-repetition. OpenMaker refuses direct writes into the calculated Text and
-creation with a nonempty source. The deferred-transfer refusal still
-applies to source containers awaiting a transfer.
-[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39)
+In a local file, a replacing Text auto-enter calculation can read the
+filename of the same occurrence's Container when the fields both have
+4, 24 or 25 repetitions. The 4- and 25-repetition cases use an embedded
+source with no validation flags. A new empty record has no filename
+cells, and editing an existing source changes only its matching
+repetition. Direct writes into the calculated Text and creation with
+a nonempty source still refuse. The 24-repetition deferred-transfer
+form permits writes to other fields and refuses writes to the container.
+[24 repetitions](https://github.com/OpenMaker-Dev/openmaker/issues/39)
+[4 and 25 repetitions](https://github.com/OpenMaker-Dev/openmaker/issues/1134#issuecomment-7204266608)
 
 In a local file, ordinary New Record applies a constant, a calculation
 that reads no fields, or a creation serial to a supported
@@ -836,6 +852,31 @@ remain unsupported for global auto-entry. OpenMaker keeps local globals
 in memory for the session. See the native
 observations in [auto-entry.md](re/auto-entry.md#auto-entry-into-global-storage)
 and [#987](https://github.com/OpenMaker-Dev/openmaker/issues/987).
+
+A local single-repetition global Text field with option word
+`0x00010080` and no validation stays writable. The replacement bit and
+any retained calculation are inactive. New Record keeps the current
+session value. The field definition is preserved.
+
+A local single-repetition replacing global Text calculation
+(`0x00010088`) can read one plain global Text field of the same
+occurrence (`0x00010000`). Both fields have zero validation flags. The
+supported `Let` returns that binding or empty Text. Scripted Set Field on
+the input updates the output immediately, including same-value writes
+and clears, with no record opened. Ordinary unsorted New Record reads the
+current input and updates the output at creation. Both values belong to
+the session globals. This scope covers scripted assignments and ordinary
+unsorted New Record in the owning local desktop file.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1138#issuecomment-7204722907)
+
+A local global Text rule of the form
+`Let ( result = Evaluate ( Input ) ; "" )` can use an ordinary Text
+input with no auto-entry or validation. Unrelated edits leave the
+global alone. Scripted unsorted New Record starts with a blank input
+and applies the measured replace or keep rule. Explicit assignments
+to the input refuse with 3. Inputs with defaults and rules that read
+the resulting global remain unsupported.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1057#issuecomment-7209580006)
 
 A calculated global Text field with the measured empty-Self default can
 retain its value or append a literal suffix. Ordinary New Record reads
@@ -1090,6 +1131,12 @@ writable.
 - **A write that doesn't check it is written:** a script's write, for a
   field validated only during data entry (s18), and a related record's
   untyped cells, which the window commits with a script's rules.
+- The measured local scalar Text definition with option word 0 and
+  validation word `0x00000104` also stays writable when the stored
+  one-byte list reference points to an unavailable list. Writes
+  that would check membership return 3. A definition with no reference
+  member remains unsupported.
+  [Native list deletion](https://github.com/OpenMaker-Dev/openmaker/issues/1136#issuecomment-7204267134)
 - **Such lists are not evaluated.** What FileMaker's membership check
   gives for them is not claimed. An auto-entered or validation calculation may read a
 global field of its own table, one repetition and not a container: it
@@ -1158,9 +1205,37 @@ record's place in what the rules read:
   set inserts it immediately after the current row when that row is known.
   Unrelated edits and later re-sorting leave its stored value alone.
   Automatic re-sorting after commit is a separate difference.
+  The stored Number calculation (`0x00080000` or value-indexed
+  `0x80080000`) also gets position 1 when local Set Field creates the
+  first match of a direct, unsorted equality relationship from a plain
+  global Text key to a plain stored Text key. The script can read the
+  position and count the new match before Commit. With the value index,
+  an exact Find for the stored position includes the new record.
+  The measured indexed Position case also supports an indexed Text match
+  key with replacing `Get ( UUID )` (`0xa0000088`, no validation).
+  Related creation uses the copied global as the match value. Direct New
+  Record on the related table still evaluates its UUID default.
+  A first-match case with that UUID key also supports the value-indexed Number default
+  `If ( IsEmpty ( Self ) ; 0 ; Self )` (`0x80000008`, no validation).
+  The related draft shows 0 on creation and keeps a nonempty assignment
+  made before or after an intermediate Commit. This also works with the
+  measured indexed Position. Both stored values can be found after
+  reopen through their indexes. With both indexed fields, a replacing
+  UUID key can validate Always, Not empty and Unique with override
+  disabled (`0x0000041c`). The copied value goes through normal write
+  validation and can be distinct plain text.
+  The measured unindexed, replacing
+  `If ( IsEmpty ( Self ) ; 0 ; Self + 1 )` (`0x00000088`, no validation)
+  also starts at 0 in this relationship when there is no stored Position.
+  An assigned 25 shows and stores
+  26, including when the script commits the new match before assigning
+  the Number. The pending read evaluates the proposed value, and Commit
+  uses that same proposal to avoid applying the increment twice.
+  The parent's record is already stored and otherwise unedited. The
+  matching key and position are checked again at save.
   The same field definition refuses writes
   on hosted files and routed tables. Duplicate Record, portal creation
-  and other creates without the local New Record position refuse with 3
+  and other creates without a supported position refuse with 3
   ([#1011](https://github.com/OpenMaker-Dev/openmaker/issues/1011)).
 - The number is unavailable for a portal that sorts or filters, a sorted
   desktop window without a known insertion position, and edits of stored records.

@@ -24,7 +24,7 @@ use crate::session::{Geometry, Session};
 use crate::theme;
 
 use om_data::layout_selection::{
-    self, Coverage, MarqueeFrame, MarqueeRole, SelectAll, Target as SelectionTarget,
+    self, Coverage, MarqueeFrame, SelectAll, Target as SelectionTarget,
 };
 
 mod history;
@@ -172,6 +172,28 @@ pub(crate) struct NewPortal {
     pub height: f64,
     pub setup: Option<crate::portal_setup::PortalChoice>,
     pub revision: Option<om_data::layout_placement::Revision>,
+}
+
+/// A web viewer being placed with the Web Viewer tool: its frame, dragged
+/// on the canvas, what Web Viewer Setup set for it (`None` until it has),
+/// and the revision of the layout it was drawn on. Nothing is stored until
+/// Save Layout places it (`DataProvider::place_layout_web_viewer`,
+/// authoring operation 28).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NewWebViewer {
+    /// The frame in layout coordinates, whole points.
+    pub left: f64,
+    pub top: f64,
+    pub width: f64,
+    pub height: f64,
+    pub setup: Option<crate::web_viewer_setup::WebViewerChoice>,
+    pub revision: Option<om_data::layout_placement::Revision>,
+}
+
+impl NewWebViewer {
+    pub(crate) fn frame(&self) -> om_layout::Rect {
+        frame(self.left, self.top, self.width, self.height)
+    }
 }
 
 impl NewPortal {
@@ -353,27 +375,6 @@ impl Selection {
     }
 }
 
-/// An unmodified arrow key moves the draft selection by one layout point.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NudgeDirection {
-    Left,
-    Right,
-    Up,
-    Down,
-}
-
-impl NudgeDirection {
-    fn delta(self) -> layout_move::Delta {
-        let (dx, dy) = match self {
-            Self::Left => (-1.0, 0.0),
-            Self::Right => (1.0, 0.0),
-            Self::Up => (0.0, -1.0),
-            Self::Down => (0.0, 1.0),
-        };
-        layout_move::Delta { dx, dy }
-    }
-}
-
 /// Every member starts from the same pointer position, so moving a mixed
 /// stored/draft selection preserves its spacing even at the layout's edges.
 struct SelectionDrag {
@@ -412,6 +413,8 @@ pub(crate) struct CanvasState {
     new_text: Option<NewText>,
     /// The Portal tool's new portal.
     new_portal: Option<NewPortal>,
+    /// The Web Viewer tool's new web viewer.
+    new_web_viewer: Option<NewWebViewer>,
     /// Where a Field or Button tool drag began, in layout coordinates.
     drag_from: Option<Pos2>,
     /// The Button tool finished drawing, or the new button was double
@@ -420,6 +423,9 @@ pub(crate) struct CanvasState {
     /// The Portal tool finished drawing, or the new portal was double
     /// clicked: Portal Setup opens.
     portal_setup: bool,
+    /// The Web Viewer tool finished drawing, or the new viewer was double
+    /// clicked: Web Viewer Setup opens.
+    web_viewer_setup: bool,
     moved: MovedObjects,
     deleted: DeletedObjects,
     controls: ControlChanges,
@@ -434,6 +440,16 @@ pub(crate) struct CanvasState {
     /// height dragged to, for the window to send.
     part_drag: Option<PartDrag>,
     part_resize: Option<PartResize>,
+    /// The Part tool was used on the layout, at this layout point's y (in
+    /// points): Part Definition opens.
+    part_tool: Option<f64>,
+    /// A layout read again no longer has objects that unsaved control or
+    /// text changes were made to; the changes are kept.
+    orphaned_drafts: bool,
+    /// The objects of the layout as last read (kept while it is read
+    /// again): an object is deleted when a read lacks one of them, not when
+    /// a read is older than an object just placed.
+    known_keys: BTreeSet<u64>,
 }
 
 /// The stored part whose boundary began the drag, and the current height.
@@ -454,17 +470,37 @@ pub(crate) struct PartResize {
     pub revision: Option<om_data::layout_placement::Revision>,
 }
 
-/// Whether part boundaries may be dragged, and the active and finished drag.
+/// Whether part boundaries may be dragged, and the active and finished
+/// drag; and whether the Part tool was used.
 struct PartEdges<'a> {
     enabled: bool,
     drag: &'a mut Option<PartDrag>,
     resize: &'a mut Option<PartResize>,
+    tool: &'a mut Option<f64>,
 }
+
+/// The Part tool's button dragged from the status toolbar: dropped on the
+/// layout, it adds a part as a click with the tool does.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PartToolDrag;
 
 impl CanvasState {
     /// A part's height dragged to, since the last call.
     pub(crate) fn take_part_resize(&mut self) -> Option<PartResize> {
         self.part_resize.take()
+    }
+
+    /// Whether a read found unsaved changes to objects the layout no longer
+    /// has since the last call (another client deleted the objects).
+    pub(crate) fn take_orphaned_drafts(&mut self) -> bool {
+        std::mem::take(&mut self.orphaned_drafts)
+    }
+
+    /// Where the Part tool was used on the layout since the last call (a
+    /// click with it, or its button dropped there): the layout point's y,
+    /// in points.
+    pub(crate) fn take_part_tool(&mut self) -> Option<f64> {
+        self.part_tool.take()
     }
 
     /// Whether the layout holds changes not saved yet: a part boundary is
@@ -481,6 +517,7 @@ impl CanvasState {
             || self.new_button.is_some()
             || self.new_text.is_some()
             || self.new_portal.is_some()
+            || self.new_web_viewer.is_some()
     }
 
     /// The layout's new width, not saved yet.
@@ -552,6 +589,19 @@ impl CanvasState {
         self.new_portal.as_mut()
     }
 
+    pub(crate) fn new_web_viewer(&self) -> Option<&NewWebViewer> {
+        self.new_web_viewer.as_ref()
+    }
+
+    pub(crate) fn new_web_viewer_mut(&mut self) -> Option<&mut NewWebViewer> {
+        self.new_web_viewer.as_mut()
+    }
+
+    /// Whether Web Viewer Setup was asked for since the last call.
+    pub(crate) fn take_web_viewer_setup(&mut self) -> bool {
+        std::mem::take(&mut self.web_viewer_setup) && self.new_web_viewer.is_some()
+    }
+
     /// Whether Portal Setup was asked for since the last call.
     pub(crate) fn take_portal_setup(&mut self) -> bool {
         std::mem::take(&mut self.portal_setup) && self.new_portal.is_some()
@@ -571,9 +621,11 @@ impl CanvasState {
         self.new_button = None;
         self.new_text = None;
         self.new_portal = None;
+        self.new_web_viewer = None;
         self.drag_from = None;
         self.button_setup = false;
         self.portal_setup = false;
+        self.web_viewer_setup = false;
     }
 
     /// Open Button Setup for the new button.
@@ -767,6 +819,9 @@ impl CanvasState {
         if let Some(portal) = self.new_portal.as_mut() {
             rebase(&mut portal.revision);
         }
+        if let Some(viewer) = self.new_web_viewer.as_mut() {
+            rebase(&mut viewer.revision);
+        }
     }
 
     #[cfg(test)]
@@ -829,7 +884,7 @@ impl CanvasState {
 
     /// Stage one arrow-key move on the current layout. Like a drag, this
     /// refuses the whole selection if any member cannot be moved.
-    pub(crate) fn nudge_selection(&mut self, session: &Session, direction: NudgeDirection) -> bool {
+    pub(crate) fn nudge_selection(&mut self, session: &Session, delta: layout_move::Delta) -> bool {
         if self.selection_count(session) == 0
             || self.drag.is_some()
             || self.selection_drag.is_some()
@@ -848,8 +903,7 @@ impl CanvasState {
             self.selected.1 = Some(CANNOT_MOVE_SELECTION);
             return false;
         };
-        let Ok(plan) = layout_move::plan(frames.iter().map(|(_, frame)| *frame), direction.delta())
-        else {
+        let Ok(plan) = layout_move::plan(frames.iter().map(|(_, frame)| *frame), delta) else {
             self.selected.1 = Some(CANNOT_MOVE_SELECTION);
             return false;
         };
@@ -1064,6 +1118,7 @@ impl CanvasState {
                 self.drop_controls();
                 self.drop_words();
                 self.drop_width();
+                self.known_keys.clear();
             }
             self.identity = Some((
                 session.target.host.clone(),
@@ -1071,34 +1126,22 @@ impl CanvasState {
                 session.layout,
             ));
             self.geometry = geometry.cloned();
-            // A control change for an object the layout no longer has (another
-            // window deleted it) could never be saved: it goes.
+            // Changes to objects the layout no longer has (another window
+            // or client deleted them) cannot be saved, but they are the
+            // user's: they stay, so Save Layout reports them, Revert Layout
+            // discards them, and closing or quitting waits for one or the
+            // other. A text being typed in such an object is kept as its
+            // change if the words changed, and its editor closes. The window
+            // is told (`take_orphaned_drafts`).
             if let Some(geometry) = &self.geometry {
-                let gone = |key: &u64| !geometry.objects.iter().any(|o| o.key == *key);
-                let controls: Vec<u64> = self
-                    .controls
-                    .objects
-                    .keys()
-                    .filter(|k| gone(k))
-                    .copied()
-                    .collect();
-                let words: Vec<u64> = self
-                    .words
-                    .objects
-                    .keys()
-                    .filter(|k| gone(k))
-                    .copied()
-                    .collect();
-                let retyped = self.retyping.as_ref().is_some_and(|r| gone(&r.key));
-                for key in controls {
-                    self.control_sent(key);
+                let present: BTreeSet<u64> = geometry.objects.iter().map(|o| o.key).collect();
+                let known = std::mem::replace(&mut self.known_keys, present);
+                let gone = |key: &u64| known.contains(key) && !self.known_keys.contains(key);
+                if let Some(done) = self.retyping.take_if(|r| gone(&r.key)) {
+                    keep_words(&mut self.words, done);
                 }
-                for key in words {
-                    self.words_sent(key);
-                }
-                if retyped {
-                    self.retyping = None;
-                }
+                self.orphaned_drafts |=
+                    self.controls.objects.keys().any(gone) || self.words.objects.keys().any(gone);
             }
         }
         if moved || geometry_changed || revisited {
@@ -1149,8 +1192,35 @@ pub(crate) fn show(
             let (design, scroll) = document.design_surface(session);
             zoom::show(ui, ui.available_size() / factor, factor, |ui| {
                 let unsaved = state.unsaved();
-                let visible =
-                    |key| contents.is_none_or(|panels| panels.visible(key, &state.front_panels));
+                let previewed_popovers =
+                    contents
+                        .map(|panels| {
+                            panels.containing_popovers(
+                                state.selected.0.iter().filter_map(|&index| {
+                                    geometry.objects.get(index).map(|o| o.key)
+                                }),
+                            )
+                        })
+                        .unwrap_or_default();
+                let visible = |key| {
+                    contents.is_none_or(|panels| {
+                        panels.visible(key, &state.front_panels, &previewed_popovers)
+                    })
+                };
+                let stack = contents
+                    .filter(|_| !previewed_popovers.is_empty())
+                    .map(|panels| {
+                        let (mut layout, popovers): (Vec<_>, Vec<_>) = (0..geometry.objects.len())
+                            .partition(|&index| {
+                                !panels.in_previewed_popover(
+                                    geometry.objects[index].key,
+                                    &previewed_popovers,
+                                )
+                            });
+                        let first_popover = layout.len();
+                        layout.extend(popovers);
+                        (layout, first_popover)
+                    });
                 let dropped = draw(
                     ui,
                     geometry,
@@ -1166,9 +1236,11 @@ pub(crate) fn show(
                         text: &mut state.new_text,
                         text_editor: &mut state.new_text_editor,
                         portal: &mut state.new_portal,
+                        web_viewer: &mut state.new_web_viewer,
                         drag_from: &mut state.drag_from,
                         setup: &mut state.button_setup,
                         portal_setup: &mut state.portal_setup,
+                        web_viewer_setup: &mut state.web_viewer_setup,
                     },
                     (
                         &mut state.moved,
@@ -1188,10 +1260,14 @@ pub(crate) fn show(
                         enabled: !unsaved && geometry.revision.is_some(),
                         drag: &mut state.part_drag,
                         resize: &mut state.part_resize,
+                        tool: &mut state.part_tool,
                     },
                     // Frozen, the canvas still paints but takes no drag or click.
                     !frozen,
                     &visible,
+                    stack
+                        .as_ref()
+                        .map(|(order, first)| (order.as_slice(), *first)),
                     design.as_ref(),
                     scroll,
                 );
@@ -1223,6 +1299,8 @@ pub(crate) fn show(
                     drag_from: &mut None,
                     setup: &mut false,
                     portal_setup: &mut false,
+                    web_viewer: &mut None,
+                    web_viewer_setup: &mut false,
                 },
                 (
                     &mut MovedObjects::default(),
@@ -1242,9 +1320,11 @@ pub(crate) fn show(
                     enabled: false,
                     drag: &mut None,
                     resize: &mut None,
+                    tool: &mut None,
                 },
                 false,
                 &|_| true,
+                None,
                 None,
                 &mut document.scroll,
             );
@@ -1279,8 +1359,8 @@ struct Texts<'a> {
     stored: &'a dyn Fn(u64) -> Option<String>,
 }
 
-/// What the Field, Button, Text and Portal tools draw: one new object at a
-/// time.
+/// What the Field, Button, Text, Portal and Web Viewer tools draw: one new
+/// object at a time.
 struct New<'a> {
     fields: &'a mut Vec<NewField>,
     field_drag: &'a mut Option<usize>,
@@ -1289,9 +1369,11 @@ struct New<'a> {
     text: &'a mut Option<NewText>,
     text_editor: &'a mut Option<egui::Id>,
     portal: &'a mut Option<NewPortal>,
+    web_viewer: &'a mut Option<NewWebViewer>,
     drag_from: &'a mut Option<Pos2>,
     setup: &'a mut bool,
     portal_setup: &'a mut bool,
+    web_viewer_setup: &'a mut bool,
 }
 
 impl New<'_> {
@@ -1300,6 +1382,7 @@ impl New<'_> {
             self.button.as_ref().map(NewButton::frame),
             self.text.as_ref().map(NewText::frame),
             self.portal.as_ref().map(NewPortal::frame),
+            self.web_viewer.as_ref().map(NewWebViewer::frame),
         ]
         .into_iter()
         .flatten()
@@ -1329,9 +1412,11 @@ fn draw(
     edges: PartEdges<'_>,
     selectable: bool,
     visible: &dyn Fn(u64) -> bool,
+    stack: Option<(&[usize], usize)>,
     design: Option<&crate::document::design::Surface<'_>>,
     scroll_state: &mut crate::document::scroll::Scroll,
 ) -> Option<NewField> {
+    let order = stack.map(|(order, _)| order);
     let mut dropped = None;
     let width = finite_extent(new_width.map_or(geometry.width, |w| w.width));
     let height = finite_extent(geometry.height);
@@ -1360,22 +1445,19 @@ fn draw(
             );
             // Fields accumulate in the draft; other tools keep their existing
             // single unfinished-object setup until Save Layout.
+            // The tool draws when no other tool's new object waits.
+            let waiting = [
+                (LayoutTool::Field, !new.fields.is_empty()),
+                (LayoutTool::Button, new.button.is_some()),
+                (LayoutTool::Text, new.text.is_some()),
+                (LayoutTool::Portal, new.portal.is_some()),
+                (LayoutTool::WebViewer, new.web_viewer.is_some()),
+            ];
             let drawing = selectable
-                && match tool {
-                    LayoutTool::Field => {
-                        new.button.is_none() && new.text.is_none() && new.portal.is_none()
-                    }
-                    LayoutTool::Button => {
-                        new.fields.is_empty() && new.text.is_none() && new.portal.is_none()
-                    }
-                    LayoutTool::Text => {
-                        new.fields.is_empty() && new.button.is_none() && new.portal.is_none()
-                    }
-                    LayoutTool::Portal => {
-                        new.fields.is_empty() && new.button.is_none() && new.text.is_none()
-                    }
-                    _ => false,
-                };
+                && waiting.iter().any(|(drawer, _)| *drawer == tool)
+                && !waiting
+                    .iter()
+                    .any(|(drawer, waits)| *drawer != tool && *waits);
             let selection_tool = selectable && tool == LayoutTool::Selection;
             let (area, background) = ui.allocate_exact_size(
                 size,
@@ -1410,7 +1492,12 @@ fn draw(
                     Sense::click_and_drag(),
                 )
             });
-            if selectable && new.button.is_none() && new.text.is_none() && new.portal.is_none() {
+            if selectable
+                && new.button.is_none()
+                && new.text.is_none()
+                && new.portal.is_none()
+                && new.web_viewer.is_none()
+            {
                 if let Some(payload) = incoming {
                     if let Some(pointer) = pointer
                         .filter(|point| surface.contains(*point) && ui.clip_rect().contains(*point))
@@ -1433,6 +1520,24 @@ fn draw(
                             });
                         }
                     }
+                }
+            }
+            // The Part tool's button dropped on the layout, as Claris
+            // documents it ("drag the Part tool ... to the layout"), or a
+            // click on the layout with the tool chosen (OpenMaker's): Part
+            // Definition opens for the point, which may be below the parts,
+            // where FileMaker Pro 26.1.1 adds a part reaching down to it.
+            // Also on a frozen canvas, where the window refuses it with the
+            // reason.
+            let on_layout = pointer.filter(|point| {
+                surface.x_range().contains(point.x)
+                    && area.contains(*point)
+                    && ui.clip_rect().contains(*point)
+            });
+            let dropped_tool = background.dnd_release_payload::<PartToolDrag>().is_some();
+            if let Some(point) = on_layout {
+                if dropped_tool || (tool == LayoutTool::Part && background.clicked()) {
+                    *edges.tool = Some(f64::from(point.y - origin.y));
                 }
             }
             let painter = ui.painter().clone();
@@ -1603,6 +1708,16 @@ fn draw(
                                     revision,
                                     focus: true,
                                 });
+                            } else if tool == LayoutTool::WebViewer {
+                                let setup = new.web_viewer.take().and_then(|v| v.setup);
+                                *new.web_viewer = Some(NewWebViewer {
+                                    left,
+                                    top,
+                                    width,
+                                    height,
+                                    setup,
+                                    revision,
+                                });
                             } else if tool == LayoutTool::Portal {
                                 let setup = new.portal.take().and_then(|p| p.setup);
                                 *new.portal = Some(NewPortal {
@@ -1663,6 +1778,13 @@ fn draw(
                     }
                     if drawn && tool == LayoutTool::Portal {
                         *new.portal_setup = true;
+                    }
+                    // Also when the drag ended on an empty frame after drawing
+                    // one: the viewer drawn last waits for its setup.
+                    if tool == LayoutTool::WebViewer
+                        && (drawn || new.web_viewer.as_ref().is_some_and(|v| v.setup.is_none()))
+                    {
+                        *new.web_viewer_setup = true;
                     }
                 }
                 // A click with the Text tool starts a text where it is.
@@ -1738,7 +1860,7 @@ fn draw(
                         .filter(|&point| surface.contains(point))
                         .map(|point| point - origin.to_vec2())
                         .filter(|&point| {
-                            hit_test(geometry, shown, point).is_none() && !new.covers(point)
+                            hit_test(geometry, order, shown, point).is_none() && !new.covers(point)
                         });
                 }
                 if let Some(from) = *box_from {
@@ -1801,7 +1923,7 @@ fn draw(
             if let Some(response) = clicked.filter(|_| selection_tool) {
                 let index = response
                     .interact_pointer_pos()
-                    .and_then(|point| hit_test(geometry, shown, point - origin.to_vec2()));
+                    .and_then(|point| hit_test(geometry, order, shown, point - origin.to_vec2()));
                 selected.click(index, ui.input(|i| i.modifiers.shift));
             }
 
@@ -1814,7 +1936,9 @@ fn draw(
                     .max_rect(artwork_bounds),
             );
             artwork.set_clip_rect(ui.clip_rect().intersect(artwork_bounds));
-            for (index, object) in geometry.objects.iter().enumerate() {
+            let mut tabs = crate::document::design::TabArtwork::default();
+            for (rank, index) in stacking_order(geometry.objects.len(), order).enumerate() {
+                let object = &geometry.objects[index];
                 let Some(frame) = shown(object) else {
                     continue;
                 };
@@ -1836,6 +1960,7 @@ fn draw(
                     .map(|name| name.find("::").map_or(name, |at| &name[at..]))
                     .unwrap_or(&object.kind_name);
                 let draft_words = texts.words.objects.get(&object.key).map(String::as_str);
+                let tab_selected = selected.2.tab_controls.contains_key(&object.key);
                 let painted = artwork_bounds.intersects(rect)
                     && design.is_some_and(|design| {
                         design.paint_object(
@@ -1844,6 +1969,7 @@ fn draw(
                             rect,
                             field_caption,
                             draft_words,
+                            (visible, &mut tabs, tab_selected),
                         )
                     });
                 if !painted || changed || !artwork_bounds.contains_rect(rect) {
@@ -1853,12 +1979,7 @@ fn draw(
                         painter.rect_stroke(rect, CornerRadius::ZERO, outline, StrokeKind::Inside);
                     }
                 }
-                let tab_label_overlay = design.is_some() && (
-                    selected.2.tab_controls.contains_key(&object.key)
-                    || matches!(object.marquee, MarqueeRole::OnTab(key)
-                        if object.selection == SelectionTarget::Panel && selected.2.tab_controls.contains_key(&key))
-                );
-                if !painted && !tab_label_overlay && rect.width() >= 1.0 && rect.height() >= 1.0 {
+                if !painted && rect.width() >= 1.0 && rect.height() >= 1.0 {
                     let stored_words = (!texts.words.objects.contains_key(&object.key))
                         .then(|| (texts.stored)(object.key))
                         .flatten();
@@ -1880,10 +2001,14 @@ fn draw(
                 // receives pointer input where objects overlap.
                 let hit = hit_rect(rect);
                 let movable = selection_tool && object.movable && object.key != 0;
+                let raised = stack.is_some_and(|(_, first_popover)| rank >= first_popover);
+                // A click-only object can pass drags through to a widget
+                // underneath it on the same layer.
                 let response = ui.interact(
                     hit,
                     ui.scope_id().with(("layout_object", index)),
-                    if movable || (selection_tool && selected.0.len() > 1) {
+                    if (raised && selectable) || movable || (selection_tool && selected.0.len() > 1)
+                    {
                         Sense::click_and_drag()
                     } else if selection_tool {
                         Sense::click()
@@ -1893,6 +2018,7 @@ fn draw(
                 );
                 // Dragging a movable object moves it.
                 if selection_tool
+                    && (!raised || movable)
                     && response.drag_started()
                     && drag.is_none()
                     && selection_drag.is_none()
@@ -1920,7 +2046,9 @@ fn draw(
                 if response.clicked() && selection_tool {
                     let index = response
                         .interact_pointer_pos()
-                        .and_then(|point| hit_test(geometry, shown, point - origin.to_vec2()))
+                        .and_then(|point| {
+                            hit_test(geometry, order, shown, point - origin.to_vec2())
+                        })
                         .or(Some(index));
                     selected.click(index, ui.input(|i| i.modifiers.shift));
                 }
@@ -2003,6 +2131,11 @@ fn draw(
                     *new.portal_setup = true;
                 }
             }
+            if let Some(viewer) = new.web_viewer.as_ref() {
+                if draw_new_web_viewer(ui, &painter, origin, viewer, selectable) {
+                    *new.web_viewer_setup = true;
+                }
+            }
 
             // Guides stay visible over both stored and draft artwork.
             painter.vline(
@@ -2055,11 +2188,20 @@ fn draw(
                     let rect = object_rect(origin, &frame);
                     if rect.is_finite() {
                         draw_selection_outline(&painter, rect, object.locked);
-                        if let Some(design) = design {
-                            design.outline_tab_labels(&painter, object.key, rect);
-                        }
                         bounds = bounds.union(rect);
                         unlocked |= !object.locked;
+                    }
+                }
+                if !selected.2.tab_controls.is_empty() {
+                    for rect in tabs.selected_labels {
+                        if rect.is_positive() {
+                            painter.rect_stroke(
+                                rect,
+                                CornerRadius::ZERO,
+                                Stroke::new(1.0, theme::TEXT),
+                                StrokeKind::Inside,
+                            );
+                        }
                     }
                 }
                 for &index in &selected.0 {
@@ -2803,6 +2945,51 @@ fn draw_new_portal(
     setup && response.double_clicked()
 }
 
+/// A new web viewer: its frame, dashed, with its web address once Web
+/// Viewer Setup has set one. A double click opens Web Viewer Setup again.
+fn draw_new_web_viewer(
+    ui: &Ui,
+    painter: &egui::Painter,
+    origin: Pos2,
+    viewer: &NewWebViewer,
+    setup: bool,
+) -> bool {
+    let rect = Rect::from_min_size(
+        origin + vec2(viewer.left as f32, viewer.top as f32),
+        vec2(viewer.width as f32, viewer.height as f32),
+    );
+    if !rect.is_finite() || !rect.is_positive() {
+        return false;
+    }
+    painter.rect_filled(rect, CornerRadius::ZERO, theme::CURRENT_ROW);
+    draw_dashed(painter, rect);
+    let address = viewer.setup.as_ref().map(|choice| choice.address.as_str());
+    painter
+        .with_clip_rect(rect.shrink(2.0).intersect(ui.clip_rect()))
+        .text(
+            rect.left_top() + vec2(5.0, 4.0),
+            Align2::LEFT_TOP,
+            address.unwrap_or("Web Viewer"),
+            theme::small(),
+            theme::SELECTED,
+        );
+    let label = match address {
+        Some(address) => format!("New web viewer {address}"),
+        None => "New web viewer".to_owned(),
+    };
+    let response = ui.interact(
+        rect,
+        ui.scope_id().with("new_web_viewer"),
+        if setup {
+            Sense::click()
+        } else {
+            Sense::hover()
+        },
+    );
+    response.widget_info(|| WidgetInfo::labeled(Role::Button, setup, &label));
+    setup && response.double_clicked()
+}
+
 fn object_rect(origin: Pos2, rect: &GeomRect) -> Rect {
     Rect::from_two_pos(
         origin + vec2(rect.left as f32, rect.top as f32),
@@ -2822,18 +3009,24 @@ fn hit_rect(rect: Rect) -> Rect {
 /// not at all once deleted).
 fn hit_test(
     geometry: &LayoutGeometry,
+    stack: Option<&[usize]>,
     shown: impl Fn(&ObjectGeom) -> Option<GeomRect>,
     position: Pos2,
 ) -> Option<usize> {
-    geometry
-        .objects
-        .iter()
-        .enumerate()
+    stacking_order(geometry.objects.len(), stack)
         .rev()
-        .find_map(|(index, object)| {
-            let rect = object_rect(Pos2::ZERO, &shown(object)?);
+        .find_map(|index| {
+            let rect = object_rect(Pos2::ZERO, &shown(&geometry.objects[index])?);
             (rect.is_finite() && hit_rect(rect).contains(position)).then_some(index)
         })
+}
+
+/// Keep geometry indices stable when a popover is painted above the layout.
+fn stacking_order(
+    len: usize,
+    raised: Option<&[usize]>,
+) -> impl DoubleEndedIterator<Item = usize> + '_ {
+    (0..len).map(move |index| raised.map_or(index, |stack| stack[index]))
 }
 
 fn object_label(index: usize, object: &ObjectGeom) -> String {
@@ -3078,6 +3271,73 @@ mod tests {
         assert_eq!(state.new_field().unwrap().revision, Some(saved));
     }
 
+    /// Unsaved text and control changes to an object another client
+    /// deleted are kept when the layout is read again without it, so
+    /// closing waits for Save or Revert Layout, and the window is told; an
+    /// editor opened on such an object and left unchanged is no change
+    /// (#1048's re-checks).
+    #[test]
+    fn changes_to_objects_deleted_elsewhere_are_kept_and_reported() {
+        let mut session = Session::new(
+            Target {
+                host: "test".into(),
+                file: "test.fmp12".into(),
+                local: None,
+            },
+            25,
+        );
+        session.layout = Some(1);
+        let with = |keys: &[u64]| {
+            Geometry::Loaded(LayoutGeometry {
+                objects: keys
+                    .iter()
+                    .map(|&key| ObjectGeom {
+                        key,
+                        ..object([0.0, 0.0, 10.0, 10.0])
+                    })
+                    .collect(),
+                ..LayoutGeometry::default()
+            })
+        };
+        session.geometry = with(&[7, 8, 9]);
+        let mut state = CanvasState::default();
+        state.synchronize(&session);
+        state.words.objects.insert(7, "Retyped".into());
+        state.controls.objects.insert(8, (2, None));
+        // An editor open on object 9 with its words untouched.
+        state.retyping = Some(Retyping {
+            key: 9,
+            text: "Name".into(),
+            stored: "Name".into(),
+            revision: None,
+            focus: false,
+        });
+        session.geometry = with(&[9]);
+        state.synchronize(&session);
+        assert_eq!(
+            state.words().objects.get(&7).map(String::as_str),
+            Some("Retyped")
+        );
+        assert!(state.controls().objects.contains_key(&8));
+        assert!(state.take_orphaned_drafts());
+        assert!(!state.take_orphaned_drafts());
+        // The untouched editor's object goes: no change, nothing reported.
+        let mut untouched = CanvasState::default();
+        session.geometry = with(&[9]);
+        untouched.synchronize(&session);
+        untouched.retyping = Some(Retyping {
+            key: 9,
+            text: "Name".into(),
+            stored: "Name".into(),
+            revision: None,
+            focus: false,
+        });
+        session.geometry = with(&[]);
+        untouched.synchronize(&session);
+        assert!(untouched.retyping.is_none() && untouched.words().objects.is_empty());
+        assert!(!untouched.take_orphaned_drafts());
+    }
+
     #[test]
     fn overlapping_objects_select_the_topmost_and_lines_have_a_hit_target() {
         let geometry = LayoutGeometry {
@@ -3089,15 +3349,107 @@ mod tests {
             ..LayoutGeometry::default()
         };
         let stored = |o: &ObjectGeom| Some(o.rect);
-        assert_eq!(hit_test(&geometry, stored, pos2(20.0, 20.0)), Some(1));
-        assert_eq!(hit_test(&geometry, stored, pos2(52.0, 10.0)), Some(2));
-        assert_eq!(hit_test(&geometry, stored, pos2(200.0, 200.0)), None);
+        assert_eq!(hit_test(&geometry, None, stored, pos2(20.0, 20.0)), Some(1));
+        assert_eq!(hit_test(&geometry, None, stored, pos2(52.0, 10.0)), Some(2));
+        assert_eq!(hit_test(&geometry, None, stored, pos2(200.0, 200.0)), None);
+        // A raised surface wins over a layout object stored after it.
+        assert_eq!(
+            hit_test(&geometry, Some(&[1, 2, 0]), stored, pos2(20.0, 20.0)),
+            Some(0)
+        );
         // A deleted object is not hit: the one under it is.
         let without_second = |o: &ObjectGeom| (o.rect.left != 10.0).then_some(o.rect);
         assert_eq!(
-            hit_test(&geometry, without_second, pos2(20.0, 20.0)),
+            hit_test(&geometry, None, without_second, pos2(20.0, 20.0)),
             Some(0)
         );
+    }
+
+    #[test]
+    fn a_drag_on_a_raised_popover_does_not_move_the_covered_object() {
+        use egui_kittest::kittest::Queryable;
+        use om_layout::{Layout, LayoutObject, ObjectStore};
+
+        let mut session = Session::new(
+            Target {
+                host: "test".into(),
+                file: "test.fmp12".into(),
+                local: None,
+            },
+            25,
+        );
+        session.layout = Some(1);
+        session.geometry = Geometry::Loaded(LayoutGeometry {
+            width: 250.0,
+            height: 140.0,
+            revision: Some([1; 32]),
+            objects: vec![
+                ObjectGeom {
+                    key: 1,
+                    kind_name: "Popover".into(),
+                    ..object([20.0, 20.0, 130.0, 80.0])
+                },
+                ObjectGeom {
+                    key: 2,
+                    kind_name: "Rectangle".into(),
+                    movable: true,
+                    ..object([20.0, 20.0, 130.0, 80.0])
+                },
+            ],
+            ..Default::default()
+        });
+        session
+            .accept_render_layout(
+                1,
+                Ok(Some(om_data::RenderLayout {
+                    layout: Layout {
+                        id: 1,
+                        objects: ObjectStore {
+                            objects: vec![LayoutObject {
+                                id: 1,
+                                object_type: 15,
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })),
+            )
+            .unwrap();
+        let mut canvas = CanvasState::default();
+        canvas.select_object(&session, 0, false);
+        let mut app = egui_kittest::Harness::builder()
+            .with_size(vec2(350.0, 200.0))
+            .with_context_setup(crate::theme::install)
+            .build_ui_state(
+                |ui, (state, document)| {
+                    show(
+                        ui,
+                        &session,
+                        LayoutTool::Selection,
+                        &[],
+                        state,
+                        false,
+                        document,
+                    );
+                },
+                (canvas, DocumentState::default()),
+            );
+        let start = app.get_by_label("Popover (object 1)").rect().center();
+        app.event(egui::Event::PointerMoved(start));
+        app.event(egui::Event::PointerButton {
+            pos: start,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        app.step();
+        app.event(egui::Event::PointerMoved(start + vec2(15.0, 0.0)));
+        app.step();
+        assert_eq!(app.state().0.selected_index(), Some(0));
+        assert!(app.state().0.selection_drag.is_none());
     }
 
     #[test]
@@ -3122,7 +3474,7 @@ mod tests {
         });
         let mut state = CanvasState::default();
         state.select_all(&session, SelectAll::Layout);
-        state.nudge_selection(&session, NudgeDirection::Left);
+        state.nudge_selection(&session, layout_move::Delta { dx: -1.0, dy: 0.0 });
         assert!(state.moved().frames.is_empty());
     }
 
@@ -3570,7 +3922,7 @@ mod tests {
             Pos2::ZERO
         )
         .is_none());
-        state.nudge_selection(&session, NudgeDirection::Right);
+        state.nudge_selection(&session, layout_move::Delta { dx: 1.0, dy: 0.0 });
         assert_eq!(state.selection_notice(), Some(CANNOT_MOVE_SELECTION));
         assert!(state.moved().frames.is_empty());
         assert_eq!(state.fields()[0].left, 20.0);

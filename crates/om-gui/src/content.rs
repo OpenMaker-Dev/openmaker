@@ -1249,6 +1249,8 @@ pub(crate) struct LayoutWorkspace {
     /// Portal Setup or Add Fields to Portal, open over the window for the
     /// new portal.
     portal_setup: Option<crate::portal_setup::PortalSetup>,
+    /// Web Viewer Setup, open over the window for the new web viewer.
+    web_viewer_setup: Option<crate::web_viewer_setup::WebViewerSetupDialog>,
     /// Save Layout's placement is with the host.
     pub saving: bool,
     /// Double-click locking applies only to the Field tool.
@@ -1281,6 +1283,12 @@ impl PartsSent {
 struct PartsHold {
     sent: PartsSent,
     answered: bool,
+}
+
+impl PartsHold {
+    fn layout(&self) -> u32 {
+        self.sent.at().0
+    }
 }
 
 impl LayoutWorkspace {
@@ -1348,10 +1356,10 @@ impl LayoutWorkspace {
     pub(crate) fn nudge_selection(
         &mut self,
         session: &Session,
-        direction: crate::layout_canvas::NudgeDirection,
+        delta: om_data::layout_move::Delta,
     ) {
         let before = self.canvas.checkpoint();
-        if self.canvas.nudge_selection(session, direction) {
+        if self.canvas.nudge_selection(session, delta) {
             self.canvas.record_command(before);
         }
     }
@@ -1400,6 +1408,18 @@ impl LayoutWorkspace {
         self.canvas.take_part_resize()
     }
 
+    /// Whether a read found unsaved changes to objects the layout no longer
+    /// has, since the last call; the changes stay until Revert Layout.
+    pub(crate) fn take_orphaned_drafts(&mut self) -> bool {
+        self.canvas.take_orphaned_drafts()
+    }
+
+    /// Where the Part tool was used on the layout since the last call: the
+    /// layout point's y, in points.
+    pub(crate) fn take_part_tool(&mut self) -> Option<f64> {
+        self.canvas.take_part_tool()
+    }
+
     /// The portal drawn with the Portal tool and not yet saved.
     pub(crate) fn new_portal(&self) -> Option<&crate::layout_canvas::NewPortal> {
         self.canvas.new_portal()
@@ -1411,6 +1431,62 @@ impl LayoutWorkspace {
             || self.new_button().is_some()
             || self.new_text().is_some()
             || self.new_portal().is_some()
+            || self.new_web_viewer().is_some()
+    }
+
+    /// The web viewer drawn with the Web Viewer tool and not yet saved.
+    pub(crate) fn new_web_viewer(&self) -> Option<&crate::layout_canvas::NewWebViewer> {
+        self.canvas.new_web_viewer()
+    }
+
+    /// Web Viewer Setup, opened when the Web Viewer tool has drawn a viewer
+    /// or the new viewer is double clicked; `schema` and the layout's
+    /// occurrence `own` compile its address. OK sets the viewer's address
+    /// and options; Cancel on a viewer not set up yet drops it, as nothing
+    /// could place it.
+    pub(crate) fn show_web_viewer_setup(
+        &mut self,
+        ctx: &egui::Context,
+        schema: Option<std::sync::Arc<om_data::host::CalcSchema>>,
+        own: Option<u64>,
+    ) {
+        use crate::web_viewer_setup::{WebViewerSetupAnswer, WebViewerSetupDialog};
+        if self.canvas.take_web_viewer_setup() && !self.saving && self.web_viewer_setup.is_none() {
+            if let Some(viewer) = self.canvas.new_web_viewer() {
+                self.web_viewer_setup = Some(WebViewerSetupDialog::new(
+                    viewer.setup.as_ref(),
+                    schema,
+                    own,
+                ));
+            }
+        }
+        if self.canvas.new_web_viewer().is_none() {
+            self.web_viewer_setup = None;
+        }
+        let Some(setup) = &mut self.web_viewer_setup else {
+            return;
+        };
+        match setup.show(ctx) {
+            WebViewerSetupAnswer::Open => {}
+            WebViewerSetupAnswer::Cancel => {
+                self.web_viewer_setup = None;
+                if self
+                    .canvas
+                    .new_web_viewer()
+                    .is_some_and(|v| v.setup.is_none())
+                {
+                    self.canvas.drop_new_object();
+                }
+            }
+            WebViewerSetupAnswer::Done(choice) => {
+                self.web_viewer_setup = None;
+                let before = self.canvas.checkpoint();
+                if let Some(viewer) = self.canvas.new_web_viewer_mut() {
+                    viewer.setup = Some(choice);
+                    self.canvas.record_command(before);
+                }
+            }
+        }
     }
 
     /// Revert Layout, or the host's answer to Save Layout. Revert waits
@@ -1419,11 +1495,14 @@ impl LayoutWorkspace {
         self.canvas.drop_new_object();
         self.button_setup = None;
         self.portal_setup = None;
+        self.web_viewer_setup = None;
     }
 
     /// Whether Button Setup, Portal Setup or Add Fields to Portal is open.
     pub(crate) fn setting_up_button(&self) -> bool {
-        self.button_setup.is_some() || self.portal_setup.is_some()
+        self.button_setup.is_some()
+            || self.portal_setup.is_some()
+            || self.web_viewer_setup.is_some()
     }
 
     /// Portal Setup, then Add Fields to Portal, opened when the Portal tool
@@ -1627,21 +1706,46 @@ impl LayoutWorkspace {
 
     /// The host answered `sent`, leaving the layout at `revision` when it
     /// saved it: when it is this window's held change, the hold ends now if
-    /// the layout is not read again (`rereads` false: refused, or the
-    /// connection is gone) or is where it was, else once it is read again.
+    /// the layout cannot have changed (`changed` false: refused without
+    /// writing, or the connection is gone) or is where it was, else once it
+    /// is read again at another revision. A refusal that wrote nothing is
+    /// read again at the revision the hold waits to leave, so it ends now.
     pub(crate) fn parts_answered(
         &mut self,
         sent: &PartsSent,
-        rereads: bool,
+        changed: bool,
         revision: Option<om_data::layout_placement::Revision>,
     ) {
         let Some(hold) = self.parts_hold.as_mut().filter(|h| h.sent == *sent) else {
             return;
         };
-        if rereads && revision != Some(sent.at().1) {
+        if changed && revision != Some(sent.at().1) {
             hold.answered = true;
         } else {
             self.parts_hold = None;
+            self.saving = false;
+        }
+    }
+
+    /// The window read layout `layout` again: an answered hold on it ends,
+    /// whatever revision the read gave. A refusal (306) whose read could
+    /// not reach the host's new catalog still shows the old revision, which
+    /// [`Self::release_parts`] would wait on for good.
+    /// A window that went to another layout meanwhile reads that one; its
+    /// read ends the hold too (`shows`: the layout the window shows now).
+    pub(crate) fn layout_read(&mut self, layout: u32, shows: Option<u32>) {
+        if self.parts_hold.as_ref().is_some_and(|hold| {
+            hold.answered && (hold.layout() == layout || shows != Some(hold.layout()))
+        }) {
+            self.parts_hold = None;
+            self.saving = false;
+        }
+    }
+
+    /// No answer or read will come for a held change (the connection or
+    /// the worker is gone): the hold ends.
+    pub(crate) fn abandon_parts(&mut self) {
+        if self.parts_hold.take().is_some() {
             self.saving = false;
         }
     }
@@ -1817,7 +1921,8 @@ pub(crate) fn layout(
         let frozen = state.saving
             || state.new_button().is_some()
             || state.new_text().is_some()
-            || state.new_portal().is_some();
+            || state.new_portal().is_some()
+            || state.new_web_viewer().is_some();
         if let Some(index) = state.objects.show(
             &mut child,
             session,

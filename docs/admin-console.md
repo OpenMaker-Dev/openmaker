@@ -1106,6 +1106,37 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
   readable `backup.config` are deleted, never through a link, and never one
   that holds a hosted file or its container data. Files they share with
   newer backups by hard links stay with those backups.
+  - Nor is one deleted that is the newest backup of the schedule holding a
+    hosted file that no newer backup that stays holds, so that a run that
+    left a file out (one closed when it ran) never retires the last backup
+    of that file. After retention, every hosted file that some backup of
+    the schedule held still has one. The process log says so, naming the
+    file: `Schedule "S": the old backup ... is kept: it is the newest that
+    holds ["F"]`.
+  - A hosted file is one with a slot: open, paused, closing or closed, one
+    whose opening again failed included. A file that failed to open at
+    startup has none and is not counted; its data stays protected as
+    below.
+  - Whether a backup holds a file is read from the backup's folder: a
+    regular file under `Databases/` at the file's place in the layout (its
+    folder's place below the database root, and its file name, the names
+    a run links an unchanged file through), looked up without following a
+    link. `backup.config` lists no files. A backup made under another
+    layout (the hosted files' common folder was different then) is not
+    recognised as holding the file, and is deleted as before.
+  - The rule only keeps what the keep count would delete; it never deletes
+    anything the keep count alone would not have deleted. It looks at
+    names, not at whether a file can be restored: a planted or damaged
+    file at a hosted file's place in a newer backup counts as holding that
+    file, and so takes the rule's protection away from an older backup,
+    which then goes at the keep count as it would have without the rule.
+    Preserved backups are untouched, as before, and count as holding what
+    they hold.
+  - OpenMaker's choice: whether FileMaker Server's backups copy closed
+    files is unmeasured
+    ([#1115](https://github.com/OpenMaker-Dev/openmaker/issues/1115)). If
+    they do, a run leaves no hosted file out and the rule never keeps
+    anything.
 - **Folder handles.** Every operation resolves its target folder once
   (the administrator's links followed) and opens it a name at a time from
   the root without following a link (inf). Listing, the final rename,

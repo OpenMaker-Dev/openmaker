@@ -56,6 +56,12 @@ reading PDF data then fails with error 3. `OPENMAKER_PDF_WORKER` names
 another worker executable (om-calc's `om-pdf-worker`, for example, for a
 host without its own).
 
+With `--features web-viewer`, `cargo build -p om-gui` also builds the page
+host of the Wayland web viewer backend, `om-gui-webview`, which `om-gui`
+runs from beside itself when `OPENMAKER_WEB_VIEWER_BACKEND=wayland`
+(`web_viewer::host`); the package installs it. Without it that backend's
+web viewers show "Web viewer: unavailable on this display."
+
 **Desktop client.** **File > Open...** opens a `.fmp12` file on this
 computer through a private embedded host (no server or license needed);
 Home's Hosts and File > Hosts > Open Network File... connect to FileMaker
@@ -69,6 +75,8 @@ environment variables:
 | `OPENMAKER_CLIENT_CERT`, `OPENMAKER_CLIENT_KEY` | PEM client identity (default: an in-memory one is generated) |
 | `OPENMAKER_CA_CERT` | Extra trusted certificate: a private CA's, or a server's self-signed one |
 | `WEBKIT_DISABLE_DMABUF_RENDERER`, `WEBKIT_DMABUF_RENDERER_FORCE_SHM` | Either one overrides OpenMaker's choice for web viewers' rendering: WebKitGTK's DMA-BUF renderer off on X servers without DRI3 (Xvfb, VNC), pages through shared memory on NVIDIA's driver |
+| `OPENMAKER_WEB_VIEWER_BACKEND` | `wayland`: a `web-viewer` build's pages are drawn by its page host and painted by the app, whose windows stay native on Wayland ([web viewers](re/layout-model.md#96-web-viewer)) |
+| `OPENMAKER_WEB_VIEWER_HOST` | The page host program to run instead of `om-gui-webview` beside the program |
 | `WINIT_X11_SCALE_FACTOR` | The windows' scale on X11 (winit's), also for a web-viewer build on a Wayland session, which runs through XWayland: on a compositor that leaves X windows unstretched (Hyprland's `force_zero_scaling`), the desktop's scale would size them as native ones (not tried) ([web viewers](re/layout-model.md#96-web-viewer)) |
 | `OPENMAKER_PDF_WORKER` | The PDF worker executable to use instead of the one beside the program (above) |
 | `OPENMAKER_USER_NAME` | `Get ( UserName )` and the session name, whatever Settings' User Name says |

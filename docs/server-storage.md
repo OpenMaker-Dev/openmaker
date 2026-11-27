@@ -21,16 +21,19 @@ of a file that is not a version's (whether it takes changes, its file on
 disk) it offers itself. The operations' own reads still hold the file
 engine's store (section 5, "Moving the other readers"). Still to come:
 `import` and `capabilities` (section 5). Of the store engine, `om-store`
-holds the `state` file (section 6.1), the entries and applying them to
-the state's trees (6.2, 6.3), the page trees (6.4), the page file with
-its checkpoints, restore points and the open that chooses a checkpoint
-(6.7), and the simulator (12); `om-server` reads a file's tree in it as
-a view, imports an `.fmp12` into one and exports it again (section 5,
+holds the `state` file (section 6.1), the log with its segments and the
+entries applied to the state's trees (6.2, 6.3), the page trees (6.4),
+the page file with its checkpoints, restore points and the open that
+chooses a checkpoint (6.7), groups (6.9), the consensus core and a
+cluster member's store for a fixed set of members (7.1, "As built"),
+and the simulators (12); `om-server` reads a file's tree in it as a
+view, imports an `.fmp12` into one and exports it again (section 5,
 "The store engine's file"), and the server hosts its files from it
 read-only when started with `--engine store` (section 11): each imported
-at start, every change refused. The log's segments, the store's write
-side behind the engine interface, groups, clones, replication and
-everything else in sections 6 to 12 are specified here and not built.
+at start, every change refused. The store's write side behind the engine
+interface, clones, repair and the rest of replication (7.2 to 7.6), and
+everything else in sections 6 to 12 not named here are specified here
+and not built.
 [#673](https://github.com/OpenMaker-Dev/openmaker/issues/673) lists the
 work. A section is rewritten in place when its part is built.
 
@@ -1661,16 +1664,24 @@ staged records left staged
   commit's answer, and the upload went with it. Answered done, the same
   commit sent again would report as stored what is not, which FileMaker
   Pro's user then believes. The connection's temporary area keeps such a
-  record's path with the commit's transaction (`writes::TempArea`),
-  recorded once the commit's outcome is known, so that each record the
-  commit was lent ends up staged again, stored, or kept there; a commit of
-  that transaction naming it with nothing staged is refused. The record is
-  forgotten only:
-  - when it is uploaded again (op14), in any transaction;
+  record's path with the commit's transaction, one entry for each record
+  and transaction (`writes::TempArea`), recorded once the commit's outcome
+  is known, so that each record the commit was lent ends up staged again,
+  stored, or kept there; a commit of that transaction naming it with
+  nothing staged is refused. The entry is forgotten only:
+  - when a commit of that transaction that stores an upload of the record
+    is saved;
   - when the transaction is given up: op65 for it, or the op65 that
     releases all of the connection's locks;
   - when a commit of that transaction naming it for deletion is saved;
   - with the session (the file closed, logout, the session's end).
+
+  Uploading the record again forgets nothing: until it is stored, that
+  upload can be lost too, to another transaction's failed save, and the
+  first transaction's commit sent again would then be answered done
+  ([#1113](https://github.com/OpenMaker-Dev/openmaker/issues/1113)). A
+  store by another transaction forgets nothing either: that transaction's
+  upload is not the one this transaction's commit lost.
 
   op65 forgets whether or not the transaction held a lock: it is the
   client giving the transaction up (FileMaker Pro sends it when its user
@@ -1682,8 +1693,8 @@ staged records left staged
   the "done" a lost upload must not get, where refusing too long only asks
   the client to upload the record again. The price: after a failed save of
   a record, a later commit of that record in the same transaction with
-  nothing uploaded is refused until the record is uploaded again or the
-  transaction is given up, even if the client unlocked it meanwhile; no
+  nothing uploaded is refused until the transaction stores an upload of
+  the record or is given up, even if the client unlocked it meanwhile; no
   client is known to send one (OpenMaker's choice). A deletion by another
   session forgets nothing: the refusal stays true.
   Each entry is charged to the client's upload memory, at most what its
@@ -2814,7 +2825,9 @@ crash therefore cannot hide that a copy was lost (server-storage-format.md
 1.3). On a single server the loss is reported by recording it in the
 incident journal (section 6.12) before the mark is settled. The repair
 record a cluster member needs, in repair with a required end not yet
-known (section 7.5), is not built: it waits for replication. A server
+known (section 7.5), is not built: until it is, a member's open records
+the possible loss as a single server's does and goes on (section 7.1, "As
+built"). A server
 without a valid copy does not know what it confirmed, and does not start
 (section 7.5). The format and what the copies protect against are in
 [server-storage-format.md](server-storage-format.md) section 1
@@ -3223,6 +3236,9 @@ settled (server-storage-format.md 4.5).
    when the pages waiting for a checkpoint or the disk refuse it, the
    recovered version, which is durable, is checkpointed first, which
    frees what the checkpoints and restore points on disk no longer need.
+   A member of a cluster writes no entry at its open, since only the
+   leader appends; how its start reaches the log is section 7.3's, which
+   is not built (OpenMaker's reading, section 7.1, "As built").
 
 If the log does not hold every entry through the marker, or neither
 checkpoint can be used, the server cannot produce what it confirmed. A
@@ -3657,6 +3673,293 @@ rule (section 6.12, "What is not found").
 
 Servers talk to each other over TLS with certificates both ends check, on
 a port of its own.
+
+**As built.** `om_store::consensus` holds the core: a state machine with
+no I/O, given ticks, messages, a leader's client entries and the results
+of its own log operations, which returns the operations to perform and
+the messages to send, in order. A member (`consensus::Member`) runs them
+one at a time on its store and takes its next message or tick only once
+the last one's operations are done, so that a simulator can stop it
+between any two. Whatever drives a member must give it a tick it refused
+while busy once it is idle: a leader whose ticks are lost behind a
+stream of client entries sends no heartbeats, and a follower it probes,
+which only heartbeats feed, then waits. The simulator's steady phase
+ticks a member only when it is idle, as the server's driver must; its
+fault phase drops a tick a busy member refuses, as one more fault (a
+slow clock; section 12). A member's store is reached only through it: it is made
+with `Store::create_member`, opened with `Member::open`, and everything
+that changes it is the crate's own; `Member` gives out its core, a view
+and its published entry to read, and nothing that can write, not even
+the store's file system. After any error a member drops what it had
+queued and takes nothing more until it is opened again.
+
+**Trust** (OpenMaker's rule). Members will authenticate each other; the
+transport, and the parsing of messages off it, are not built. The core
+does not defend against a member that lies within the protocol, as Raft
+does not. On any decoded message, from anyone, it never panics, never
+overflows, never allocates by a number the message gives, and never acts
+outside what it asked for. One rule holds for every kind of message: a
+malformed message changes nothing, neither the term nor the sender's
+start count, because its shape is checked before anything else. Malformed
+is a term past 2^62 or an index past the log's largest (2^54 - 1), so
+that no addition on a term or an index can overflow (a member whose term
+reaches 2^62 no longer stands), and any message whose fields contradict
+each other where the protocol relates them, as listed below. Of a
+well-formed message, two things count before it is matched to anything:
+a start count of its sender higher than the last heard makes a leader
+forget what it held of that member (its match, what it sent, its probe),
+and a higher term is taken and recorded before anything else (Raft's
+rule), for a vote request together with the vote in one write.
+Everything else of a reply counts only against the request it answers,
+which the reply names by repeating it, as below.
+
+The fields the protocol relates, message by message (OpenMaker's list;
+the term is the envelope's, the sender's own):
+- Every log position (a vote request's last entry, an append's `prev`):
+  index 0 has term 0 and no other position has (no entry is of term 0).
+  Checked.
+- Pre-vote: its round is the sender's term plus one, and the last entry
+  it gives is of no later term than the sender's. Checked.
+- Pre-vote reply: a grant is for a round past the granter's term (it
+  grants nothing at or below its own). Checked. A refusal relates to
+  nothing: the refuser may be at any term.
+- Vote: the last entry it gives is of no later term than the candidate's.
+  Checked. Vote reply: nothing to relate.
+- Append: at most `batch` entries and `batch_bytes` of payload in more
+  than one entry; entries that follow `prev` one by one, with terms that
+  never go down from `prev`'s and never pass the leader's. Checked. Its
+  committed position relates to nothing in it: the leader's may lie past
+  what it sends, and the follower bounds it by what it checked (section
+  6.3).
+- Append reply: its term is at least the term it repeats, since the
+  follower records an append's term before it answers. A success checked
+  at least the entry it names, and the log it reports (`hint`) reaches
+  what it acknowledges. A refusal in the term it repeats names where to
+  try next before the entry the append named; a refusal of a later term
+  (the follower is ahead of the leader) may name any entry, and the
+  leader steps down on its term. Checked. The start it repeats relates to
+  nothing in the message: matching it to the leader's own is correlation,
+  below.
+- Size refusal: its term is at least the term it repeats; the entry it
+  refuses is after the one the append named, and larger than the limit
+  it gives. Checked. Whether the entry was one the append carried is
+  correlation, below.
+- Left to members that follow the protocol, because no field of the
+  message can show it: that a reply answers the very append it names
+  (below), that a hint is where the follower's log really diverges, and
+  that the limit a size refusal gives is the follower's setting.
+
+Beyond the rules above, these are OpenMaker's own choices:
+
+- The ask before an election is Raft's pre-vote (Ongaro's thesis, 9.6):
+  it changes no term or vote, and a server that heard from its leader
+  within an election timeout refuses it, as a leader does. A member that
+  is granted it stands, and standing restarts its election timer (a new
+  timeout drawn), as a candidate's does in Raft: the pre-vote ran on the
+  timeout drawn when it began, and the vote gets one of its own. A leader
+  steps down at the first tick at which it has not heard from a majority
+  within an election timeout, each follower's last answer timed on its
+  own; a new leader takes every follower as heard when it begins.
+- What timing elections need: a pre-vote's round trip (the ask delivered,
+  answered and the answer delivered) must take no more ticks than the
+  timeout drawn when it was asked, and a vote's round trip, which includes
+  the voter's flush of its term and vote, fewer ticks than the timeout
+  drawn when the member stood (the tick at which it stands counts). The
+  shortest timeout is the configured election timeout, so it must be set
+  well above the slowest round trip; when it is not, members time out
+  before their answers arrive and no leader may ever be elected, though
+  every message arrives. (Before round 5 the vote shared the pre-vote's timeout, and
+  two round trips had to fit in one: the second review by experiment found
+  a network delivering every message two ticks late, with a timeout of 4,
+  on which no leader was ever elected.) The other transitions leave no
+  member waiting for answers without a full timeout ahead: a pre-vote
+  begins on a fresh timeout, a member that grants a vote or hears its
+  leader restarts its timer, a leader that steps down restarts it, and a
+  candidate or pre-candidate that hears a higher term becomes a follower,
+  which waits for no answer.
+- Every member passes over a message of an earlier start of its sender,
+  whatever its role. The first start count a member hears from another
+  is not a rise: only a later, higher one makes the leader forget what it
+  recorded that member to hold.
+- An append's reply repeats the leader's term and start count as the
+  append gave them, and the entry the append named for its consistency
+  check (its `prev`), with the last entry it checked or, refused, where
+  to try next. The leader keeps of each follower, in its term and since
+  the start of the follower it last heard: the entry it next sends
+  (`next`), the last the follower acknowledged (`matched`), `sent` (the
+  highest entry any append to it named or carried: all an append to it
+  can have checked), `carried` (the highest entry any append to it
+  carried), the entry the last append to it named (its probe), and
+  whether it probes the follower.
+  - A reply is taken only if it repeats the leader's own term and start
+    and names an entry no later than `sent` and not before the leader's
+    log base when it took office (no append of its term named an earlier
+    one). Anything else changes nothing: not the time the leader last
+    heard from the follower, its probe, or whether it is behind.
+  - A success counts no further than `sent` and the leader's durable
+    entry, and only if what it counts then still reaches the entry it
+    names. `matched` takes the larger, so a duplicate or a late success is
+    harmless whatever its age.
+  - A refusal of an entry the follower has acknowledged (its `prev` at or
+    before `matched`) is old news and changes nothing.
+  - While appends follow one another (`next` moving on with each one
+    sent), any other refusal puts the follower to probing at once,
+    whatever went out since: `next = max(matched, min(hint, prev - 1)) +
+    1`.
+  - While it is probed, one probe position is out at a time: a client's
+    entry sends that follower nothing new, and each heartbeat sends an
+    append naming the probe's `prev` again, carrying what the log holds
+    from there, so repetitions of one position may carry different
+    entries as the log grows. Only the refusal of that position moves
+    `next` back. The core does not bound how many such appends are
+    unanswered: whatever carries the messages must keep at most one per
+    follower queued, the newer replacing the older (part 2, below). A
+    success moves `matched` on as always; the follower leaves probing only
+    on a success that reaches the probe's `prev` or beyond, and then `next
+    = matched + 1`, never an older `next`.
+  - A follower is behind only when it refuses a probe at the leader's log
+    base as the base is when the refusal arrives (and the refusal is not
+    old news).
+
+  What `sent` and `carried` bound: each is one number per follower. No
+  success counts past `sent`, and no reply naming an entry past it is
+  taken; no size refusal of an entry past `carried`, or at or before
+  `matched` (old news), is taken. They do not tell which append a reply
+  answers: a reply naming any entry up to `sent` is taken as the answer
+  to an append that named it. That correlation is left to honest
+  followers, which report only what the append they answer checked. With
+  honest followers it is enough: a success reports what its own append
+  checked, a success for a later checked prefix proves the earlier prefix
+  too, and taking the larger keeps that evidence in either order.
+
+  Why a follower catches up while writes go on, given a leader that
+  stays, every message delivered, and a follower within the leader's
+  retained log: a refusal of any append above `matched` puts it to
+  probing; while it is probed only the probe's position goes to it, each
+  heartbeat sending it again, so the probe is answered; each refusal of
+  the probe
+  moves its `prev` strictly back and never before `matched`, which the
+  follower holds (in one term nothing cuts what the leader of that term
+  sent it), so a probe at `matched` at the latest succeeds; that success
+  ends probing, and appends follow one another from `matched + 1`. Round
+  2's rule, a refusal counted only if it answered the last append sent,
+  let a newer append overtake each refusal for as long as writes went on,
+  leaving a follower behind while the others kept committing (round 3,
+  finding 1). The probe state also keeps out the loop round 2 found
+  (seed 190), in which a heartbeat probed past a step back so that the
+  step back's refusal answered nothing: a probed follower's `next` stays
+  until a success.
+
+  A late success can make the leader believe a follower holds more than
+  it does now: a leader of a higher term may have cut the follower's
+  entries since (round 3's review argued this; it is OpenMaker's reading,
+  checked by the simulator, not proved). It does not commit anything a
+  majority does not hold. The leader counts only successes of its own
+  term and start. If a majority really acknowledged an entry of its term,
+  any later leader was elected by a majority that meets that one in a
+  voter which held the entry and voted only for a log at least as up to
+  date, so the later leader holds the entry and never cuts it. If only a
+  minority acknowledged it (of five, A leading and B, while C, D and E
+  elect a leader that replaces B's entries before B's old reply reaches
+  A), A counts B but reaches two of five. A restart that loses a flushed
+  write breaks the premise; repair must fence it (part 2).
+  This is how "a reply counts only against the request it answers" is
+  kept, with no request numbers to age out, repeat or run out (round 1's
+  numbered requests did all three, and were replaced).
+- An append carries at most `batch` entries and `batch_bytes` bytes of
+  payload, or a single entry of any size up to `max_entry`. `max_entry`
+  is a cluster setting, the largest entry: no member proposes, sends or
+  takes a larger one. A member opens only if its log takes entries that
+  large (`log::Config::max_payload`, a setting) and retains none larger:
+  `MemberError::EntryTooLarge` names the entry, its size and the limit
+  asked for. Raising `max_entry` is always allowed; lowering it below an
+  entry a member's log still retains is refused at that member's open,
+  so a leader never holds an entry it may not send. Every member of a
+  cluster must be given the same value; in part 1 that is the operator's
+  duty, and nothing checks it. A follower given a lower value refuses a
+  larger entry past its log's base with a refusal of its own
+  (`AppendTooLarge`: the entry, its size and the follower's limit) and
+  takes nothing of that append; an entry at or before its base is
+  retired, is not taken anyway, and is never refused for its size, so a
+  replay of an old append cannot block a follower that checkpointed the
+  entry. The leader takes the refusal only for an entry it carried to
+  that follower and the follower has not acknowledged (above). It then
+  reports the follower blocked (`Core::blocked`), apart from behind
+  (`Core::behind`, what it needs is retired), and sends it only empty
+  heartbeats, which read nothing from the log, until the follower starts
+  again with another limit or another leader leads. A follower whose log
+  cannot take an append in one write flushes it in pieces before it
+  acknowledges it, so a follower behind by large entries catches up.
+- A leader flushes its own entries before it sends them: a member sends
+  only durable entries, so the leader's copy counts as soon as it is
+  sent.
+- On a mismatch the follower names where to try next: before its run of
+  entries of the mismatched term, never before what it knows is
+  committed.
+- Every member, the leader too, applies and publishes an entry only once
+  it knows it is committed: the leader's working state is its published
+  state. The store bounds a publication by the committed position its
+  marker records, whatever it is asked, and applies committed entries in
+  pieces of at most 64 entries or 4 MiB of payload, a single larger entry
+  in a piece of its own.
+- A leader serves (`Core::serving`) once its `empty` entry is committed and
+  published: its state then holds everything committed before its term.
+  It does not mean the state holds everything committed: a leader deposed
+  without having heard yet still serves. A read that must see every
+  committed change will need a round to a majority or a lease (section
+  7.4), which are not built.
+- A member's open replays as far as the committed position its marker
+  recorded (section 6.7, step 4), keeps the term and vote `state`
+  recorded (a single server starts a new term at each open instead), and
+  writes no entry.
+- Election timeouts are drawn from a stream seeded by the whole member
+  id, the start count and a seed a server takes from the operating
+  system's randomness once at its start (the simulator: from its seed),
+  so that the core stays free of I/O. The timeout must be from 2 ticks to
+  2^32, and the heartbeat from 1 tick to below the timeout: members could
+  not draw different timeouts from a timeout of 1, and a larger one could
+  overflow the draw.
+- On a member, the single server's own appends and flushes, its
+  checkpoints with restore points, dropping a restore point, freeing
+  pages on demand and acknowledging incidents are refused. A member's
+  checkpoint frees what it can as any checkpoint does.
+
+Not built yet, and what stands in for it:
+
+- Checking an operation against the leader's working state before it is
+  proposed (section 7.2). Until it is built, proposing is not offered
+  outside `om-store`; an entry that cannot be applied would stop every
+  member that learns it is committed
+  ([#862](https://github.com/OpenMaker-Dev/openmaker/issues/862)).
+- Repair (section 7.5). A member's open that passed over a copy of
+  `state` and found no whole batch after the marker records the possible
+  loss as a single server's does and goes on, which is safe only while
+  flushed writes stay on the disk; the cluster simulator injects no other
+  faults yet. Repair must fence a restart that loses a flushed write: the
+  leader keeps a follower's acknowledgements across an ordinary restart
+  until it hears the new start count. An unreadable end is not handled
+  for a member: its open fails.
+- Members (section 7.6). The members are a fixed set given when the
+  cluster is made (`consensus::Config::members`); `Core::members` is
+  where the latest `members` entry will take their place for elections,
+  votes and counting. Nothing on disk records that a store is a member:
+  `Member::open` opens it as one, and `Store::open` on a member's folder
+  would apply entries that are not committed
+  ([#850](https://github.com/OpenMaker-Dev/openmaker/issues/850)).
+- State transfer (section 7.5, "State"). A follower whose next entry the
+  leader's log no longer holds stays behind, and the leader reports it
+  (`Core::behind`). A leader retires its log for its own checkpoints
+  only, not for what its followers still need. A majority that includes
+  such a follower makes no progress while the others are down: the
+  leader cannot count it. The follower answers the leader's empty
+  heartbeats, so the leader hears from a majority and stays in office
+  without committing; a leader elected after it is in the same place
+  ([#849](https://github.com/OpenMaker-Dev/openmaker/issues/849)).
+- The transport between servers and sessions in the log (sections 7.3,
+  7.4). The transport must keep at most one unanswered append per
+  follower queued, a newer one replacing an older repetition, because the
+  core sends a probed follower one more at every heartbeat and does not
+  count them (part 2).
 
 ### 7.2 Who executes
 
@@ -4685,6 +4988,240 @@ leader is elected without the entry and that the servers concerned stay
 in repair and say why. A schedule that injects a fault the store cannot
 find (a flushed write that leaves no trace, together with the marker
 that recorded it) is checked only against what section 6.12 says of it.
+
+**As built for a cluster** (`om_store::consensus`'s tests): 3 and 5
+members, each a store on its own simulated disk, with the network and
+the clock simulated in one thread from a seed. A schedule has calm and
+stormy phases. The network delays messages by up to an election timeout,
+drops, repeats and reorders them, and splits the members; work keeps up
+with the clock, the members busy and the messages due drawing steps in
+proportion, so that messages arrive when their delay says. On purpose
+some do not: one schedule in six runs a network that delivers one message
+a step whatever is due, so that deliveries fall far behind their time,
+and in storms a message is now and then held back for several election
+timeouts. The faults are power losses between steps and inside disk
+calls, a process that stops with its cache kept, and failed writes and
+flushes: none breaks what a flush promised. A tick a busy member refuses
+is dropped in this phase, as one more fault (a slow clock). One schedule
+in five gives one member a smaller largest entry (512 bytes) than the
+others, and its client writes, now and then, an entry twice that size:
+the member refuses it for its size and the leader reports it blocked.
+Five election timeouts into the steady phase below, the member starts
+again with the cluster's value (the operator's mistake and its
+correction, section 7.1), and must catch up. Faults are also drawn where a
+rule is at stake: a power loss right after an answer, and a leader cut
+off right after it sends its term's first entry, right after a commit,
+and whenever another member ends its log with entries of a later term
+than the leader's at their place (Raft's figure 8). One schedule in three
+churns leaders, with short timeouts and one entry per append. Half the
+five-member schedules make a leader return: it is cut off with one
+follower whose acknowledgements are held back, the rest elect a leader
+that cuts its entries, and it leads again, with one real follower, before
+the held acknowledgements arrive.
+
+What is committed is the simulator's own record, taken from the disks
+and not from any member's core. Each term has one chain: every entry of
+term `t` that any member's disk held while its `state` recorded `t`,
+read from that disk when the member gained it; two different entries of
+one term at one index are a breach. The record also keeps how far each
+member was seen to hold each term's chain, and keeps it after the member
+goes down or is cut. A member's position is counted only when what its
+disk reads shows the entry there (the checkpoint's entry, when it is the
+log's base), with the hash counted. An entry of term `t` is committed
+once a majority have held that chain through it, and so is every entry
+before it. A position a majority reaches inside the record must have its
+counted hash and be the recorded entry; past the record, the record
+grows from a disk that holds the chain that far, its entry there
+compared with the hash counted. Its limit: a member is seen only
+when a step involves it, so an entry held for less than a step is not
+counted, which can only delay what the record calls committed. After
+every step it checks:
+- that a term has at most one leader;
+- that a leader decides an entry is committed only once the disks show
+  it, and that it is the entry they show;
+- that no leader is elected whose log lacks a committed entry;
+- that a leader keeps every entry of its log while it leads;
+- that two logs agree wherever they hold an entry of the same index and
+  term, compared each time either gains durable entries: walking down
+  from the top of the range they share to the highest index where both
+  hold an entry of the same term, whose chain hash covers everything
+  below; an entry the walk meets that cannot be read, or is missing, is a
+  failure, and an empty shared range a pass;
+- that the committed position a member records, and every entry it
+  applies and publishes, is a committed entry (check 4);
+- that every member's state after the same entry has the same root
+  hashes, compared after every entry applied, while running and while
+  an open replays (check 3);
+- that a held view reads what it read;
+- that whatever a member sends agrees with what its disk records: the
+  term `state` holds; the vote it holds when it grants one; the last
+  entry a vote or pre-vote request gives, which must be the sender's
+  durable entry; and an acknowledgement, which must lie within what the
+  append it answers checked (from the entry it named to the last it
+  carried), at or before the durable entry, and be that append's entry
+  (the one it carried, or for the entry it named, of the term it gave):
+  on the disk, at the log's base the checkpoint's entry, and before the
+  base the entry the record holds committed;
+- that a vote is granted only in answer to a request the voter received
+  from that candidate in that term, and only to a log as up to date as
+  the voter's durable log and not ending before its committed position,
+  as the two disks say;
+- that a leader that serves, after every step, has as its `empty` entry
+  an entry of its own term that the record holds committed, and has
+  published it, and that its term opens with that entry and it is of
+  the `empty` kind (as the disks showed the term's first entry when it
+  was written, which the record keeps after logs retire it); and that
+  the leader of the newest term serves only with
+  a state that holds every entry committed before its term (a deposed
+  leader that has not heard yet may serve with less, section 7.1);
+- that while the network is healthy (no fault drawn, no split, every
+  member up, delivery keeping up) and one leader leads the newest term,
+  every follower comes to hold the leader's durable entry, as it was when
+  the watch began (its target), by a deadline fixed then, which later
+  writes do not move. A follower the leader reports behind or blocked is
+  exempt only once the disks confirm it: their logs agree nowhere at or
+  after the leader's base (what it lacks is retired there), or the entry
+  it refused is in the leader's log and larger than its own largest. The
+  deadline is
+  six election timeouts and ten ticks, plus a round trip of the slowest
+  healthy network (four ticks) for each entry of the follower's log past
+  where the two logs meet on the disks, which a probe may have to step
+  back over one at a time, and for each batch it lacks from there; the
+  watch arms a new target from each target reached, so it holds while
+  writes go on (the progress check);
+- that in the steady phase below a leader is in office within an
+  election's bound (the election check);
+- that every server starts (check 11);
+- that every error a member's store returns follows a fault its disk
+  injected during that very call.
+
+The progress check needs writes while the network is healthy: in a calm
+phase the client writes only now and then, and the settle phase below
+writes nothing, so a follower left behind only while writes go on would
+not show. After the faults stop, every run therefore has a steady phase:
+every member starts, the leader in office stops and starts again, and
+until a new leader is in office every message takes the same number of
+ticks, as long as it may be for a vote's round trip to take fewer ticks than the
+shortest timeout (half the timeout, less half a tick, rounded down: 1, 4
+and 7 ticks for timeouts of 4, 10 and 16). Each steady phase thus judges
+an election near the limit of the timing section 7.1 states, and checks
+that no candidate's timer runs out while the answers to its vote are on
+their way, which that timing rules out. (With a timeout of 4 no whole
+number of ticks separates one round trip from two, so there a member
+that does not restart its timer on standing is caught only by the fixed
+test below.) Then
+the client writes on every tick for twenty election timeouts (after five
+more for the member with a smaller largest entry, which then starts
+again with the cluster's), on a network that drops nothing and delays
+every message by one or two ticks. So appends to one follower cross, and no
+answer arrives before the next entry's append has gone out: the history
+in which round 2's rule left a follower behind. The phase must also have
+a leader: a leader of the highest term any member has must be in office
+within an election's bound of the phase's start and of any leader's fall
+(the election check). The bound is eight attempts, each a timeout running
+out (at most twice the election timeout less a tick) and two round trips,
+the pre-vote's and the vote's, of at most twice the phase's largest
+delay, two ticks. Randomized timeouts make split votes rare but not
+impossible, which the attempts allow for; the longest time without a
+leader the runs measure, in attempts, is given with them. At the phase's close the writes go on until every member has
+its verdict under a leader in office: a target reached, or the disks
+confirming it behind or blocked (a target dropped because the leader
+changed is armed again under the next one). The election and progress
+deadlines bound the close, so every steady phase ends with a verdict on
+every member or the run fails; none is excused. The deadline is the
+simulator's, not a measured latency. It first counted only the entries a
+follower lacked, and a long run found a follower whose log diverged for
+a dozen entries of a dozen terms (leaders churning): each refusal could
+step back one entry, slower than that bound but not stuck.
+
+At the end the faults stop: one leader must serve, and every member must
+hold and publish everything committed or be one the leader reports as
+behind. Then a minority goes down for good, the leader first, and the
+rest must elect a leader that serves and commit a new entry. A run where
+they cannot is passed only where the disks show a barrier: some survivor's
+log agrees nowhere at or after the base of the log that would have to
+send it what it lacks, so what it lacks is retired there (state transfer
+is not built). That log is the leader's in office, which a behind follower
+keeps in office by answering its empty heartbeats; with none in office,
+it is each survivor's that could be elected (the most up to date: every
+survivor's vote is needed). The leader's own report does not decide it.
+
+Nineteen planted defects (`consensus::Plant`) each name the checks they
+must break, and a seed of the default run must find each one by one of
+them. A leader counting a success of an earlier term is thin: it needs
+the returning-leader history and then an acknowledgement past the new
+`empty`, and only 5 seeds of 240 find it (the first 15). Under round 4's
+schedules no seed of the default run found it, and a search pinned to its
+first seed stood in; any change to the schedules can move it out again.
+Its guard is the fixed returning-leader test, which plays that history by
+hand and fails with the plant in. The plants:
+- a vote answered before it is recorded; the term recorded with a vote
+  but not the vote; a follower answering an append without recording the
+  leader's term; an acknowledgement sent before its flush (what a member
+  sends against its disk);
+- a vote granted without the up-to-date rule, and with only its last
+  index or only its last term compared (the grant check);
+- a leader committing an earlier term's entry by counting; a leader
+  counting a success of an earlier term (a commit before the disks show
+  it, a leader elected without a committed entry, or a follower never
+  sent what it lacks);
+- a follower acknowledging its last entry, not the last the append
+  checked (what a member sends against its disk: the acknowledgement
+  against the append's interval and chain);
+- a leader taking a refusal only if it answers the last append sent,
+  round 2's rule (the progress check, in the steady phase);
+- a follower recording a committed position past what it checked (the
+  recorded committed position);
+- a follower cutting from the entry before the first that differs (a
+  refusal by its store);
+- a follower publishing what is only durable, and as far as the
+  leader's committed position (what it applies);
+- a leader serving before its `empty` entry is committed, and a new
+  leader opening its term with an ordinary entry in place of its `empty`
+  one (the serving check);
+- a member that stands without restarting its election timer (the
+  election check);
+- a leader that keeps a follower blocked when it starts again with a
+  larger limit (the progress check, in the steady phase).
+
+Two are measured but cannot be found, and a core-level test holds each:
+a leader counting a success past what it sent (only a member that lies
+claims more than it was sent), and a leader taking a size refusal of an
+entry the follower acknowledged (a follower that follows the protocol
+refuses before it takes anything, and a new start makes the leader forget
+what it acknowledged, so it never sends one). The checks that a leader keeps
+its entries, that logs match, that states are equal, that held views
+keep reading and that every server starts have no planted defect. Nor
+are four rules checked whose breach only disturbs on these disks: a
+pre-vote that raises the asker's term, a pre-vote granted while hearing
+from a leader, a leader that keeps leading without a majority, and the
+start count ignored, which becomes unsafe where flushed copies can be
+lost, with repair. Fixed schedules check, at the level of the core or on
+the members themselves, a reply that answers no request or claims more
+than was sent, every check of a message's shape (one message breaking
+each relation of section 7.1's list alone, which changes nothing, the
+receiver's start record included; random schedules send no malformed
+message, so this test is their only guard), a refusal that
+arrives twice, a follower behind by entries larger than its log takes in
+one write, a member's refusal of everything after a failed operation, a
+leader that returns after it was cut and must not count an
+acknowledgement of its earlier term, and round 3's schedules: a follower
+whose every refusal is overtaken by a newer append while writes go on
+(it catches up; under the planted round 2 rule it stays where it was), the
+same with the other follower stopped once the first is left behind
+(commits go on; planted, they stop), an old refusal at the leader's base
+(not behind), a heartbeat between each step back and its refusal (seed
+190's loop does not return), a follower given a lower `max_entry`
+(blocked, sent only empty heartbeats), and a member refusing to open
+below the largest entry its log holds; and later rounds' schedules: a
+size refusal counted only for an entry carried and not acknowledged, a
+blocked follower that starts again with the cluster's limit and catches
+up, elections on a network that delivers every message two ticks late
+(a leader within 100 ticks; with the timer not restarted on standing,
+none in 400), and the checker's own hand-built cases for the commit
+record, an acknowledgement at the base and an unconfirmed report of
+behind. Checks 1, 2, 5 to 9, 12 and 13,
+and check 10's repair, are not run on a cluster yet.
 
 **Both engines behind one server.** Every server test runs against both
 engines, and generated request sequences are sent to both through the real

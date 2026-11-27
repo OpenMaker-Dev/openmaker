@@ -574,7 +574,7 @@ Style object type resolution is `ObjectStyle::GetObjectType(LayoutObject const&)
 | 5 | Rectangle | `ShapeLayoutObject` | `rectangle` (51) | same | self, inner_border |
 | 6 | Rounded rectangle | `ShapeLayoutObject` | `rounded` (52) | same | self, inner_border |
 | 7 | Oval | `ShapeLayoutObject` | `oval` (53) | same | self, inner_border |
-| 8 | Group (and grouped button) | `GroupLayoutObject` | `group` (87) | `groupObj`: scriptStep (present when the group acts as a button) | - |
+| 8 | Group (and grouped button) | `GroupLayoutObject` | `group` (87) | `groupObj`: scriptStep (a nonzero step ID gives the group an action) | - |
 | 9 | Portal | `PortalLayoutObject` | `portal` (83) | `portalObj`: tableContextKey, tableAliasKey, portalFlags (5.3.2), oldNumRows, initialRow, numRows (double), scrollbarStyle | self, contents, row, row_alt, row_active, scrollbar_track, inner_border |
 | 10 | Button, also each button bar segment | `ScriptStepButtonLayoutObject` | `button` (80); `button_bar_segment` (79) inside a button bar | `buttonObj`: flags, textFlags, scriptStep {id, value, flags, reserved}, libraryKey (icon), iconSize, displayType | self, text, icon, inner_border |
 | 11 | Tab control | `TabLayoutObject` | `tab_control` (81) | `tabObj`: flags, tabWidth, tabHeight, tabStyle, defaultPanelKey, currentPanelKey | self, tab_header |
@@ -2242,7 +2242,9 @@ Storage [O, 2026-11-02]:
   `SetAutoEncodeURL` clears `0x20` when on (the bit means "do not encode"),
   `SetFMIntegration` ("Allow JavaScript to perform FileMaker scripts")
   `0x40`. The setup model does not touch `0x8000`, which most stored viewers
-  have (meaning unknown, kept). Across the 80 web viewers of the MBS 16.3
+  have: FileMaker Pro 26.1.1 set it for a custom web address and not for a
+  template (inferred, 10.19); it also stored `0x0080`, which no setter
+  writes, with some options (10.19). Across the 80 web viewers of the MBS 16.3
   examples, 62 store `0x800d`: FileMaker's defaults (interaction, progress
   bar, status messages, encoding on; Find mode and JavaScript scripts off).
   None of them allows JavaScript scripts, and none of their pages call
@@ -2268,7 +2270,8 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
 - Browse evaluates the address on the current record in Form view and on
   each row's record in List view, and shows it in a native view (wry): on
   Linux a WebKitGTK view whose X11 window is a child of its window's own X11
-  window, on macOS a WKWebView in a clipping view of its window's content
+  window, or, with the Wayland backend, a page Browse paints itself (below),
+  on macOS a WKWebView in a clipping view of its window's content
   view (below). The view lies at the
   object's rectangle, clipped to the document's scroll area
   and zoomed with it; the view hides while egui draws anything over it
@@ -2360,7 +2363,58 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   so as to leave the desktop alone), and `tests/web_viewer_windows_native.rs`
   reads a second window's List rows' colors from the system's
   `screencapture`.
-- On Linux the views can only be children of X11 windows, so a build with
+- With `OPENMAKER_WEB_VIEWER_BACKEND=wayland` (opt-in for now,
+  `web_viewer/wayland.rs`), a Linux build keeps its windows where winit
+  puts them (Wayland on a Wayland session), and no view is a window:
+  - **The page host.** WebKitGTK runs in `om-gui-webview`, a process of its
+    own beside the program (or `OPENMAKER_WEB_VIEWER_HOST`), which takes
+    the app's commands and sends its events as JSON lines on its stdin and
+    stdout. Its only display is a Wayland compositor of the app's own
+    (smithay, `web_viewer/wayland/display.rs`) with no screen, reached
+    through a socket in a private directory that goes once the host has
+    connected. Each view is a window there, titled with its id and sized to
+    the object in points. The display's `wl_output` scale is the app's
+    pixels per point rounded up (GTK 3 has whole scales only, so at 1.5 a
+    page is drawn at 2 and scaled down), and the host gets no `GDK_SCALE`
+    ([#1086](https://github.com/OpenMaker-Dev/openmaker/issues/1086)).
+  - **Frames.** The display offers no DMA-BUF, so WebKitGTK sends its pages
+    in shared memory (its web process still renders them on the GPU). The
+    display reads each buffer through its pool's file rather than mapping
+    it, which needs no `unsafe` code, and only once the sizes the buffer
+    declares fit: sides no larger than the app's largest texture, and what
+    reading and converting it take within 256 MiB beside the other views'
+    frames waiting for the app. Each view keeps only its newest frame: the
+    one waiting goes before its replacement is read.
+  - **Painting.** Browse paints each view's newest frame as a texture in its
+    object's place among the layout's objects. Objects stacked above a web
+    viewer, menus, popovers and dialogs draw over the page, where the X11
+    backend's views hide instead. A window needs no native window of its own
+    for its pages.
+  - **Input.** The pointer's moves, buttons and wheel over an interactive
+    viewer go to the page; nothing egui draws above it gets them. A press
+    gives the page the keyboard's focus, and scrolling over the page scrolls
+    it, not the layout. Keys, input methods, the page's menus and pop-ups
+    (shown nowhere yet, and closed by the next press), its cursor shapes and
+    the clipboard do not reach it yet.
+  - **The host is another process.** Both ways are bounded. A command
+    line longer than 16 MiB (a page's address, a function's parameters) is
+    refused as it is written, and that load or call fails; the Set Web
+    Viewer or Perform JavaScript in Web Viewer that asked for it fails with
+    error 3 [I, OpenMaker's choice; FileMaker unmeasured]. A view whose
+    first address was refused is made, empty, by its next load. Commands
+    wait in a queue bounded by number and bytes, and the host holds one at
+    a time. Its event lines are bounded too, and its events are checked as
+    any page's are. A host that ends fails its views, as a native view
+    whose browser went away does. Set Web Viewer and Perform JavaScript in
+    Web Viewer then fail with error 3 [I, OpenMaker's choice; FileMaker's
+    error for a web viewer whose engine ended is unmeasured].
+
+  Its design, and how the alternatives were set aside, is
+  [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323)'s study.
+  `tests/web_viewer_composited.rs` runs it in the real app under Xvfb: a
+  page painted in its object with no child window, a text object above
+  the viewer drawn over it, and a real click reaching the page's bridge.
+- On Linux the X11 backend's views can only be children of X11 windows, so a build with
   the feature puts its windows on winit's X11 backend whenever an X server
   answers at startup (`om_gui::native_options`). On a Wayland session, where
   winit would otherwise choose Wayland, that is XWayland, and no environment
@@ -2607,7 +2661,7 @@ objects:
 
 | Key | Holds | Type |
 |---|---|---|
-| `01, <occurrence>, <field>, <object>` | which objects show which fields: the occurrence's and the field's catalog key segments (Contacts: `d0 00 02`, field `01`), then the object's key. A field object's entry has an empty value (156 entries across the six templates); other values (`00` 37, `0a` 34, `02` 11, `09` 10, `0d` 1) sit under portals (field `00` with a portal object's key), merge texts and buttons. A layout without references holds an empty list at `01, 00` | O; values other than empty: U |
+| `01, <occurrence>, <field>, <object>` | which objects show which fields: the occurrence's and the field's catalog key segments (Contacts: `d0 00 02`, field `01`), then the object's key. A field object's entry has an empty value (156 entries across the six templates); other values (`00` 37, `0a` 34, `02` 11, `09` 10, `0d` 1) sit under portals (field `00` with a portal object's key), merge texts and buttons, and `0d` under a web viewer for each field its address reads (10.19). A layout without references holds an empty list at `01, 00` | O; values other than empty but `09` (10.17) and `0d`: U |
 | `03, <part>, 07` | the part's top-level objects: a big-endian `u32` count, then each object's key string after a byte giving its length (`02 01 33` for object 51, `03 02 80 49` for object 201). Every part has one (183 of 183, 67 of them empty with count 0), stored inline, its count matching its entries, in the order of the root stack (183 of 183). Every top-level object is in its part's list (853 of 853, 264 of them field objects); one list names a key that is not a top-level object | O; meaning I: the objects each part shows (below) |
 | `05, 00` | the key string (length byte, serial key) of an object key: on each of 47 layouts with objects, never below a key of the object store, equal to the largest on 37 and above it on 10 (objects deleted); absent on the 25 without objects. One layout has an attribute record keyed above it | O; meaning I: the last object key issued |
 | `08, <name key>` | the named objects: the object name's collation key (as a catalog's name list, schema-path.md 5.6) to the object's key string (`01 03`) | O |
@@ -3699,6 +3753,75 @@ above.
 from (the field ends at 192, 82 points into the Body), and what it writes
 for a sub-summary or a part added between two existing parts of other
 kinds.
+
+### 10.19 A new web viewer's records
+
+[O, 2026-11-26, FileMaker Pro 26.1.1 for macOS, #896; four copies of the
+English Contacts starter, Contact Details, each with one web viewer drawn
+with the Web Viewer tool at 40/300/440/500 points and set up in Web Viewer
+Setup, then saved, closed and compared key by key with the starter and with
+a copy Pro opened and saved without a viewer]
+
+| Copy | Setup | `externalObj.flags` |
+|---|---|---|
+| W1 | Custom Web Address `"https://example.com/?q=" & Contacts::Website`; interaction, Find mode and JavaScript scripts on; progress bar, status messages and encoding off | `0x80e3` |
+| W2 | Custom Web Address `"https://example.com"`, the dialog's defaults | `0x800d` |
+| W3 | W1 opened again: address `"https://example.org"`, progress bar on | `0x80e7` |
+| W4 | the Google Maps (US) template, its five fields set to a related occurrence's fields, the defaults | `0x000d` |
+
+A new viewer's setup starts on Google Maps (US) with interaction, progress
+bar, status messages and encoding on, and Find mode and JavaScript scripts
+off. In all four the layout member gained:
+- **The object**, on top of the root stack, as 9.6 describes it: type 13,
+  key 51 (the next), flags `0x30400000` (anchored left and top, and
+  `kSelected`, 5.2.1), the bounds, the style `{localStyles {self normal
+  613: 0}, objectTypeId 86}` and `externalObj {WEBV, 0, flags}`. Pro
+  rewrote the object store, and every other object's definition was byte
+  for byte the stored one.
+- **Its attribute record** `05, <viewer>`: the address under `00 00` as
+  a formula node `05` with context `04` = `01 00`, the formatted stream
+  `05` and the Polish stream `06` (for a lone text literal the two
+  streams are the same bytes); the data format `0d` = `00 0a`; and a UUID
+  `d8`. No name `10` and no `d9`, which every object of the shipped
+  templates has.
+- **Its indexes**: an entry at the end of the body's list `03, <body>, 07`,
+  an object index entry `0a, <300, 40, 50>` with the nine-byte value
+  every indexed object has, the same value in the tab order at one past
+  the last entry (`15, 001c`), and `05, 00` raised to its key.
+- **Field references** `01, <occurrence>, <field>, <viewer>` of value `0d`,
+  one per field the address reads: one for W1, none for W2, five (to the
+  related occurrence) for W4. W3's new address read no field, and W1's
+  reference was gone; the viewer kept its UUID.
+- Nothing else of the layout: no table view `0d` for it, and the layout's
+  catalog entry `[4, 1, 07, L]` and `16` were byte for byte the starter's.
+  The member's and the catalog's stamps changed.
+
+Save as XML's `<WebViewer>` calculations matched the stored formatted
+text, and recompiled to the stored Polish.
+
+[I] `0x8000` marks a custom address: W2 and W4 have the same check boxes
+and differ only by it, which explains why most stored viewers have it
+(9.6). [U] `0x0080`: W1 and W3 have it and no Setup setter writes it; W2
+does not. Which option or action sets it is not isolated yet (#896's
+follow-up runs W5-W8, one option each).
+
+What OpenMaker writes for a new viewer (`om_data::layout_placement::
+plan_web_viewer`, `docs/authoring.md`, "Web viewers on layouts"): the
+records above, but for `kSelected` in the object's flags, which no
+placement writes (10.5), and the object store, to which the viewer is
+appended with every stored byte kept. It writes only the option
+combinations measured above (W2's, W1's and W3's flags) with a custom
+address, and refuses the others; and only an address whose formatted
+stream, printed with the file's names as Web Viewer Setup shows it and
+compiled again as text with them, gives back the same tokens and the
+stored Polish stream, as Pro's four did (names that begin or end a binding
+with a colon are refused); whose fields are each stored with their occurrence (`TABLE_PRESENT`, as W1's),
+and which calls no custom or plug-in function. [O, 2026-11-26] For W2's and W1's setups
+on the same starter's Contact Details (at 40/300/320/500, clear of the
+tab control), OpenMaker Server's records outside the object store were
+byte for byte Pro's, but for the viewer's UUID and the stamp's user and
+time. That FileMaker Pro opens such a file, shows the viewer and passes
+Recover is not yet checked.
 
 ## 11. Installer "FileMaker Pro 26.pdf"
 

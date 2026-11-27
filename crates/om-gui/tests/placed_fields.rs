@@ -971,6 +971,103 @@ fn a_portal_drawn_in_layout_mode_is_set_up_and_saved() {
     );
 }
 
+/// Layout mode's Web Viewer tool draws a web viewer (#896); Web Viewer
+/// Setup, which opens as the drawing ends, takes a custom web address and
+/// refuses options FileMaker Pro was not seen to store; Save Layout places
+/// it with the operation `om-author`'s `place_web_viewer` uses, and a new
+/// connection reads it with its options and address.
+#[test]
+fn a_web_viewer_drawn_in_layout_mode_is_set_up_and_saved() {
+    use egui::accesskit::Role;
+    let file = form_file_with(NAME);
+    let hosted = hosted::host_file(
+        "place-web-viewer",
+        Path::new(&file.0),
+        fixture::FILE,
+        (ACCOUNT, PASSWORD),
+    );
+    let mut app = open_window(&hosted);
+    common::click(&mut app, "Edit Layout");
+    common::wait_until(&mut app, "the layout canvas", |app| {
+        app.query_by_label("Field: Name (object 1)").is_some()
+    });
+    common::click(&mut app, "Web Viewer");
+    let canvas = app.get_by_label("Layout canvas").rect();
+    let origin = canvas.min + egui::vec2(22.0, 0.0);
+    drag(
+        &mut app,
+        origin + egui::vec2(20.0, 60.0),
+        origin + egui::vec2(320.0, 170.0),
+    );
+    common::wait_until(&mut app, "Web Viewer Setup", |app| {
+        app.query_by_role_and_label(Role::MultilineTextInput, "Web Address")
+            .is_some()
+    });
+    app.get_by_role_and_label(Role::MultilineTextInput, "Web Address")
+        .click();
+    app.run_steps(2);
+    app.get_by_role_and_label(Role::MultilineTextInput, "Web Address")
+        .type_text("\"https://example.com/?q=\" & Name");
+    app.run_steps(2);
+    // An option combination Pro was not seen to store: OK waits.
+    app.get_by_role_and_label(Role::CheckBox, "Automatically encode URL")
+        .click();
+    app.run_steps(2);
+    assert!(app.get_by_label("OK").accesskit_node().is_disabled());
+    app.get_by_role_and_label(Role::CheckBox, "Automatically encode URL")
+        .click();
+    app.run_steps(2);
+    shot(
+        &mut app,
+        "web-viewer-setup",
+        "Web Viewer Setup for the drawn web viewer",
+    );
+    ok(&mut app);
+    let drafted = "New web viewer \"https://example.com/?q=\" & Name";
+    common::wait_for_label(&mut app, drafted);
+    // Setup's OK is a step of the draft's history: Undo drops the set-up
+    // viewer and Redo brings it back (#1076's review).
+    common::open_menu(&mut app, "Edit");
+    common::click(&mut app, "Undo");
+    assert!(app.query_by_label(drafted).is_none());
+    app.key_press_modifiers(
+        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        egui::Key::Z,
+    );
+    app.run_steps(3);
+    common::wait_for_label(&mut app, drafted);
+    save_layout(&mut app);
+    common::wait_until(&mut app, "the layout saved", |app| {
+        assert!(app.state().error().is_none(), "{:?}", app.state().error());
+        app.state().is_settled()
+            && app
+                .query_by_role_and_label(Role::MultilineTextInput, "Web Address")
+                .is_none()
+            && app
+                .query_by_label("New web viewer \"https://example.com/?q=\" & Name")
+                .is_none()
+    });
+    shot(&mut app, "web-viewer-saved", "the web viewer saved");
+    drop(app);
+
+    let mut reader = hosted.opened();
+    let member = reader.layout_member(fixture::LAYOUT).unwrap().unwrap();
+    reader.close();
+    let layout = om_data::layout_placement::decode(&member).unwrap();
+    let viewer = layout
+        .objects
+        .get(*layout.objects.root.last().unwrap())
+        .unwrap();
+    assert_eq!(viewer.web_viewer().map(|o| o.0), Some(0x800d));
+    let bounds = viewer.bounds.as_ref().unwrap();
+    assert_eq!(
+        (bounds.left, bounds.top, bounds.right, bounds.bottom),
+        (20.0, 60.0, 320.0, 170.0)
+    );
+    let address = viewer.calcs.web_address.as_ref().expect("the web address");
+    assert_eq!(address.polish.field_references().len(), 1);
+}
+
 /// Layout mode's New Layout / Report adds a Form layout on the occurrence
 /// chosen, named as typed, with the operation `om-author`'s
 /// `create_layout` uses (`DataProvider::create_layout`): the window opens
@@ -2164,6 +2261,69 @@ fn part_setup_turns_on_the_bodys_page_break() {
     assert_eq!(parts[0].flags & PAGE_BREAK_BEFORE, PAGE_BREAK_BEFORE);
 }
 
+/// A retyped text whose Save Layout meets a layout another client changed
+/// (306) stays unsaved: the alert says it is kept, closing still waits for
+/// Save or Revert Layout, and Revert Layout discards it (#1048's re-check).
+#[test]
+fn a_retyped_text_is_kept_when_save_layout_meets_a_changed_layout() {
+    let mut tree = form_tree(encode::text_object(1, &rect(110.0, 20.0, 120.0, 20.0)));
+    let layout = uint_segment(fixture::LAYOUT);
+    tree.put(
+        &[&[4], &[5], &layout, &[5], &[1], &[1]],
+        om_scripts::text_node(&[], "Due"),
+    );
+    let file = fixture::TempFile::from_tree("gui-retype-conflict", &tree);
+    let hosted = hosted::host_file(
+        "retype-conflict",
+        Path::new(&file.0),
+        fixture::FILE,
+        (ACCOUNT, PASSWORD),
+    );
+    let mut app = open_window(&hosted);
+    common::click(&mut app, "Edit Layout");
+    common::wait_until(&mut app, "the layout canvas", |app| {
+        app.query_by_label("Text (object 1)").is_some()
+    });
+    let at = app.get_by_label("Text (object 1)").rect().center();
+    common::workspace::double_click_at(&mut app, at);
+    common::wait_until(&mut app, "the text being typed", |app| {
+        app.query_by_label("Text being typed").is_some()
+    });
+    app.event(egui::Event::Text(" date".into()));
+    app.run_steps(2);
+    app.key_press(egui::Key::Enter);
+    app.run_steps(2);
+    // Another client adds a Footer: the layout's revision moves on.
+    let mut other = hosted.opened();
+    let shown = other.layout_member(fixture::LAYOUT).unwrap().unwrap();
+    other
+        .set_layout_parts(om_data::layout_placement::PartsChange {
+            layout: u32::try_from(fixture::LAYOUT).unwrap(),
+            expected: catalog_revision(&shown),
+            change: om_data::layout_placement::PartChange::Add {
+                part_type: 7,
+                size: 22.0,
+            },
+        })
+        .unwrap();
+    other.close();
+    save_layout(&mut app);
+    common::wait_until(&mut app, "the refusal", |app| app.state().error().is_some());
+    let error = app.state().error().unwrap().to_owned();
+    assert!(error.contains("are kept"), "{error}");
+    assert!(app.state().layout_unsaved(), "the retyped text is kept");
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "the layout read again", |app| {
+        app.state().is_settled()
+    });
+    app.run_steps(5);
+    assert!(app.state().layout_unsaved(), "still kept after the read");
+    common::open_menu(&mut app, "Layouts");
+    common::click(&mut app, "Revert Layout");
+    app.run_steps(2);
+    assert!(!app.state().layout_unsaved());
+}
+
 /// Part Setup's Create adds a Header above the body, which moves the body's
 /// field down by its 110 points, and Delete removes it again, each with the
 /// operation `om-author`'s `change_parts` uses
@@ -2298,10 +2458,121 @@ fn part_setup_creates_and_deletes_a_header_and_the_body_boundary_is_dragged() {
         "95-part-boundary",
         "the Body dragged 40 points taller",
     );
-    drop(app);
     assert_eq!(
         read(&hosted),
         (vec![(4, 0.0, 240.0), (7, 240.0, 22.0)], 20.0)
+    );
+
+    // The Part tool's button dropped within the parts adds none, as
+    // FileMaker Pro 26.1.1 added none at any such drop (#885).
+    let tool = app.get_by_label("Part Tool").rect().center();
+    let canvas = app.get_by_label("Layout canvas").rect();
+    drag(&mut app, tool, canvas.min + egui::vec2(200.0, 60.0));
+    common::wait_until(&mut app, "the drop refused", |app| {
+        app.state().error().is_some()
+    });
+    assert_eq!(
+        app.state().error(),
+        Some("This part cannot be positioned here.")
+    );
+    shot(
+        &mut app,
+        "95b-part-tool-refused",
+        "the Part tool dropped within the Body",
+    );
+    common::click(&mut app, "OK");
+    app.run_steps(2);
+
+    // Dropped 17 points below the layout's last part, it opens Part
+    // Definition alone with the kinds that follow the Footer offered and
+    // the first chosen, and OK adds that part from the Footer's bottom
+    // down to the drop point, as Pro's did on a List layout.
+    let tool = app.get_by_label("Part Tool").rect().center();
+    drag(&mut app, tool, canvas.min + egui::vec2(200.0, 262.0 + 17.0));
+    common::wait_until(&mut app, "the Part tool's Part Definition", |app| {
+        app.query_by_role_and_label(Role::RadioButton, "Title Footer")
+            .is_some()
+    });
+    assert!(
+        app.query_by_role_and_label(Role::Button, "Create")
+            .is_none(),
+        "Part Definition opens without Part Setup's list"
+    );
+    let radio = |app: &common::App, kind: &str| {
+        let radio = app.get_by_role_and_label(Role::RadioButton, kind);
+        let node = radio.accesskit_node();
+        (
+            node.toggled() == Some(egui::accesskit::Toggled::True),
+            !node.is_disabled(),
+        )
+    };
+    assert_eq!(radio(&app, "Title Footer"), (true, true));
+    assert_eq!(radio(&app, "Bottom Navigation"), (false, true));
+    assert_eq!(
+        radio(&app, "Header"),
+        (false, false),
+        "not after the Footer"
+    );
+    shot(
+        &mut app,
+        "96-part-tool",
+        "the Part tool dropped below the Footer, Title Footer chosen",
+    );
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "the Part tool's part saved", |app| {
+        assert!(app.state().error().is_none(), "{:?}", app.state().error());
+        app.state().is_settled() && app.query_by_label("Title Footer boundary").is_some()
+    });
+    assert!(
+        app.query_by_role_and_label(Role::RadioButton, "Title Footer")
+            .is_none(),
+        "Part Definition closed"
+    );
+    shot(
+        &mut app,
+        "97-part-tool-title-footer",
+        "the Title Footer the Part tool added",
+    );
+    assert_eq!(
+        read(&hosted),
+        (
+            vec![(4, 0.0, 240.0), (7, 240.0, 22.0), (8, 262.0, 17.0)],
+            20.0
+        )
+    );
+
+    // Insert > Part... (#911) opens the same Part Definition with the first
+    // kind the layout lacks chosen, as FileMaker Pro 26.1.1's did: OK alone
+    // adds a Top Navigation part.
+    common::open_menu(&mut app, "Insert");
+    shot(&mut app, "98-insert-menu", "Layout mode's Insert menu");
+    common::click(&mut app, "Part...");
+    common::wait_until(&mut app, "Insert > Part's Part Definition", |app| {
+        app.query_by_role_and_label(Role::RadioButton, "Top Navigation")
+            .is_some()
+    });
+    shot(
+        &mut app,
+        "99-insert-part",
+        "Insert > Part..., the first kind offered chosen",
+    );
+    common::click(&mut app, "OK");
+    common::wait_until(&mut app, "Insert > Part's part saved", |app| {
+        assert!(app.state().error().is_none(), "{:?}", app.state().error());
+        app.state().is_settled() && app.query_by_label("Top Navigation boundary").is_some()
+    });
+    drop(app);
+    assert_eq!(
+        read(&hosted),
+        (
+            vec![
+                (12, 0.0, 22.0),
+                (4, 22.0, 240.0),
+                (7, 262.0, 22.0),
+                (8, 284.0, 17.0)
+            ],
+            42.0
+        )
     );
 }
 
