@@ -2301,7 +2301,17 @@ impl RecordPlan {
             if options.options & !allowed != 0 {
                 return Err(error("unsupported field options."));
             }
-            let auto_enters_global = global && options.options & AUTO_ENTRY_OPTIONS & !0x100 != 0;
+            // Disabling calculated auto-entry can leave the replacement
+            // bit and the old calculation on a local global Text field.
+            let inactive_global_replacement = local
+                && kind == FieldKind::Normal
+                && field.data_type == DataType::Text
+                && options.options == 0x0001_0080
+                && options.max_repetitions == 1
+                && options.validation_options == 0;
+            let auto_enters_global = global
+                && options.options & AUTO_ENTRY_OPTIONS & !0x100 != 0
+                && !inactive_global_replacement;
             if auto_enters_global
                 && (!global_defaults
                     || options.options & AUTO_ENTRY_MODES & !GLOBAL_AUTO_ENTRY_MODES != 0
@@ -10775,6 +10785,27 @@ mod tests {
             assert_eq!(decoded(&assigned, 23).as_deref(), Some("Explicit"));
             assert!(plan_with(&table, &base_formulas(), &[], Vec::new(), false).is_err());
         }
+    }
+
+    #[test]
+    fn inactive_global_replacement_leaves_the_table_writable() {
+        let mut table = table();
+        table.fields.push(field(
+            23,
+            FieldKind::Normal,
+            DataType::Text,
+            0,
+            0x0001_0080,
+            0,
+        ));
+        let mut formulas = base_formulas();
+        formulas.push((23, 5, "\"automatic\""));
+        let plan = plan_of(&table, &formulas, &[]).unwrap();
+        assert!(!plan.has_global_auto_entry(Entry::script(false, false)));
+        let created = create(&plan, &[(1, "Ada")]).unwrap();
+        assert_eq!(decoded(&created, 1).as_deref(), Some("Ada"));
+        assert!(!created.values.contains_key(&23));
+        assert!(plan_with(&table, &formulas, &[], Vec::new(), false).is_err());
     }
 
     #[test]
