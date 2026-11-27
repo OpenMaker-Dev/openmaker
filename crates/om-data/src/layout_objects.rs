@@ -42,6 +42,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use om_hbam::slot::be_uint;
 use om_hbam::{serial, OwnedNode};
+use om_layout::object::AutosizingAnchors;
 use om_layout::wire::{Fields, RawValue, Value};
 use om_layout::{LayoutDef, LayoutObject, ObjectKind, Rect};
 
@@ -111,12 +112,45 @@ pub struct DeletedObjects {
 /// Frames or a deletion planned into a layout.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Planned {
-    /// The member `[4, 5, L]` with the objects at their new frames, or
-    /// without the deleted objects, without the stamp.
+    /// The layout member `[4, 5, L]` with the object edit, before stamping.
     pub member: OwnedNode,
     /// What changed: each changed key below the member (as hex segments)
     /// and what it holds.
     pub changes: Vec<(String, String)>,
+}
+
+/// Plan the selected object's stored edge anchors on a fixed layout.
+///
+/// The edit leaves the order of the store, enclosing objects' flags and
+/// the selection bit unchanged (layout-model.md 5.7).
+pub fn plan_anchors(
+    member: &OwnedNode,
+    object: u64,
+    anchors: AutosizingAnchors,
+) -> Result<Planned, Refusal> {
+    fixed_layout(member)?;
+    let (stored, objects) = stored_objects(member)?;
+    if objects.get(object).is_none() {
+        return Err(Refusal::Invalid(format!(
+            "The layout has no object {object}."
+        )));
+    }
+    let bytes = om_layout::encode::with_object_anchors(&stored, object, anchors.flags())
+        .ok_or_else(|| {
+            Refusal::Unsupported(format!(
+                "OpenMaker cannot safely edit the stored anchors of object {object}."
+            ))
+        })?;
+    let mut next = member.clone();
+    let mut changes = Vec::new();
+    if stored != bytes {
+        next.set_child(stored_value(&[OBJECTS], &bytes));
+        changes.push(("[07]".into(), format!("object {object} autosizing anchors")));
+    }
+    Ok(Planned {
+        member: next,
+        changes,
+    })
 }
 
 /// The field controls a field object can be given (layout-model.md 5.4),
@@ -1181,6 +1215,29 @@ mod tests {
                 OwnedNode::leaf(vec![0x77], vec![9]),
             ],
         )
+    }
+
+    #[test]
+    fn planning_anchors_edits_one_member_record_and_keeps_a_no_op_exact() {
+        let before = member();
+        let (_, stored) = stored_objects(&before).unwrap();
+        let anchors = AutosizingAnchors {
+            left: false,
+            top: false,
+            right: true,
+            bottom: true,
+        };
+        let edit = plan_anchors(&before, 2, anchors).unwrap();
+        let (_, changed) = stored_objects(&edit.member).unwrap();
+        assert_eq!(changed.get(2).unwrap().autosizing_anchors(), anchors);
+        assert_eq!(stored.get(1), changed.get(1));
+        assert_eq!(stored.root, changed.root);
+        let mut restored = edit.member.clone();
+        restored.set_child(before.child(&[OBJECTS]).unwrap().clone());
+        assert_eq!(restored, before);
+        let repeated = plan_anchors(&edit.member, 2, anchors).unwrap();
+        assert!(repeated.changes.is_empty());
+        assert_eq!(repeated.member, edit.member);
     }
 
     /// A field shown as a pop-up menu takes display type 2, the value list

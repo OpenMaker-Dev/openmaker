@@ -1373,7 +1373,10 @@ and checked by reopening the file:
 | Pop-up field inside an all-edges portal | `0x30000000` | `0x70000000` |
 
 Right was enabled for both nested targets, and the enclosing objects kept
-their own anchor bits. Comparing raw messages by object key found no other
+their own anchor bits. After reopening the saved file,
+the Inspector showed the grouped child's Right anchor even though its
+group had only Left and Top. That readback matches the child's own stored
+bits. Comparing raw messages by object key found no other
 field changes. In each save FileMaker moved the `0x00400000` selection bit
 (5.2.1) from the previously selected object to the edited top-level object
 or, for the nested cases, to its group or portal. It also serialized the

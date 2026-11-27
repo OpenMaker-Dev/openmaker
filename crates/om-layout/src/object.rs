@@ -622,6 +622,30 @@ pub struct AutosizingAnchors {
     pub bottom: bool,
 }
 
+impl AutosizingAnchors {
+    const LEFT: u64 = 1 << 28;
+    const TOP: u64 = 1 << 29;
+    const RIGHT: u64 = 1 << 30;
+    const BOTTOM: u64 = 1 << 31;
+
+    fn from_flags(flags: u64) -> Self {
+        Self {
+            left: flags & Self::LEFT != 0,
+            top: flags & Self::TOP != 0,
+            right: flags & Self::RIGHT != 0,
+            bottom: flags & Self::BOTTOM != 0,
+        }
+    }
+
+    /// This edge set's four bits in `LayoutObject.flags`.
+    pub fn flags(self) -> u64 {
+        (u64::from(self.left) * Self::LEFT)
+            | (u64::from(self.top) * Self::TOP)
+            | (u64::from(self.right) * Self::RIGHT)
+            | (u64::from(self.bottom) * Self::BOTTOM)
+    }
+}
+
 /// `FMLayoutPB.LayoutObject`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LayoutObject {
@@ -781,12 +805,7 @@ impl LayoutObject {
 
     /// The stored autosizing flags (layout-model.md §5.7).
     pub fn autosizing_anchors(&self) -> AutosizingAnchors {
-        AutosizingAnchors {
-            left: self.flags & (1 << 28) != 0,
-            top: self.flags & (1 << 29) != 0,
-            right: self.flags & (1 << 30) != 0,
-            bottom: self.flags & (1 << 31) != 0,
-        }
+        AutosizingAnchors::from_flags(self.flags)
     }
 
     /// Whether the layout object has FileMaker's design-time lock flag.
