@@ -3920,6 +3920,133 @@ fn a_local_global_recalculates_from_explicit_input_and_new_record() {
 }
 
 #[test]
+fn a_local_global_evaluate_rule_refuses_evaluation_before_changing_fields_or_rows() {
+    use fixture::{LAYOUT, OCCURRENCE};
+    use om_data::host::CalcNeed;
+    use om_data::rules::RecordNumber;
+    use om_hbam::slot::uint_segment;
+
+    const INPUT: u64 = 40;
+    const OUTPUT: u64 = 41;
+    const EXPRESSION: &str = r#"Let ( $$Trace = "ran" ; 1 )"#;
+    for (tag, options, replaces) in [
+        ("evaluate-replace", 0x1_0088, true),
+        ("evaluate-keep", 0x1_0008, false),
+    ] {
+        let folder = Folder::new(tag);
+        let path = folder.file(FILE, PASSWORD, |root| {
+            fixture::add_field(root, TABLE, INPUT, "Input", 1, 1, 0, 0x1_0000, 0);
+            fixture::add_field(root, TABLE, OUTPUT, "Output", 1, 1, 0, options, 0);
+            let mut names = fixture::names();
+            names.add_field(TABLE, INPUT, "Input");
+            fixture::add_formula(
+                root,
+                &names,
+                (TABLE, OCCURRENCE),
+                OUTPUT,
+                5,
+                r#"Let ( result = Evaluate ( Input ) ; "" )"#,
+            );
+            root.put(
+                &[&uint_segment(TABLE), &[8], &uint_segment(INPUT)],
+                om_hbam::OwnedNode::leaf(Vec::new(), om_scsu::encode_scsu(EXPRESSION)),
+            );
+        });
+        let mut provider = opened(&path);
+        let values = |provider: &mut NativeProvider| {
+            let data = provider
+                .calc_data(&[CalcNeed::Globals { table: TABLE }])
+                .unwrap();
+            [INPUT, OUTPUT].map(|field| match data.globals[&TABLE].get(field, 1) {
+                Some(om_data::calc::Value::Text(text)) => text.as_str().to_owned(),
+                None => String::new(),
+                other => panic!("expected plain Text, got {other:?}"),
+            })
+        };
+        let layout = LAYOUT as u32;
+        let original = provider.records(layout, 0, 1).unwrap();
+        let new = om_data::ScriptWrite {
+            layout,
+            record_number: Some(RecordNumber::LocalNewRecord(original.total + 1)),
+            ..Default::default()
+        };
+        assert_eq!(values(&mut provider), [EXPRESSION, ""]);
+        assert_eq!(
+            provider
+                .set_typed_global(TABLE, INPUT, 1, "")
+                .unwrap_err()
+                .code,
+            Some(3)
+        );
+        assert_eq!(
+            provider
+                .set_global(TABLE, INPUT, 1, "another expression")
+                .unwrap_err()
+                .code,
+            Some(3)
+        );
+        assert_eq!(values(&mut provider), [EXPRESSION, ""]);
+        provider.begin_record_commit().unwrap();
+        assert_eq!(
+            provider
+                .write_record_with_creation(&new, om_data::RecordCreation::NewRecord)
+                .unwrap_err()
+                .code,
+            Some(3)
+        );
+        provider.revert_record_session().unwrap();
+        assert_eq!(
+            provider.records(layout, 0, 1).unwrap().total,
+            original.total
+        );
+
+        provider.set_global(TABLE, OUTPUT, 1, "prior").unwrap();
+        if replaces {
+            assert_eq!(
+                provider
+                    .set_global(TABLE, INPUT, 1, EXPRESSION)
+                    .unwrap_err()
+                    .code,
+                Some(3)
+            );
+            assert_eq!(values(&mut provider), [EXPRESSION, "prior"]);
+            provider.set_global(TABLE, INPUT, 1, "").unwrap();
+            assert_eq!(values(&mut provider), ["", ""]);
+            provider.set_global(TABLE, OUTPUT, 1, "prior").unwrap();
+        } else {
+            provider.set_global(TABLE, INPUT, 1, EXPRESSION).unwrap();
+            assert_eq!(values(&mut provider), [EXPRESSION, "prior"]);
+        }
+        assert!(!provider.record_session_open());
+        provider.begin_record_commit().unwrap();
+        let created = provider
+            .write_record_with_creation(&new, om_data::RecordCreation::NewRecord)
+            .unwrap();
+        assert_eq!(created.id, original.total as i64 + 1);
+        let expected = if replaces {
+            ["", ""]
+        } else {
+            [EXPRESSION, "prior"]
+        };
+        assert_eq!(values(&mut provider), expected);
+        provider.commit_record_session(false).unwrap();
+        provider.close();
+
+        let saved = om_hbam::HbamFile::open(&path).unwrap();
+        assert_eq!(
+            saved.records(TABLE).unwrap().len(),
+            original.total as usize + 1
+        );
+        for field in [INPUT, OUTPUT] {
+            assert!(saved
+                .cell(TABLE, created.id as u64, field)
+                .unwrap()
+                .is_none());
+        }
+    }
+}
+
+#[test]
 fn new_record_auto_enters_the_session_globals() {
     use fixture::{LAYOUT, NAME, OCCURRENCE};
     use om_data::calc::Value;

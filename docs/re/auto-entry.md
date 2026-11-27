@@ -1011,6 +1011,16 @@ assignments did not survive reopen, unlike the separate global-input
 trial below. The cause was not measured.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1057#issuecomment-7209580006)
 
+With plain global Text input (`0x00010000`), an explicit Set Field
+recalculates immediately with RecordOpenState 0, even when assigned the
+same text. Ordinary New Record uses the current global input. An unrelated
+edit does neither. A valid expression set the trace when replacement was
+enabled or the output was empty. A nonempty keep-existing output suppressed
+the trace. On a clear or malformed input, Replace cleared the output and
+Keep preserved it, with no trace change. These runs returned 0. Nonempty
+input and output globals persisted across reopen.
+[Global-input comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1057#issuecomment-7209893983)
+
 ### A calculated global reading another global
 
 FileMaker Pro 26.1.1 on a local file measured global Text `Input` with
