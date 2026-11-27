@@ -2426,7 +2426,9 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
     egui's focus from any field; a press elsewhere in the window takes the
     keyboard back. While the page has it, the window's keys go to the page
     before anything else in the window sees them: its shortcuts and Tab
-    too, as with the X11 backend, where the page's own window takes them.
+    too, as with the X11 backend, where the page's own window takes them;
+    egui's focus stays with the page meanwhile. Every key the page holds
+    goes up when the keyboard moves, and when the app's window loses it.
     - **Keymap.** Keys go as Linux key codes with the modifier keys held.
       On a Wayland session the page's keymap is the session's: a connection
       of the app's own reads the compositor's keyboard keymap

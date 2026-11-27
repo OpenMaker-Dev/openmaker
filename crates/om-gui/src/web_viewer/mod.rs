@@ -179,6 +179,9 @@ pub(crate) enum PageInput {
     Preedit(String),
     /// The text an input method finished.
     Commit(String),
+    /// The app's window lost the keyboard: every key the page holds goes
+    /// up, since their releases go to another window.
+    Unfocused,
 }
 
 /// A view's newest picture ([`composited`] backends): `size` pixels of
@@ -606,6 +609,9 @@ pub(crate) struct WebViewers {
     /// The window and view whose painted page has the keyboard
     /// ([`Self::take_keys`]).
     keyboard: Option<(u32, u64)>,
+    /// The egui widget of the page with the keyboard, which keeps egui's
+    /// focus (`None`: no widget has it).
+    page_focus: Option<egui::Id>,
 }
 
 impl Default for WebViewers {
@@ -687,6 +693,7 @@ impl WebViewers {
             outcomes: Vec::new(),
             textures: std::collections::HashMap::new(),
             keyboard: None,
+            page_focus: None,
             hovered: None,
         }
     }
@@ -881,6 +888,7 @@ impl WebViewers {
             // The page has the keyboard now, and egui's focus with it (from
             // the next frame's start, before a Tab could move it).
             self.keyboard = Some((frame.window, view));
+            self.page_focus = focus;
             ctx.memory_mut(|memory| match focus {
                 Some(id) => {
                     memory.request_focus(id);
@@ -1072,6 +1080,32 @@ impl WebViewers {
             self.keyboard = None;
             return false;
         };
+        // egui's focus stays the page's: a Tab egui read before the page's
+        // widget held the focus (its lock applies from the frame after)
+        // moved it, and it comes back before any widget is drawn.
+        let page_focus = self.page_focus;
+        ctx.memory_mut(|memory| {
+            // The move a Tab or arrow asked of egui this frame is the page's.
+            memory.move_focus(egui::FocusDirection::None);
+            match page_focus {
+                Some(id) if memory.focused() != Some(id) => {
+                    memory.request_focus(id);
+                    memory.set_focus_lock_filter(id, PAGE_KEYS);
+                }
+                None => {
+                    if let Some(focused) = memory.focused() {
+                        memory.surrender_focus(focused);
+                    }
+                }
+                Some(_) => {}
+            }
+        });
+        let unfocused = ctx.input(|input| {
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::WindowFocused(false)))
+        });
         let (events, modifiers) = ctx.input_mut(|input| {
             let mut taken = Vec::new();
             input.events.retain(|event| {
@@ -1094,6 +1128,9 @@ impl WebViewers {
         let Some(Ok(backend)) = self.backend.as_mut() else {
             return true;
         };
+        if unfocused {
+            backend.input(view, PageInput::Unfocused);
+        }
         let any = !events.is_empty();
         for event in events {
             let command = |key| keys::code(key).map(|code| (code, vec![keys::CONTROL]));

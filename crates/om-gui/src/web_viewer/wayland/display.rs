@@ -420,6 +420,7 @@ impl State {
                 } => self.key(view, code, pressed, &held),
                 PageInput::Preedit(text) => self.compose(view, Some(text), None),
                 PageInput::Commit(text) => self.compose(view, None, Some(text)),
+                PageInput::Unfocused => self.release_keys(),
                 input => self.pointer(view, input),
             },
             Request::Focus(view) => self.focus(view),
@@ -434,6 +435,19 @@ impl State {
         }
     }
 
+    /// Every key the keyboard holds goes up (the modifiers, and keys such as
+    /// Right Shift or AltGr that went as keys), so that its state never
+    /// keeps one down: before the focus moves, or when the app's window
+    /// lost the keyboard.
+    fn release_keys(&mut self) {
+        self.held.clear();
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            for key in keyboard.pressed_keys() {
+                self.send_key(key.raw().saturating_sub(8), false);
+            }
+        }
+    }
+
     /// Give the keyboard, and the text input, to `view`'s window or none.
     fn focus(&mut self, view: Option<u64>) {
         let surface = view.and_then(|v| self.views.get(&v).cloned());
@@ -441,14 +455,10 @@ impl State {
         if before == surface {
             return;
         }
-        // Every key the keyboard holds goes up before the focus moves (the
-        // modifiers, and keys such as Right Shift or AltGr that went as
-        // keys), so that its state never keeps one down.
-        self.held.clear();
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            for key in keyboard.pressed_keys() {
-                self.send_key(key.raw().saturating_sub(8), false);
-            }
+        self.release_keys();
+        // The caret the page had is no longer where text goes.
+        if let (Some(view), Ok(mut carets)) = (self.keyboard_view, self.carets.lock()) {
+            carets.remove(&view);
         }
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, surface.clone(), SERIAL_COUNTER.next_serial());
@@ -458,6 +468,7 @@ impl State {
             // again for the new window.
             input.enabled = false;
             input.pending_enable = None;
+            input.pending_caret = None;
             if let Some(before) = &before {
                 input.resource.leave(before);
             }
@@ -645,7 +656,10 @@ impl State {
                     },
                 );
             }
-            PageInput::Key { .. } | PageInput::Preedit(_) | PageInput::Commit(_) => return,
+            PageInput::Key { .. }
+            | PageInput::Preedit(_)
+            | PageInput::Commit(_)
+            | PageInput::Unfocused => return,
             PageInput::Wheel { x, y, dx, dy } => {
                 motion(self, x, y);
                 let mut frame = AxisFrame::new(time).source(AxisSource::Continuous);

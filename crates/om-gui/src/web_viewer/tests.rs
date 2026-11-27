@@ -426,8 +426,75 @@ fn a_painted_page_with_the_keyboard_takes_the_window_keys() {
             ),
         ]
     );
+    // The window losing the keyboard lets go of every key the page holds
+    // (their releases go to another window).
+    let mut output = ctx.run_ui(
+        egui::RawInput {
+            events: vec![egui::Event::WindowFocused(false)],
+            ..Default::default()
+        },
+        |ui| {
+            assert!(viewers.take_keys(ui.ctx(), 1));
+        },
+    );
+    output.textures_delta.clear();
+    assert_eq!(commands(&recorded), ["input 1 Unfocused".to_owned()]);
     // Another window's frame takes nothing.
     assert!(!viewers.take_keys(&ctx, 2));
+}
+
+/// A Tab in the frame after a press in a page goes to the page: egui reads
+/// it before the page's widget holds the focus (its lock applies only from
+/// the frame after), and `take_keys` gives the focus back before any of
+/// the window's widgets is drawn.
+#[test]
+fn the_first_tab_after_a_press_in_a_page_leaves_egui_focus_with_it() {
+    let (mut viewers, _recorded) = viewers();
+    let ctx = egui::Context::default();
+    let page_id = egui::Id::unique("the page");
+    let page = placement(Some("about:blank"));
+    let pressed = Placement {
+        hovered: true,
+        focus: Some(page_id),
+        input: vec![PageInput::Button {
+            x: 1.0,
+            y: 1.0,
+            button: 0,
+            pressed: true,
+        }],
+        ..page.clone()
+    };
+    let draw = |ui: &mut egui::Ui| {
+        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(100.0, 50.0));
+        ui.interact(rect, page_id, egui::Sense::click_and_drag());
+        // A control drawn after the page, which a Tab would focus.
+        let _ = ui.button("next");
+    };
+    viewers.reconcile(&ctx, &frame(std::slice::from_ref(&page), &[]));
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        viewers.reconcile(ui.ctx(), &frame(std::slice::from_ref(&pressed), &[]));
+        draw(ui);
+    });
+    output.textures_delta.clear();
+    let tab = egui::Event::Key {
+        key: egui::Key::Tab,
+        physical_key: Some(egui::Key::Tab),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let mut output = ctx.run_ui(
+        egui::RawInput {
+            events: vec![tab],
+            ..Default::default()
+        },
+        |ui| {
+            assert!(viewers.take_keys(ui.ctx(), 1));
+            draw(ui);
+        },
+    );
+    output.textures_delta.clear();
+    assert_eq!(ctx.memory(|m| m.focused()), Some(page_id));
 }
 
 /// A painted page's newest frame is what Browse paints, until its view
