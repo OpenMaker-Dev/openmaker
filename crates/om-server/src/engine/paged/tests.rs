@@ -1824,8 +1824,11 @@ fn a_refused_import_leaves_no_page_in_use_on_the_page_file() {
 
 /// A tree of random shape: lists empty and full, values empty, short and
 /// long (which the writer writes in pieces), segments with zero and `ff`
-/// bytes, as the writer writes them.
-fn random_tree(rng: &mut Rng, depth: usize) -> Vec<OwnedNode> {
+/// bytes, as the writer writes them. With `long`, one segment in five is
+/// 4,200 bytes `p` and one more, which no `.fmp12` holds: in the store
+/// engine's tree its keys and the separators between them spill, sharing
+/// their first 1,024 bytes, so that pages cannot prove their order.
+fn random_tree(rng: &mut Rng, depth: usize, long: bool) -> Vec<OwnedNode> {
     let mut segments = std::collections::BTreeSet::new();
     let width = match rng.below(8) {
         0 => 0,
@@ -1833,6 +1836,12 @@ fn random_tree(rng: &mut Rng, depth: usize) -> Vec<OwnedNode> {
         _ => 1 + rng.below(6),
     };
     for _ in 0..width {
+        if long && rng.below(5) == 0 {
+            let mut segment = vec![b'p'; 4200];
+            segment.push(rng.next() as u8);
+            segments.insert(segment);
+            continue;
+        }
         let len = 1 + rng.below(4);
         let segment: Vec<u8> = (0..len)
             .map(|_| match rng.below(4) {
@@ -1847,7 +1856,7 @@ fn random_tree(rng: &mut Rng, depth: usize) -> Vec<OwnedNode> {
         .into_iter()
         .map(|segment| {
             if depth < 5 && rng.below(3) == 0 {
-                OwnedNode::list(segment, random_tree(rng, depth + 1))
+                OwnedNode::list(segment, random_tree(rng, depth + 1, long))
             } else {
                 let len = match rng.below(6) {
                     0 => 0,
@@ -1873,7 +1882,7 @@ fn an_export_of_what_import_accepts_imports_to_the_same_root_hash() {
     let mut nodes = 0;
     for seed in 1..=40u64 {
         let mut rng = Rng(seed * 0x9e37_79b9);
-        let root = OwnedNode::list(Vec::new(), random_tree(&mut rng, 0));
+        let root = OwnedNode::list(Vec::new(), random_tree(&mut rng, 0, false));
         let bytes =
             om_hbam::writer::rebuild(&root, &om_hbam::new_superblock("Random").unwrap()).unwrap();
         let batch = Batch {
@@ -2620,4 +2629,105 @@ fn an_item_outside_its_leafs_range_fails_every_paged_read_before_it() {
         .map(|(read, given, error)| format!("{read}: {given}, then {error:?}"))
         .collect();
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Every node of `node`'s subtree below it, parents first, with its path.
+fn nodes_of<'n>(
+    node: &'n OwnedNode,
+    path: &mut Vec<Vec<u8>>,
+    out: &mut Vec<(Vec<Vec<u8>>, &'n OwnedNode)>,
+) {
+    for child in &node.children {
+        path.push(child.segment.clone());
+        out.push((path.clone(), child));
+        nodes_of(child, path, out);
+        path.pop();
+    }
+}
+
+/// #1180's check never fails a read of a tree the writer built, through the
+/// paged readers: for random trees (`random_tree`, with long segments)
+/// put node by node through `om_store::tree::apply` in entries of random
+/// size, then a third of their nodes deleted again in entries, each read
+/// the [`seeded_reads`] make, children, subtrees and walks in pages of
+/// random size from random bounds both ways, is answered by the store
+/// engine's view as by the file engine's view of the same tree (which
+/// fails no read), after the puts and after the deletes.
+#[test]
+fn two_engines_answer_alike_on_trees_the_writer_built_and_deleted_from() {
+    let (mut calls, mut nodes, mut leaves, mut tall, mut spilled) = (0, 0, 0, 0, 0);
+    for seed in 1..=12u64 {
+        let mut rng = Rng(seed * 0x2545_f491);
+        let mut root = OwnedNode::list(Vec::new(), random_tree(&mut rng, 0, true));
+        // The root as a file's tree holds it, which no list opens.
+        root.push = false;
+        let mut all = Vec::new();
+        nodes_of(&root, &mut Vec::new(), &mut all);
+        let puts: Vec<Edit> = all
+            .iter()
+            .map(|(path, node)| match node.push {
+                true => Edit::list(path.clone()),
+                false => Edit::leaf(path.clone(), node.value.clone().unwrap_or_default()),
+            })
+            .collect();
+        let mut deletes: Vec<Vec<Vec<u8>>> = all
+            .iter()
+            .filter(|_| rng.below(3) == 0)
+            .map(|(path, _)| path.clone())
+            .collect();
+        for i in (1..deletes.len()).rev() {
+            deletes.swap(i, rng.below(i + 1));
+        }
+        let store = MemStore::new(Numbering::Sequential);
+        let (mut at, mut entry) = (None, 1);
+        let mut apply = |edits: &[Edit]| {
+            let mut unit = store.begin().unwrap();
+            let new = tree::apply(&store, &mut unit, at, entry, edits).unwrap();
+            unit.commit().unwrap();
+            (at, entry) = (Some(new), entry + 1);
+            new
+        };
+        let mut compare = |root: &OwnedNode, tree: Root| {
+            let report = tree::check(&store, tree).unwrap();
+            nodes += report.items;
+            leaves += report.leaves;
+            tall += usize::from(report.height >= 3);
+            spilled += report.spilled_separators;
+            // A clone holds its lists at their lengths, as a loaded file
+            // does: a subtree's limit counts capacity, which `remove` left.
+            let root = root.clone();
+            let file = crate::engine::TreeView::new(&root, 1);
+            let paged = PagedView::open(&store, tree).unwrap();
+            let both = Both::new(&file, &paged);
+            let steps: Vec<Step> = (&both as &dyn View)
+                .walk(&[])
+                .collect::<Result<_, _>>()
+                .expect("the walk reads");
+            seeded_reads(&both, &paths_of(&steps), seed, 400);
+            calls += both.calls.get();
+        };
+        let mut tree_root = None;
+        for chunk in puts.chunks(1 + rng.below(300)) {
+            tree_root = Some(apply(chunk));
+        }
+        let Some(written) = tree_root else { continue };
+        compare(&root, written);
+        let edits: Vec<Edit> = deletes
+            .iter()
+            .map(|path| {
+                root.remove(&refs(path));
+                Edit::delete(path.clone())
+            })
+            .collect();
+        for chunk in edits.chunks(1 + rng.below(100)) {
+            tree_root = Some(apply(chunk));
+        }
+        compare(&root, tree_root.expect("a tree"));
+    }
+    println!(
+        "24 versions: {nodes} items, {leaves} leaves, {tall} of three levels or more, \
+         {spilled} spilled separators, {calls} calls compared"
+    );
+    assert!(tall >= 2, "{tall} versions of three levels");
+    assert!(spilled >= 20, "{spilled} spilled separators");
 }
