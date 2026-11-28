@@ -449,7 +449,9 @@ items' overflow pages (a range or walk started from the place another
 read of the same version left, `tree::Place`, only those below the
 deepest page that place shares with the way to its first item); a
 listing of children the keys of the items it passes and the children's
-own values, each child sought from where the one before it was found,
+own values (asked only whether another child follows,
+`tree::Children::more`, the keys its seek compares and no value), each
+child sought from where the one before it was found,
 in the same leaf when it is there and otherwise below the deepest page
 on the way to both, never from the root again; "changed since" index
 pages only (2.8). Every comparison with a stored key or separator uses the bytes its

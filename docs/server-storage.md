@@ -1167,17 +1167,28 @@ Nothing of its write side is built.
   further to say), and subtrees built with exactly as many places as
   they hold, so that a limit counts them as it counts the file engine's
   tree of the same file (`om_hbam::tree::memory` counts capacity). A
-  listing or walk that meets a read that fails, at any step of a page,
-  the look-ahead past a full page included, fails the call, and what the
-  page had gathered is not given: a fault of order (an item that would
-  go back, in a stored tree whose pages disagree) is not met again by a
-  later seek, so a page that gave what came before it could end the read
-  without what follows the fault
+  listing or walk that meets a read that fails at any step of a page
+  fails the call, and what the page had gathered is not given: a fault
+  of order (an item that would go back, in a stored tree whose pages
+  disagree) is not met again by a later seek, so a page that gave what
+  came before it could end the read without what follows the fault
   ([#998](https://github.com/OpenMaker-Dev/openmaker/issues/998),
-  [#1149](https://github.com/OpenMaker-Dev/openmaker/issues/1149)). That
-  an item which merely cannot be read also fails the items before it in
-  its page is [#1200](https://github.com/OpenMaker-Dev/openmaker/issues/1200).
-  Its version is the index of the
+  [#1149](https://github.com/OpenMaker-Dev/openmaker/issues/1149)). The
+  look past a full page of children or subtrees, which asks only whether
+  more follow, fails for the child it looks at and not for those before
+  it ([#1200](https://github.com/OpenMaker-Dev/openmaker/issues/1200)).
+  It is the seek the next child's read starts with, and reads no value
+  (`tree::Children::more`), so a value that cannot be read fails the
+  page that gives its child. When that seek cannot read a page (one the
+  store does not have or could not read, one damaged, or not the page and
+  version its parent names), the page gives its children and says more
+  follow: the next call starts with the same seek, whose choices are
+  those of a descent from the root wherever it starts, and reads that
+  page again before it gives anything: it fails there, or, after a read
+  that failed once and not again, reads on to that child. A fault of
+  order, or of any other of the tree's own checks (a malformed page), met
+  by the look still fails the call. A walk in pages looks past nothing: a
+  full page says more may follow. Its version is the index of the
   last entry that changed the tree, its root page's stamp, read when the
   view is made; `changed_since` is the tree's own
   ([server-storage-format.md](server-storage-format.md) 2.8). The `View`
