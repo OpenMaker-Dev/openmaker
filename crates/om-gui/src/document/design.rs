@@ -80,29 +80,7 @@ impl<'a> Surface<'a> {
         if !caption.is_positive() || !painter.clip_rect().intersects(caption) {
             return;
         }
-        let mut text = object
-            .calcs
-            .web_address_source
-            .as_deref()
-            .filter(|tokens| !tokens.is_empty())
-            .map_or_else(
-                || "Web Viewer".to_owned(),
-                |tokens| {
-                    let names: &dyn formula::Names = match self.schema {
-                        Some(schema) => schema.names(),
-                        None => &formula::NoNames,
-                    };
-                    let ctx = formula::Context {
-                        decimal_comma: self
-                            .schema
-                            .is_some_and(|schema| schema.locale.decimal_separator == ','),
-                        ..formula::Context::new(names)
-                    };
-                    formula::print(tokens, &ctx)
-                },
-            );
-        // There is only one visible line, even for a long data URL.
-        text.truncate(text.floor_char_boundary(1024));
+        let text = web_viewer_caption(object.calcs.web_address_source.as_deref(), self.schema);
         let ink = crate::theme::TEXT;
         let mut job =
             egui::text::LayoutJob::simple(text, FontId::proportional(12.0), ink, caption.width());
@@ -389,5 +367,63 @@ impl<'a> Surface<'a> {
             let _ = paint_rich_text(ui, label, &text, &text_style, rich, None);
         }
         true
+    }
+}
+
+fn web_viewer_caption(source: Option<&[formula::Token]>, schema: Option<&CalcSchema>) -> String {
+    let Some(tokens) = source.filter(|tokens| !tokens.is_empty()) else {
+        return "Web Viewer".into();
+    };
+    // A pending or unavailable schema cannot tell us which names are missing.
+    if schema.is_none()
+        && tokens.iter().any(|token| match token {
+            formula::Token::Field(_) | formula::Token::CustomFunction(_) => true,
+            formula::Token::PluginFunction(id) => formula::catalog::builtin(*id).is_none(),
+            _ => false,
+        })
+    {
+        return "Web Viewer".into();
+    }
+    let names: &dyn formula::Names = match schema {
+        Some(schema) => schema.names(),
+        None => &formula::NoNames,
+    };
+    let ctx = formula::Context {
+        decimal_comma: schema.is_some_and(|schema| schema.locale.decimal_separator == ','),
+        ..formula::Context::new(names)
+    };
+    let mut text = formula::print(tokens, &ctx);
+    // Limit the text passed to the single-line painter, even for a long
+    // data URL. egui needs LF to clip at the stored formula's line breaks.
+    text.truncate(text.floor_char_boundary(1024));
+    if text.contains('\r') {
+        text = text.replace('\r', "\n");
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_viewer_caption_keeps_line_breaks_and_waits_for_field_names() {
+        let mut schema = CalcSchema::new("Items", om_data::calc::Locale::en_us());
+        let names = schema.names_mut();
+        names.add_occurrence(0xd0_0002, "Items", 0x8002);
+        names.add_field(0x8002, 2, "Name");
+        let source = "\"https://example.invalid/?q=\" &\rItems::Name";
+        let compiled = formula::compile(source, &formula::Context::new(names)).unwrap();
+        let tokens = Some(compiled.tokens.as_slice());
+
+        assert_eq!(web_viewer_caption(tokens, None), "Web Viewer");
+        assert_eq!(
+            web_viewer_caption(tokens, Some(&schema)),
+            "\"https://example.invalid/?q=\" &\nItems::Name"
+        );
+        assert_eq!(
+            web_viewer_caption(Some(&compiled.tokens[..1]), None),
+            "\"https://example.invalid/?q=\""
+        );
     }
 }

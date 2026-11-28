@@ -2194,9 +2194,10 @@ cannot be resolved, a labeled button keeps its full-width label and an
 image-only button uses the canvas's outline and caption.
 Saved web viewers show a centered OpenMaker globe and their stored address
 expression in the upper left. Layout mode never loads a page. The caption
-uses the file's names when available and is clipped to one line. If the
-formatted expression is missing, unreadable or over 64 KiB, the caption
-says Web Viewer.
+uses the file's names when available and is clipped to the first line of a
+multiline expression. If the formatted expression is missing, unreadable,
+over 64 KiB or needs names from an unavailable schema, the caption says
+Web Viewer.
 The glyph, sizing rule and clipping are OpenMaker's choices
 ([FileMaker comparison](re/client-ui.md#web-viewer-artwork-in-layout-mode)).
 Unsupported objects and geometry-only providers still use outlines and
