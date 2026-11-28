@@ -2505,8 +2505,11 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
 - The X11 backend draws the pages on an X11 session, with
   `OPENMAKER_WEB_VIEWER_BACKEND=x11`, or on a Wayland session without a
   page host that can be run, or whose display does not answer (a
-  `WAYLAND_DISPLAY` left from a compositor that went). A page host that is
-  there but fails to start leaves the web viewers showing a note. Its views can only be children of X11 windows, so the build
+  `WAYLAND_DISPLAY` left from a compositor that went, or a `WAYLAND_SOCKET`
+  that is not a connected stream socket). A page host that is there but
+  fails to start leaves the web viewers showing a note;
+  `OPENMAKER_WEB_VIEWER_BACKEND=x11` chooses the X11 backend then, which
+  needs an X server. Its views can only be children of X11 windows, so the build
   puts its windows on winit's X11 backend whenever an X server answers at
   startup (`om_gui::native_options`); on a Wayland session that is
   XWayland. When no X server answers (XWayland turned off), or a

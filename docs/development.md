@@ -65,9 +65,11 @@ host of the Wayland web viewer backend, `om-gui-webview`, which `om-gui`
 runs from beside itself on a Wayland session (`web_viewer::host`); the
 package installs it. `cargo run` builds only `om-gui`, so build first.
 Without the page host, or when the session's Wayland display does not
-answer, a Wayland session uses the X11 backend, through XWayland. A page
-host that is there but fails to start leaves the web viewers showing a
-note; `OPENMAKER_WEB_VIEWER_BACKEND=x11` chooses the X11 backend then.
+answer, a Wayland session uses the X11 backend, through XWayland. Without
+XWayland either, the windows stay on Wayland and the web viewers show a
+note. A page host that is there but fails to start also leaves them
+showing a note; `OPENMAKER_WEB_VIEWER_BACKEND=x11` then chooses the X11
+backend, which needs XWayland.
 
 **Desktop client.** **File > Open...** opens a `.fmp12` file on this
 computer through a private embedded host (no server or license needed);
