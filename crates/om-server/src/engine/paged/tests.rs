@@ -1064,17 +1064,17 @@ fn the_page_file_keeps_an_import_and_fails_the_reads_a_damaged_page_reaches() {
         matches!(failed, Some(ReadError::Unreadable { .. })),
         "{failed:?}"
     );
+    assert!(read < walked.len(), "{read} of {}", walked.len());
+    // The walk gave whole pages before the one that reaches the damaged
+    // page and nothing of that one: a node it did not give is on the
+    // damaged page.
+    let reached = walked[read..]
+        .iter()
+        .find(|path| matches!(dynamic.node(&refs(path)), Err(ReadError::Unreadable { .. })));
     assert!(
-        read > 1 && read < walked.len(),
-        "{read} of {}",
-        walked.len()
+        reached.is_some(),
+        "no node after the {read} given is unreadable"
     );
-    // The first node the walk did not reach is on the damaged page.
-    let reached = refs(&walked[read]);
-    assert!(matches!(
-        dynamic.node(&reached),
-        Err(ReadError::Unreadable { .. })
-    ));
     assert!(dynamic.subtree(&[], NO_LIMIT).is_err());
     assert!(dynamic.node(&refs(&walked[1])).unwrap().is_some());
     assert!(dynamic
@@ -1430,12 +1430,14 @@ fn a_batch_keeps_within_its_limits() {
     assert_eq!(units.batches, vec![(2, 10), (2, 10), (1, 5)]);
 }
 
-/// A read that fails partway through a call gives what came before it and
-/// "more", and the next call fails: here the read that fails is the
-/// look-ahead at the last child, whose value is on an overflow page that
-/// does not check.
+/// A read that fails partway through a call fails the call, whatever it
+/// gave before it (the module doc, "A read that fails partway"; review of
+/// #1166): here the read that fails is the look past the last child, whose
+/// value is on an overflow page that does not check. A page of the first
+/// child, the page after it, the subtrees page and a page asked for both
+/// all fail; none answers "more" past a read that failed.
 #[test]
-fn a_failed_look_ahead_answers_more_and_the_next_page_fails() {
+fn a_failed_look_ahead_fails_the_page() {
     let store = MemStore::new(Numbering::Sequential);
     let list = vec![b"l".to_vec()];
     let child = |segment: &[u8]| vec![b"l".to_vec(), segment.to_vec()];
@@ -1464,58 +1466,26 @@ fn a_failed_look_ahead_answers_more_and_the_next_page_fails() {
     }
     let view = PagedView::open(&store, root).unwrap();
     let at = refs(&list);
+    let failed = |page: &Result<bool, ReadError>| matches!(page, Err(ReadError::Unreadable { .. }));
     let mut out = Vec::new();
-    assert_eq!(
-        view.children_page(&at, Bound::Unbounded, Direction::Forward, 1, &mut out),
-        Ok(true)
-    );
-    assert_eq!(out.len(), 1);
+    let first = view.children_page(&at, Bound::Unbounded, Direction::Forward, 1, &mut out);
+    assert!(failed(&first), "{first:?}");
     let mut next = Vec::new();
-    assert!(matches!(
-        view.children_page(&at, Bound::Excluded(b"a"), Direction::Forward, 1, &mut next),
-        Err(ReadError::Unreadable { .. })
-    ));
+    let after = view.children_page(&at, Bound::Excluded(b"a"), Direction::Forward, 1, &mut next);
+    assert!(failed(&after), "{after:?}");
     let mut whole = Vec::new();
-    assert_eq!(
-        view.subtrees_page(
-            &at,
-            Bound::Unbounded,
-            Direction::Forward,
-            1,
-            NO_LIMIT,
-            &mut whole
-        ),
-        Ok(true)
+    let subtrees = view.subtrees_page(
+        &at,
+        Bound::Unbounded,
+        Direction::Forward,
+        1,
+        NO_LIMIT,
+        &mut whole,
     );
-    assert_eq!(whole.len(), 1);
-    // Asked for both, the listing gives `a` and "more", where the next
-    // page fails.
+    assert!(failed(&subtrees), "{subtrees:?}");
     let mut both = Vec::new();
-    assert_eq!(
-        view.children_page(&at, Bound::Unbounded, Direction::Forward, 5, &mut both),
-        Ok(true)
-    );
-    assert_eq!(both.len(), 1);
-    let mut steps = Vec::new();
-    assert_eq!(
-        view.walk_page(&at, None, 5, &mut steps),
-        Ok(Some(vec![b"a".to_vec()]))
-    );
-    assert_eq!(steps.len(), 2);
-    // Through the iterators the error comes after what was given.
-    let dynamic: &dyn View = &view;
-    let listed: Vec<_> = dynamic
-        .children(&at, Bound::Unbounded, Direction::Forward)
-        .collect();
-    assert!(matches!(
-        listed[..],
-        [Ok(_), Err(ReadError::Unreadable { .. })]
-    ));
-    let walked: Vec<_> = dynamic.walk(&at).collect();
-    assert!(matches!(
-        walked[..],
-        [Ok(_), Ok(_), Err(ReadError::Unreadable { .. })]
-    ));
+    let page = view.children_page(&at, Bound::Unbounded, Direction::Forward, 5, &mut both);
+    assert!(failed(&page), "{page:?}");
 }
 
 /// On the page file, an import refused after it committed batches (and
@@ -2243,5 +2213,60 @@ fn paged_measurement() {
          MB; {report}",
         started.elapsed().as_secs_f64() * 1e3,
         status("VmHWM:") - base,
+    );
+}
+
+/// Review of #1166 (P1): a paged read that meets a fault fails the call,
+/// whatever it gave before it, rather than answer those as a page after
+/// which the next call starts past them (the module doc, "A read that
+/// fails partway"). On the reviewer's tree (leaves `a, d` and `b, c`, the
+/// separator `b`, written page by page), a walk of the root in one page
+/// with room for every node, through the view's own walk, and in pages of
+/// two, fails where the cursor steps from `d` into the leaf that begins
+/// before it. Answered as a continuation, the next page, sought past `d`,
+/// found nothing beyond it and the walk ended without `b` and `c`. (A walk
+/// in pages of three, and a listing of the root's children, take no step
+/// across the fault: a seek past `d` finds nothing beyond it, as from the
+/// root, #1180; they are not asserted here.) And on #998's tree (the
+/// separator `x`), a page of children that meets the child that comes back
+/// fails, rather than answer the children before it and "more".
+#[test]
+fn a_paged_read_fails_at_a_fault_rather_than_end_on_the_next_page() {
+    use om_store::tree::{built, key};
+    let store = MemStore::new(Numbering::Sequential);
+    let item = |s: &[u8]| (built::KIND_VALUE, key::encode(&[s]), b"v".to_vec());
+    let tree_with = |separator: &[u8]| {
+        let separator = key::encode(&[separator]);
+        let leaves = [vec![item(b"a"), item(b"d")], vec![item(b"b"), item(b"c")]];
+        built::tree(&store, &leaves, &[separator.as_slice()]).root
+    };
+    let root_path: [&[u8]; 0] = [];
+    let failed = |read: &Result<Option<Vec<Vec<u8>>>, ReadError>| {
+        matches!(read, Err(ReadError::Unreadable { .. }))
+    };
+    let view = PagedView::open(&store, tree_with(b"b")).unwrap();
+    let mut whole = Vec::new();
+    let one_page = view.walk_page(&root_path, None, 100, &mut whole);
+    assert!(failed(&one_page), "{one_page:?}");
+    let walked: Result<Vec<Step>, ReadError> = (&view as &dyn View).walk(&root_path).collect();
+    assert!(walked.is_err(), "{walked:?}");
+    let mut first = Vec::new();
+    let resume = view.walk_page(&root_path, None, 2, &mut first).unwrap();
+    assert_eq!(resume, Some(vec![b"a".to_vec()]));
+    let mut second = Vec::new();
+    let next = view.walk_page(&root_path, resume.as_deref(), 2, &mut second);
+    assert!(failed(&next), "{next:?}");
+    let view = PagedView::open(&store, tree_with(b"x")).unwrap();
+    let mut children = Vec::new();
+    let listed = view.children_page(
+        &root_path,
+        Bound::Unbounded,
+        Direction::Forward,
+        10,
+        &mut children,
+    );
+    assert!(
+        matches!(listed, Err(ReadError::Unreadable { .. })),
+        "{listed:?}"
     );
 }

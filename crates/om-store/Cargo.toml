@@ -9,6 +9,11 @@ description = "OpenMaker Server's store engine: a change log and copy-on-write p
 [dependencies]
 ring = "0.17"
 
+[features]
+# The builder of trees written page by page (`tree::built`), for other
+# crates' tests of trees the writer never makes. Tests only.
+test-support = []
+
 [dev-dependencies]
 # The file engine's in-memory tree, to check that tree edits leave what it
 # holds after the same change (tests/entries.rs).
