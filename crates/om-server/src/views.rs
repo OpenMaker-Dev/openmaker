@@ -99,6 +99,18 @@ pub(crate) fn keep_hidden(record: &mut OwnedNode, stored: &OwnedNode, hidden: &B
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Withheld(BTreeSet<(Vec<u8>, Vec<u8>)>);
 
+/// A session's [`Withheld`] records of one file, with the Login they are
+/// of: a read admitted under an earlier Login adds nothing to them
+/// (`connection.rs`, `note_withheld`), so that a read on another of the
+/// client's connections that is in flight across a Login does not mark
+/// records for the new account ([#968](https://github.com/OpenMaker-Dev/openmaker/issues/968)).
+#[derive(Debug, Default)]
+pub(crate) struct SessionWithheld {
+    /// The Login (`joins::next_login`), 0 before the first.
+    pub login: u64,
+    pub records: Withheld,
+}
+
 impl Withheld {
     /// Add what `view` withheld.
     pub(crate) fn note(&mut self, view: &ViewFilter) {

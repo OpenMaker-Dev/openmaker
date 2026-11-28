@@ -92,7 +92,11 @@ GIOP messages for later decoding (use a new directory per run). It serves
 at most 4096 connections at once, 1024 from one address, and closes a
 silent one after an hour, or 145 s without a session (`--connections`,
 `--connections-per-address`, `--idle-seconds`); it raises its open-file
-limit to match. Logging follows `RUST_LOG` (default `info`). Beside it,
+limit to match. Logging follows `RUST_LOG` (default `info`); the log names
+each connection's TLS version, whether its handshake was full or resumed,
+and its client certificate's SHA-256, and each read it serves or refuses
+on a connection that sent no Connect of its own
+([network-protocol](re/network-protocol.md) 3). Beside it,
 the server writes an event log in FileMaker Server's format, `Event.log`
 and `Access.log` in `--log-folder` (default `Logs` in its state folder,
 [The server's certificate](#the-servers-certificate)); on Unix, SIGTERM or

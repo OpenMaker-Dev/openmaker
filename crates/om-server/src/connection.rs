@@ -42,8 +42,8 @@ use om_protocol::{
     parse_download_request, parse_file_list_request, parse_is_a_request, parse_login_request,
     parse_open_request, parse_perform_request, parse_query_request, parse_request_notification,
     parse_tickle_parms, parse_tickle_request, ConnectReply, DownloadListReply, DownloadReply,
-    FileListReply, KeyList, LoginReply, Opcode, OpenReply, PerformError, QueryReply,
-    ReceivedDownload, Resume, OBJECT_KEY, REPO_ID,
+    FileListReply, KeyList, LoginReply, Opcode, OpenReply, PerformError, PerformRequest,
+    QueryReply, ReceivedDownload, Resume, OBJECT_KEY, REPO_ID,
 };
 use om_rctransaction::{Header, ResultBuilder};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -60,6 +60,7 @@ use crate::engine::{
 };
 use crate::eventlog::{ClientLabel, Event, EventLog, SessionEnd};
 use crate::hosting::{check_password, Eligibility, FileAccount, Hosted, Hosting, Registration};
+use crate::joins::{self, FileGrant, Joins, Peer, Refusal, Seat};
 use crate::locks::LockUser;
 use crate::login_limits::{Attempt, LoginLimits, LOGIN_TOO_MANY_ATTEMPTS};
 use crate::record::{Recorder, Recordings};
@@ -193,6 +194,9 @@ pub(crate) struct Shared {
     pub rng: SystemRandom,
     /// Connection ids in use, so a new one is never handed out twice.
     pub connection_ids: Mutex<HashSet<u32>>,
+    /// The sessions other transports of their clients may read from
+    /// ([`crate::joins`]).
+    pub joins: Joins,
     /// Where to record connections, if anywhere.
     pub recordings: Option<Recordings>,
     /// Change notifications waiting for each connection.
@@ -269,6 +273,10 @@ pub(crate) struct Shared {
     /// ([`crate::ServerHandle::read_only_before_next_write`]).
     #[cfg(debug_assertions)]
     pub read_only_before_write: AtomicBool,
+    /// How long each join's lookup waits once its attempt is taken
+    /// ([`crate::Server::delaying_join_lookups`]).
+    #[cfg(debug_assertions)]
+    pub join_lookup_delay: std::sync::OnceLock<Duration>,
 }
 
 /// The sockets of a server's accepted connections, so that they can be
@@ -314,14 +322,23 @@ impl Sockets {
     }
 
     /// Shut down every socket, both ways: blocked reads and writes return
-    /// and their connections end. Returns how many there were.
-    pub fn close_all(&self) -> usize {
+    /// and their connections end. Returns how many there were. Under the
+    /// lock that takes the batch, each socket's flag is set, then `cut`
+    /// runs, then the sockets are shut: a socket tracked after it is not in
+    /// the batch, and one in it has its flag set by the cut (what its
+    /// connection opens later reads it, `joins::Grant`). The lock waits
+    /// only for one entry going in or out ([`Sockets::track`],
+    /// [`Sockets::close`]) or for another bulk close's shutdowns.
+    pub fn close_all(&self, cut: impl FnOnce()) -> usize {
         let open = self
             .open
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for (socket, closed) in open.values() {
+        for (_, closed) in open.values() {
             closed.store(true, Ordering::Release);
+        }
+        cut();
+        for (socket, _) in open.values() {
             let _ = socket.shutdown(std::net::Shutdown::Both);
         }
         open.len()
@@ -366,6 +383,22 @@ impl Shared {
     pub(crate) fn connection_alive(&self, id: u32) -> bool {
         self.connection_ids().contains(&id)
     }
+
+    /// Close every accepted connection's socket at once
+    /// ([`crate::ServerHandle::close_connections`]); how many there were.
+    /// First, in one step with taking the batch of sockets, no session's
+    /// other transports are admitted to read from then on, nor those of a
+    /// session a socket of the batch starts later, before any connection's
+    /// thread gets to end its session; the sockets are shut next, and what
+    /// those transports page goes last, as that waits for reads under way.
+    /// A socket accepted after the batch was taken is untouched.
+    pub(crate) fn close_connections(&self) -> usize {
+        let closed = self.sockets.close_all(|| self.joins.cut());
+        for grant in self.joins.ended_grants() {
+            grant.drain();
+        }
+        closed
+    }
 }
 
 /// A file opened on this connection.
@@ -383,8 +416,12 @@ struct OpenFile {
     /// client (`Connection::file_closes`).
     close: CloseStep,
     /// The records this session was served without their values, which it
-    /// may not edit (`views::Withheld`, #670).
-    withheld: std::sync::Mutex<crate::views::Withheld>,
+    /// may not edit (`views::Withheld`, #670), on whichever transport they
+    /// were served ([`crate::joins`]).
+    withheld: Arc<std::sync::Mutex<crate::views::SessionWithheld>>,
+    /// Which accepted Login `account` is from ([`joins::next_login`]); 0
+    /// before the first.
+    login: u64,
 }
 
 /// What a client that has a closing file open has been sent
@@ -450,6 +487,36 @@ struct Session {
     /// login on it takes back (`login_limits`, #440); the latest
     /// [`MAX_AUTOMATIC_LOGINS`].
     automatic_logins: Vec<Attempt>,
+    /// What the session's other transports may read of it
+    /// ([`crate::joins`]), kept current after each of its requests.
+    grant: Arc<joins::Grant>,
+}
+
+impl Session {
+    /// Publish the files the session has open now, and the accounts it is
+    /// logged in to them with, to the transports that joined it.
+    fn publish(&self) {
+        self.grant.publish(self.open.iter().map(|(id, file)| {
+            let grant = FileGrant {
+                hosted: Arc::clone(&file.hosted),
+                account: file.account.clone(),
+                withheld: Arc::clone(&file.withheld),
+                login: file.login,
+            };
+            (*id, grant)
+        }));
+    }
+}
+
+/// A session this transport joined ([`crate::joins`]): its place among
+/// the session's joined transports, with the downloads it pages for it
+/// (`Seat::table`: its own, a download being continued on the transport
+/// that started it, and let go by the session when it loses the file or
+/// ends), and what it served, for the log.
+struct Joined {
+    seat: Seat,
+    /// Requests answered, by opcode.
+    served: std::collections::BTreeMap<u8, u64>,
 }
 
 /// The empty-password failures a connection keeps for taking back: one per
@@ -496,6 +563,20 @@ pub(crate) struct Connection {
     held_bytes: usize,
     /// The request id of the next call on the client's callback object.
     next_call: u32,
+    /// Who the client is: its address and its TLS client certificate.
+    transport: Peer,
+    /// The sessions of other transports this one joined, by connection id
+    /// ([`crate::joins`]); never one while it has a session of its own.
+    joined: HashMap<u32, Joined>,
+    /// Requests refused that named a session this transport does not
+    /// own, by opcode, for the log.
+    refused_joins: std::collections::BTreeMap<u8, u64>,
+    /// How many such requests were refused, against
+    /// `JoinRefusals::per_connection`.
+    refusals: u32,
+    /// Close the connection once the reply being sent is out: it met a
+    /// limit on refused reads (`crate::config::JoinRefusals`).
+    close_after_reply: bool,
 }
 
 impl Connection {
@@ -531,7 +612,19 @@ impl Connection {
             held: Default::default(),
             held_bytes: 0,
             next_call: FIRST_CALL_ID,
+            transport: Peer::new(address.ip(), None),
+            joined: HashMap::new(),
+            refused_joins: Default::default(),
+            refusals: 0,
+            close_after_reply: false,
         }
+    }
+
+    /// The client presented a TLS client certificate whose SHA-256 is
+    /// `certificate`, and proved in its handshake that it holds its key.
+    pub fn with_client_certificate(mut self, certificate: Option<joins::CertificateHash>) -> Self {
+        self.transport.certificate = certificate;
+        self
     }
 
     /// The connection's socket is closed by the server when `closed` is set
@@ -577,6 +670,7 @@ impl Connection {
             // the connection closing, and reads the files again when it
             // reconnects.
             if self.notifications_overflowed() {
+                self.stop_reads();
                 info!("{}: closing: too many notifications wait for it", self.peer);
                 self.ending = SessionEnd::Overflow;
                 let close = om_giop::build_close_connection();
@@ -596,6 +690,7 @@ impl Connection {
                     if let Some(limit) = limit.filter(|limit| heard.elapsed() >= *limit) {
                         // As FileMaker Server closes a silent connection
                         // (network-protocol.md 6.2).
+                        self.stop_reads();
                         let session = if self.session.is_some() {
                             ""
                         } else {
@@ -615,10 +710,16 @@ impl Connection {
                         self.write_failed("a reply", &e, limits);
                         break;
                     }
+                    if self.closed_after_reply(stream) {
+                        break;
+                    }
                     if let Err(e) = self.send_calls(stream, limits) {
                         self.write_failed("a back-channel call", &e, limits);
                         break;
                     }
+                    // What it holds for sessions that ended goes even
+                    // while it is quiet.
+                    self.leave_ended();
                     continue;
                 }
                 Err(ReadError::Closed) => {
@@ -628,17 +729,20 @@ impl Connection {
                 // Closing TCP without a TLS close_notify is a normal way for a
                 // client to leave.
                 Err(ReadError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    debug!("{}: closed without close_notify", self.peer);
                     self.ended_by_reading(None);
+                    debug!("{}: closed without close_notify", self.peer);
                     break;
                 }
                 Err(e) => {
-                    warn!("{}: {e}", self.peer);
                     self.ended_by_reading(Some(e.to_string()));
+                    warn!("{}: {e}", self.peer);
                     break;
                 }
             };
             self.record(true, &msg);
+            // What it holds for sessions that ended goes at any message,
+            // not only at its reads (a client that only tickles too).
+            self.leave_ended();
             match parse_header(&msg).map(|(h, _)| h.msg_type) {
                 Ok(MsgType::Request) => {
                     // Requests held for files resumed since go first.
@@ -656,6 +760,9 @@ impl Connection {
                             self.write_failed("a reply", &e, limits);
                             break;
                         }
+                    }
+                    if self.closed_after_reply(stream) {
+                        break;
                     }
                 }
                 Ok(MsgType::LocateRequest) => {
@@ -677,6 +784,7 @@ impl Connection {
                 Ok(MsgType::Reply) => self.call_answered(&msg),
                 Ok(other) => debug!("{}: ignoring GIOP {other:?}", self.peer),
                 Err(e) => {
+                    self.stop_reads();
                     warn!("{}: {e}", self.peer);
                     self.ending = SessionEnd::Lost(e.to_string());
                     break;
@@ -688,6 +796,9 @@ impl Connection {
             // advance, so a client that never pauses cannot hold them off.
             if let Err(e) = self.answer_held(stream) {
                 self.write_failed("a reply", &e, limits);
+                break;
+            }
+            if self.closed_after_reply(stream) {
                 break;
             }
             if let Err(e) = self.send_calls(stream, limits) {
@@ -706,6 +817,7 @@ impl Connection {
     /// ([`crate::ServerHandle::close_connections`]), or else the client
     /// left, or reading failed with `failure`.
     fn ended_by_reading(&mut self, failure: Option<String>) {
+        self.stop_reads();
         self.ending = if self.closed_by_server.load(Ordering::Acquire) {
             SessionEnd::ClosedByServer
         } else if self.control.disconnecting() {
@@ -720,6 +832,7 @@ impl Connection {
     /// Log a failed write of `what`: one that timed out is a client that
     /// took none of it for the stall limit.
     fn write_failed(&mut self, what: &str, e: &std::io::Error, limits: &ConnectionLimits) {
+        self.stop_reads();
         let problem = if matches!(
             e.kind(),
             std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
@@ -854,11 +967,11 @@ impl Connection {
             }
         }
         if leave {
+            self.control.disconnect_now();
             info!(
                 "{}: session 0x{connection:08x} kept a closing file open: disconnecting",
                 self.peer
             );
-            self.control.disconnect_now();
         }
     }
 
@@ -872,28 +985,31 @@ impl Connection {
 
     /// The file a request must wait for: a `Perform` of the session on a
     /// paused file (an Open naming one included), or on a file a request
-    /// is already held for, so that a file's requests keep their order.
+    /// is already held for, so that a file's requests keep their order. (A
+    /// read for a session the transport joined waits too, decided where the
+    /// join rule is applied, `Connection::joined_perform`.)
     /// Everything else (`Tickle`, other files' requests) is answered at
     /// once, as FileMaker Server answers a Tickle while it holds a request
     /// (spec 6.1, 6.5).
     fn held_for(&self, msg: &[u8]) -> Option<u32> {
-        let session = self.session.as_ref()?;
         let request = Request::parse(msg).ok()?;
         if request.object_key != OBJECT_KEY || request.operation != op::PERFORM {
             return None;
         }
         let perform = parse_perform_request(request.body)?;
-        if perform.connection_id != session.connection_id {
-            return None;
-        }
         let header = Header::parse(perform.transaction)?;
-        let file = if header.opcode == Opcode::OpenFile as u8 {
-            let open = parse_open_request(perform.transaction).ok()?;
-            self.shared.hosting.slot_named(&open.filename)?.id
-        } else if session.open.contains_key(&header.file_id) {
-            header.file_id
-        } else {
-            return None;
+        let file = match &self.session {
+            Some(session) if perform.connection_id == session.connection_id => {
+                if header.opcode == Opcode::OpenFile as u8 {
+                    let open = parse_open_request(perform.transaction).ok()?;
+                    self.shared.hosting.slot_named(&open.filename)?.id
+                } else if session.open.contains_key(&header.file_id) {
+                    header.file_id
+                } else {
+                    return None;
+                }
+            }
+            _ => return None,
         };
         (self.file_paused(file) || self.held.iter().any(|held| held.file == file)).then_some(file)
     }
@@ -941,7 +1057,11 @@ impl Connection {
                 self.send(stream, &reply)?;
             }
         }
-        self.held = waiting;
+        // A read held again meanwhile (`joined_perform`, its file paused
+        // again) came before those still waiting for its file.
+        let mut held = std::mem::take(&mut self.held);
+        held.extend(waiting);
+        self.held = held;
         Ok(())
     }
 
@@ -991,12 +1111,13 @@ impl Connection {
             }
             Some(leave_by) if now >= leave_by => {
                 if first_open.is_some() {
+                    self.control.disconnect_now();
                     info!(
                         "{}: session 0x{connection:08x} did not leave when told: disconnecting",
                         self.peer
                     );
-                    self.control.disconnect_now();
                 } else {
+                    self.stop_reads();
                     let id = self.call_id();
                     info!(
                         "{}: ending session 0x{connection:08x}, its files closed, for the \
@@ -1122,8 +1243,16 @@ impl Connection {
     /// Also run while the thread unwinds from a panic (`Drop`), where a
     /// second panic aborts the server: so nothing here may panic, and
     /// every lock it takes is used even when poisoned.
+    ///
+    /// Every way a session ends or is replaced comes here (Disconnect, a
+    /// Connect on its transport, its transport closing for any reason, a
+    /// panic), and the first thing done is to stop the session's grant: no
+    /// other transport is admitted to read through it from then on,
+    /// whatever below waits. What the transports that joined it page goes
+    /// last, as that can wait for a read under way (`joins::Grant`).
     fn end_session(&mut self) {
         if let Some(mut session) = self.session.take() {
+            session.grant.stop();
             if let Some(client) = &session.access {
                 let events = &self.shared.events;
                 for file in session.open.values() {
@@ -1155,6 +1284,8 @@ impl Connection {
             // client registry's lock alone, no other being held then, and
             // cannot panic (`Clients::closed`).
             for file in std::mem::take(&mut session.open).into_values() {
+                #[cfg(test)]
+                joins::model::point(joins::Section::Release);
                 let release = Operation::ReleaseSessionLocks(ReleaseSessionLocks { connection });
                 let outcome = self.shared.engine.submit(&file.hosted, release);
                 outcome
@@ -1186,6 +1317,21 @@ impl Connection {
                 "{}: session 0x{:08x} ended",
                 self.peer, session.connection_id
             );
+            // Last, once the locks are released: the grant leaves the list
+            // and what the joined transports page for it goes, which waits
+            // for a read under way.
+            self.shared.joins.close(&session.grant);
+        }
+    }
+
+    /// The session is ending: from now on no other transport is admitted
+    /// to read through it. Called where the connection decides to end,
+    /// before anything that can wait there: a log line (its sink may
+    /// block), a write to a client that does not read, and the session's
+    /// end itself ([`Connection::end_session`]).
+    fn stop_reads(&self) {
+        if let Some(session) = &self.session {
+            session.grant.stop();
         }
     }
 
@@ -1214,7 +1360,8 @@ impl Connection {
                     build_is_a_reply(id, repo == Some(REPO_ID) || file_list || authoring)
                 }
                 op::CONNECT => self.connect(id, msg),
-                op::PERFORM => self.perform(&request),
+                // None: held for a paused file.
+                op::PERFORM => self.perform(&request, msg)?,
                 hosted_files::LIST_FILES => self.list_files(&request),
                 op::DISCONNECT => {
                     match (parse_disconnect_request(request.body), &self.session) {
@@ -1262,6 +1409,8 @@ impl Connection {
             return exception(id, "NO_PERMISSION");
         }
         self.end_session();
+        // A transport with a session of its own reads for no other.
+        self.leave_joined();
 
         let key: [u8; 16] = self.shared.random();
         let connection_id = self.shared.new_connection_id();
@@ -1288,6 +1437,13 @@ impl Connection {
             callback: Callback::Unlocated,
             file_list: None,
             automatic_logins: Vec::new(),
+            grant: self.shared.joins.open(
+                connection_id,
+                self.transport,
+                &self.peer,
+                Arc::clone(&self.control),
+                Arc::clone(&self.closed_by_server),
+            ),
         });
         self.shared
             .clients
@@ -1364,24 +1520,25 @@ impl Connection {
         hosted_files::build_list_files_reply(id, &names)
     }
 
-    fn perform(&mut self, request: &Request<'_>) -> Vec<u8> {
+    /// The reply to a `Perform`, the whole GIOP message `msg`; `None` when
+    /// it is held for a paused file.
+    fn perform(&mut self, request: &Request<'_>, msg: &[u8]) -> Option<Vec<u8>> {
         let id = request.request_id;
         let Some(perform) = parse_perform_request(request.body) else {
-            return exception(id, "MARSHAL");
+            return Some(exception(id, "MARSHAL"));
         };
         if !MAX_RETURN_RANGE.contains(&perform.max_return) {
-            return exception(id, "BAD_PARAM");
+            return Some(exception(id, "BAD_PARAM"));
         }
         let Some(header) = Header::parse(perform.transaction) else {
-            return exception(id, "BAD_PARAM");
+            return Some(exception(id, "BAD_PARAM"));
         };
         let Some(session) = self
             .session
             .as_mut()
             .filter(|s| s.connection_id == perform.connection_id)
         else {
-            debug!("{}: Perform for an unknown connection", self.peer);
-            return exception(id, "BAD_PARAM");
+            return self.joined_perform(id, &perform, &header, msg);
         };
         let txn = perform.transaction;
         let peer = &self.peer;
@@ -1413,10 +1570,12 @@ impl Connection {
                 login(shared, peer, self.address.ip(), session, &header, txn)
             }
             code if code == Opcode::DownloadWithLock as u8 => {
-                download(shared, peer, session, &header, txn, perform.max_return)
+                let reader = session.reader(header.file_id);
+                download(shared, peer, reader, &header, txn, perform.max_return)
             }
             code if code == Opcode::DownloadList as u8 => {
-                download_list(shared, peer, session, &header, txn, perform.max_return)
+                let reader = session.reader(header.file_id);
+                download_list(shared, peer, reader, &header, txn, perform.max_return)
             }
             code if code == Opcode::QueryProgram as u8 => {
                 query(shared, peer, session, &header, txn, perform.max_return)
@@ -1504,7 +1663,8 @@ impl Connection {
                 }
             }
             code if code == Opcode::DownloadFromHost as u8 => {
-                download_from_host(shared, peer, session, &header, txn, perform.max_return)
+                let reader = session.reader(header.file_id);
+                download_from_host(shared, peer, reader, &header, txn, perform.max_return)
             }
             code if code == Opcode::UploadToHost as u8 => {
                 upload(shared, peer, session, &header, txn, perform.max_return)
@@ -1567,6 +1727,9 @@ impl Connection {
                 Ok(ResultBuilder::new().push_u16(UNSUPPORTED).finish())
             }
         };
+        // What the request changed of the session's files and logins is
+        // what its other transports read from now on.
+        session.publish();
         // Changes other clients made go out in the backchannel (write-path.md
         // 6.4), as many as the reply leaves room for in `maxreturn`; an
         // exception carries none, so they wait for the next reply.
@@ -1582,19 +1745,266 @@ impl Connection {
         } else {
             write::notification_backchannel(&notifications)
         };
-        match result {
-            Ok(result) => build_perform_reply(id, &result, &backchannel),
-            Err(PerformError::Status(status)) if status == LIMIT_EXCEPTION => {
-                warn!("{peer}: op{}: refused at a connection limit", header.opcode);
-                exception(id, LIMIT_EXCEPTION)
+        Some(perform_reply(peer, id, header.opcode, result, &backchannel))
+    }
+
+    /// A Perform naming a session this transport does not own
+    /// ([`crate::joins`]): a read answered from that session when the
+    /// transport may join it ([`joins::decide`]); otherwise `BAD_PARAM`,
+    /// as a Perform naming an unknown connection always was, whether a
+    /// session has the id or not. A transport with a session of its own
+    /// joins none. The reply's backchannel carries no notifications: those
+    /// wait for the session's own transport.
+    fn joined_perform(
+        &mut self,
+        id: u32,
+        perform: &PerformRequest<'_>,
+        header: &Header,
+        msg: &[u8],
+    ) -> Option<Vec<u8>> {
+        let session_id = perform.connection_id;
+        if self.session.is_some() {
+            debug!("{}: Perform for an unknown connection", self.peer);
+            return Some(exception(id, "BAD_PARAM"));
+        }
+        let file = match self.join(session_id, header) {
+            Ok(file) => file,
+            Err(refusal) => {
+                return Some(self.refuse(id, session_id, header.opcode, refusal, true));
             }
-            Err(PerformError::Status(status)) if status == UNREADABLE_EXCEPTION => {
-                exception(id, UNREADABLE_EXCEPTION)
+        };
+        // A read of a paused file waits, as the session's own would
+        // (`held_for`), and so does one after a request held for its file.
+        if self.file_paused(header.file_id) || self.held.iter().any(|h| h.file == header.file_id) {
+            return self.hold(header.file_id, msg);
+        }
+        let (shared, peer) = (&self.shared, &self.peer);
+        let Some(joined) = self.joined.get_mut(&session_id) else {
+            return Some(exception(id, "BAD_PARAM"));
+        };
+        // Under the table's lock, once the session still grants the file
+        // under the Login the read was admitted with (`Seat::table`).
+        let read = joined
+            .seat
+            .table(header.file_id, file.login)
+            .map(|mut transfers| {
+                *joined.served.entry(header.opcode).or_default() += 1;
+                shared.joins.served(
+                    peer,
+                    format_args!(
+                        "serving op{} {} of file {} for session 0x{session_id:08x} \
+                         ({} bytes, maxreturn {})",
+                        header.opcode,
+                        Opcode::name(header.opcode).unwrap_or("(unknown)"),
+                        header.file_id,
+                        perform.transaction.len(),
+                        perform.max_return
+                    ),
+                );
+                let open = OpenFile {
+                    hosted: file.hosted,
+                    nonce: 0,
+                    account: file.account,
+                    close: CloseStep::None,
+                    withheld: file.withheld,
+                    login: file.login,
+                };
+                let reader = Reader {
+                    file: Some(&open),
+                    transfers: &mut transfers,
+                };
+                let (txn, max_return) = (perform.transaction, perform.max_return);
+                if header.opcode == Opcode::DownloadWithLock as u8 {
+                    download(shared, peer, reader, header, txn, max_return)
+                } else {
+                    download_list(shared, peer, reader, header, txn, max_return)
+                }
+            });
+        Some(match read {
+            Ok(result) => perform_reply(peer, id, header.opcode, result, &BACKCHANNEL),
+            // The session lost the file or ended between the read's
+            // admission and its turn at the table: refused, at no cost, as
+            // the rule admitted it.
+            Err(refusal) => self.refuse(id, session_id, header.opcode, refusal, false),
+        })
+    }
+
+    /// Refuse request `id` naming session `session_id` (`BAD_PARAM`, the
+    /// same for every refusal). One the rule refused (`counted`) counts
+    /// against this transport, which is closed after the answer at its
+    /// limit or its address's (`crate::config::JoinRefusals`); the address
+    /// was charged as it was looked at (`Joins::admit`).
+    fn refuse(
+        &mut self,
+        id: u32,
+        session_id: u32,
+        opcode: u8,
+        refusal: Refusal,
+        counted: bool,
+    ) -> Vec<u8> {
+        if matches!(refusal, Refusal::NoSession | Refusal::Ended) {
+            self.leave(session_id);
+        }
+        // At most one count per opcode: bounded whatever is sent.
+        *self.refused_joins.entry(opcode).or_default() += 1;
+        let joins = &self.shared.joins;
+        if counted {
+            self.refusals = self.refusals.saturating_add(1);
+            if refusal == Refusal::Allowance || self.refusals >= joins.limits().per_connection {
+                self.close_after_reply = true;
             }
-            Err(e) => {
-                warn!("{peer}: op{}: {e}", header.opcode);
-                exception(id, "MARSHAL")
+        }
+        joins.refused(&self.peer, session_id, opcode, refusal);
+        exception(id, "BAD_PARAM")
+    }
+
+    /// Apply the join rule to a request naming session `session_id`, within
+    /// its address's allowance: the allowance is looked at, the rule
+    /// applied and a refusal charged in one section under the address's
+    /// lock (`Joins::admit`), so that connections from one address trying
+    /// at once get no more looks than the allowance between them. When it
+    /// passes, the transport has a seat in the session, taken at its first
+    /// request there, and the file it names as the session has it open now
+    /// comes back.
+    fn join(&mut self, session_id: u32, header: &Header) -> Result<FileGrant, Refusal> {
+        let shared = Arc::clone(&self.shared);
+        let address = crate::admission::client_key(self.address.ip());
+        shared.joins.admit(address, || {
+            #[cfg(debug_assertions)]
+            if let Some(delay) = shared.join_lookup_delay.get() {
+                std::thread::sleep(*delay);
             }
+            let lookup =
+                shared
+                    .joins
+                    .lookup(self.transport.certificate, session_id, header.file_id);
+            joins::decide(&lookup.inputs(header.opcode, self.transport))?;
+            let (Some(grant), Some(file)) = (lookup.grant, lookup.file) else {
+                return Err(Refusal::NoSession);
+            };
+            // An earlier session of the same id is let go.
+            if self
+                .joined
+                .get(&session_id)
+                .is_some_and(|joined| !Arc::ptr_eq(joined.seat.grant(), &grant))
+            {
+                self.leave(session_id);
+            }
+            if !self.joined.contains_key(&session_id) {
+                if self.joined.len() >= joins::MAX_SESSIONS_PER_TRANSPORT {
+                    return Err(Refusal::TooManySessions);
+                }
+                let transfers = Arc::new(Mutex::new(Transfers::new(
+                    &shared.upload_memory,
+                    &shared.download_memory,
+                    address,
+                )));
+                let seat = grant.take_seat(transfers)?;
+                info!(
+                    "{}: joined session 0x{session_id:08x} of {} for its reads",
+                    self.peer,
+                    grant.owner_name()
+                );
+                self.joined.insert(
+                    session_id,
+                    Joined {
+                        seat,
+                        served: Default::default(),
+                    },
+                );
+            }
+            Ok(file)
+        })
+    }
+
+    /// Give up the seat in session `session_id`, if this transport has one.
+    fn leave(&mut self, session_id: u32) {
+        if let Some(joined) = self.joined.remove(&session_id) {
+            let served: Vec<String> = joined
+                .served
+                .iter()
+                .map(|(opcode, n)| format!("op{opcode} {n}"))
+                .collect();
+            info!(
+                "{}: left session 0x{session_id:08x}, having served {}",
+                self.peer,
+                if served.is_empty() {
+                    "nothing".to_owned()
+                } else {
+                    served.join(", ")
+                }
+            );
+        }
+    }
+
+    /// Give up the seats in sessions that ended, and what was paged for
+    /// them.
+    fn leave_ended(&mut self) {
+        let ended: Vec<u32> = self
+            .joined
+            .iter()
+            .filter(|(_, joined)| joined.seat.grant().ended())
+            .map(|(session_id, _)| *session_id)
+            .collect();
+        for session_id in ended {
+            self.leave(session_id);
+        }
+    }
+
+    /// Close the connection when it met a limit on refused reads, with a
+    /// GIOP CloseConnection after the reply already sent; whether it did.
+    fn closed_after_reply(&mut self, stream: &mut impl Write) -> bool {
+        if !self.close_after_reply {
+            return false;
+        }
+        info!("{}: closing: it met its limit of refused reads", self.peer);
+        let close = om_giop::build_close_connection();
+        self.record(false, &close);
+        let _ = stream.write_all(&close).and_then(|()| stream.flush());
+        true
+    }
+
+    /// Give up every seat, and log what was refused.
+    fn leave_joined(&mut self) {
+        let sessions: Vec<u32> = self.joined.keys().copied().collect();
+        for session_id in sessions {
+            self.leave(session_id);
+        }
+        if !self.refused_joins.is_empty() {
+            let refused: Vec<String> = std::mem::take(&mut self.refused_joins)
+                .iter()
+                .map(|(opcode, n)| format!("op{opcode} {n}"))
+                .collect();
+            info!(
+                "{}: refused naming sessions it does not own: {}",
+                self.peer,
+                refused.join(", ")
+            );
+        }
+    }
+}
+
+/// The reply to a Perform whose operation answered `result`, with
+/// `backchannel`.
+fn perform_reply(
+    peer: &str,
+    id: u32,
+    opcode: u8,
+    result: Result<Vec<u8>, PerformError>,
+    backchannel: &[u8],
+) -> Vec<u8> {
+    match result {
+        Ok(result) => build_perform_reply(id, &result, backchannel),
+        Err(PerformError::Status(status)) if status == LIMIT_EXCEPTION => {
+            warn!("{peer}: op{opcode}: refused at a connection limit");
+            exception(id, LIMIT_EXCEPTION)
+        }
+        Err(PerformError::Status(status)) if status == UNREADABLE_EXCEPTION => {
+            exception(id, UNREADABLE_EXCEPTION)
+        }
+        Err(e) => {
+            warn!("{peer}: op{opcode}: {e}");
+            exception(id, "MARSHAL")
         }
     }
 }
@@ -1608,6 +2018,7 @@ impl Drop for Connection {
             self.ending = SessionEnd::Panic;
         }
         self.end_session();
+        self.leave_joined();
     }
 }
 
@@ -1872,6 +2283,7 @@ fn open(
                 account: None,
                 close: CloseStep::None,
                 withheld: Default::default(),
+                login: 0,
             },
         );
         shared
@@ -1924,9 +2336,13 @@ fn close_file(shared: &Shared, peer: &str, session: &mut Session, file_id: u32) 
 
 /// End authority for this file before logout or changing identities.
 fn clear_file_session(shared: &Shared, session: &mut Session, file_id: u32) {
+    // First, before the session lets go of the account: the session's other
+    // transports lose it in the same step, never later (`joins::Grant`).
+    let login = session.open.get(&file_id).map_or(0, |file| file.login);
+    session.grant.revoke(file_id, login);
     if let Some(file) = session.open.get_mut(&file_id) {
         // What the old account was served withheld is its own.
-        file.withheld.lock().expect("withheld records lock").clear();
+        withheld(file).records.clear();
         if let (Some(account), Some(client)) = (file.account.take(), &session.access) {
             shared.events.record(Event::client_closed(
                 client,
@@ -1934,6 +2350,8 @@ fn clear_file_session(shared: &Shared, session: &mut Session, file_id: u32) {
                 &account.name,
             ));
         }
+        #[cfg(test)]
+        joins::model::point(joins::Section::Release);
         let release = Operation::ReleaseSessionLocks(ReleaseSessionLocks {
             connection: session.connection_id,
         });
@@ -1950,6 +2368,21 @@ fn clear_file_session(shared: &Shared, session: &mut Session, file_id: u32) {
         session.transfers.drop_file(file_id);
         shared.clients.logged_out(session.connection_id, file_id);
     }
+}
+
+/// The session is logged in to `file` as `account` from now on, under a new
+/// Login ([`joins::next_login`]). The records withheld go with the old
+/// account, under the lock a read noting them takes, so that a read
+/// admitted under it adds none for the new one (`note_withheld`).
+fn logged_in(file: &mut OpenFile, account: Arc<FileAccount>) {
+    let login = joins::next_login();
+    {
+        let mut withheld = withheld(file);
+        withheld.records.clear();
+        withheld.login = login;
+    }
+    file.account = Some(account);
+    file.login = login;
 }
 
 /// op80 Login from `client`: recover the credentials and check them against
@@ -2134,8 +2567,7 @@ fn login(
                 &file.hosted.name,
                 &account.name,
             ));
-            file.withheld.lock().expect("withheld records lock").clear();
-            file.account = Some(account);
+            logged_in(file, account);
             if shared.local {
                 // Deferred work the local file holds is finished and saved
                 // now that an account it admits has logged in.
@@ -2183,11 +2615,10 @@ fn rejected_login(error_code: u16) -> Vec<u8> {
 fn readable<'s>(
     shared: &Shared,
     peer: &str,
-    session: &'s Session,
-    header: &Header,
+    file: Option<&'s OpenFile>,
     path: &[Vec<u8>],
 ) -> Option<&'s OpenFile> {
-    let file = session.open.get(&header.file_id)?;
+    let file = file?;
     let pre_login = PRE_LOGIN_PATHS.iter().any(|allowed| {
         path.len() >= allowed.len() && allowed.iter().zip(path).all(|(a, p)| *a == p.as_slice())
     });
@@ -2350,12 +2781,23 @@ fn unreadable(peer: &str, file: &OpenFile, path: &[Vec<u8>], error: &ViewError) 
     PerformError::Status(UNREADABLE_EXCEPTION.to_owned())
 }
 
-/// Note in `file`'s session what `view` withheld (`views::Withheld`).
+/// Note in `file`'s session what `view` withheld (`views::Withheld`),
+/// when the read was admitted under the session's current Login of the
+/// file: a read on another of the client's connections may finish after
+/// the next Login (`crate::joins`).
 fn note_withheld(file: &OpenFile, view: &crate::views::ViewFilter) {
-    file.withheld
-        .lock()
-        .expect("withheld records lock")
-        .note(view);
+    let mut withheld = withheld(file);
+    if withheld.login == file.login {
+        withheld.records.note(view);
+    }
+}
+
+/// `file`'s session's withheld records, also after a thread panicked
+/// holding them: each change adds or clears whole entries, and the lock is
+/// now shared with the session's other connections (`crate::joins`), so a
+/// panic on one of them must not fail the session's own Logins and commits.
+fn withheld(file: &OpenFile) -> std::sync::MutexGuard<'_, crate::views::SessionWithheld> {
+    file.withheld.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The view limits of `file`'s account (`views::ViewFilter`), when its
@@ -2468,19 +2910,36 @@ fn unknown_cursor(peer: &str, resume: &Resume) -> Resume {
     Resume::complete()
 }
 
+/// What a download reads with: the file its header names, as the session
+/// has it open (`None`: not open), and the transfers that page it.
+struct Reader<'s> {
+    file: Option<&'s OpenFile>,
+    transfers: &'s mut Transfers,
+}
+
+impl Session {
+    /// The [`Reader`] of a request naming file `file_id`.
+    fn reader(&mut self, file_id: u32) -> Reader<'_> {
+        Reader {
+            file: self.open.get(&file_id),
+            transfers: &mut self.transfers,
+        }
+    }
+}
+
 /// op90 Download With Lock: the target's subtree in wire form, paged when it
 /// does not fit one reply, or its value inline when the key holds a value
 /// (spec 5.6.6, 5.6.6c).
 fn download(
     shared: &Shared,
     peer: &str,
-    session: &mut Session,
+    reader: Reader<'_>,
     header: &Header,
     txn: &[u8],
     max_return: u32,
 ) -> Result<Vec<u8>, PerformError> {
     let request = parse_download_request(txn)?;
-    let reply = download_reply(shared, peer, session, header, &request, max_return)?;
+    let reply = download_reply(shared, peer, reader, header, &request, max_return)?;
     Ok(reply.to_result_within(max_return as usize))
 }
 
@@ -2490,13 +2949,13 @@ fn download(
 fn download_from_host(
     shared: &Shared,
     peer: &str,
-    session: &mut Session,
+    reader: Reader<'_>,
     header: &Header,
     txn: &[u8],
     max_return: u32,
 ) -> Result<Vec<u8>, PerformError> {
     let request = parse_download_request(txn)?;
-    let reply = download_reply(shared, peer, session, header, &request, max_return)?;
+    let reply = download_reply(shared, peer, reader, header, &request, max_return)?;
     Ok(reply.to_unlocked_result_within(max_return as usize))
 }
 
@@ -2505,15 +2964,16 @@ fn download_from_host(
 fn download_reply(
     shared: &Shared,
     peer: &str,
-    session: &mut Session,
+    reader: Reader<'_>,
     header: &Header,
     request: &ReceivedDownload,
     max_return: u32,
 ) -> Result<DownloadReply, PerformError> {
     let limit = page_limit(max_return);
     let owner = Owner::of(header);
+    let Reader { file, transfers } = reader;
     Ok(if request.resume.has_more() {
-        match session.transfers.next(owner, &request.resume, limit)? {
+        match transfers.next(owner, &request.resume, limit)? {
             Some((page, resume)) => DownloadReply::node(page, resume),
             None => DownloadReply {
                 resume: unknown_cursor(peer, &request.resume),
@@ -2521,7 +2981,7 @@ fn download_reply(
             },
         }
     } else {
-        match readable(shared, peer, session, header, &request.key_path) {
+        match readable(shared, peer, file, &request.key_path) {
             None => DownloadReply::missing().with_lock_error(ACCESS_DENIED),
             Some(file) => {
                 // The store is held while the node is read, and let go
@@ -2546,10 +3006,10 @@ fn download_reply(
                     }
                     Ok(Downloaded::Filtered(node)) => {
                         let stream = node.to_wire().unwrap_or_default();
-                        download_stream(shared, session, owner, request, stream, limit)
+                        download_stream(shared, transfers, owner, request, stream, limit)
                     }
                     Ok(Downloaded::List(stream)) => {
-                        download_stream(shared, session, owner, request, stream, limit)
+                        download_stream(shared, transfers, owner, request, stream, limit)
                     }
                 }
             }
@@ -2561,7 +3021,7 @@ fn download_reply(
 /// test replaces it (`Server::overriding_download_slots`).
 fn download_stream(
     shared: &Shared,
-    session: &mut Session,
+    transfers: &mut Transfers,
     owner: Owner,
     request: &ReceivedDownload,
     stream: Vec<u8>,
@@ -2574,9 +3034,7 @@ fn download_stream(
         .iter()
         .find(|reply| reply.path == request.key_path)
         .map_or(stream, |reply| reply.slots.clone());
-    let (page, resume) = session
-        .transfers
-        .start(owner, stream, limit, || shared.handle());
+    let (page, resume) = transfers.start(owner, stream, limit, || shared.handle());
     DownloadReply::node(page, resume)
 }
 
@@ -2586,7 +3044,7 @@ fn download_stream(
 fn download_list(
     shared: &Shared,
     peer: &str,
-    session: &mut Session,
+    reader: Reader<'_>,
     header: &Header,
     txn: &[u8],
     max_return: u32,
@@ -2594,6 +3052,7 @@ fn download_list(
     let request = parse_download_list_request(txn)?;
     let limit = page_limit(max_return);
     let owner = Owner::of(header);
+    let Reader { file, transfers } = reader;
     let reply = |slots, resume, status| DownloadListReply {
         status,
         slots,
@@ -2601,7 +3060,7 @@ fn download_list(
     };
     // A continuation of a download in progress.
     if request.resume.has_more() && request.resume.depth >= 0 {
-        let reply = match session.transfers.next(owner, &request.resume, limit)? {
+        let reply = match transfers.next(owner, &request.resume, limit)? {
             Some((page, resume)) => reply(page, resume, 0),
             None => reply(Vec::new(), unknown_cursor(peer, &request.resume), 0),
         };
@@ -2609,7 +3068,7 @@ fn download_list(
     }
     let path = &request.key_path;
     // Each part of the key list is held only for a path the session may read.
-    let Some(file) = readable(shared, peer, session, header, path) else {
+    let Some(file) = readable(shared, peer, file, path) else {
         let reply = reply(Vec::new(), Resume::complete(), ACCESS_DENIED);
         return Ok(reply.to_result_within(max_return as usize));
     };
@@ -2620,9 +3079,7 @@ fn download_list(
     };
     // The first part of the key list, or a later one.
     let part = request.payload;
-    let upload = session
-        .transfers
-        .upload(owner, &request.resume, part, max, || shared.handle());
+    let upload = transfers.upload(owner, &request.resume, part, max, || shared.handle());
     // The key list's charge, if it arrived in parts, lasts as long as it.
     let (payload, _held) = match upload? {
         Upload::Complete(payload, held) => (payload, held),
@@ -2637,7 +3094,6 @@ fn download_list(
     };
     // Checked before the store is held; read again from the bytes there.
     let keys = KeyList::parse(&payload)?;
-    let file = readable(shared, peer, session, header, path).expect("checked above");
     let parent = shared
         .engine
         .read(&file.hosted)
@@ -2647,9 +3103,7 @@ fn download_list(
         Ok(Some(parent)) => parent.to_wire().unwrap_or_default(),
         Ok(None) => vec![om_hbam::slot::BEGIN, om_hbam::slot::POP],
     };
-    let (page, resume) = session
-        .transfers
-        .start(owner, stream, limit, || shared.handle());
+    let (page, resume) = transfers.start(owner, stream, limit, || shared.handle());
     Ok(reply(page, resume, 0).to_result_within(max_return as usize))
 }
 
@@ -4050,12 +4504,7 @@ fn commit(
     let withheld = session
         .open
         .get(&header.file_id)
-        .map(|file| {
-            file.withheld
-                .lock()
-                .expect("withheld records lock")
-                .named_in(&list)
-        })
+        .map(|file| withheld(file).records.named_in(&list))
         .unwrap_or_default();
     let client = session.client;
     let temp = session
@@ -4432,8 +4881,69 @@ fn exception(request_id: u32, name: &str) -> Vec<u8> {
 }
 
 #[cfg(test)]
+mod join_orders;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file's account leaves the session's read grant in the same step
+    /// as it leaves the session (`clear_file_session`: Logout, a new Login
+    /// before its password is checked, the file opened again or closed),
+    /// not when the request ends: a joined read admitted after it is
+    /// refused. Tested on the grant right after the step, as a Login cannot
+    /// be held open in its password check.
+    #[test]
+    fn a_files_account_leaves_the_grant_with_the_session() {
+        use crate::scripts::fixture;
+        let file = fixture::TempFile::new("grant-revoke", &[], true);
+        let shared = crate::scripts::tests::shared(&file);
+        let hosted = crate::scripts::tests::hosted(&shared);
+        let address: IpAddr = "127.0.0.1".parse().unwrap();
+        let owner = Peer::new(address, Some([1; 32]));
+        let grant = shared.joins.open(
+            7,
+            owner,
+            "owner",
+            Arc::new(Control::default()),
+            Arc::default(),
+        );
+        let mut session = Session {
+            connection_id: 7,
+            key: [0; 16],
+            name: "owner".into(),
+            open: HashMap::new(),
+            transfers: Transfers::new(&shared.upload_memory, &shared.download_memory, address),
+            temp: HashMap::new(),
+            client: address,
+            version: String::new(),
+            address,
+            access: None,
+            callback: Callback::Unlocated,
+            file_list: None,
+            automatic_logins: Vec::new(),
+            grant,
+        };
+        session.open.insert(
+            hosted.id,
+            OpenFile {
+                hosted: Arc::clone(&hosted),
+                nonce: 0,
+                account: hosted.account(fixture::ACCOUNT),
+                close: CloseStep::None,
+                withheld: Default::default(),
+                login: 1,
+            },
+        );
+        session.publish();
+        let joined_read = || {
+            let lookup = shared.joins.lookup(Some([1; 32]), 7, hosted.id);
+            joins::decide(&lookup.inputs(Opcode::DownloadWithLock as u8, owner))
+        };
+        assert_eq!(joined_read(), Ok(()));
+        clear_file_session(&shared, &mut session, hosted.id);
+        assert_eq!(joined_read(), Err(Refusal::NotLoggedIn));
+    }
 
     /// A query source's head of a node is what its node would give, read
     /// from the view's head and never from a subtree, for every path of a

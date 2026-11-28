@@ -642,6 +642,21 @@ impl Clients {
     }
 }
 
+impl Shared {
+    /// Disconnect session `id` for the administrator
+    /// ([`ServerHandle::disconnect_client`]); its client's address, or
+    /// `None` when no client has the id. The connection's disconnect flag
+    /// comes first, in one step: from then on no other transport is
+    /// admitted to read through the session, whatever its own is doing
+    /// (`crate::joins`). Then its grant is stopped and what those
+    /// transports page goes, which waits for a read under way.
+    pub(crate) fn disconnect_session(&self, id: u32) -> Option<SocketAddr> {
+        let address = self.clients.disconnect(id)?;
+        self.joins.end(id);
+        Some(address)
+    }
+}
+
 /// A client's socket as its connection reads and writes it. Once the
 /// administrator disconnects the client, every read fails, so the
 /// connection stops within one read however the client goes on sending:
@@ -1019,7 +1034,7 @@ impl ServerHandle {
     /// once.
     pub fn disconnect_client(&self, id: u32) -> bool {
         let label = self.shared.clients.label(id);
-        let Some(address) = self.shared.clients.disconnect(id) else {
+        let Some(address) = self.shared.disconnect_session(id) else {
             return false;
         };
         info!("{address}: disconnecting session 0x{id:08x} for the administrator");

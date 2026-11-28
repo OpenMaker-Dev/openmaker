@@ -209,6 +209,7 @@ impl Server {
                 custom_sets: AtomicBool::new(false),
                 rng: SystemRandom::new(),
                 connection_ids: Mutex::new(Default::default()),
+                joins: Default::default(),
                 recordings,
                 mailboxes: Default::default(),
                 engine: Arc::new(engine),
@@ -242,6 +243,8 @@ impl Server {
                 failing_timestamps: Default::default(),
                 #[cfg(debug_assertions)]
                 read_only_before_write: AtomicBool::new(false),
+                #[cfg(debug_assertions)]
+                join_lookup_delay: Default::default(),
             }),
             schedules: Scheduler::new(),
             limits: ConnectionLimits::DEFAULT,
@@ -297,6 +300,7 @@ impl Server {
     /// The caps on connections and the time limits on each
     /// ([`ConnectionLimits::DEFAULT`] otherwise).
     pub fn with_connection_limits(mut self, limits: ConnectionLimits) -> Self {
+        self.shared.joins.set_limits(limits.join_refusals);
         self.shared.upload_memory.set_limit(limits.upload_memory);
         self.shared
             .download_memory
@@ -423,6 +427,18 @@ impl Server {
             .write()
             .expect("omitted list paths lock")
             .push(path.iter().map(|key| key.to_vec()).collect());
+        self
+    }
+
+    /// Hold each read on a connection without a session of its own for
+    /// `delay` once its attempt is taken from its address's allowance and
+    /// before the session it names is looked up (`crate::joins`). A test
+    /// fixture: many connections' requests then overlap at that point.
+    /// Only in debug builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn delaying_join_lookups(self, delay: Duration) -> Self {
+        let _ = self.shared.join_lookup_delay.set(delay);
         self
     }
 
@@ -1049,7 +1065,7 @@ impl ServerHandle {
     /// were. For a host that is going away ([`crate::LocalHost`]); a
     /// server's [`ServerHandle::shutdown`] leaves open connections open.
     pub fn close_connections(&self) -> usize {
-        self.shared.sockets.close_all()
+        self.shared.close_connections()
     }
 
     /// Shut down: record it in the event log, stop the schedules (no run
@@ -1131,7 +1147,11 @@ fn handle(
             return;
         }
     }
-    info!("{peer}: connected");
+    let certificate = client_certificate(&conn);
+    info!(
+        "{peer}: connected, {}",
+        tls_summary(&conn, certificate.as_ref())
+    );
     // Wake up regularly to send back-channel calls (callback results) to a
     // quiet client; a read cut by the timeout resumes where it stopped. A
     // write fails once the client has taken nothing for the stall limit:
@@ -1149,6 +1169,7 @@ fn handle(
     let mut stream = StreamOwned::new(conn, ClientSocket::new(tcp, control.clone()));
     Connection::new(shared.clone(), address, control)
         .closed_by_server(closed)
+        .with_client_certificate(certificate)
         .serve(&mut stream, limits);
     // TLS bytes still unsent mean the client stopped taking them: it is
     // not waited for again for a goodbye.
@@ -1157,6 +1178,41 @@ fn handle(
         let _ = stream.conn.complete_io(&mut stream.sock);
     }
     info!("{peer}: disconnected");
+}
+
+/// The SHA-256 of the client certificate `conn`'s handshake verified
+/// (`tls::AnyClientCert`): the one a joining transport must present again
+/// (`crate::joins`).
+fn client_certificate(conn: &ServerConnection) -> Option<[u8; 32]> {
+    let der = conn.peer_certificates()?.first()?;
+    let digest = ring::digest::digest(&ring::digest::SHA256, der.as_ref());
+    digest.as_ref().try_into().ok()
+}
+
+/// What the log says of a connection's TLS: its version, whether its
+/// handshake was full or resumed a session, and its client certificate's
+/// SHA-256, which tells an administrator whether two connections came
+/// from one client (`crate::joins`).
+fn tls_summary(conn: &ServerConnection, certificate: Option<&[u8; 32]>) -> String {
+    let version = conn
+        .protocol_version()
+        .map_or_else(|| "no TLS version".to_owned(), |v| format!("{v:?}"));
+    let handshake = match conn.handshake_kind() {
+        Some(rustls::HandshakeKind::Full) => "full handshake",
+        Some(rustls::HandshakeKind::FullWithHelloRetryRequest) => {
+            "full handshake after a HelloRetryRequest"
+        }
+        Some(rustls::HandshakeKind::Resumed) => "resumed session",
+        None => "handshake of unknown kind",
+    };
+    let certificate = certificate.map_or_else(
+        || "no client certificate".to_owned(),
+        |hash| {
+            let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+            format!("client certificate sha256 {hex}")
+        },
+    );
+    format!("{version}, {handshake}, {certificate}")
 }
 
 /// A socket each read and write of which waits only for the time left

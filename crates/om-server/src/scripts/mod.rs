@@ -742,7 +742,7 @@ pub(crate) mod fixture;
 mod oracle_tests;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::time::{Duration, Instant};
 
     use om_calc::eval::CalcHost;
@@ -764,7 +764,7 @@ mod tests {
 
     const CLIENT: u32 = 0x77;
 
-    pub(super) fn shared(file: &TempFile) -> Arc<Shared> {
+    pub(crate) fn shared(file: &TempFile) -> Arc<Shared> {
         let engine = crate::engine::Engine::default();
         // Every read answered through both views (`engine::copies`) and
         // every write checked (`engine::checking`), in debug builds only.
@@ -796,6 +796,7 @@ mod tests {
             custom_sets: Default::default(),
             rng: SystemRandom::new(),
             connection_ids: Default::default(),
+            joins: Default::default(),
             recordings: None,
             mailboxes: Default::default(),
             engine: std::sync::Arc::new(engine),
@@ -829,6 +830,8 @@ mod tests {
             failing_timestamps: Default::default(),
             #[cfg(debug_assertions)]
             read_only_before_write: Default::default(),
+            #[cfg(debug_assertions)]
+            join_lookup_delay: Default::default(),
         });
         // A client registered for the file's notifications.
         shared.connection_ids.lock().unwrap().insert(CLIENT);
@@ -845,7 +848,7 @@ mod tests {
         shared
     }
 
-    pub(super) fn hosted(shared: &Shared) -> Arc<Hosted> {
+    pub(crate) fn hosted(shared: &Shared) -> Arc<Hosted> {
         shared.hosting.by_name(fixture::FILE).unwrap().clone()
     }
 

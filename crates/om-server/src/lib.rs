@@ -123,6 +123,7 @@ mod engine;
 mod eventlog;
 mod filelock;
 pub mod hosting;
+mod joins;
 mod library;
 mod local;
 mod locks;
@@ -152,8 +153,8 @@ pub use admin::{
 };
 pub use backups::{BackupError, BackupInfo, BackupProgress, MAX_KEEP, MAX_LABEL_CHARS};
 pub use config::{
-    check_store_folder, ConnectionLimits, EngineSettings, HostedFile, Privileges, ScriptLimits,
-    ServerConfig, ServerIdentity, SCRIPT_CALC_LIMITS,
+    check_store_folder, ConnectionLimits, EngineSettings, HostedFile, JoinRefusals, Privileges,
+    ScriptLimits, ServerConfig, ServerIdentity, SCRIPT_CALC_LIMITS,
 };
 #[cfg(debug_assertions)]
 #[doc(hidden)]
