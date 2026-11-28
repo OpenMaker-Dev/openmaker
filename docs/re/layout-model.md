@@ -3856,6 +3856,13 @@ whether turning JavaScript scripts off on a viewer that has them clears it,
 the progress bar or status messages turned off alone, templates, and
 combinations of several changes other than W1's and W3's.
 
+[O, 2026-11-28, FileMaker Pro 26.1.1 for macOS, #896's native check] A
+copy of the Contacts starter in which OpenMaker placed a viewer with
+JavaScript scripts on (`0x80cd`, the address `"https://example.com"`)
+opened with no alert. The viewer showed in Browse mode, Web Viewer Setup
+showed "Allow JavaScript to perform FileMaker scripts" on, and Recover
+reported 0 for all 215 of its codes.
+
 What OpenMaker writes for a new viewer (`om_data::layout_placement::
 plan_web_viewer`, `docs/authoring.md`, "Web viewers on layouts"): the
 records above, but for `kSelected` in the object's flags, which no
