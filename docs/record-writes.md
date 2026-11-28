@@ -1151,9 +1151,12 @@ reference storage.
 
 The measured local scalar Text definition with option word `0` and
 validation word `0x00000104` retains its single-byte list ID reference
-after list deletion. A nonempty value checked against that missing list
-fails membership validation with error 506. A script whose write skips
-the membership check can still save the value.
+after list deletion. For the tested nonempty typed values, FileMaker
+showed the same dialog as for a nonmember of a working list. OpenMaker
+reports error 506, inferred from the working-list error mapping (s17).
+OpenMaker accepts a typed clear under its ordinary empty-value rule.
+Clearing in FileMaker Browse remains unmeasured. A script whose write
+skips the membership check can still save or clear the value.
 [Dangling-reference comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1136#issuecomment-7214224232)
 
 **A field validated against a value list the rules cannot check yet**
