@@ -1949,10 +1949,9 @@ mod tests {
     /// listing gives the children that seeking each from the root gives,
     /// though the first leaf straddles the bound past `a` too. On such a
     /// tree a read can go back, where it fails (#998, #1149), so the first
-    /// items are compared, errors included. With the held leaf taken
-    /// whenever its items straddle the bound (#938's fault), the held cursor
-    /// gave `z` where the root gives `n`, and the listing `a, z` where
-    /// seeking from the root gives `a, n`.
+    /// items are compared, errors included. With every held page trusted
+    /// (#938's fault), the held cursor seeking `n` forward gave `z`, then
+    /// failed stepping back to `a/c`, where the root gives `n, o`.
     #[test]
     fn a_seek_from_a_held_leaf_gives_what_the_root_gives_on_a_tree_out_of_order() {
         let store = MemStore::new(Numbering::Sequential);
