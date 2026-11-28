@@ -660,8 +660,8 @@ impl Connection {
             // the connection closing, and reads the files again when it
             // reconnects.
             if self.notifications_overflowed() {
-                info!("{}: closing: too many notifications wait for it", self.peer);
                 self.stop_reads();
+                info!("{}: closing: too many notifications wait for it", self.peer);
                 self.ending = SessionEnd::Overflow;
                 let close = om_giop::build_close_connection();
                 self.record(false, &close);
@@ -680,6 +680,7 @@ impl Connection {
                     if let Some(limit) = limit.filter(|limit| heard.elapsed() >= *limit) {
                         // As FileMaker Server closes a silent connection
                         // (network-protocol.md 6.2).
+                        self.stop_reads();
                         let session = if self.session.is_some() {
                             ""
                         } else {
@@ -689,7 +690,6 @@ impl Connection {
                             "{}: closing after {limit:?} without a request{session}",
                             self.peer
                         );
-                        self.stop_reads();
                         self.ending = SessionEnd::Idle(limit);
                         let close = om_giop::build_close_connection();
                         self.record(false, &close);
@@ -719,13 +719,13 @@ impl Connection {
                 // Closing TCP without a TLS close_notify is a normal way for a
                 // client to leave.
                 Err(ReadError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                    debug!("{}: closed without close_notify", self.peer);
                     self.ended_by_reading(None);
+                    debug!("{}: closed without close_notify", self.peer);
                     break;
                 }
                 Err(e) => {
-                    warn!("{}: {e}", self.peer);
                     self.ended_by_reading(Some(e.to_string()));
+                    warn!("{}: {e}", self.peer);
                     break;
                 }
             };
@@ -774,6 +774,7 @@ impl Connection {
                 Ok(MsgType::Reply) => self.call_answered(&msg),
                 Ok(other) => debug!("{}: ignoring GIOP {other:?}", self.peer),
                 Err(e) => {
+                    self.stop_reads();
                     warn!("{}: {e}", self.peer);
                     self.ending = SessionEnd::Lost(e.to_string());
                     break;
@@ -806,6 +807,7 @@ impl Connection {
     /// ([`crate::ServerHandle::close_connections`]), or else the client
     /// left, or reading failed with `failure`.
     fn ended_by_reading(&mut self, failure: Option<String>) {
+        self.stop_reads();
         self.ending = if self.closed_by_server.load(Ordering::Acquire) {
             SessionEnd::ClosedByServer
         } else if self.control.disconnecting() {
@@ -820,6 +822,7 @@ impl Connection {
     /// Log a failed write of `what`: one that timed out is a client that
     /// took none of it for the stall limit.
     fn write_failed(&mut self, what: &str, e: &std::io::Error, limits: &ConnectionLimits) {
+        self.stop_reads();
         let problem = if matches!(
             e.kind(),
             std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
@@ -954,11 +957,11 @@ impl Connection {
             }
         }
         if leave {
+            self.control.disconnect_now();
             info!(
                 "{}: session 0x{connection:08x} kept a closing file open: disconnecting",
                 self.peer
             );
-            self.control.disconnect_now();
         }
     }
 
@@ -1098,19 +1101,19 @@ impl Connection {
             }
             Some(leave_by) if now >= leave_by => {
                 if first_open.is_some() {
+                    self.control.disconnect_now();
                     info!(
                         "{}: session 0x{connection:08x} did not leave when told: disconnecting",
                         self.peer
                     );
-                    self.control.disconnect_now();
                 } else {
+                    self.stop_reads();
                     let id = self.call_id();
                     info!(
                         "{}: ending session 0x{connection:08x}, its files closed, for the \
                          administrator",
                         self.peer
                     );
-                    self.stop_reads();
                     self.send(stream, &om_protocol::build_disconnect(id, connection, true))?;
                     self.end_session();
                 }
@@ -1312,9 +1315,10 @@ impl Connection {
     }
 
     /// The session is ending: from now on no other transport is admitted
-    /// to read through it, before a step that can wait (a write to a client
-    /// that does not read) and the session's end itself
-    /// ([`Connection::end_session`]).
+    /// to read through it. Called where the connection decides to end,
+    /// before anything that can wait there: a log line (its sink may
+    /// block), a write to a client that does not read, and the session's
+    /// end itself ([`Connection::end_session`]).
     fn stop_reads(&self) {
         if let Some(session) = &self.session {
             session.grant.stop();
