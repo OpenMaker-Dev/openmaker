@@ -16,8 +16,10 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -30,7 +32,9 @@ use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
-use smithay::reexports::calloop::{channel, EventLoop, Interest, LoopSignal, PostAction};
+use smithay::reexports::calloop::{
+    channel, EventLoop, Interest, LoopHandle, LoopSignal, PostAction,
+};
 use smithay::reexports::wayland_protocols::wp::text_input::zv3::server::{
     zwp_text_input_manager_v3::{self, ZwpTextInputManagerV3},
     zwp_text_input_v3::{self, ZwpTextInputV3},
@@ -54,9 +58,12 @@ use smithay::wayland::compositor::{
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
 use smithay::wayland::selection::data_device::{
+    request_data_device_client_selection, set_data_device_focus, set_data_device_selection,
+};
+use smithay::wayland::selection::data_device::{
     ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
 };
-use smithay::wayland::selection::SelectionHandler;
+use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
@@ -66,6 +73,7 @@ use smithay::{
 };
 
 use super::shm::{self, Shm};
+use super::transfer::{self, Transfer};
 use crate::web_viewer::PageInput;
 
 /// The title prefix the host gives each view's window.
@@ -87,11 +95,86 @@ pub(crate) enum Request {
     Scale(i32),
     /// The session's keymap, in xkb's text format.
     Keymap(String),
+    /// Pointer input over a page's pop-up, in its points.
+    PopupPointer { popup: u32, input: PageInput },
+    /// Paste `text` in `view`'s page: the clipboard holds it, then Ctrl+V.
+    Paste { view: u64, text: String },
+    /// Copy (or cut) the selection in `view`'s page.
+    Edit { view: u64, cut: bool },
+}
+
+/// The Linux key codes of the keys that type c, x and v in the page's
+/// keymap: where they are on a US keyboard, unless its first layout has
+/// them elsewhere (Dvorak, AZERTY).
+#[derive(Clone, Copy)]
+struct EditKeys {
+    c: u32,
+    x: u32,
+    v: u32,
+}
+
+impl Default for EditKeys {
+    fn default() -> Self {
+        EditKeys {
+            c: 46,
+            x: 45,
+            v: 47,
+        }
+    }
+}
+
+impl EditKeys {
+    /// The keys in `keymap` (the text of an xkb keymap).
+    fn of(keymap: &str) -> Self {
+        use smithay::input::keyboard::{keysyms, xkb};
+        let mut keys = EditKeys::default();
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let Some(keymap) = xkb::Keymap::new_from_string(
+            &context,
+            keymap.to_owned(),
+            xkb::KEYMAP_FORMAT_TEXT_V1,
+            xkb::KEYMAP_COMPILE_NO_FLAGS,
+        ) else {
+            return keys;
+        };
+        let wanted = [
+            (keysyms::KEY_c, &mut keys.c),
+            (keysyms::KEY_x, &mut keys.x),
+            (keysyms::KEY_v, &mut keys.v),
+        ];
+        for (symbol, code) in wanted {
+            let found = (keymap.min_keycode().raw()..=keymap.max_keycode().raw()).find(|raw| {
+                keymap
+                    .key_get_syms_by_level((*raw).into(), 0, 0)
+                    .iter()
+                    .any(|sym| sym.raw() == symbol)
+            });
+            if let Some(raw) = found {
+                // xkb's codes are the Linux ones plus 8.
+                *code = raw.saturating_sub(8);
+            }
+        }
+        keys
+    }
 }
 
 /// Where each view's text caret is, in its points (x, y, width, height), as
 /// its page last said: the input method's window goes beside it.
 pub(crate) type Carets = Arc<std::sync::Mutex<HashMap<u64, [i32; 4]>>>;
+
+/// The text a page last copied, for the app's clipboard.
+pub(crate) type Copied = Arc<std::sync::Mutex<Option<String>>>;
+
+/// The clipboard's text types, in the order a page's are asked for.
+const TEXT_TYPES: [&str; 3] = ["text/plain;charset=utf-8", "UTF8_STRING", "text/plain"];
+/// The most text taken from a page's clipboard.
+const MAX_COPY: usize = 16 * 1024 * 1024;
+/// The most pastes a page may be taking at once; one more is refused.
+const MAX_PASTES: usize = 4;
+/// The most pop-ups the pages may have open at once; one more is closed.
+const MAX_POPUPS: usize = 8;
+/// The farthest a pop-up may lie from its view's corner, in points.
+const MAX_PLACE: i32 = 16_384;
 
 /// Each view's newest picture, which the display replaces as views commit
 /// and the app takes when it draws: a slot per view, not a queue, so a
@@ -103,7 +186,20 @@ pub(crate) type Frames = Arc<std::sync::Mutex<FrameSlots>>;
 #[derive(Default)]
 pub(crate) struct FrameSlots {
     pub frames: HashMap<u64, Frame>,
+    /// The pop-ups the pages show (menus, a `<select>`'s list, tooltips),
+    /// by their surface: there while they are, each with its newest frame
+    /// until the app takes it.
+    pub popups: HashMap<u32, PopupSlot>,
     pub max_side: usize,
+}
+
+/// A page's pop-up: its view, where it lies from the view's top left
+/// corner and its size, in points, and its newest picture.
+pub(crate) struct PopupSlot {
+    pub view: u64,
+    pub at: [i32; 2],
+    pub extent: [i32; 2],
+    pub frame: Option<Frame>,
 }
 
 /// The most bytes the frames waiting for the app may hold together: a
@@ -118,22 +214,30 @@ pub(crate) struct Frame {
     pub rgba: Vec<u8>,
 }
 
+/// What the display hands the app: each view's newest frame and caret,
+/// what a page copied, and how to wake the app when there is something.
+pub(crate) struct Outbox {
+    pub frames: Frames,
+    pub carets: Carets,
+    pub copied: Copied,
+    pub wake: Arc<dyn Fn() + Send + Sync>,
+}
+
 /// The running display. Dropping it stops the thread.
 pub(crate) struct PageDisplay {
     requests: channel::Sender<Request>,
     signal: LoopSignal,
+    /// Set when it is dropped: the loop stops at its next turn, also when
+    /// it was dropped before the loop began (entering its run clears a
+    /// stop asked before).
+    stopping: Arc<AtomicBool>,
     socket: PathBuf,
 }
 
 impl PageDisplay {
     /// Start the display, putting frames in `frames` and calling `wake`
     /// after each.
-    pub fn start(
-        frames: Frames,
-        carets: Carets,
-        wake: Box<dyn Fn() + Send>,
-        scale: i32,
-    ) -> Result<Self, String> {
+    pub fn start(outbox: Outbox, scale: i32) -> Result<Self, String> {
         let directory = tempfile::Builder::new()
             .prefix("openmaker-pages-")
             .tempdir_in(
@@ -145,19 +249,11 @@ impl PageDisplay {
         let (requests, request_rx) = channel::channel();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let socket_directory = (listener, directory);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&stopping);
         std::thread::Builder::new()
             .name("openmaker-page-display".into())
-            .spawn(move || {
-                run(
-                    socket_directory,
-                    request_rx,
-                    frames,
-                    carets,
-                    wake,
-                    scale,
-                    ready_tx,
-                )
-            })
+            .spawn(move || run(socket_directory, request_rx, outbox, scale, ready_tx, stop))
             .map_err(|e| e.to_string())?;
         let signal = ready_rx
             .recv_timeout(Duration::from_secs(5))
@@ -165,6 +261,7 @@ impl PageDisplay {
         Ok(PageDisplay {
             requests,
             signal,
+            stopping,
             socket,
         })
     }
@@ -186,6 +283,7 @@ impl PageDisplay {
 
 impl Drop for PageDisplay {
     fn drop(&mut self) {
+        self.stopping.store(true, Ordering::SeqCst);
         self.signal.stop();
         self.signal.wakeup();
     }
@@ -213,10 +311,29 @@ struct State {
     toplevels: Vec<ToplevelSurface>,
     views: HashMap<u64, WlSurface>,
     popups: Vec<PopupSurface>,
+    /// Each pop-up's view and place (`PopupSlot::at`), by its surface.
+    popup_places: HashMap<u32, (u64, [i32; 2])>,
     callbacks: Vec<WlCallback>,
     frames: Frames,
-    wake: Box<dyn Fn() + Send>,
+    wake: Arc<dyn Fn() + Send + Sync>,
     carets: Carets,
+    copied: Copied,
+    /// A page's copy being read (a newer copy supersedes it), the pastes
+    /// pages are taking, and the transfers to start once the clients'
+    /// requests are dispatched (smithay installs a new selection only
+    /// after it tells the handler).
+    copy: Option<Transfer>,
+    pastes: Vec<Transfer>,
+    copy_asked: Option<&'static str>,
+    paste_asked: Vec<(OwnedFd, Arc<str>)>,
+    /// The text the display's own selection holds now, by the number its
+    /// offers carry: an older offer a page kept gets nothing, so no older
+    /// text is held for it.
+    selection: Option<(u64, Arc<str>)>,
+    /// The keys that type c, x and v in the page's keymap (Linux key
+    /// codes), for Copy, Cut and Paste.
+    edit_keys: EditKeys,
+    dh: DisplayHandle,
     /// The view the pointer is over, and the one with the keyboard.
     pointer_view: Option<u64>,
     keyboard_view: Option<u64>,
@@ -225,6 +342,8 @@ struct State {
     /// last goes up (the pointer's grab), wherever the pointer is.
     buttons: Vec<u32>,
     pressed_on: Option<u64>,
+    /// The pop-up they were pressed in, if it was one.
+    pressed_popup: Option<u32>,
     /// The modifier keys the keyboard holds down, as the page heard them.
     held: Vec<u32>,
     text_inputs: Vec<TextInput>,
@@ -245,12 +364,17 @@ struct TextInput {
 fn run(
     (listener, directory): (ListeningSocket, tempfile::TempDir),
     requests: channel::Channel<Request>,
-    frames: Frames,
-    carets: Carets,
-    wake: Box<dyn Fn() + Send>,
+    outbox: Outbox,
     scale: i32,
     ready: Sender<Result<LoopSignal, String>>,
+    stopping: Arc<AtomicBool>,
 ) {
+    let Outbox {
+        frames,
+        carets,
+        copied,
+        wake,
+    } = outbox;
     type Started = (
         EventLoop<'static, State>,
         State,
@@ -294,13 +418,23 @@ fn run(
             toplevels: Vec::new(),
             views: HashMap::new(),
             popups: Vec::new(),
+            popup_places: HashMap::new(),
             callbacks: Vec::new(),
             frames,
             wake,
             pointer_view: None,
             buttons: Vec::new(),
             pressed_on: None,
+            pressed_popup: None,
             carets,
+            copied,
+            copy: None,
+            pastes: Vec::new(),
+            copy_asked: None,
+            paste_asked: Vec::new(),
+            selection: None,
+            edit_keys: EditKeys::default(),
+            dh: dh.clone(),
             keyboard_view: None,
             held: Vec::new(),
             text_inputs: Vec::new(),
@@ -314,6 +448,7 @@ fn run(
             return;
         }
     };
+    let closing = event_loop.get_signal();
     let handle = event_loop.handle();
     // The display's own file descriptor (a copy), so that the display can
     // stay outside the loop's state and be dispatched without `unsafe`.
@@ -325,6 +460,8 @@ fn run(
             .try_clone_to_owned()
             .map_err(|e| e.to_string())?;
         let clients = Rc::clone(&display);
+        // Weak: the loop's sources must not keep the loop alive.
+        let transfers = handle.downgrade();
         handle
             .insert_source(
                 Generic::new(
@@ -334,6 +471,9 @@ fn run(
                 ),
                 move |_, _, state| {
                     let _ = clients.borrow_mut().dispatch_clients(state);
+                    if let Some(handle) = transfers.upgrade() {
+                        state.transfer(&handle);
+                    }
                     Ok(PostAction::Continue)
                 },
             )
@@ -362,10 +502,10 @@ fn run(
             )
             .map_err(|e| e.to_string())?;
         handle
-            .insert_source(requests, |event, _, state| {
-                if let channel::Event::Msg(request) = event {
-                    state.request(request);
-                }
+            .insert_source(requests, move |event, _, state| match event {
+                channel::Event::Msg(request) => state.request(request),
+                // Every sender went: nothing will ask anything again.
+                channel::Event::Closed => closing.stop(),
             })
             .map_err(|e| e.to_string())?;
         handle
@@ -385,8 +525,14 @@ fn run(
     }
     let _ = ready.send(Ok(event_loop.get_signal()));
     let flush = Rc::clone(&display);
+    let signal = event_loop.get_signal();
     let _ = event_loop.run(None, &mut state, move |_| {
         let _ = flush.borrow_mut().flush_clients();
+        // Dropped, perhaps before the run began: the wakeup it sent, or the
+        // next frame tick, brings the loop here.
+        if stopping.load(Ordering::SeqCst) {
+            signal.stop();
+        }
     });
 }
 
@@ -421,11 +567,48 @@ impl State {
                 PageInput::Preedit(text) => self.compose(view, Some(text), None),
                 PageInput::Commit(text) => self.compose(view, None, Some(text)),
                 PageInput::Unfocused => self.release_keys(),
-                input => self.pointer(view, input),
+                PageInput::Paste(text) => self.request(Request::Paste { view, text }),
+                PageInput::Edit { cut } => self.request(Request::Edit { view, cut }),
+                input => self.pointer(view, None, input),
             },
-            Request::Focus(view) => self.focus(view),
+            Request::PopupPointer { popup, input } => {
+                if let Some(&(view, _)) = self.popup_places.get(&popup) {
+                    self.pointer(view, Some(popup), input);
+                }
+            }
+            Request::Focus(view) => {
+                // A press elsewhere in the window closes the pages' menus.
+                if view.is_none() {
+                    self.dismiss_popups();
+                }
+                self.focus(view);
+            }
             Request::Scale(scale) => set_scale(&self.output, scale),
+            Request::Paste { view, text } => {
+                // Only in the page with the keyboard (one that went since
+                // gets nothing), and no more than a copy may hold.
+                if self.keyboard_view != Some(view) || text.len() > MAX_COPY {
+                    return;
+                }
+                let number = self
+                    .selection
+                    .as_ref()
+                    .map_or(0, |(n, _)| n.wrapping_add(1));
+                self.selection = Some((number, Arc::from(text)));
+                let types = TEXT_TYPES.map(String::from).to_vec();
+                set_data_device_selection(&self.dh, &self.seat, types, number);
+                self.edit_key(view, self.edit_keys.v);
+            }
+            Request::Edit { view, cut } => {
+                let key = if cut {
+                    self.edit_keys.x
+                } else {
+                    self.edit_keys.c
+                };
+                self.edit_key(view, key);
+            }
             Request::Keymap(keymap) => {
+                self.edit_keys = EditKeys::of(&keymap);
                 if let Some(keyboard) = self.seat.get_keyboard() {
                     if let Err(error) = keyboard.set_keymap_from_string(self, keymap) {
                         eprintln!("openmaker: web viewers: the session's keymap: {error:?}");
@@ -476,7 +659,20 @@ impl State {
                 input.resource.enter(surface);
             }
         }
+        if surface.is_none() {
+            // smithay tells the handler of a new focus only: no page may
+            // set the clipboard, or is offered it, without the keyboard.
+            set_data_device_focus(&self.dh, &self.seat, None);
+        }
         self.keyboard_view = surface.and(view);
+    }
+
+    /// Ctrl and `key` in `view`, as Copy, Cut or Paste.
+    fn edit_key(&mut self, view: u64, key: u32) {
+        let control = crate::web_viewer::keys::CONTROL;
+        self.key(view, key, true, &[control]);
+        self.key(view, key, false, &[control]);
+        self.key(view, control, false, &[]);
     }
 
     /// Send a key to `view`, which gets the keyboard if it had not, the
@@ -556,6 +752,7 @@ impl State {
         };
         let time = self.millis();
         self.pressed_on = None;
+        self.pressed_popup = None;
         for code in std::mem::take(&mut self.buttons) {
             pointer.button(
                 self,
@@ -580,11 +777,68 @@ impl State {
         self.pointer_view = None;
     }
 
-    fn pointer(&mut self, view: u64, input: PageInput) {
+    /// Close the pages' pop-ups. The app stops showing them, and their
+    /// input stops, now, whenever the host destroys them.
+    fn dismiss_popups(&mut self) {
+        // Buttons held in one are let go of with it.
+        if self.pressed_popup.is_some() {
+            self.release_pointer();
+        }
+        for popup in self.popups.drain(..) {
+            popup.send_popup_done();
+        }
+        self.popup_places.clear();
+        if let Ok(mut slots) = self.frames.lock() {
+            slots.popups.clear();
+        }
+        (self.wake)();
+    }
+
+    /// Start the clipboard transfers the clients' requests asked for.
+    fn transfer(&mut self, handle: &LoopHandle<'static, State>) {
+        if let Some(kind) = self.copy_asked.take() {
+            if let Some(older) = self.copy.take() {
+                older.cancel(handle);
+            }
+            self.copy = self.read_copy(handle, kind);
+        }
+        self.pastes.retain(|paste| !paste.over());
+        for (fd, text) in std::mem::take(&mut self.paste_asked) {
+            // Beyond the limit the descriptor closes: that paste is empty.
+            if self.pastes.len() < MAX_PASTES {
+                self.pastes.extend(transfer::write(handle, fd, text));
+            }
+        }
+    }
+
+    /// Read the page's new clipboard selection, as `kind`, for the app's
+    /// clipboard.
+    fn read_copy(&mut self, handle: &LoopHandle<'static, State>, kind: &str) -> Option<Transfer> {
+        let (reader, writer) = std::io::pipe().ok()?;
+        request_data_device_client_selection(&self.seat, kind.to_owned(), OwnedFd::from(writer))
+            .ok()?;
+        transfer::read(handle, reader, MAX_COPY, |state: &mut State, text| {
+            if let Ok(mut copied) = state.copied.lock() {
+                *copied = Some(String::from_utf8_lossy(&text).into_owned());
+            }
+            (state.wake)();
+        })
+    }
+
+    /// Pointer input for `view`'s page, or for its pop-up `popup`.
+    fn pointer(&mut self, view: u64, popup: Option<u32>, input: PageInput) {
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
-        let surface = self.views.get(&view).cloned();
+        let surface = match popup {
+            Some(popup) => self
+                .popups
+                .iter()
+                .map(|p| p.wl_surface())
+                .find(|s| s.id().protocol_id() == popup)
+                .cloned(),
+            None => self.views.get(&view).cloned(),
+        };
         let time = self.millis();
         let motion = |state: &mut Self, x: f32, y: f32| {
             pointer.motion(
@@ -621,12 +875,10 @@ impl State {
                 pressed,
             } => {
                 motion(self, x, y);
-                if pressed {
-                    // A press anywhere closes the menus a page opened
-                    // (they are not shown yet).
-                    for popup in self.popups.drain(..) {
-                        popup.send_popup_done();
-                    }
+                // A press in the page closes its menus; one in a menu goes
+                // to it.
+                if pressed && popup.is_none() {
+                    self.dismiss_popups();
                 }
                 let Some(&code) = BUTTONS.get(usize::from(button)) else {
                     return;
@@ -634,12 +886,14 @@ impl State {
                 if pressed {
                     if self.buttons.is_empty() {
                         self.pressed_on = Some(view);
+                        self.pressed_popup = popup;
                     }
                     self.buttons.push(code);
                 } else {
                     self.buttons.retain(|held| *held != code);
                     if self.buttons.is_empty() {
                         self.pressed_on = None;
+                        self.pressed_popup = None;
                     }
                 }
                 pointer.button(
@@ -659,7 +913,9 @@ impl State {
             PageInput::Key { .. }
             | PageInput::Preedit(_)
             | PageInput::Commit(_)
-            | PageInput::Unfocused => return,
+            | PageInput::Unfocused
+            | PageInput::Paste(_)
+            | PageInput::Edit { .. } => return,
             PageInput::Wheel { x, y, dx, dy } => {
                 motion(self, x, y);
                 let mut frame = AxisFrame::new(time).source(AxisSource::Continuous);
@@ -716,12 +972,13 @@ impl CompositorHandler for State {
                 let _ = popup.send_configure();
             }
         }
-        let (buffer, callbacks) = with_states(surface, |states| {
+        let (buffer, callbacks, scale) = with_states(surface, |states| {
             let mut attributes = states.cached_state.get::<SurfaceAttributes>();
             let current = attributes.current();
             (
                 current.buffer.take(),
                 std::mem::take(&mut current.frame_callbacks),
+                current.buffer_scale.max(1),
             )
         });
         self.callbacks.extend(callbacks);
@@ -729,25 +986,67 @@ impl CompositorHandler for State {
             return;
         };
         let view = toplevel.as_ref().and_then(Self::view_of);
-        if let (Some(view), Some(data)) = (view, buffer.data::<shm::Buffer>()) {
+        let popup = surface.id().protocol_id();
+        let place = self.popup_places.get(&popup).copied();
+        if let (Some(data), true) = (
+            buffer.data::<shm::Buffer>(),
+            view.is_some() || place.is_some(),
+        ) {
             let (width, height) = (data.width as usize, data.height as usize);
             // From the sizes the buffer declares, before anything is read.
-            // The view's frame still waiting goes first: this one replaces
-            // it, and both would otherwise be held while this one is read.
+            // The frame this one replaces, still waiting, goes first: both
+            // would otherwise be held while this one is read.
             let admitted = self.frames.lock().is_ok_and(|mut slots| {
-                slots.frames.remove(&view);
-                let waiting: usize = slots.frames.values().map(|f| f.rgba.len()).sum();
+                match view {
+                    Some(view) => {
+                        slots.frames.remove(&view);
+                    }
+                    None => {
+                        if let Some(slot) = slots.popups.get_mut(&popup) {
+                            slot.frame = None;
+                        }
+                    }
+                }
+                let waiting: usize = slots
+                    .frames
+                    .values()
+                    .chain(slots.popups.values().filter_map(|slot| slot.frame.as_ref()))
+                    .map(|frame| frame.rgba.len())
+                    .sum();
                 shm::admits(data, slots.max_side, waiting, FRAME_BUDGET)
             });
             if let Some(rgba) = admitted.then(|| data.rgba()).flatten() {
-                let frame = Frame {
-                    view,
-                    width,
-                    height,
-                    rgba,
-                };
                 if let Ok(mut slots) = self.frames.lock() {
-                    slots.frames.insert(view, frame);
+                    match (view, place) {
+                        (Some(view), _) => {
+                            let frame = Frame {
+                                view,
+                                width,
+                                height,
+                                rgba,
+                            };
+                            slots.frames.insert(view, frame);
+                        }
+                        (None, Some((view, at))) => {
+                            let frame = Frame {
+                                view,
+                                width,
+                                height,
+                                rgba,
+                            };
+                            let extent = [data.width / scale, data.height / scale];
+                            slots.popups.insert(
+                                popup,
+                                PopupSlot {
+                                    view,
+                                    at,
+                                    extent,
+                                    frame: Some(frame),
+                                },
+                            );
+                        }
+                        (None, None) => {}
+                    }
                 }
                 (self.wake)();
             }
@@ -766,10 +1065,61 @@ impl SeatHandler for State {
     }
 
     fn cursor_image(&mut self, _: &Seat<Self>, _: CursorImageStatus) {}
+
+    /// The clipboard follows the keyboard: the page with it is offered the
+    /// selection a paste puts there, and may set its own.
+    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+        let client = focused.and_then(|surface| self.dh.get_client(surface.id()).ok());
+        set_data_device_focus(&self.dh, seat, client);
+    }
 }
 
+/// The clipboard between pages and the app: what a page copies goes to the
+/// app's clipboard (read through a pipe, bounded, on a thread of its own);
+/// what the app pastes in a page is the display's selection, the text it
+/// was given.
 impl SelectionHandler for State {
-    type SelectionUserData = ();
+    type SelectionUserData = u64;
+
+    fn new_selection(
+        &mut self,
+        ty: SelectionTarget,
+        source: Option<SelectionSource>,
+        _: Seat<Self>,
+    ) {
+        let (SelectionTarget::Clipboard, Some(source)) = (ty, source) else {
+            return;
+        };
+        let offered = source.mime_types();
+        // Read once smithay has installed it (`State::transfer`).
+        self.copy_asked = TEXT_TYPES
+            .iter()
+            .find(|kind| offered.iter().any(|offer| offer == *kind))
+            .copied();
+    }
+
+    fn send_selection(
+        &mut self,
+        ty: SelectionTarget,
+        mime_type: String,
+        fd: OwnedFd,
+        _: Seat<Self>,
+        number: &u64,
+    ) {
+        if ty != SelectionTarget::Clipboard || !TEXT_TYPES.contains(&mime_type.as_str()) {
+            return;
+        }
+        // Only the current selection's offer, and within the pastes a page
+        // may be taking: otherwise `fd` closes now, and that paste is empty.
+        let current = match &self.selection {
+            Some((current, text)) if current == number => Arc::clone(text),
+            _ => return,
+        };
+        let taking = self.pastes.iter().filter(|paste| !paste.over()).count();
+        if taking + self.paste_asked.len() < MAX_PASTES {
+            self.paste_asked.push((fd, current));
+        }
+    }
 }
 
 impl DataDeviceHandler for State {
@@ -802,6 +1152,10 @@ impl XdgShellHandler for State {
             .iter()
             .find(|(_, s)| *s == surface.wl_surface())
             .map(|(view, _)| *view);
+        // A view with the keyboard gives it up, and the clipboard, first.
+        if gone.is_some() && gone == self.keyboard_view {
+            self.focus(None);
+        }
         self.toplevels.retain(|t| t != &surface);
         self.views.retain(|_, s| s != surface.wl_surface());
         // The buttons pressed on a view that goes are let go of, so that
@@ -814,13 +1168,47 @@ impl XdgShellHandler for State {
     }
 
     fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
-        surface.with_pending_state(|s| s.geometry = positioner.get_geometry());
+        let geometry = positioner.get_geometry();
+        surface.with_pending_state(|s| s.geometry = geometry);
         self.output.enter(surface.wl_surface());
-        self.popups.push(surface);
+        // Its place from its view's corner: from its parent's, the view's
+        // window or another pop-up (a submenu).
+        let parent = surface.get_parent_surface().and_then(|parent| {
+            if let Some((view, _)) = self.views.iter().find(|(_, s)| **s == parent) {
+                return Some((*view, [0, 0]));
+            }
+            self.popup_places.get(&parent.id().protocol_id()).copied()
+        });
+        // Beyond the pop-ups the app shows at once, or a place no texture
+        // reaches (a submenu's offsets added up), it is closed at once.
+        let at = parent.and_then(|(view, at)| {
+            let x = at[0].checked_add(geometry.loc.x)?;
+            let y = at[1].checked_add(geometry.loc.y)?;
+            let reach = -MAX_PLACE..=MAX_PLACE;
+            (reach.contains(&x) && reach.contains(&y)).then_some((view, [x, y]))
+        });
+        match at {
+            Some(place) if self.popups.len() < MAX_POPUPS => {
+                self.popup_places
+                    .insert(surface.wl_surface().id().protocol_id(), place);
+                self.popups.push(surface);
+            }
+            _ => surface.send_popup_done(),
+        }
     }
 
     fn popup_destroyed(&mut self, surface: PopupSurface) {
+        let popup = surface.wl_surface().id().protocol_id();
+        // The buttons pressed in a pop-up that goes are let go of.
+        if self.pressed_popup == Some(popup) {
+            self.release_pointer();
+        }
         self.popups.retain(|p| p != &surface);
+        self.popup_places.remove(&popup);
+        if let Ok(mut slots) = self.frames.lock() {
+            slots.popups.remove(&popup);
+        }
+        (self.wake)();
     }
 
     fn grab(&mut self, _: PopupSurface, _: WlSeat, _: Serial) {}
@@ -941,6 +1329,36 @@ impl Dispatch<ZwpTextInputV3, ()> for State {
                 state.text_inputs.retain(|i| &i.resource != resource);
             }
             _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A display dropped as soon as it started (perhaps before its loop
+    /// began) still ends, and takes its socket's directory with it.
+    #[test]
+    fn a_display_dropped_at_once_ends_and_removes_its_socket() {
+        for _ in 0..20 {
+            let outbox = Outbox {
+                frames: Frames::default(),
+                carets: Carets::default(),
+                copied: Copied::default(),
+                wake: Arc::new(|| {}),
+            };
+            let display = PageDisplay::start(outbox, 1).expect("a display");
+            let directory = display.socket().parent().expect("its directory").to_owned();
+            drop(display);
+            let until = Instant::now() + Duration::from_secs(5);
+            while directory.exists() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                !directory.exists(),
+                "the display went on after it was dropped"
+            );
         }
     }
 }

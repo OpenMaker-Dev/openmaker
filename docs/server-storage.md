@@ -3808,12 +3808,31 @@ Beyond the rules above, these are OpenMaker's own choices:
   steps down at the first tick at which it has not heard from a majority
   within an election timeout, each follower's last answer timed on its
   own; a new leader takes every follower as heard when it begins.
-- What timing elections need: a pre-vote's round trip (the ask delivered,
-  answered and the answer delivered) must take no more ticks than the
-  timeout drawn when it was asked, and a vote's round trip, which includes
-  the voter's flush of its term and vote, fewer ticks than the timeout
-  drawn when the member stood (the tick at which it stands counts). The
-  shortest timeout is the configured election timeout, so it must be set
+- What timing elections need. A round trip is the ask delivered,
+  answered and the answer delivered, for the vote with the voter's flush
+  of its term and vote; a timeout is counted from when it was drawn, for
+  the pre-vote the tick on which the member asked, for the vote when it
+  stood.
+  - The vote: a candidate leads only if the votes of a quorum are
+    processed before the tick on which its timeout falls due. On that
+    tick it turns to a new pre-vote, and votes processed after it are
+    lost. Winning needs the vote's round trip to take fewer ticks than
+    that timeout.
+  - The pre-vote: an attempt ends on the tick its timeout falls due, when
+    the member asks again for the same round and forgets the grants it
+    had. Grants of a quorum processed before that tick make it stand
+    within the attempt, which a round trip of fewer ticks than the
+    timeout gives. Grants processed after it count toward the new
+    attempt, with the answers to its own asks: a quorum of grants all
+    processed after the tick still makes it stand, and one split across
+    the tick does not (five members, a timeout of 4: both grants
+    processed after the fourth tick, it stands; one after the third and
+    one after the fourth, it does not). So the bound is what one attempt
+    needs to finish within its own timeout; a pre-vote whose round trip
+    is longer may still stand on a later attempt, depending on how its
+    grants fall across the ticks.
+
+  The shortest timeout is the configured election timeout, so it must be set
   well above the slowest round trip; when it is not, members time out
   before their answers arrive and no leader may ever be elected, though
   every message arrives. (Before round 5 the vote shared the pre-vote's timeout, and
@@ -5147,17 +5166,35 @@ The progress check needs writes while the network is healthy: in a calm
 phase the client writes only now and then, and the settle phase below
 writes nothing, so a follower left behind only while writes go on would
 not show. After the faults stop, every run therefore has a steady phase:
-every member starts, the leader in office stops and starts again, and
-until a new leader is in office every message takes the same number of
-ticks, as long as it may be for a vote's round trip to take fewer ticks than the
-shortest timeout (half the timeout, less half a tick, rounded down: 1, 4
-and 7 ticks for timeouts of 4, 10 and 16). Each steady phase thus judges
-an election near the limit of the timing section 7.1 states, and checks
-that no candidate's timer runs out while the answers to its vote are on
-their way, which that timing rules out. (With a timeout of 4 no whole
-number of ticks separates one round trip from two, so there a member
-that does not restart its timer on standing is caught only by the fixed
-test below.) Then
+every member starts, every member that believes it leads stops and
+starts again (a deposed leader that has not heard yet too), and until a
+leader is in office whose whole campaign, pre-vote and vote, ran after
+that, every message takes the same number of ticks, as long as it may be
+for a vote's round trip to take fewer ticks than the shortest timeout
+(half the timeout, less half a tick, rounded down: 1, 4 and 7 ticks for
+timeouts of 4, 10 and 16). The simulator marks each message sent under
+that timing, an answer to a vote or pre-vote request only when the
+request went under it too. A leader ends the opening election only if
+it stood on pre-vote grants that were all marked. One whose campaign
+counted anything of the faults' network (votes asked before the phase,
+or a pre-vote grant asked or answered before it, which a pre-vote asked
+again for the same round still counts) stops and starts again, and the
+election goes on. Each steady phase thus judges an election near the
+limit of the timing section 7.1 states, and checks that no candidate's
+timer runs out while a marked grant of its vote is on its way, which
+that timing rules out: the grant arrives two delays after its candidate
+stood, fewer ticks than any timeout. The check goes on after the
+opening election has ended, for a candidate that lost the race while
+such a grant was on its way. A request or an answer sent outside that
+timing, before the phase or after its opening election, is not judged.
+At a timeout of 4 the delay is one
+tick: one round trip takes two ticks, the pre-vote's and the vote's
+together four, so a member that does not restart its timer on standing
+has its votes processed after the tick a timeout drawn at 4 falls due,
+and the seeded runs find it there too: of 240 seeds with that plant, 126
+fail, all by this timing check, 48 of the 142 schedules with a timeout
+of 4, 36 of 52 with 10 and 42 of 46 with 16. The fixed test below holds it on a
+network that delays every message two ticks. Then
 the client writes on every tick for twenty election timeouts (after five
 more for the member with a smaller largest entry, which then starts
 again with the cluster's), on a network that drops nothing and delays
@@ -5168,9 +5205,10 @@ a leader: a leader of the highest term any member has must be in office
 within an election's bound of the phase's start and of any leader's fall
 (the election check). The bound is eight attempts, each a timeout running
 out (at most twice the election timeout less a tick) and two round trips,
-the pre-vote's and the vote's, of at most twice the phase's largest
-delay, two ticks. Randomized timeouts make split votes rare but not
-impossible, which the attempts allow for; the longest time without a
+the pre-vote's and the vote's, each of at most twice the larger of the
+opening election's delay and the phase's later largest delay, two ticks:
+120, 280 and 472 ticks for timeouts of 4, 10 and 16. Randomized
+timeouts make split votes rare but not impossible, which the attempts allow for; the longest time without a
 leader the runs measure, in attempts, is given with them. At the phase's close the writes go on until every member has
 its verdict under a leader in office: a target reached, or the disks
 confirming it behind or blocked (a target dropped because the leader
@@ -5266,8 +5304,19 @@ size refusal counted only for an entry carried and not acknowledged, a
 blocked follower that starts again with the cluster's limit and catches
 up, elections on a network that delivers every message two ticks late
 (a leader within 100 ticks; with the timer not restarted on standing,
-none in 400), and the checker's own hand-built cases for the commit
-record, an acknowledgement at the base and an unconfirmed report of
+none in 400), the timing rule of section 7.1 at its boundary (five
+members, a timeout of 4, one tick a leg, answers on either side of the
+tick the timeout falls due), a steady phase opening while a deposed
+leader still believes it leads, while a campaign is under way, and with
+a pre-vote's grants from before it due when it opens or after the
+member asked again for the same round (each time a new election runs
+under the phase's timing), a vote asked just before the phase whose
+grant comes back after its candidate's timer ran out (not judged, and
+every check holds), two candidates of one term in the opening election
+where the first wins and the other's timer runs out with a grant on its
+way (caught with the timer not restarted on standing; without that
+plant every check holds), and the checker's own hand-built
+cases for the commit record, an acknowledgement at the base and an unconfirmed report of
 behind. Checks 1, 2, 5 to 9, 12 and 13,
 and check 10's repair, are not run on a cluster yet.
 

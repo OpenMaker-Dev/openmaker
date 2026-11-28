@@ -12,6 +12,12 @@
 //!   performs a script that commits the record's field.
 //! - A click in the page's text box gives the page the keyboard: real keys
 //!   (XTest) type in it, in xkb's default keymap (no Wayland session).
+//! - Text the page copies is the app's clipboard's, and the app's clipboard
+//!   pastes in the page: `abc` copied from one text box reaches the app;
+//!   `xy`, which the app puts on its clipboard, pastes in the second box;
+//!   copied from there, `xy` reaches the app in its turn.
+//! - A click on the page's `<select>` opens its list, a pop-up the app draws
+//!   below the page, past the object's edge; Down and Return choose in it.
 //!
 //! `dbus-run-session -- xvfb-run -a cargo test -p om-gui --features web-viewer
 //! --test web_viewer_composited` on Linux; skipped without an X display.
@@ -51,7 +57,12 @@ mod linux {
         'clicked')\\\" style='position:absolute;left:100px;top:100px;width:200px;\
         height:80px'>Go</button><input id='t' oninput=\\\"FileMaker.PerformScript('Record', \
         'typed:' + this.value)\\\" style='position:absolute;left:100px;top:220px;width:200px;\
-        height:30px'><script>window.addEventListener('load', function () \
+        height:30px'><input id='u' oninput=\\\"FileMaker.PerformScript('Record', \
+        'pasted:' + this.value)\\\" style='position:absolute;left:320px;top:220px;width:150px;\
+        height:30px'><select onchange=\\\"FileMaker.PerformScript('Record', 'chose:' + \
+        this.value)\\\" style='position:absolute;left:100px;top:262px;width:120px;\
+        height:30px'><option>One</option><option>Two</option><option>Three</option></select>\
+        <script>window.addEventListener('load', function () \
         { FileMaker.PerformScript('Record', 'loaded'); });</script></body></html>\"";
 
     #[derive(Default)]
@@ -431,6 +442,15 @@ mod linux {
         /// has given the page the click.
         Focusing(Instant),
         Typing,
+        /// Copied from the first text box (Ctrl+A, Ctrl+C); then the app's
+        /// own text pasted in the second (Ctrl+V); then copied from there.
+        Copying,
+        Pasting(Instant),
+        Pasted,
+        Recopying,
+        /// Clicked on the `<select>`: its list is drawn by then.
+        Opening(Instant),
+        Choosing,
     }
 
     struct Driver {
@@ -439,6 +459,9 @@ mod linux {
         x11: RustConnection,
         root: u32,
         phase: Phase,
+        /// The text the app last put on the clipboard, and text for it to.
+        copied: Option<String>,
+        to_copy: Option<String>,
         deadline: Instant,
     }
 
@@ -463,6 +486,23 @@ mod linux {
                     self.x11.flush().unwrap();
                     std::thread::sleep(Duration::from_millis(60));
                 }
+            }
+        }
+
+        /// Press `key` with `modifier` held (X keycodes).
+        fn chord(&self, modifier: u8, key: u8) {
+            let events = [
+                (xproto::KEY_PRESS_EVENT, modifier),
+                (xproto::KEY_PRESS_EVENT, key),
+                (xproto::KEY_RELEASE_EVENT, key),
+                (xproto::KEY_RELEASE_EVENT, modifier),
+            ];
+            for (kind, keycode) in events {
+                self.x11
+                    .xtest_fake_input(kind, keycode, x11rb::CURRENT_TIME, self.root, 0, 0, 0)
+                    .unwrap();
+                self.x11.flush().unwrap();
+                std::thread::sleep(Duration::from_millis(60));
             }
         }
 
@@ -572,6 +612,71 @@ mod linux {
                         shot.save("3-composited-typed");
                     }
                     println!("keys typed in the page's text box reached it");
+                    // Ctrl+A, Ctrl+C (X keycodes of evdev's 29, 30, 46).
+                    self.chord(37, 38);
+                    self.chord(37, 54);
+                    self.phase = Phase::Copying;
+                }
+                Phase::Copying if self.copied.as_deref() == Some("abc") => {
+                    println!("the page's copy reached the app's clipboard");
+                    // Text the page never had: only the bridge can paste it.
+                    self.to_copy = Some("xy".into());
+                    let page = Shot::take(&self.x11, window).as_ref().and_then(Shot::page);
+                    let Some([left, top, ..]) = page else {
+                        fail("the page went".into());
+                    };
+                    // The second text box: 320..470 x 220..250 in the page.
+                    self.click(window, (left + 395) as i16, (top + 235) as i16);
+                    self.phase = Phase::Pasting(Instant::now() + Duration::from_millis(800));
+                }
+                Phase::Pasting(at) if Instant::now() >= at => {
+                    self.chord(37, 55);
+                    self.phase = Phase::Pasted;
+                }
+                Phase::Pasted if given == "pasted:xy" => {
+                    println!("the app's clipboard pasted in the page");
+                    self.chord(37, 38);
+                    self.chord(37, 54);
+                    self.phase = Phase::Recopying;
+                }
+                Phase::Recopying if self.copied.as_deref() == Some("xy") => {
+                    println!("a second copy reached the app's clipboard in its turn");
+                    let Some([left, top, ..]) =
+                        Shot::take(&self.x11, window).as_ref().and_then(Shot::page)
+                    else {
+                        fail("the page went".into());
+                    };
+                    // The `<select>`: 100..220 x 262..292 in the page.
+                    self.click(window, (left + 160) as i16, (top + 277) as i16);
+                    self.phase = Phase::Opening(Instant::now() + Duration::from_millis(1500));
+                }
+                Phase::Opening(at) if Instant::now() >= at => {
+                    let Some(shot) = Shot::take(&self.x11, window) else {
+                        return;
+                    };
+                    shot.save("4-composited-select-open");
+                    // The page ends 300 points down: below it, where the
+                    // layout is empty, the list's items are dark text.
+                    let Some([left, top, ..]) = Shot::page(&shot) else {
+                        fail("the page went".into());
+                    };
+                    let below = (left + 100..left + 220)
+                        .flat_map(|x| (top + 302..top + 380).map(move |y| (x, y)))
+                        .filter(|&(x, y)| y < shot.height && shot.at(x, y).iter().all(|c| *c < 96))
+                        .count();
+                    if below == 0 {
+                        fail("the select's list is not drawn below the page".into());
+                    }
+                    println!("{below} dark pixels of the select's list below the page");
+                    // Down to Two, and Return (X keycodes of evdev's 108, 28).
+                    self.type_keys(&[116, 36]);
+                    self.phase = Phase::Choosing;
+                }
+                Phase::Choosing if given == "chose:Two" => {
+                    if let Some(shot) = Shot::take(&self.x11, window) {
+                        shot.save("5-composited-chose");
+                    }
+                    println!("the select's list took the keys and chose Two");
                     println!("PASS");
                     std::process::exit(0);
                 }
@@ -583,7 +688,20 @@ mod linux {
     impl eframe::App for Driver {
         fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
             eframe::App::ui(&mut self.app, ui, frame);
+            // What the app put on the system clipboard this frame.
+            let copied = ui.ctx().output(|o| {
+                o.commands.iter().rev().find_map(|command| match command {
+                    egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                    _ => None,
+                })
+            });
+            if copied.is_some() {
+                self.copied = copied;
+            }
             self.step(Self::window(frame));
+            if let Some(text) = self.to_copy.take() {
+                ui.ctx().copy_text(text);
+            }
             ui.ctx().request_repaint_after(Duration::from_millis(50));
         }
     }
@@ -636,6 +754,8 @@ mod linux {
                     x11,
                     root,
                     phase: Phase::Loading,
+                    copied: None,
+                    to_copy: None,
                     deadline: Instant::now() + Duration::from_secs(120),
                 }))
             }),
