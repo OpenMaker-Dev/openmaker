@@ -149,10 +149,10 @@ enum Check {
     /// the bound.
     Progress,
     /// In the steady phase, no leader was in office within the bound of the
-    /// phase's start or of the last leader's fall; or, in its opening
-    /// election, a candidate's timer ran out while the answer to a vote
-    /// request it sent under that election's delay was on its way, on a
-    /// network fast enough for it.
+    /// phase's start or of the last leader's fall; or a candidate's timer
+    /// ran out while a grant of its vote was on its way, request and grant
+    /// both sent under the opening election's delay, a network fast enough
+    /// for them.
     Election,
     /// The cluster did not settle once the faults stopped.
     Settle,
@@ -4847,19 +4847,23 @@ fn core_of_five(me: u8, plant: Option<Plant>) -> Core {
     Core::new(cfg, &rec).unwrap()
 }
 
-/// Issue #1188, 3: section 7.1's timing rule at its boundary, five
-/// members, an election timeout of 4 and one tick a leg (an ask goes out
-/// on a tick, or when the member stands, and its answer is processed after
-/// the second tick from then). Answers from a quorum count when they are
-/// processed before the tick on which the timeout falls due, for the
-/// pre-vote as for the vote. On that tick a pre-candidate asks again,
-/// having forgotten its grants, and a candidate turns to a new pre-vote,
-/// its votes lost. One round trip, two ticks, fits in a timeout of 4. The
-/// pre-vote's and the vote's together, four ticks, fit only because
-/// standing restarts the timer: without that (planted), the votes are
-/// processed after the tick the one timeout falls due.
+/// Issue #1188, 3, and the review of #1222, 3: section 7.1's timing rule
+/// at its boundary, five members, an election timeout of 4 and one tick a
+/// leg (an ask goes out on a tick, or when the member stands, and its
+/// answer is processed after the second tick from then). A candidate leads
+/// only on votes from a quorum processed before the tick on which its
+/// timeout falls due: on that tick it turns to a new pre-vote, and votes
+/// after it are lost. A pre-vote's attempt ends on that tick: the member
+/// asks again for the same round, having forgotten the grants it had, and
+/// grants processed after the tick count toward the new attempt. So a
+/// quorum's grants all before the tick, or all after it, make it stand,
+/// and a quorum split across the tick does not. One round trip, two ticks,
+/// fits in a timeout of 4. The pre-vote's and the vote's together, four
+/// ticks, fit only because standing restarts the timer: without that
+/// (planted), the votes are processed after the tick the one timeout falls
+/// due.
 #[test]
-fn answers_count_only_before_the_tick_the_timeout_falls_due() {
+fn answers_on_either_side_of_the_tick_the_timeout_falls_due() {
     let me = 1;
     // A pre-candidate that asked on the tick its timer fell due, its next
     // timeout 4.
@@ -4914,6 +4918,13 @@ fn answers_count_only_before_the_tick_the_timeout_falls_due() {
     ticks(&mut c, 1);
     c.receive(grant(&c, 3));
     assert_eq!(c.role(), Role::PreCandidate);
+    // Both after the fourth: they count toward the attempt that tick
+    // began, which asks for the same round, and it stands.
+    let mut c = asking(None);
+    ticks(&mut c, 4);
+    c.receive(grant(&c, 2));
+    c.receive(grant(&c, 3));
+    assert_eq!(c.role(), Role::Candidate);
     // The vote, on a timeout of 4 from standing, after the pre-vote's round
     // trip of two ticks.
     let standing = |plant| {

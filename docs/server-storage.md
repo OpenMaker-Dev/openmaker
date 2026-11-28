@@ -3760,21 +3760,31 @@ Beyond the rules above, these are OpenMaker's own choices:
   steps down at the first tick at which it has not heard from a majority
   within an election timeout, each follower's last answer timed on its
   own; a new leader takes every follower as heard when it begins.
-- What timing elections need: the answers of a quorum must be processed
-  before the tick on which the timeout falls due, for the pre-vote (the
-  timeout drawn when it asked, counted from the tick on which it asked)
-  as for the vote (the timeout drawn when the member stood, counted from
-  then). A round trip (the ask delivered, answered and the answer
-  delivered; for the vote, with the voter's flush of its term and vote)
-  must therefore take fewer ticks than that timeout. On the tick the
-  timeout falls due a pre-candidate asks again and forgets the grants it
-  had, and a candidate turns to a new pre-vote, its votes lost. A grant
-  processed after that tick can still count toward the new pre-vote,
-  which asks for the same round, but a quorum whose answers fall on both
-  sides of it is lost: with five members, a timeout of 4 and one grant
-  processed after the third tick, the other after the fourth, the member
-  does not stand. The
-  shortest timeout is the configured election timeout, so it must be set
+- What timing elections need. A round trip is the ask delivered,
+  answered and the answer delivered, for the vote with the voter's flush
+  of its term and vote; a timeout is counted from when it was drawn, for
+  the pre-vote the tick on which the member asked, for the vote when it
+  stood.
+  - The vote: a candidate leads only if the votes of a quorum are
+    processed before the tick on which its timeout falls due. On that
+    tick it turns to a new pre-vote, and votes processed after it are
+    lost. Winning needs the vote's round trip to take fewer ticks than
+    that timeout.
+  - The pre-vote: an attempt ends on the tick its timeout falls due, when
+    the member asks again for the same round and forgets the grants it
+    had. Grants of a quorum processed before that tick make it stand
+    within the attempt, which a round trip of fewer ticks than the
+    timeout gives. Grants processed after it count toward the new
+    attempt, with the answers to its own asks: a quorum of grants all
+    processed after the tick still makes it stand, and one split across
+    the tick does not (five members, a timeout of 4: both grants
+    processed after the fourth tick, it stands; one after the third and
+    one after the fourth, it does not). So the bound is what one attempt
+    needs to finish within its own timeout; a pre-vote whose round trip
+    is longer may still stand on a later attempt, depending on how its
+    grants fall across the ticks.
+
+  The shortest timeout is the configured election timeout, so it must be set
   well above the slowest round trip; when it is not, members time out
   before their answers arrive and no leader may ever be elected, though
   every message arrives. (Before round 5 the vote shared the pre-vote's timeout, and
@@ -5110,18 +5120,26 @@ writes nothing, so a follower left behind only while writes go on would
 not show. After the faults stop, every run therefore has a steady phase:
 every member starts, every member that believes it leads stops and
 starts again (a deposed leader that has not heard yet too), and until a
-leader is in office whose campaign began after that, every message takes
-the same number of ticks, as long as it may be for a vote's round trip
-to take fewer ticks than the shortest timeout (half the timeout, less
-half a tick, rounded down: 1, 4 and 7 ticks for timeouts of 4, 10 and
-16). A campaign already under way when the phase opens asked for its
-votes on the faults' network; if it wins, that leader stops and starts
-again too, so the election the phase takes is one run under its timing.
-Each steady phase thus judges an election near the limit of the timing
-section 7.1 states, and checks that no candidate's timer runs out while
-the answer to a vote request it sent under that timing is on its way,
-which that timing rules out; a request sent before, even on the tick
-the phase opened, is not judged. At a timeout of 4 the delay is one
+leader is in office whose whole campaign, pre-vote and vote, ran after
+that, every message takes the same number of ticks, as long as it may be
+for a vote's round trip to take fewer ticks than the shortest timeout
+(half the timeout, less half a tick, rounded down: 1, 4 and 7 ticks for
+timeouts of 4, 10 and 16). The simulator marks each message sent under
+that timing, an answer to a vote or pre-vote request only when the
+request went under it too. A leader ends the opening election only if
+it stood on pre-vote grants that were all marked. One whose campaign
+counted anything of the faults' network (votes asked before the phase,
+or a pre-vote grant asked or answered before it, which a pre-vote asked
+again for the same round still counts) stops and starts again, and the
+election goes on. Each steady phase thus judges an election near the
+limit of the timing section 7.1 states, and checks that no candidate's
+timer runs out while a marked grant of its vote is on its way, which
+that timing rules out: the grant arrives two delays after its candidate
+stood, fewer ticks than any timeout. The check goes on after the
+opening election has ended, for a candidate that lost the race while
+such a grant was on its way. A request or an answer sent outside that
+timing, before the phase or after its opening election, is not judged.
+At a timeout of 4 the delay is one
 tick: one round trip takes two ticks, the pre-vote's and the vote's
 together four, so a member that does not restart its timer on standing
 has its votes processed after the tick a timeout drawn at 4 falls due,
@@ -5239,11 +5257,17 @@ blocked follower that starts again with the cluster's limit and catches
 up, elections on a network that delivers every message two ticks late
 (a leader within 100 ticks; with the timer not restarted on standing,
 none in 400), the timing rule of section 7.1 at its boundary (five
-members, a timeout of 4, one tick a leg), a steady phase opening while a
-deposed leader still believes it leads and while a campaign is under way
-(a new election runs under the phase's timing), a vote asked just before
-the phase whose grant comes back after its candidate's timer ran out
-(not judged, and every check holds), and the checker's own hand-built
+members, a timeout of 4, one tick a leg, answers on either side of the
+tick the timeout falls due), a steady phase opening while a deposed
+leader still believes it leads, while a campaign is under way, and with
+a pre-vote's grants from before it due when it opens or after the
+member asked again for the same round (each time a new election runs
+under the phase's timing), a vote asked just before the phase whose
+grant comes back after its candidate's timer ran out (not judged, and
+every check holds), two candidates of one term in the opening election
+where the first wins and the other's timer runs out with a grant on its
+way (caught with the timer not restarted on standing; without that
+plant every check holds), and the checker's own hand-built
 cases for the commit record, an acknowledgement at the base and an unconfirmed report of
 behind. Checks 1, 2, 5 to 9, 12 and 13,
 and check 10's repair, are not run on a cluster yet.
