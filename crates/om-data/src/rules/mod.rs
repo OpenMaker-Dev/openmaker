@@ -19,11 +19,13 @@
 //! field values; it does not send protocol requests or write records.
 //! Refusals carry the FileMaker error a script step reports
 //! ([`DataError::code`]).
+mod global_evaluate;
 mod global_text_input;
 mod global_text_self;
 mod named_auto_entry;
+pub use global_evaluate::{global_evaluate_changes, global_evaluate_outputs};
 pub use global_text_input::global_text_input_changes;
-pub use global_text_self::global_text_assignment;
+pub use global_text_self::{global_text_assignment, typed_text_self_default};
 pub mod recalc;
 pub mod schema;
 mod typing;
@@ -1210,7 +1212,18 @@ pub struct RecordPlan {
 enum AutoEntrySelf {
     Unused,
     ProposedNumber,
+    ProposedText,
     Unsupported,
+}
+
+impl AutoEntrySelf {
+    fn proposed_type(self) -> Option<ValueType> {
+        match self {
+            Self::ProposedNumber => Some(ValueType::Number),
+            Self::ProposedText => Some(ValueType::Text),
+            Self::Unused | Self::Unsupported => None,
+        }
+    }
 }
 
 struct PlannedField {
@@ -1228,6 +1241,8 @@ struct PlannedField {
     global_text_self: GlobalTextSelf,
     /// This local global's auto-entry reads an independent plain global.
     global_text_input: Option<GlobalTextInput>,
+    /// Global formula text this output would evaluate on local New Record.
+    global_evaluate_input: Option<u64>,
     /// Creation Date supplies the value on create. The calculation's
     /// dependencies identify updates with an unmeasured result.
     creation_date_with_calculation: bool,
@@ -2200,45 +2215,6 @@ fn supports_creation_time_text(locale: &Locale) -> bool {
         && locale.pm == " PM"
 }
 
-/// A global rule of the form `Let ( result = Evaluate ( Input ) ; "" )`.
-/// The input has no default and the result is empty at ordinary New Record.
-/// An explicit assignment to the input is outside that measured write path.
-fn blank_global_evaluate_input<'a>(
-    table: &Table,
-    context: &[u8],
-    polish: &'a Expr,
-) -> Option<(u64, &'a Expr)> {
-    let Expr::Let { bindings, body } = polish else {
-        return None;
-    };
-    let [Expr::Evaluate {
-        args,
-        need_field_ref: 0,
-    }] = bindings.as_slice()
-    else {
-        return None;
-    };
-    let [Expr::Field(field)] = args.as_slice() else {
-        return None;
-    };
-    if field.occurrence.0 != context
-        || field.repetition != 1
-        || !matches!(field.flags, 0 | 4)
-        || !matches!(body.as_ref(), Expr::Text(text) if text.style.is_none() && text.value.is_empty())
-    {
-        return None;
-    }
-    let id = field.field.id()?;
-    let source = table.field(id)?;
-    let options = source.decoded_options()?;
-    (source.kind == FieldKind::Normal
-        && source.data_type == DataType::Text
-        && options.options == 0
-        && options.validation_options == 0
-        && options.max_repetitions == 1)
-        .then_some((id, body.as_ref()))
-}
-
 impl RecordPlan {
     /// The rules of `table` from its definitions in `tree` alone (no other
     /// tables, occurrences or custom functions).
@@ -2501,6 +2477,7 @@ impl RecordPlan {
             } else {
                 None
             };
+            let mut global_evaluate_input = None;
             let mut formula_at = |key: u64, usage: FormulaUse| -> Result<Expression, DataError> {
                 let formula = field_node.and_then(|node| node.get(key));
                 let context = formula
@@ -2520,10 +2497,23 @@ impl RecordPlan {
                     && options.validation_options == 0
                     && options.max_repetitions == 1
                 {
-                    if let Some((input, blank)) =
-                        blank_global_evaluate_input(table, &context, &polish)
+                    if let Some((input, global, blank)) =
+                        global_evaluate::classify(table, &context, &polish)
                     {
-                        blank_evaluate_inputs.insert(input);
+                        if global {
+                            let local_occurrence = Key(context.to_vec())
+                                .id()
+                                .and_then(|occurrence| schema.table_of(occurrence))
+                                .is_some_and(|source| source.id == table.id);
+                            if !local_occurrence {
+                                return Err(error(
+                                    "Global Evaluate input requires this table's occurrence.",
+                                ));
+                            }
+                            global_evaluate_input = Some(input);
+                        } else {
+                            blank_evaluate_inputs.insert(input);
+                        }
                         blank_evaluate_outputs.insert(field.id);
                         return analyze_rule(blank.clone(), &context, usage).map_err(|e| error(&e));
                     }
@@ -2649,6 +2639,11 @@ impl RecordPlan {
                         && !other_inputs;
                     auto_enter_self = if measured {
                         AutoEntrySelf::ProposedNumber
+                    } else if local
+                        && kind == FieldKind::Normal
+                        && typed_text_self_default(&def).is_some()
+                    {
+                        AutoEntrySelf::ProposedText
                     } else {
                         AutoEntrySelf::Unsupported
                     };
@@ -2851,6 +2846,7 @@ impl RecordPlan {
                 auto_enter_self,
                 global_text_self,
                 global_text_input,
+                global_evaluate_input,
                 creation_date_with_calculation,
                 constant,
                 validation,
@@ -3295,7 +3291,23 @@ impl RecordPlan {
                     ),
                 ));
             }
-            if let Some(input) = field.global_text_input {
+            if let Some(input) = field.global_evaluate_input {
+                if !allow_nonempty {
+                    return Err(DataError::with_code(
+                        error::UNAVAILABLE,
+                        "Global Evaluate auto-entry requires local New Record.",
+                    ));
+                }
+                let input_empty = globals.get(input, 1).is_none_or(Value::is_empty);
+                if global_evaluate::clears_output(
+                    id,
+                    field.options.calculation_replaces_existing(),
+                    globals,
+                    input_empty,
+                )? {
+                    values.insert((id, 1), String::new());
+                }
+            } else if let Some(input) = field.global_text_input {
                 if !allow_nonempty {
                     return Err(DataError::with_code(
                         error::UNAVAILABLE,
@@ -4367,7 +4379,12 @@ impl RecordPlan {
             context.record_number,
             Some(RecordNumber::LocalSortedNewRecord { .. })
         );
-        if !self.blank_evaluate_inputs.is_empty() && (!unsorted || !entry.script || entry.imported)
+        if (!self.blank_evaluate_inputs.is_empty()
+            || self
+                .fields
+                .values()
+                .any(|field| field.global_evaluate_input.is_some()))
+            && (!unsorted || !entry.script || entry.imported)
         {
             return Err(DataError::with_code(
                 error::UNAVAILABLE,
@@ -4477,6 +4494,7 @@ impl RecordPlan {
                             && (!sorted || field.options.options & ALWAYS_EVALUATE != 0)
                             && !supports_related_self(*id)
                     }
+                    AutoEntrySelf::ProposedText => (!unsorted && !sorted) || entry.imported,
                     AutoEntrySelf::Unsupported => true,
                 }
         }) {
@@ -6795,10 +6813,14 @@ impl RecordPlan {
             .table(self.table)
             .and_then(|t| t.fields.get(&id));
         let result_type = def.map(|d| d.value_type);
-        let self_value = self.auto_enters_proposed_self(id).then(|| {
+        let proposed_type = self
+            .fields
+            .get(&id)
+            .and_then(|f| f.auto_enter_self.proposed_type());
+        let self_value = proposed_type.map(|value_type| {
             let cx = Ctx::new(&self.schema.locale, session.today());
             let proposed = row.get(&id).map_or("", String::as_str);
-            stored_value(proposed, ValueType::Number, &cx)
+            stored_value(proposed, value_type, &cx)
         });
         let repetition = InRepetition::Calculation(repetition);
         self.run(
@@ -6817,7 +6839,7 @@ impl RecordPlan {
     pub fn auto_enters_proposed_self(&self, cell: u64) -> bool {
         self.fields
             .get(&cell)
-            .is_some_and(|field| field.auto_enter_self == AutoEntrySelf::ProposedNumber)
+            .is_some_and(|field| field.auto_enter_self.proposed_type().is_some())
     }
 
     /// Whether repetition `repetition` of field `id` passes its validation
@@ -10120,6 +10142,60 @@ mod tests {
         let filled = create(&plan, &[(1, "a")]).unwrap();
         assert_eq!(decoded(&filled, 20).as_deref(), Some("xa"));
         assert_eq!(decoded(&filled, 21).as_deref(), Some("ya"));
+    }
+
+    #[test]
+    fn local_text_self_restores_its_default_when_cleared() {
+        let id = 20;
+        for options in [0x0000_0088, 0xa000_0088] {
+            let table = Table {
+                fields: vec![field(id, FieldKind::Normal, DataType::Text, 0, options, 0)],
+                ..table()
+            };
+            let formula = [(id, 5, r#"If ( IsEmpty ( Self ) ; "Draft" ; Self )"#)];
+            let plan = plan_of(&table, &formula, &[]).unwrap();
+            let entry = Entry::script(false, false);
+            let env = RecordEnvironment {
+                context: WriteContext {
+                    record_number: Some(RecordNumber::LocalNewRecord(2)),
+                    ..WriteContext::default()
+                },
+                ..environment()
+            };
+            let empty = BTreeMap::new();
+            let no_changes = BTreeMap::new();
+            let default = BTreeMap::from([(id, Some("Draft".into()))]);
+            let created = plan.compute(WriteMode::Create, &empty, &no_changes, &env, entry);
+            assert_eq!(created.unwrap(), default);
+            let draft = BTreeMap::from([(id, "Draft".into())]);
+            // Text that looks numeric still reaches Self as text.
+            let proposed = BTreeMap::from([(id, Some("007".into()))]);
+            assert_eq!(
+                plan.compute(WriteMode::Update, &draft, &proposed, &env, entry)
+                    .unwrap(),
+                proposed
+            );
+            let typed = BTreeMap::from([(id, "007".into())]);
+            assert_eq!(
+                plan.compute(
+                    WriteMode::Update,
+                    &typed,
+                    &BTreeMap::from([(id, None)]),
+                    &env,
+                    entry,
+                )
+                .unwrap(),
+                default
+            );
+            let hosted = plan_with(&table, &formula, &[], Vec::new(), false).unwrap();
+            assert_eq!(
+                hosted
+                    .compute(WriteMode::Create, &empty, &no_changes, &env, entry)
+                    .unwrap_err()
+                    .code,
+                Some(error::UNAVAILABLE)
+            );
+        }
     }
 
     #[test]

@@ -224,8 +224,9 @@ pub enum Direction {
 /// Trees written page by page, for tests of what the writer never makes:
 /// a key without its parent, a leaf whose spilled keys are out of order, a
 /// key outside its leaf's range.
-#[cfg(test)]
-pub(crate) mod built {
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod built {
     use std::sync::Arc;
 
     use crate::page::{
@@ -234,11 +235,14 @@ pub(crate) mod built {
     };
 
     /// An item as it goes into a leaf: its kind, key and value.
-    pub(crate) type Item = (u8, Vec<u8>, Vec<u8>);
+    pub type Item = (u8, Vec<u8>, Vec<u8>);
+
+    /// The kind of an item that holds a value and no list.
+    pub const KIND_VALUE: u8 = crate::page::KIND_VALUE;
 
     /// What [`tree`] wrote: the root, and each item's overflow pages, in
     /// the order the items were given.
-    pub(crate) struct Built {
+    pub struct Built {
         pub root: Root,
         pub overflow: Vec<Vec<PageNo>>,
     }
@@ -247,7 +251,7 @@ pub(crate) mod built {
     /// large for its page spilled to overflow pages, as the writer spills
     /// it) and, for more than one leaf, an index page over them with the
     /// separators `seps`, all as entry 1, and commits them.
-    pub(crate) fn tree(store: &MemStore, leaves: &[Vec<Item>], seps: &[&[u8]]) -> Built {
+    pub fn tree(store: &MemStore, leaves: &[Vec<Item>], seps: &[&[u8]]) -> Built {
         let mut out = store.begin().unwrap();
         let mut write = |builder: Builder| -> (PageNo, Hash) {
             let number = out.allocate().unwrap();
@@ -300,7 +304,7 @@ pub(crate) mod built {
     /// A page of a tree [`shaped`] writes: a leaf with its items in the
     /// order given, or an index page over its children (all of one level)
     /// with the separator of each child after the first.
-    pub(crate) enum Shape {
+    pub enum Shape {
         Leaf(Vec<Item>),
         Index(Vec<Shape>, Vec<Vec<u8>>),
     }
@@ -309,7 +313,7 @@ pub(crate) mod built {
     /// large for its page spilled to overflow pages as the writer spills
     /// it, and commits it: [`tree`] for more than two levels and for long
     /// separators.
-    pub(crate) fn shaped(store: &MemStore, shape: &Shape) -> Root {
+    pub fn shaped(store: &MemStore, shape: &Shape) -> Root {
         let mut out = store.begin().unwrap();
         let (page, hash, _) = write_shape(&mut out, shape);
         out.commit().unwrap();

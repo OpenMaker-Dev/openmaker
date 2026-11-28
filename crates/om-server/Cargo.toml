@@ -66,6 +66,9 @@ rustix = { version = "1.1", features = ["fs", "process", "system"] }
 signal-hook = "0.4"
 
 [dev-dependencies]
+# Trees written page by page, out of order across their pages, for the
+# paged view's tests (`om_store::tree::built`).
+om-store = { path = "../om-store", features = ["test-support"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # tests/logins.rs connects from other loopback addresses, as other

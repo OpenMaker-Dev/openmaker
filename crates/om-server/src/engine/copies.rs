@@ -230,12 +230,11 @@ impl View for Copies<'_> {
         let more = self
             .inner
             .children_page(path, from, direction, max.min(PAGE), &mut page)?;
-        for (given, child) in page.into_iter().enumerate() {
-            if let Err(error) = self.check(&child_path(path, &child.segment)) {
-                // The children before it are given; the next page reaches
-                // it first.
-                return if given > 0 { Ok(true) } else { Err(error) };
-            }
+        for child in page {
+            // A child that does not read fails the page, as the store
+            // engine's view fails it (`engine::paged`, "A read that fails
+            // partway").
+            self.check(&child_path(path, &child.segment))?;
             out.push(Child {
                 segment: Cow::Owned(child.segment.into_owned()),
                 head: child.head.into_owned(),
@@ -259,14 +258,10 @@ impl View for Copies<'_> {
         let more =
             self.inner
                 .subtrees_page(path, from, direction, max.min(PAGE), limit, &mut page)?;
-        for (given, child) in page.into_iter().enumerate() {
+        for child in page {
             let at = child_path(path, &child.segment);
-            if let Err(error) = self
-                .check_whole_index(&at)
-                .and_then(|()| self.check_subtree(&at))
-            {
-                return if given > 0 { Ok(true) } else { Err(error) };
-            }
+            self.check_whole_index(&at)
+                .and_then(|()| self.check_subtree(&at))?;
             out.push(Cow::Owned(child.into_owned()));
         }
         Ok(more)
@@ -1038,13 +1033,14 @@ mod tests {
             )
             .unwrap());
         assert_eq!(page.len(), PAGE);
-        // Children before the failing one list; reaching it fails.
+        // Pages before the one that reaches the failing child list; that
+        // page fails, the children before it in the page with it.
         let listed: Vec<Result<Child, ReadError>> = view
             .children(&[&[1]], Bound::Unbounded, Direction::Forward)
             .collect();
-        assert_eq!(listed.len(), 6);
-        assert!(listed[..5].iter().all(Result::is_ok));
-        assert_eq!(listed[5], Err(unreadable(&failing[0])));
+        assert_eq!(listed.len(), PAGE + 1);
+        assert!(listed[..PAGE].iter().all(Result::is_ok));
+        assert_eq!(listed[PAGE], Err(unreadable(&failing[0])));
         // Backward from below it does not reach it.
         assert_eq!(
             view.children(&[&[1]], Bound::Excluded(&[5]), Direction::Backward)

@@ -423,7 +423,22 @@ page in the error:
 
 The tree then checks that a child has the level and kind its parent
 implies, was written by the entry its stamp names and, if a leaf, is not
-empty, and that an overflow page holds the bytes its item expects. A
+empty, and that an overflow page holds the bytes its item expects.
+Pages are not checked against each other's keys: a leaf whose keys lie
+outside the range its parent's separators give it is read where the
+separators route a key, so that every read, one that seeks from pages it
+holds included, finds what a descent from the root finds. But a
+cursor's items only move on, and a read fails as *malformed* where one
+would not: the first item after a seek must lie past the bound sought
+(as one the leaf's own search found does, that search having compared
+it with the bound; one reached through the next leaf is compared), and
+each item after it must follow the one before (it does by construction
+within a leaf whose bytes prove its keys in order, and is compared
+within any other and into the next leaf). A listing, which seeks each child past
+the one before, and a walk in pages, each page sought past its last
+item, therefore end on any tree
+([#998](https://github.com/OpenMaker-Dev/openmaker/issues/998),
+[#1149](https://github.com/OpenMaker-Dev/openmaker/issues/1149)). A
 page the store cannot find is *missing*. Nothing is allocated by a size the bytes give before
 it is checked against the page size or the bounds, and no read recurses
 deeper than the tree's levels.
