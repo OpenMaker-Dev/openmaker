@@ -5883,7 +5883,7 @@ fn paint_object_repetition(
                     .flatten();
                 match media {
                     Some(Some(address)) => {
-                        let (input, hovered) =
+                        let (input, hovered, focus) =
                             paint_page(ui, &state.web_pages, object.id, None, frame, true);
                         state.web_viewers.push(crate::web_viewer::Placement {
                             object: object.id,
@@ -5898,6 +5898,7 @@ fn paint_object_repetition(
                             zoom: state.zoom.factor(),
                             input,
                             hovered,
+                            focus,
                         });
                     }
                     Some(None) => {}
@@ -6415,7 +6416,7 @@ fn paint_object_repetition(
                             // Without calculations only an empty address is known.
                             _ => object.calcs.web_address.is_none().then(String::new),
                         };
-                        let (input, hovered) = paint_page(
+                        let (input, hovered, focus) = paint_page(
                             ui,
                             &state.web_pages,
                             object.id,
@@ -6434,6 +6435,7 @@ fn paint_object_repetition(
                             zoom: state.zoom.factor(),
                             input,
                             hovered,
+                            focus,
                         });
                     }
                     None => {}
@@ -8387,8 +8389,9 @@ const MAX_WEB_VIEWERS: usize = 32;
 /// picture over `rect`, where it lies among the layout's objects, so that
 /// the objects after it, and whatever egui draws above the document, cover
 /// it. With `interactive`, the pointer's input over it this frame, in the
-/// page's points (the window's), and whether the pointer is on it; scrolling
-/// over it scrolls the page, not the document. Native views paint nothing.
+/// page's points (the window's), whether the pointer is on it, and its egui
+/// id; scrolling over it scrolls the page, not the document. Native views
+/// paint nothing.
 fn paint_page(
     ui: &mut Ui,
     pages: &[crate::web_viewer::PageTexture],
@@ -8396,20 +8399,20 @@ fn paint_page(
     record: Option<i64>,
     rect: Rect,
     interactive: bool,
-) -> (Vec<crate::web_viewer::PageInput>, bool) {
+) -> (Vec<crate::web_viewer::PageInput>, bool, Option<egui::Id>) {
     use crate::web_viewer::PageInput;
     if !crate::web_viewer::composited() {
-        return (Vec::new(), false);
+        return (Vec::new(), false, None);
     }
-    if let Some(page) = pages
+    let page = pages
         .iter()
-        .find(|p| p.object == object && p.record == record)
-    {
+        .find(|p| p.object == object && p.record == record);
+    if let Some(page) = page {
         let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
         ui.painter().image(page.texture, rect, uv, Color32::WHITE);
     }
     if !interactive {
-        return (Vec::new(), false);
+        return (Vec::new(), false, None);
     }
     let response = ui.interact(
         rect,
@@ -8421,6 +8424,22 @@ fn paint_page(
     let window = to_window(ui, rect);
     let at = |p: egui::Pos2| (p.x - window.min.x, p.y - window.min.y);
     let on = response.hovered() || response.dragged();
+    // A page with the keyboard holds egui's focus, with Tab, the arrows and
+    // Escape its own, so that no widget of the window takes the focus while
+    // the page takes the keys.
+    if !page.is_some_and(|p| p.keyboard) {
+        // It lost the keyboard to a press elsewhere: egui's focus goes too.
+        if response.has_focus() {
+            response.surrender_focus();
+        }
+    } else {
+        // Asked for only when it lacks it: asking again each frame would
+        // read as a new focus, and end the input method's composition.
+        if !response.has_focus() {
+            response.request_focus();
+        }
+        ui.memory_mut(|m| m.set_focus_lock_filter(response.id, crate::web_viewer::PAGE_KEYS));
+    }
     // A press the page took: its release goes to the page wherever the
     // pointer is, in whichever frame it comes.
     let held_id = response.id.with("pressed");
@@ -8489,7 +8508,7 @@ fn paint_page(
             d.remove::<u8>(held_id);
         }
     });
-    (input, on)
+    (input, on, Some(response.id))
 }
 
 /// The wheel's scroll in this frame's `events`, in points (a line is

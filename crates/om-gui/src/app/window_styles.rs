@@ -175,6 +175,26 @@ impl OpenMakerApp {
         let chain = self.card_chain(id);
         let top = *chain.last().expect("one window");
         let dialog = self.blocking_dialog(id);
+        // A painted web viewer page with the keyboard takes the frame's
+        // keys before the window's shortcuts and fields see them; only the
+        // window in front (not under a card), with nothing over it (a
+        // dialog, a script's prompt, a modal, an open menu), has them. The
+        // app's own state says so from the frame the prompt or dialog
+        // comes in; egui's modal layer only from the next.
+        let covered = dialog.is_some()
+            || self.dialog_over_document()
+            || self
+                .with_window(top, |app| {
+                    app.script.prompt.is_some() || app.dialog_over_document()
+                })
+                .unwrap_or(false)
+            || ui.ctx().memory(|m| m.top_modal_layer().is_some())
+            || egui::Popup::is_any_open(ui.ctx());
+        if covered {
+            self.web.cover(top);
+        } else {
+            self.web.take_keys(ui.ctx(), top);
+        }
         if !embedded
             && dialog.is_none()
             && matches!(

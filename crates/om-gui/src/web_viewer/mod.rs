@@ -30,6 +30,7 @@ mod appkit;
 mod gtk;
 #[cfg(all(feature = "web-viewer", target_os = "linux"))]
 pub(crate) mod host;
+pub(crate) mod keys;
 mod viewports;
 #[cfg(all(feature = "web-viewer", target_os = "linux"))]
 mod wayland;
@@ -137,10 +138,14 @@ pub(crate) struct Placement {
     pub input: Vec<PageInput>,
     /// The pointer is over the page, and nothing egui draws covers it there.
     pub hovered: bool,
+    /// The egui id of the page's area ([`composited`] views): a press on
+    /// it gives it egui's focus at once.
+    pub focus: Option<egui::Id>,
 }
 
-/// Pointer input for a page, at points from its top left corner.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Input for a page: the pointer's, at points from its top left corner,
+/// and, while it has the keyboard, keys and an input method's text.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum PageInput {
     Move {
         x: f32,
@@ -162,6 +167,21 @@ pub(crate) enum PageInput {
         dy: f32,
     },
     Leave,
+    /// A key, as its Linux input event code, with the modifier keys held
+    /// (codes too) as it went down or up.
+    Key {
+        code: u32,
+        pressed: bool,
+        held: Vec<u32>,
+    },
+    /// The text an input method is composing, shown in the page as it would
+    /// be (empty: none).
+    Preedit(String),
+    /// The text an input method finished.
+    Commit(String),
+    /// The app's window lost the keyboard: every key the page holds goes
+    /// up, since their releases go to another window.
+    Unfocused,
 }
 
 /// A view's newest picture ([`composited`] backends): `size` pixels of
@@ -179,6 +199,11 @@ pub(crate) struct PageTexture {
     pub object: u64,
     pub record: Option<i64>,
     pub texture: egui::TextureId,
+    /// Where the page's text caret is, in the page's points, when it has
+    /// told: the input method's window goes beside it.
+    pub caret: Option<egui::Rect>,
+    /// It has the keyboard ([`WebViewers::take_keys`]).
+    pub keyboard: bool,
 }
 
 /// Whether pages are textures Browse paints (the Wayland backend) rather
@@ -198,6 +223,14 @@ pub(crate) fn composited() -> bool {
         false
     }
 }
+
+/// The keys a page with the keyboard keeps from egui's focus moves.
+pub(crate) const PAGE_KEYS: egui::EventFilter = egui::EventFilter {
+    tab: true,
+    horizontal_arrows: true,
+    vertical_arrows: true,
+    escape: true,
+};
 
 /// Whether this build has a native backend for its platform.
 const NATIVE: bool = cfg!(all(
@@ -392,6 +425,11 @@ pub(crate) trait Backend {
     fn frames(&mut self) -> Vec<PageFrame> {
         Vec::new()
     }
+    /// Where a view's text caret is, in its points, if it said
+    /// ([`composited`] backends).
+    fn caret(&self, _view: u64) -> Option<egui::Rect> {
+        None
+    }
     /// The end of the app's frame, with the root viewport's window: a
     /// backend whose views must be made on the main thread, with a window
     /// to make them in, applies its commands now.
@@ -484,6 +522,8 @@ struct View {
     current: bool,
     /// The native window the view is a child of.
     parent: NativeParent,
+    /// Its object's rectangle in the window, in points, as last painted.
+    rect: egui::Rect,
     seen: bool,
 }
 
@@ -566,6 +606,12 @@ pub(crate) struct WebViewers {
     textures: std::collections::HashMap<u64, egui::TextureHandle>,
     /// The window and view the pointer was over last.
     hovered: Option<(u32, u64)>,
+    /// The window and view whose painted page has the keyboard
+    /// ([`Self::take_keys`]).
+    keyboard: Option<(u32, u64)>,
+    /// The egui widget of the page with the keyboard, which keeps egui's
+    /// focus (`None`: no widget has it).
+    page_focus: Option<egui::Id>,
 }
 
 impl Default for WebViewers {
@@ -646,6 +692,8 @@ impl WebViewers {
             next: 0,
             outcomes: Vec::new(),
             textures: std::collections::HashMap::new(),
+            keyboard: None,
+            page_focus: None,
             hovered: None,
         }
     }
@@ -700,8 +748,10 @@ impl WebViewers {
         for view in &mut self.views {
             view.seen = false;
         }
-        // The page the pointer is over in this window.
+        // The page the pointer is over in this window, and the one a press
+        // went to.
         let mut hovered = None;
+        let mut pressed_page = None;
         let parent = frame.parent;
         for placement in frame.placements {
             let Some(layout) = frame.layout else {
@@ -771,7 +821,13 @@ impl WebViewers {
                     }
                 }
                 for input in &placement.input {
-                    backend.input(id, *input);
+                    if matches!(input, PageInput::Button { pressed: true, .. }) {
+                        pressed_page = Some((id, placement.focus));
+                    }
+                    backend.input(id, input.clone());
+                }
+                if let Some(view) = self.views.iter_mut().find(|v| v.id == id) {
+                    view.rect = placement.rect;
                 }
                 if placement.hovered {
                     hovered = Some(id);
@@ -806,6 +862,7 @@ impl WebViewers {
                 state: LoadState::Created,
                 placed: (geometry, visible),
                 current: placement.current,
+                rect: placement.rect,
                 parent,
                 seen: true,
             });
@@ -827,12 +884,30 @@ impl WebViewers {
         }
         // A press in a painted page gives it the keyboard; any other press
         // in the window takes the keyboard back from its pages.
-        let pressed_page = frame.placements.iter().any(|p| {
-            p.input
-                .iter()
-                .any(|i| matches!(i, PageInput::Button { pressed: true, .. }))
-        });
-        if let (true, false, Some(parent)) = (frame.pressed, pressed_page, parent) {
+        if let Some((view, focus)) = pressed_page {
+            // The page has the keyboard now, and egui's focus with it (from
+            // the next frame's start, before a Tab could move it).
+            self.keyboard = Some((frame.window, view));
+            self.page_focus = focus;
+            ctx.memory_mut(|memory| match focus {
+                Some(id) => {
+                    memory.request_focus(id);
+                    memory.set_focus_lock_filter(id, PAGE_KEYS);
+                }
+                None => {
+                    if let Some(focused) = memory.focused() {
+                        memory.surrender_focus(focused);
+                    }
+                }
+            });
+        } else if frame.pressed
+            && self
+                .keyboard
+                .is_some_and(|(window, _)| window == frame.window)
+        {
+            self.keyboard = None;
+        }
+        if let (true, true, Some(parent)) = (frame.pressed, pressed_page.is_none(), parent) {
             let hosts = self
                 .views
                 .iter()
@@ -976,13 +1051,176 @@ impl WebViewers {
                     object: v.key.object,
                     record: v.key.record,
                     texture: self.textures.get(&v.id)?.id(),
+                    keyboard: self.keyboard.is_some_and(|(_, view)| view == v.id),
+                    caret: self
+                        .backend
+                        .as_ref()
+                        .and_then(|b| b.as_ref().ok())
+                        .and_then(|b| b.caret(v.id)),
                 })
             })
             .collect()
     }
 
+    /// At the start of window `window`'s frame: when one of its painted
+    /// pages has the keyboard, the frame's keys and input method's text go
+    /// to the page and to nothing else in the window, as a native page takes
+    /// its keys from the window system. egui's Copy, Cut and Paste are their
+    /// keys again (Ctrl and C, X or V); typed text comes from the keys, in
+    /// the page's keymap. The input method's window goes beside the page's
+    /// caret. Whether the page had the keyboard.
+    pub fn take_keys(&mut self, ctx: &egui::Context, window: u32) -> bool {
+        let Some((at, view)) = self.keyboard else {
+            return false;
+        };
+        if at != window {
+            return false;
+        }
+        let Some(rect) = self.views.iter().find(|v| v.id == view).map(|v| v.rect) else {
+            self.keyboard = None;
+            return false;
+        };
+        // egui's focus stays the page's: a Tab egui read before the page's
+        // widget held the focus (its lock applies from the frame after)
+        // moved it, and it comes back before any widget is drawn.
+        let page_focus = self.page_focus;
+        ctx.memory_mut(|memory| {
+            // The move a Tab or arrow asked of egui this frame is the page's.
+            memory.move_focus(egui::FocusDirection::None);
+            match page_focus {
+                Some(id) if memory.focused() != Some(id) => {
+                    memory.request_focus(id);
+                    memory.set_focus_lock_filter(id, PAGE_KEYS);
+                }
+                None => {
+                    if let Some(focused) = memory.focused() {
+                        memory.surrender_focus(focused);
+                    }
+                }
+                Some(_) => {}
+            }
+        });
+        let (events, modifiers) = ctx.input_mut(|input| {
+            let mut taken = Vec::new();
+            input.events.retain(|event| {
+                let page = matches!(
+                    event,
+                    egui::Event::Key { .. }
+                        | egui::Event::Text(_)
+                        | egui::Event::Ime(_)
+                        | egui::Event::Copy
+                        | egui::Event::Cut
+                        | egui::Event::Paste(_)
+                );
+                // The window losing the keyboard is the page's too, in its
+                // place among the keys (egui keeps it as well).
+                let unfocused = matches!(event, egui::Event::WindowFocused(false));
+                if page || unfocused {
+                    taken.push(event.clone());
+                }
+                !page
+            });
+            (taken, input.modifiers)
+        });
+        let Some(Ok(backend)) = self.backend.as_mut() else {
+            return true;
+        };
+        let any = !events.is_empty();
+        for event in events {
+            let command = |key| keys::code(key).map(|code| (code, vec![keys::CONTROL]));
+            let input = match event {
+                egui::Event::Key {
+                    key,
+                    physical_key,
+                    pressed,
+                    repeat: false,
+                    modifiers,
+                } => keys::code(physical_key.unwrap_or(key)).map(|code| PageInput::Key {
+                    code,
+                    pressed,
+                    held: keys::held(modifiers),
+                }),
+                egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => {
+                    Some(PageInput::Preedit(text))
+                }
+                egui::Event::Ime(egui::ImeEvent::Commit(text)) => Some(PageInput::Commit(text)),
+                egui::Event::WindowFocused(false) => Some(PageInput::Unfocused),
+                egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_) => {
+                    let key = match event {
+                        egui::Event::Copy => egui::Key::C,
+                        egui::Event::Cut => egui::Key::X,
+                        _ => egui::Key::V,
+                    };
+                    if let Some((code, held)) = command(key) {
+                        for pressed in [true, false] {
+                            let held = held.clone();
+                            backend.input(
+                                view,
+                                PageInput::Key {
+                                    code,
+                                    pressed,
+                                    held,
+                                },
+                            );
+                        }
+                    }
+                    None
+                }
+                _ => None,
+            };
+            if let Some(input) = input {
+                backend.input(view, input);
+            }
+        }
+        if any {
+            // The modifier keys as they are now, whatever the events said.
+            backend.input(
+                view,
+                PageInput::Key {
+                    code: keys::SHIFT,
+                    pressed: false,
+                    held: keys::held(modifiers),
+                },
+            );
+        }
+        // While the page edits text (it said where its caret is), the input
+        // method's window goes beside the caret; otherwise it is off.
+        if let Some(caret) = backend.caret(view) {
+            let caret = caret.translate(rect.min.to_vec2());
+            ctx.output_mut(|output| {
+                output.ime = Some(egui::output::IMEOutput {
+                    purpose: egui::IMEPurpose::default(),
+                    rect,
+                    cursor_rect: caret,
+                    should_interrupt_composition: false,
+                });
+            });
+        }
+        true
+    }
+
+    /// Something covers window `window` (a dialog, a modal, an open menu):
+    /// its page gives the keyboard back, and with it egui's focus, so that
+    /// what covers the page has them.
+    pub fn cover(&mut self, window: u32) {
+        let Some((at, view)) = self.keyboard else {
+            return;
+        };
+        if at != window {
+            return;
+        }
+        self.keyboard = None;
+        let parent = self.views.iter().find(|v| v.id == view).map(|v| v.parent);
+        if let (Some(parent), Some(Ok(backend))) = (parent, self.backend.as_mut()) {
+            backend.release_focus(parent);
+        }
+    }
+
     fn destroy(&mut self, id: u64) {
         self.textures.remove(&id);
+        if self.keyboard.is_some_and(|(_, view)| view == id) {
+            self.keyboard = None;
+        }
         if self.hovered.is_some_and(|(_, view)| view == id) {
             self.hovered = None;
         }

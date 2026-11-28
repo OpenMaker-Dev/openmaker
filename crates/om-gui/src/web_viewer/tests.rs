@@ -128,6 +128,7 @@ fn placement(address: Option<&str>) -> Placement {
         zoom: 1.0,
         input: Vec::new(),
         hovered: false,
+        focus: None,
     }
 }
 
@@ -303,7 +304,7 @@ fn a_painted_page_gets_the_pointer_input_over_it() {
     };
     let over = Placement {
         hovered: true,
-        input: vec![press],
+        input: vec![press.clone()],
         ..page.clone()
     };
     let mut pressed = frame(std::slice::from_ref(&over), &[]);
@@ -353,6 +354,166 @@ fn steps_on_a_backend_that_ended_fail_as_unavailable() {
             result: Err(UNAVAILABLE),
         }]
     );
+}
+
+/// A page a press gave the keyboard takes the window's keys, as event
+/// codes with the modifiers held, and its input method's text; egui's Copy
+/// is Ctrl+C again; nothing of it is left for the window's own widgets.
+#[test]
+fn a_painted_page_with_the_keyboard_takes_the_window_keys() {
+    let (mut viewers, recorded) = viewers();
+    let ctx = egui::Context::default();
+    let page = placement(Some("about:blank"));
+    viewers.reconcile(&ctx, &frame(std::slice::from_ref(&page), &[]));
+    let pressed = Placement {
+        hovered: true,
+        input: vec![PageInput::Button {
+            x: 1.0,
+            y: 1.0,
+            button: 0,
+            pressed: true,
+        }],
+        ..page.clone()
+    };
+    viewers.reconcile(&ctx, &frame(std::slice::from_ref(&pressed), &[]));
+    commands(&recorded);
+    let shift = egui::Modifiers::SHIFT;
+    let events = vec![
+        egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: Some(egui::Key::A),
+            pressed: true,
+            repeat: false,
+            modifiers: shift,
+        },
+        egui::Event::Text("A".into()),
+        egui::Event::Ime(egui::ImeEvent::Commit("日本".into())),
+        egui::Event::Copy,
+    ];
+    let mut left = None;
+    let mut output = ctx.run_ui(
+        egui::RawInput {
+            events,
+            ..Default::default()
+        },
+        |ui| {
+            assert!(viewers.take_keys(ui.ctx(), 1));
+            left = Some(ui.input(|i| i.events.len()));
+        },
+    );
+    output.textures_delta.clear();
+    assert_eq!(left, Some(0));
+    let held = |held: &[u32]| format!("{held:?}");
+    assert_eq!(
+        commands(&recorded),
+        [
+            format!(
+                "input 1 Key {{ code: 30, pressed: true, held: {} }}",
+                held(&[42])
+            ),
+            "input 1 Commit(\"日本\")".to_owned(),
+            format!(
+                "input 1 Key {{ code: 46, pressed: true, held: {} }}",
+                held(&[29])
+            ),
+            format!(
+                "input 1 Key {{ code: 46, pressed: false, held: {} }}",
+                held(&[29])
+            ),
+            format!(
+                "input 1 Key {{ code: 42, pressed: false, held: {} }}",
+                held(&[])
+            ),
+        ]
+    );
+    // The window losing the keyboard lets go of every key the page holds
+    // (their releases go to another window).
+    // Also a key pressed in the same frame, before the window lost it:
+    // the page hears the press, then lets go of it.
+    let pressed = egui::Event::Key {
+        key: egui::Key::B,
+        physical_key: Some(egui::Key::B),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let mut output = ctx.run_ui(
+        egui::RawInput {
+            events: vec![pressed, egui::Event::WindowFocused(false)],
+            ..Default::default()
+        },
+        |ui| {
+            assert!(viewers.take_keys(ui.ctx(), 1));
+        },
+    );
+    output.textures_delta.clear();
+    let sent = commands(&recorded);
+    assert_eq!(
+        sent.iter().take(2).collect::<Vec<_>>(),
+        [
+            &format!(
+                "input 1 Key {{ code: 48, pressed: true, held: {} }}",
+                held(&[])
+            ),
+            &"input 1 Unfocused".to_owned(),
+        ]
+    );
+    // Another window's frame takes nothing.
+    assert!(!viewers.take_keys(&ctx, 2));
+}
+
+/// A Tab in the frame after a press in a page goes to the page: egui reads
+/// it before the page's widget holds the focus (its lock applies only from
+/// the frame after), and `take_keys` gives the focus back before any of
+/// the window's widgets is drawn.
+#[test]
+fn the_first_tab_after_a_press_in_a_page_leaves_egui_focus_with_it() {
+    let (mut viewers, _recorded) = viewers();
+    let ctx = egui::Context::default();
+    let page_id = egui::Id::unique("the page");
+    let page = placement(Some("about:blank"));
+    let pressed = Placement {
+        hovered: true,
+        focus: Some(page_id),
+        input: vec![PageInput::Button {
+            x: 1.0,
+            y: 1.0,
+            button: 0,
+            pressed: true,
+        }],
+        ..page.clone()
+    };
+    let draw = |ui: &mut egui::Ui| {
+        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(100.0, 50.0));
+        ui.interact(rect, page_id, egui::Sense::click_and_drag());
+        // A control drawn after the page, which a Tab would focus.
+        let _ = ui.button("next");
+    };
+    viewers.reconcile(&ctx, &frame(std::slice::from_ref(&page), &[]));
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        viewers.reconcile(ui.ctx(), &frame(std::slice::from_ref(&pressed), &[]));
+        draw(ui);
+    });
+    output.textures_delta.clear();
+    let tab = egui::Event::Key {
+        key: egui::Key::Tab,
+        physical_key: Some(egui::Key::Tab),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let mut output = ctx.run_ui(
+        egui::RawInput {
+            events: vec![tab],
+            ..Default::default()
+        },
+        |ui| {
+            assert!(viewers.take_keys(ui.ctx(), 1));
+            draw(ui);
+        },
+    );
+    output.textures_delta.clear();
+    assert_eq!(ctx.memory(|m| m.focused()), Some(page_id));
 }
 
 /// A painted page's newest frame is what Browse paints, until its view
