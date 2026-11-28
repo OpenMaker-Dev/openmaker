@@ -891,6 +891,15 @@ to the input refuse with 3. Inputs with defaults and rules that read
 the resulting global remain unsupported.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1057#issuecomment-7209580006)
 
+The same rule can use a plain local global Text input (`0x00010000`).
+Scripted Set Field and ordinary unsorted scripted New Record use the
+assigned or current input respectively. A blank input clears a replacing
+output, and a nonempty keep-existing output is preserved for any input.
+An operation that would evaluate nonempty formula text returns 3 before
+changing either global or allocating a row. Browse typing into the input
+and saving global values across reopen are outside this scope.
+[Global-input comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1057#issuecomment-7209893983)
+
 A calculated global Text field with the measured empty-Self default can
 retain its value or append a literal suffix. Ordinary New Record reads
 the current session value. Scripted Set Field reads its assigned text.

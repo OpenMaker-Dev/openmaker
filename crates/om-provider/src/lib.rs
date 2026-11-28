@@ -2193,6 +2193,31 @@ impl NativeProvider {
         )?
         .unwrap_or_else(|| text.to_owned());
         let mut changes = om_data::GlobalChanges::new();
+        if repetition == 1 {
+            let outputs = self
+                .catalog
+                .table(table)
+                .map_or_else(Vec::new, |definition| {
+                    om_data::rules::global_evaluate_outputs(&schema, definition, field)
+                });
+            if !outputs.is_empty() {
+                if !local {
+                    return Err(DataError::with_code(
+                        3,
+                        "Global Evaluate auto-entry requires an assignment in the local file.",
+                    ));
+                }
+                let data = self.read_calc_data(&[om_data::host::CalcNeed::Globals { table }])?;
+                let globals = data.globals.get(&table).ok_or_else(|| {
+                    DataError::with_code(3, "The table's global values could not be read.")
+                })?;
+                changes.extend(om_data::rules::global_evaluate_changes(
+                    outputs,
+                    globals,
+                    value.is_empty(),
+                )?);
+            }
+        }
         if local && repetition == 1 {
             if let Some(table) = self.catalog.table(table) {
                 changes.extend(om_data::rules::global_text_input_changes(
@@ -2254,7 +2279,17 @@ impl NativeProvider {
             def.data_type,
             om_hbam::DataType::Date | om_hbam::DataType::Time | om_hbam::DataType::Timestamp
         );
-        self.global_write_schema(table, field, repetition)?;
+        let schema = self.global_write_schema(table, field, repetition)?;
+        if repetition == 1
+            && self.catalog.table(table).is_some_and(|definition| {
+                !om_data::rules::global_evaluate_outputs(&schema, definition, field).is_empty()
+            })
+        {
+            return Err(DataError::with_code(
+                3,
+                "This global feeds an Evaluate auto-entry rule that requires scripted Set Field.",
+            ));
+        }
         if !temporal
             && options
                 .as_ref()
