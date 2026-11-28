@@ -23,7 +23,7 @@ mod global_text_input;
 mod global_text_self;
 mod named_auto_entry;
 pub use global_text_input::global_text_input_changes;
-pub use global_text_self::global_text_assignment;
+pub use global_text_self::{global_text_assignment, typed_text_self_default};
 pub mod recalc;
 pub mod schema;
 mod typing;
@@ -1210,7 +1210,18 @@ pub struct RecordPlan {
 enum AutoEntrySelf {
     Unused,
     ProposedNumber,
+    ProposedText,
     Unsupported,
+}
+
+impl AutoEntrySelf {
+    fn proposed_type(self) -> Option<ValueType> {
+        match self {
+            Self::ProposedNumber => Some(ValueType::Number),
+            Self::ProposedText => Some(ValueType::Text),
+            Self::Unused | Self::Unsupported => None,
+        }
+    }
 }
 
 struct PlannedField {
@@ -2618,6 +2629,11 @@ impl RecordPlan {
                         && !other_inputs;
                     auto_enter_self = if measured {
                         AutoEntrySelf::ProposedNumber
+                    } else if local
+                        && kind == FieldKind::Normal
+                        && typed_text_self_default(&def).is_some()
+                    {
+                        AutoEntrySelf::ProposedText
                     } else {
                         AutoEntrySelf::Unsupported
                     };
@@ -4430,6 +4446,7 @@ impl RecordPlan {
                             && (!sorted || field.options.options & ALWAYS_EVALUATE != 0)
                             && !supports_related_self(*id)
                     }
+                    AutoEntrySelf::ProposedText => (!unsorted && !sorted) || entry.imported,
                     AutoEntrySelf::Unsupported => true,
                 }
         }) {
@@ -6748,10 +6765,14 @@ impl RecordPlan {
             .table(self.table)
             .and_then(|t| t.fields.get(&id));
         let result_type = def.map(|d| d.value_type);
-        let self_value = self.auto_enters_proposed_self(id).then(|| {
+        let proposed_type = self
+            .fields
+            .get(&id)
+            .and_then(|f| f.auto_enter_self.proposed_type());
+        let self_value = proposed_type.map(|value_type| {
             let cx = Ctx::new(&self.schema.locale, session.today());
             let proposed = row.get(&id).map_or("", String::as_str);
-            stored_value(proposed, ValueType::Number, &cx)
+            stored_value(proposed, value_type, &cx)
         });
         let repetition = InRepetition::Calculation(repetition);
         self.run(
@@ -6770,7 +6791,7 @@ impl RecordPlan {
     pub fn auto_enters_proposed_self(&self, cell: u64) -> bool {
         self.fields
             .get(&cell)
-            .is_some_and(|field| field.auto_enter_self == AutoEntrySelf::ProposedNumber)
+            .is_some_and(|field| field.auto_enter_self.proposed_type().is_some())
     }
 
     /// Whether repetition `repetition` of field `id` passes its validation
@@ -10073,6 +10094,60 @@ mod tests {
         let filled = create(&plan, &[(1, "a")]).unwrap();
         assert_eq!(decoded(&filled, 20).as_deref(), Some("xa"));
         assert_eq!(decoded(&filled, 21).as_deref(), Some("ya"));
+    }
+
+    #[test]
+    fn local_text_self_restores_its_default_when_cleared() {
+        let id = 20;
+        for options in [0x0000_0088, 0xa000_0088] {
+            let table = Table {
+                fields: vec![field(id, FieldKind::Normal, DataType::Text, 0, options, 0)],
+                ..table()
+            };
+            let formula = [(id, 5, r#"If ( IsEmpty ( Self ) ; "Draft" ; Self )"#)];
+            let plan = plan_of(&table, &formula, &[]).unwrap();
+            let entry = Entry::script(false, false);
+            let env = RecordEnvironment {
+                context: WriteContext {
+                    record_number: Some(RecordNumber::LocalNewRecord(2)),
+                    ..WriteContext::default()
+                },
+                ..environment()
+            };
+            let empty = BTreeMap::new();
+            let no_changes = BTreeMap::new();
+            let default = BTreeMap::from([(id, Some("Draft".into()))]);
+            let created = plan.compute(WriteMode::Create, &empty, &no_changes, &env, entry);
+            assert_eq!(created.unwrap(), default);
+            let draft = BTreeMap::from([(id, "Draft".into())]);
+            // Text that looks numeric still reaches Self as text.
+            let proposed = BTreeMap::from([(id, Some("007".into()))]);
+            assert_eq!(
+                plan.compute(WriteMode::Update, &draft, &proposed, &env, entry)
+                    .unwrap(),
+                proposed
+            );
+            let typed = BTreeMap::from([(id, "007".into())]);
+            assert_eq!(
+                plan.compute(
+                    WriteMode::Update,
+                    &typed,
+                    &BTreeMap::from([(id, None)]),
+                    &env,
+                    entry,
+                )
+                .unwrap(),
+                default
+            );
+            let hosted = plan_with(&table, &formula, &[], Vec::new(), false).unwrap();
+            assert_eq!(
+                hosted
+                    .compute(WriteMode::Create, &empty, &no_changes, &env, entry)
+                    .unwrap_err()
+                    .code,
+                Some(error::UNAVAILABLE)
+            );
+        }
     }
 
     #[test]

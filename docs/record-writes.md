@@ -813,6 +813,19 @@ the option word `0xa8`, with "Do not evaluate if all referenced fields
 are empty" off. That option still refuses sorted creation.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1059)
 
+An ordinary Text field in a local desktop window can replace its
+cleared value with a literal default through
+`If ( IsEmpty ( Self ) ; "Draft" ; Self )`. New Record shows the
+default, Set Field leaves nonempty text as supplied and restores the
+default on a clear, and leaving a cleared Browse editor shows the
+default before Commit. The field must have one repetition, no
+validation, and option word `0x00000088` or `0xa0000088`. Sorted
+New Record uses the same rule for both keep-sorted settings; the native
+trial used the setting on. Existing value and word indexes follow the
+written result. Suffix formulas and creation outside an ordinary local
+desktop window still refuse evaluation with error 3.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1135#issuecomment-7214357479)
+
 A local table accepts ordinary record writes to its other fields when a
 Container awaits transfer to embedded storage. This covers a
 single-repetition field marked `0x6000` (external Open storage) and a
