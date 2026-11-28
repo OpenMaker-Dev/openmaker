@@ -530,6 +530,20 @@ artwork. The comparison is retained privately
 **Unknowns:** the exact dimming formula, other kinds of artwork, and
 whether the same effect applies below the last part.
 
+### Web viewer artwork in Layout mode
+
+[O] FileMaker Pro 26.1.1, private Layout capture from the
+[#1196 native acceptance](https://github.com/OpenMaker-Dev/openmaker/issues/896#issuecomment-7231598739).
+In Layout mode a 280 × 200 pt viewer showed the quoted address expression
+at its upper left and a centered gray globe about 62 pt across. Artwork
+behind the transparent viewer was still visible. A second viewer showed
+an expression containing field references as text and a larger globe.
+Neither showed a web page in the Layout canvas. The smaller viewer was
+selected and had the usual resize handles.
+
+**Unknowns:** the exact globe sizing rule and how FileMaker shows long or
+multiline expressions, missing source, and viewers at other zoom levels.
+
 ### Front panels
 
 The [panel selection help](https://help.claris.com/en/pro-help/content/objects-on-panel-controls.html)

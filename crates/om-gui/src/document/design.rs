@@ -1,10 +1,12 @@
 //! Static layout artwork. The design canvas supplies draft frames and owns
-//! all interaction. No record values, calculations or actions are read here.
+//! all interaction. No record values are read, and no calculations or
+//! actions are run here.
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
-use egui::{pos2, vec2, Color32, CornerRadius, Rect, Stroke, StrokeKind, Ui};
+use egui::{pos2, vec2, Color32, CornerRadius, FontId, Rect, Stroke, StrokeKind, Ui};
+use om_data::{formula, host::CalcSchema};
 use om_layout::{Layout, ObjectKind, TextRun};
 
 use super::{
@@ -15,6 +17,7 @@ use super::{
 pub(crate) struct Surface<'a> {
     layout: &'a Layout,
     cache: &'a LayoutCache,
+    schema: Option<&'a CalcSchema>,
 }
 
 #[derive(Default)]
@@ -24,12 +27,20 @@ pub(crate) struct TabArtwork {
 }
 
 impl<'a> Surface<'a> {
-    pub(super) fn new(session: &'a Session, cache: &'a LayoutCache) -> Option<Self> {
+    pub(super) fn new(
+        session: &'a Session,
+        cache: &'a LayoutCache,
+        schema: Option<&'a CalcSchema>,
+    ) -> Option<Self> {
         let crate::session::RenderState::Loaded(render) = &session.render else {
             return None;
         };
         let layout = &render.layout;
-        (session.layout.map(u64::from) == Some(layout.id)).then_some(Self { layout, cache })
+        (session.layout.map(u64::from) == Some(layout.id)).then_some(Self {
+            layout,
+            cache,
+            schema,
+        })
     }
 
     pub(crate) fn background(&self) -> Option<Color32> {
@@ -51,6 +62,55 @@ impl<'a> Surface<'a> {
             let style = self.cache.part_style(self.layout, part, 1, 1);
             paint_box(ui, rect, &style, ObjectKind::Rectangle);
         }
+    }
+
+    fn paint_web_viewer(&self, ui: &Ui, rect: Rect, object: &om_layout::LayoutObject) {
+        let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(rect));
+        // The glyph occupies three quarters of its grid. At this size it
+        // covers about 31% of the viewer's shorter side, as in the reference.
+        let grid = rect.width().min(rect.height()) * (5.0 / 12.0);
+        crate::icons::paint(
+            &painter,
+            Rect::from_center_size(rect.center(), vec2(grid, grid)),
+            crate::icons::Icon::WebViewer,
+            Color32::from_gray(156),
+            Color32::TRANSPARENT,
+        );
+        let caption = rect.shrink(2.0);
+        if !caption.is_positive() || !painter.clip_rect().intersects(caption) {
+            return;
+        }
+        let mut text = object
+            .calcs
+            .web_address_source
+            .as_deref()
+            .filter(|tokens| !tokens.is_empty())
+            .map_or_else(
+                || "Web Viewer".to_owned(),
+                |tokens| {
+                    let names: &dyn formula::Names = match self.schema {
+                        Some(schema) => schema.names(),
+                        None => &formula::NoNames,
+                    };
+                    let ctx = formula::Context {
+                        decimal_comma: self
+                            .schema
+                            .is_some_and(|schema| schema.locale.decimal_separator == ','),
+                        ..formula::Context::new(names)
+                    };
+                    formula::print(tokens, &ctx)
+                },
+            );
+        // There is only one visible line, even for a long data URL.
+        text.truncate(text.floor_char_boundary(1024));
+        let ink = crate::theme::TEXT;
+        let mut job =
+            egui::text::LayoutJob::simple(text, FontId::proportional(12.0), ink, caption.width());
+        job.wrap.max_rows = 1;
+        let galley = super::layer_galley(ui, job);
+        painter
+            .with_clip_rect(painter.clip_rect().intersect(caption))
+            .galley(caption.min, galley, ink);
     }
 
     /// Draw the saved headers and front-panel background before the canvas
@@ -212,19 +272,22 @@ impl<'a> Surface<'a> {
                     })
             });
         }
-        if !matches!(
-            kind,
-            ObjectKind::Field
-                | ObjectKind::Text
-                | ObjectKind::Rectangle
-                | ObjectKind::RoundedRectangle
-                | ObjectKind::Oval
-                | ObjectKind::Line
-                | ObjectKind::Button
-                | ObjectKind::PopoverButton
-                | ObjectKind::Popover
-                | ObjectKind::Graphic
-        ) {
+        let web_viewer = object.web_viewer().is_some();
+        if !web_viewer
+            && !matches!(
+                kind,
+                ObjectKind::Field
+                    | ObjectKind::Text
+                    | ObjectKind::Rectangle
+                    | ObjectKind::RoundedRectangle
+                    | ObjectKind::Oval
+                    | ObjectKind::Line
+                    | ObjectKind::Button
+                    | ObjectKind::PopoverButton
+                    | ObjectKind::Popover
+                    | ObjectKind::Graphic
+            )
+        {
             return false;
         }
         if kind != ObjectKind::Line && !rect.is_positive() {
@@ -245,7 +308,7 @@ impl<'a> Surface<'a> {
             return true;
         }
         paint_box(ui, rect, &style, kind);
-        if matches!(kind, ObjectKind::Field | ObjectKind::Text)
+        if (web_viewer || matches!(kind, ObjectKind::Field | ObjectKind::Text))
             && !(0..4).any(|side| {
                 super::border_width(&style, side).is_some()
                     && style.border_color[side].is_none_or(|c| color(c).a() > 0)
@@ -257,6 +320,10 @@ impl<'a> Surface<'a> {
                 Stroke::new(1.0, crate::theme::HAIRLINE),
                 StrokeKind::Inside,
             );
+        }
+        if web_viewer {
+            self.paint_web_viewer(ui, rect, object);
+            return true;
         }
         if kind == ObjectKind::Graphic {
             let Some(image) = object.graphic.as_ref().filter(|g| g.library_key != 0) else {

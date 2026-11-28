@@ -1964,7 +1964,7 @@ pub(crate) fn layout(
         &mut child,
         session,
         tool,
-        fields,
+        (fields, schema),
         &mut state.canvas,
         state.saving,
         document,
