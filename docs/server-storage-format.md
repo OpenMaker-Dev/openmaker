@@ -478,7 +478,7 @@ the leaf holding a misplaced key, find it absent; and in a leaf whose
 bytes cannot prove its keys in order, the keys between the first and
 the last are bounded only by the cursor's checks of order, so one out of
 order there can still end a listing without what follows it
-([#1240](https://github.com/OpenMaker-Dev/openmaker/issues/1240)). Only a
+([#1228](https://github.com/OpenMaker-Dev/openmaker/issues/1228)). Only a
 check of the whole tree (`tree::check`, section 6.12 of the design) finds
 every key where a search will find it. A page the store cannot find is
 *missing*. Nothing is allocated by a size the bytes give before

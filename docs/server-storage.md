@@ -3136,18 +3136,21 @@ read enters lies in the range its ancestors' separators give it, at every
 level (its first key at or above the separator before it, its last below
 the one after it), and a read's items only move on. A read gives the
 items it reaches in key order, from such leaves, or fails as malformed;
-a listing or a walk in pages ends on any tree and never ends early
-without an error because a key lay left of its leaf's range
+a listing or a walk in pages ends on any tree, and never ends early
+without an error because a key lies outside its leaf's range
 ([#998](https://github.com/OpenMaker-Dev/openmaker/issues/998),
 [#1149](https://github.com/OpenMaker-Dev/openmaker/issues/1149),
 [#1180](https://github.com/OpenMaker-Dev/openmaker/issues/1180)). The
 check costs at most two key comparisons a level for each leaf a read
-enters, and nothing while it stays in one: about 0.X% more comparisons
-for a listing of a million records. It does not make a damaged tree
-whole: a lookup routed past a misplaced key, and a read that never
+enters, and nothing while it stays in one: listing a million records
+makes 242,841 more, 1.6% of 15.2 million, in no more time than the
+spread of the runs
+([store-engine-file.md](performance/store-engine-file.md)). It does not
+make a damaged tree whole: a lookup routed past a misplaced key, and a
+read that never
 enters its leaf, answer that it is absent; within a leaf whose bytes
 cannot prove its keys in order only its first and last key are held to
-the range ([#1240](https://github.com/OpenMaker-Dev/openmaker/issues/1240));
+the range ([#1228](https://github.com/OpenMaker-Dev/openmaker/issues/1228));
 and only a check of the whole tree (section 6.12) finds every key where
 a search will find it
 ([#1181](https://github.com/OpenMaker-Dev/openmaker/issues/1181)).

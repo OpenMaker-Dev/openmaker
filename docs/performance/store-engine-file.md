@@ -287,6 +287,38 @@ of the tree after it, which hashes every page once more.
   tree, after a cold and a warm walk; interleaved, load 8 to 17; the file
   engine 37 ms). A warm walk of the same table takes 1.5 s.
 
+## Checking the range of each leaf a read enters
+
+Since [#1180](https://github.com/OpenMaker-Dev/openmaker/issues/1180) a cursor
+compares each leaf it enters with the separators around it at every level
+(docs/server-storage-format.md 2.6): at most two key comparisons a level for
+each leaf entered, none while it stays in one. Measured on the 1,000,000-record
+file of "Hosting on the store engine" (655.8 MB, Name's and Creator's indexes
+stored; imported: 11,200,625 nodes, 59,583 leaves and 334 index pages, four
+levels), `paged_measurement` `reads` with a 1 GiB cache, release builds of the
+same code with the check and with it taken out. Key comparisons were counted by
+a thread-local counter in `Pages::cmp_stored`, `Pages::cmp_known` and the
+check's comparison decided by the pages' own bytes (a measurement-only patch,
+as for [#767](https://github.com/OpenMaker-Dev/openmaker/issues/767)), in
+builds apart from the timed ones; the timed runs alternated
+the two builds, one process at a time, three rounds, load 5.6 to 5.9:
+
+| | Without the check | With it |
+|---|---:|---:|
+| Key comparisons, 1,000,000 records listed (`View::children`) | 14,958,373 | 15,201,214 (+242,841, 1.6%) |
+| Key comparisons, a walk of the table (9,000,001 nodes, `View::walk` through `walk_page`) | 1,047,886 | 1,467,579 (+419,693) |
+| 1,000,000 records listed | 957, 890, 868 ms | 884, 947, 889 ms |
+| The walk, warm | 1,478, 1,468, 1,503 ms | 1,569, 1,539, 1,528 ms |
+| The walk, first pass | 4,424, 4,333, 4,402 ms | 4,294, 4,389, 4,495 ms |
+
+The listing enters each of the table's leaves once and compares about five
+separators for each (three index levels, fewer at the first and last child of
+a page); its time does not move beyond the runs' spread. The walk in pages
+seeks each page of 256 nodes anew, and checks the leaf each page lands in as
+well as each leaf it steps into: a warm walk took about 4% longer, more than
+the spread of these runs; its first pass, which reads and checks every page,
+did not move beyond it.
+
 ## Hosting on the store engine
 
 The server binary hosting one file on each engine (`--engine file` and
