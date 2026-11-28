@@ -1499,37 +1499,53 @@ fn subtrees_in_pages(
 /// follow, and the next page, which reads the value, fails: nothing given
 /// twice, nothing left out without an error. A page that holds the child
 /// fails, the child before it in the page with it: that child was asked
-/// for.
+/// for. And a read of the value that fails once fails the page that gives
+/// the child, not the look, which does not read it.
 #[test]
 fn a_look_ahead_reads_no_value_and_the_page_that_gives_it_fails() {
-    let store = MemStore::new(Numbering::Sequential);
     let list = vec![b"l".to_vec()];
-    let child = |segment: &[u8]| vec![b"l".to_vec(), segment.to_vec()];
-    let root = apply_unit(
-        &store,
-        &tree_name(),
-        None,
-        1,
-        &[
-            Edit::list(list.clone()),
-            Edit::leaf(child(b"a"), b"a".to_vec()),
-            Edit::leaf(child(b"b"), long_value(6000)),
-        ],
-    )
-    .unwrap();
-    let overflow: Vec<u64> = om_store::tree::check(&store, root)
-        .unwrap()
-        .pages
-        .iter()
-        .filter(|(n, h)| store.read(*n, h).unwrap().kind() == PageKind::Overflow)
-        .map(|(n, _)| *n)
-        .collect();
-    assert!(!overflow.is_empty());
+    let at = refs(&list);
+    // The list `l` with the children `a` and `b`, `b`'s value on overflow
+    // pages; the store, the root and those pages.
+    let tree = || {
+        let store = MemStore::new(Numbering::Sequential);
+        let child = |segment: &[u8]| vec![b"l".to_vec(), segment.to_vec()];
+        let root = apply_unit(
+            &store,
+            &tree_name(),
+            None,
+            1,
+            &[
+                Edit::list(list.clone()),
+                Edit::leaf(child(b"a"), b"a".to_vec()),
+                Edit::leaf(child(b"b"), long_value(6000)),
+            ],
+        )
+        .unwrap();
+        let overflow: Vec<u64> = om_store::tree::check(&store, root)
+            .unwrap()
+            .pages
+            .iter()
+            .filter(|(n, h)| store.read(*n, h).unwrap().kind() == PageKind::Overflow)
+            .map(|(n, _)| *n)
+            .collect();
+        assert!(!overflow.is_empty());
+        (store, root, overflow)
+    };
+    let failed = |read: &Option<ReadError>| matches!(read, Some(ReadError::Unreadable { .. }));
+    let (store, root, overflow) = tree();
+    for &page in &overflow {
+        store.fail_reads(page, 1);
+    }
+    let view = PagedView::open(&store, root).unwrap();
+    let (given, error) = children_in_pages(&view, &at, 1);
+    assert_eq!(given, [b"a".to_vec()]);
+    assert!(failed(&error), "{error:?}");
+    let (store, root, overflow) = tree();
     for page in overflow {
         assert!(store.damage(page, 100, 0xff));
     }
     let view = PagedView::open(&store, root).unwrap();
-    let at = refs(&list);
     let Some(om_query::Children::Listed(listing)) =
         crate::connection::ViewListing::of(&view, &at).unwrap()
     else {
@@ -1544,7 +1560,6 @@ fn a_look_ahead_reads_no_value_and_the_page_that_gives_it_fails() {
     );
     assert_eq!(looked_up.ok(), Some(true));
     assert_eq!(keys, [&b"a"[..]]);
-    let failed = |read: &Option<ReadError>| matches!(read, Some(ReadError::Unreadable { .. }));
     let (given, error) = children_in_pages(&view, &at, 1);
     assert_eq!(given, [b"a".to_vec()]);
     assert!(failed(&error), "{error:?}");
