@@ -1373,7 +1373,10 @@ and checked by reopening the file:
 | Pop-up field inside an all-edges portal | `0x30000000` | `0x70000000` |
 
 Right was enabled for both nested targets, and the enclosing objects kept
-their own anchor bits. Comparing raw messages by object key found no other
+their own anchor bits. After reopening the saved file,
+the Inspector showed the grouped child's Right anchor even though its
+group had only Left and Top. That readback matches the child's own stored
+bits. Comparing raw messages by object key found no other
 field changes. In each save FileMaker moved the `0x00400000` selection bit
 (5.2.1) from the previously selected object to the edited top-level object
 or, for the nested cases, to its group or portal. It also serialized the
@@ -1382,6 +1385,13 @@ other bytes within each object definition stayed as stored, apart from the
 flag changes. Within `[4, 5, L]`, only `07` and stamps `fc` and `fc03`
 changed. File history and modification counts elsewhere also changed.
 [Native run and method](https://github.com/OpenMaker-Dev/openmaker/issues/888#issuecomment-7214357808).
+
+FileMaker Pro 26.1.1 opened and reopened an OpenMaker-written copy with
+the same four anchor edits. The changes were confined to the four anchor
+bits of each target; the object order and selection bits were left intact.
+Both parent anchor sets read back unchanged. Recover returned only code
+0 on the edited copy and rebuilt no-edit control.
+[Native acceptance](https://github.com/OpenMaker-Dev/openmaker/issues/888#issuecomment-7231598734).
 
 **Unknowns:** Whether the definition order reverses on every subsequent
 save, how the Inspector handles multiple selected objects or all four

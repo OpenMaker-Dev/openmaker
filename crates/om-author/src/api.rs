@@ -61,6 +61,7 @@ pub enum Command {
     SetPartOptions(PartOptionsParams),
     ChangeParts(ChangePartsParams),
     SetText(TextParams),
+    SetObjectAnchors(AnchorParams),
     CreateLayout(CreateLayoutParams),
     /// Run a script on the host (Perform Script on Server) and wait for its
     /// last error and result.
@@ -139,6 +140,7 @@ impl Command {
             Command::SetPartOptions(_) => &catalog::SET_PART_OPTIONS,
             Command::ChangeParts(_) => &catalog::CHANGE_PARTS,
             Command::SetText(_) => &catalog::SET_TEXT,
+            Command::SetObjectAnchors(_) => &catalog::SET_OBJECT_ANCHORS,
             Command::CreateLayout(_) => &catalog::CREATE_LAYOUT,
             Command::RunScript(_) => &catalog::RUN_SCRIPT,
             Command::ListChoices(_) => &catalog::LIST_CHOICES,
@@ -854,6 +856,29 @@ pub struct FieldControlParams {
     /// out, the object keeps its own.
     #[serde(default)]
     pub value_list: Option<String>,
+}
+
+/// An edge that stays anchored as its enclosing surface resizes.
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AnchorEdge {
+    Left,
+    Top,
+    Right,
+    Bottom,
+}
+
+/// Replace an object's stored autosizing anchors.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AnchorParams {
+    /// The layout object reference returned by get_layout.
+    pub object: String,
+    /// The layout revision returned by get_layout.
+    pub expected_revision: String,
+    /// All edges to anchor. Supply at least one edge, with no duplicates.
+    #[schemars(length(min = 1, max = 4))]
+    pub anchors: Vec<AnchorEdge>,
 }
 
 /// A text object's new words.

@@ -118,6 +118,9 @@ impl<'a> Cursor<'a> {
                 return Err(self.error(start, "truncated varint"));
             };
             self.pos += 1;
+            if i == 9 && (2..0x80).contains(&byte) {
+                return Err(self.error(start, "varint overflows u64"));
+            }
             value |= u64::from(byte & 0x7f) << (7 * i);
             if byte & 0x80 == 0 {
                 return Ok(value);

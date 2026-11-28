@@ -193,6 +193,7 @@ pub(crate) fn perform(
         | Operation::LayoutSetup
         | Operation::LayoutWidth
         | Operation::LayoutSetupMargins
+        | Operation::SetObjectAnchors
         | Operation::FieldControl
         | Operation::PartOptions
         | Operation::ChangeParts
@@ -238,6 +239,7 @@ pub(crate) fn perform(
                 | OP_LAYOUT_SETUP
                 | OP_LAYOUT_WIDTH
                 | OP_LAYOUT_SETUP_MARGINS
+                | authoring::OP_SET_OBJECT_ANCHORS
                 | OP_FIELD_CONTROL
                 | OP_PART_OPTIONS
                 | OP_CHANGE_PARTS
@@ -328,6 +330,7 @@ pub(crate) fn perform(
         Request::FieldControl(request) => author(DesignEdit::FieldControl(request))?,
         Request::PartOptions(request) => author(DesignEdit::PartOptions(request))?,
         Request::ChangeParts(request) => author(DesignEdit::ChangeParts(request))?,
+        Request::SetObjectAnchors(request) => author(DesignEdit::SetObjectAnchors(request))?,
         Request::SetText(request) => author(DesignEdit::SetText(request))?,
         Request::ValueListValues(request) => author(DesignEdit::ValueListValues(request))?,
         Request::PlaceButton(request) => author(DesignEdit::PlaceButton(request))?,
@@ -432,6 +435,7 @@ pub(crate) fn edit(
         DesignEdit::FieldControl(request) => field_control(ed, request),
         DesignEdit::PartOptions(request) => part_options(ed, request),
         DesignEdit::ChangeParts(request) => change_parts(ed, request),
+        DesignEdit::SetObjectAnchors(request) => set_object_anchors(ed, request),
         DesignEdit::SetText(request) => set_text(ed, request),
         DesignEdit::ValueListValues(request) => value_list_values(ed, request),
         DesignEdit::PlaceButton(request) => place_button(ed, request),
@@ -1266,6 +1270,35 @@ fn field_control(ed: &mut Editor<'_, '_, '_>, request: &FieldControl) -> Reply {
     }
 }
 
+/// Operation 30: one object's stored autosizing anchors.
+fn set_object_anchors(ed: &mut Editor<'_, '_, '_>, request: &authoring::SetObjectAnchors) -> Reply {
+    let flags = u64::from(request.flags);
+    if flags == 0 || flags & !om_layout::encode::ANCHOR_MASK != 0 {
+        return refused(
+            status::INVALID,
+            "Specify at least one autosizing edge and no other flags.",
+        );
+    }
+    let anchors = om_layout::object::AutosizingAnchors::from_flags(flags);
+    let object = request.object;
+    let edit = ObjectEdit {
+        layout: request.layout,
+        expected: request.expected,
+        objects: 1,
+        done: "given their autosizing anchors",
+        already: |member: &OwnedNode, _: &Schema<'_>| {
+            layout_objects::already_anchored(member, object, anchors)
+        },
+        plan: |member: &OwnedNode, _: &Schema<'_>| {
+            layout_objects::plan_anchors(member, object, anchors).map_err(placement_refused)
+        },
+    };
+    match edit_objects(ed, edit) {
+        Ok((changed, revision)) => Reply::Framed(Framed { changed, revision }),
+        Err(reply) => reply,
+    }
+}
+
 /// Operation 20: a text object's words, planned with
 /// `layout_placement::plan_words` and saved as an object edit is
 /// ([`edit_objects`]).
@@ -1561,6 +1594,12 @@ where
         });
     }
     let planned = (edit.plan)(&current, &ed.schema())?;
+    if planned.changes.is_empty() && planned.member == current {
+        return Ok((
+            false,
+            answer(older, &current, layout_revision, legacy_catalog_revision),
+        ));
+    }
     let locks = [(member_path.clone(), LOCK_EXCLUSIVE)];
     if let Err(users) = ed.lock_all(&locks) {
         return Err(refused(

@@ -2644,7 +2644,10 @@ when the object has no name. Renaming and object tooltips are unavailable
 ([#887](https://github.com/OpenMaker-Dev/openmaker/issues/887)). The
 Autosizing section lists the selected object's stored edge anchors as
 read-only. The list shows the saved flags before constraints from enclosing
-objects. Changing anchors is unavailable
+objects. In FileMaker Pro 26.1.1, the Inspector still showed a grouped
+child's saved Right anchor after reopening, while the group had only Left
+and Top. The child's effective resizing in Browse was not measured.
+Changing anchors is unavailable
 ([#888](https://github.com/OpenMaker-Dev/openmaker/issues/888)). Data
 Formatting shows OpenMaker's read-only summary of the decoded number,
 date, time or graphic format for

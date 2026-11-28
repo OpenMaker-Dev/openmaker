@@ -166,6 +166,7 @@ and every response is one JSON object:
 | `change_parts` | `layout`/`layout_name`, `expected_revision` (get_layout's, required), `action` (`add`, `delete`, `resize`), `part` (get_layout's part `id`, for `delete` and `resize`), `kind` (for `add`: `title_header`, `header`, `leading_grand_summary`, `body`, `trailing_grand_summary`, `footer`, `title_footer`, `top_navigation`, `bottom_navigation`), `height` (whole points, for `add` and `resize`) | `status` (`changed`, `already_applied`), the `layout`, its `parts` read back, `previous_revision`, `revision`, and `verified` from a new connection. [Parts](#parts) |
 | `set_text` | `object` (get_layout's reference of a text or a field's label), `expected_revision` (get_layout's `revision`, required), `text` (one line of plain text) | `status` (`set`, `already_applied`), the `layout`, the `object`, the `text`, `previous_revision`, `revision`, and `verified` from a new connection. [Texts on layouts](#texts-on-layouts) |
 | `set_part_options` | `layout` or `layout_name`, `expected_revision` (get_layout's `revision`, required), `part` (a part's `id` from get_layout: a body or a sub-summary), `options` (`page_break_before`, `restart_page_numbers`, `break_across_pages`, `discard_remainder`, each `true` or `false`; others keep their state), `page_break_after` (1 to 32,767, 0 for none), `sorted_by` (a leading sub-summary's field, of the layout's own table, as `field:TABLE.FIELD@File`) | `status` (`set`, `already_applied`), the `layout`, the `part`, its `options` and `page_break_after`, `previous_revision`, `revision`, and `verified` from a new connection. [Part options](#part-options) |
+| `set_object_anchors` | `object` and `expected_revision` from get_layout, and `anchors` (one or more of `left`, `top`, `right`, `bottom`) | `status` (`set`, `already_applied`), `layout`, `object`, `anchors`, `previous_revision`, `revision` and `verified` from a fresh connection. [Autosizing anchors](#autosizing-anchors) |
 | `set_field_control` | `object` (get_layout's field object reference), `expected_revision` (get_layout's `revision`, required), `control` (`edit_box`, `drop_down_list`, `pop_up_menu`, `checkbox_set`, `radio_button_set`, `drop_down_calendar`), `value_list` (get_value_lists' reference; required for the four list controls, left out to keep the object's) | `status` (`set`, `already_applied`), the `layout`, the `object`, the `control`, `previous_revision`, `revision`, and `verified` from a new connection. [Field controls](#field-controls) |
 | `set_layout_width` | `layout`/`layout_name`, `expected_revision` (get_layout's `revision`, required), `width` (points) | `status` (`set`, `already_applied`), the `layout`, its `width`, `previous_revision`, `revision`, and `verified` from a new connection. [Layout width](#layout-width) |
 | `layout_setup` | `layout`/`layout_name`, `expected_revision` (get_layout's `revision`, required), and any of `name`, `views` (some of `form`, `list`, `table`), `default_view`, `include_in_layout_menus`, `fixed_page_margins`, `page_margins` (`top`, `bottom`, `left`, `right` in points) | `status` (`set_up`, `already_applied`), the `layout`, its `name`, `views`, `default_view`, `include_in_layout_menus`, `fixed_page_margins` and the `page_margins` sent, `previous_revision`, `revision`, and `verified` from a new connection. [Layout Setup](#layout-setup) |
@@ -888,6 +889,32 @@ The desktop's New Layout/Report adds a layout the same way
 (`DataProvider::create_layout`, the same request) and opens it in Layout
 mode ([desktop client](desktop-client.md), "Layout mode and Manage
 Layouts"). Fields go on a new layout with `place_field` or the Field tool.
+
+### Autosizing anchors
+
+`get_layout` lists each object's stored anchor edges as `anchors`, in
+Left, Top, Right, Bottom order. Use its object reference and layout revision
+to replace that set. The CLI takes comma-separated edge names:
+
+```sh
+om-author set-object-anchors --object 'layout_object:1.4@File.fmp12' \
+  --anchors left,top,right --expected-revision "$layout_revision"
+```
+
+The MCP tool `openmaker_set_object_anchors` takes an array of the same edge
+names. The operation saves one unlocked text or field on a fixed layout,
+including a direct child of a group or portal. OpenMaker refuses the edit
+if an enclosing object is locked because FileMaker's behavior in that case
+is unmeasured. It also refuses an empty set of anchors. Clearing all four
+and changing anchors for other object kinds remain unmeasured. The desktop
+Inspector still shows a read-only summary.
+
+OpenMaker changes only the object's anchor bits in `[4, 5, L, 07]` and
+stamps the layout member through the ordinary hosted object-edit path.
+The edit preserves the selection bits, enclosing objects and stored
+object order. Repeating an edit already in effect returns
+`already_applied` without writing. A stale revision with different
+anchors returns a conflict. [FileMaker Pro reference](https://github.com/OpenMaker-Dev/openmaker/issues/888#issuecomment-7231598734)
 
 ### Field controls
 
@@ -1960,7 +1987,7 @@ operation's fields.
 
 | operation | fields (pop order) | OK reply fields (pop order) |
 |-----------|--------------------|-----------------------------|
-| 1 Describe | none | `u32` operations (bit 2: replace steps, bit 3: create field, bit 4: place field, bit 5: describe security, bit 6: create layout, bit 7: place button, bit 8: place button step, bit 9: save, bit 11: set object frames, bit 12: delete objects, bit 13: duplicate layout, bit 14: delete layout, bit 15: place text, bit 16: Layout Setup, bit 17: layout width, bit 18: field control, bit 19: part options, bit 20: set text, bit 21: place portal, bit 22: change parts, bit 23: Layout Setup with margins), `u8` may author, `u32` largest definition |
+| 1 Describe | none | `u32` operations (bit 2: replace steps, bit 3: create field, bit 4: place field, bit 5: describe security, bit 6: create layout, bit 7: place button, bit 8: place button step, bit 9: save, bit 11: set object frames, bit 12: delete objects, bit 13: duplicate layout, bit 14: delete layout, bit 15: place text, bit 16: Layout Setup, bit 17: layout width, bit 18: field control, bit 19: part options, bit 20: set text, bit 21: place portal, bit 22: change parts, bit 23: Layout Setup with margins, bit 30: set object anchors), `u8` may author, `u32` largest definition |
 | 2 Replace script steps | `u32` length, the new definition as a wire slot list (one child of a root), 32-byte expected revision, `u64` script id | `u8` changed, 32-byte stored revision |
 | 3 Create field | `u64` table id (its key read big-endian), 32-byte expected fields revision, `u8` data type (1 text, 2 number, 3 date, 4 time, 5 timestamp), name, comment (empty for none), strings in the trailing-`u32` SCSU form | `u8` changed, `u64` field id (its key read big-endian), 32-byte stored fields revision |
 | 4 Place field | `u64` layout id, 32-byte expected layout revision, `u64` expected base-table id, `u64` occurrence id, `u64` field id (keys read big-endian), the frame as four `u64` IEEE-754 bit patterns (top, left, bottom, right, points), `u8` label (0 none, 1), and with one the label's text and its frame | `u8` changed, `u64` field object key, `u64` label object key (0 for none), 32-byte stored layout revision |
@@ -1980,6 +2007,7 @@ operation's fields.
 | 18 Field control | `u64` layout id, 32-byte expected layout revision, `u64` object key, `u32` display type, `u64` value list key, `u8` whether the value list is given (0: keep the object's) | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |
 | 19 Part options | `u64` layout id, 32-byte expected layout revision, `u64` part key, `u64` `PartDef.flags`, `u32` page break after every N (0: none), `u64` break field's occurrence id (the layout's own), `u64` that occurrence's base table id, `u64` the field id, `u8` whether the break field is given (0: keep the part's) | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |
 | 20 Set text | `u64` layout id, 32-byte expected layout revision, `u64` object key, the new words (string) | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |
+| 30 Set object anchors | `u64` layout id, 32-byte expected layout revision, `u64` object key, `u32` anchor flags (bits 28–31) | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |
 | 21 Place portal | `u64` layout id, 32-byte expected layout revision, `u64` expected base-table id, `u64` occurrence id, the frame as four `u64` IEEE-754 bit patterns (top, left, bottom, right, points), `u32` rows, `u32` count (1 to 20), then each field id (`u64`) | as 4 Place field: `u8` changed, `u64` the portal's key (its fields have the keys after it, in order), `u64` 0, 32-byte stored layout revision |
 | 22 Change parts | `u64` layout id, 32-byte expected layout revision, `u8` action (1 add, 2 delete, 3 resize), `u64` part key (0 for add), `u32` part type, `u64` the size's IEEE-754 bit pattern (points; 0 for delete) | as 11 Set object frames: `u8` changed, 32-byte stored layout revision |
 | 24 Value list values | `u64` value list id, 32-byte expected member revision, `u32` count of values (at most 10,000), then each value (a string; at most 10,000 characters in all, none holding a return) | as 11 Set object frames: `u8` changed, 32-byte stored member revision |

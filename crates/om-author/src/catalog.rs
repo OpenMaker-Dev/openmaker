@@ -18,7 +18,7 @@ use rmcp::model::JsonObject;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::api::{AnalysisParams, ObjectParams, ScriptCallsParams, UnusedParams};
+use crate::api::{AnalysisParams, AnchorParams, ObjectParams, ScriptCallsParams, UnusedParams};
 use crate::api::{
     ApplyParams, ArrangeObjectsParams, AuthorError, ChangePartsParams, ChoiceParams, ChooseParams,
     Command, CompareDesignsParams, CompletionParams, CreateFieldParams, CreateFileParams,
@@ -101,6 +101,7 @@ pub enum Grant {
     PartOptions,
     /// A layout text's words.
     TextEditing,
+    AnchorEditing,
     /// Placing web viewers on layouts.
     WebViewers,
 }
@@ -185,6 +186,7 @@ impl CommandSpec {
                 Grant::FieldControls => "field_controls",
                 Grant::PartOptions => "part_options",
                 Grant::TextEditing => "text_editing",
+                Grant::AnchorEditing => "anchor_editing",
                 Grant::WebViewers => "web_viewers",
                 Grant::ValueLists => "value_lists",
             });
@@ -661,6 +663,19 @@ pub static SET_PART_OPTIONS: CommandSpec = CommandSpec {
     parse: |params| read(params).map(Command::SetPartOptions),
 };
 
+pub static SET_OBJECT_ANCHORS: CommandSpec = CommandSpec {
+    id: "set_object_anchors",
+    cli: "set-object-anchors",
+    tool: "openmaker_set_object_anchors",
+    title: "Set an object's autosizing anchors",
+    description: "Replace the stored edge anchors of one unlocked text or field on a fixed layout, including a child of a group or portal. Supply a nonempty list of edge names, the object reference and layout revision from get_layout. Saves through the host and verifies with a fresh connection. Repeating a completed edit reports already_applied.",
+    effect: Effect::Authors,
+    needs: Needs::Grant(Grant::AnchorEditing),
+    operation: Some("set_object_anchors"),
+    params: schema_for_type::<AnchorParams>,
+    parse: |params| read(params).map(Command::SetObjectAnchors),
+};
+
 pub static SET_TEXT: CommandSpec = CommandSpec {
     id: "set_text",
     cli: "set-text",
@@ -1005,7 +1020,7 @@ pub static SCRIPT_CALLS: CommandSpec = CommandSpec {
     parse: |params| read(params).map(Command::ScriptCalls),
 };
 
-pub static ALL: [&CommandSpec; 43] = [
+pub static ALL: [&CommandSpec; 44] = [
     &CAPABILITIES,
     &INSPECT,
     &GET_SCRIPT,
@@ -1033,6 +1048,7 @@ pub static ALL: [&CommandSpec; 43] = [
     &SET_PART_OPTIONS,
     &CHANGE_PARTS,
     &SET_TEXT,
+    &SET_OBJECT_ANCHORS,
     &RUN_SCRIPT,
     &LIST_CHOICES,
     &CHOOSE_VALUE_LIST_ITEM,
@@ -1093,7 +1109,7 @@ mod tests {
             assert_eq!(names.iter().collect::<HashSet<_>>().len(), ALL.len());
         }
         let frame = json!({"left": 10, "top": 60, "width": 120, "height": 20});
-        let samples = json!({
+        let mut samples = json!({
             "get_script": {"script_name": "S"},
             "validate": {"script_name": "S", "source": ""},
             "plan": {"script_name": "S", "source": ""},
@@ -1150,6 +1166,8 @@ mod tests {
             "unused_objects": {"kinds": ["script"]},
             "script_calls": {"script_name": "S", "direction": "callers"},
         });
+        samples["set_object_anchors"] =
+            json!({"object": "o", "expected_revision": "r", "anchors": ["left", "top"]});
         for spec in ALL {
             assert!(std::ptr::eq(get(spec.id).unwrap(), spec));
             let command = spec.parse(samples[spec.id].clone()).unwrap();

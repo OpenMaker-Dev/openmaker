@@ -42,8 +42,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use om_hbam::slot::be_uint;
 use om_hbam::{serial, OwnedNode};
+use om_layout::object::AutosizingAnchors;
 use om_layout::wire::{Fields, RawValue, Value};
-use om_layout::{LayoutDef, LayoutObject, ObjectKind, Rect};
+use om_layout::{LayoutDef, LayoutObject, ObjectKind, ObjectStore, Rect};
 
 use crate::layout_placement::{
     definition, frame_text, hex, is_container, key_string, kind_name, overlap, part_list, parts,
@@ -111,12 +112,100 @@ pub struct DeletedObjects {
 /// Frames or a deletion planned into a layout.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Planned {
-    /// The member `[4, 5, L]` with the objects at their new frames, or
-    /// without the deleted objects, without the stamp.
+    /// The layout member `[4, 5, L]` with the object edit, before stamping.
     pub member: OwnedNode,
     /// What changed: each changed key below the member (as hex segments)
     /// and what it holds.
     pub changes: Vec<(String, String)>,
+}
+
+/// Plan the selected object's stored edge anchors on a fixed layout.
+///
+/// The edit leaves the order of the store, enclosing objects' flags and
+/// the selection bit unchanged (layout-model.md 5.7).
+pub fn plan_anchors(
+    member: &OwnedNode,
+    object: u64,
+    anchors: AutosizingAnchors,
+) -> Result<Planned, Refusal> {
+    fixed_layout(member)?;
+    let (stored, objects) = stored_objects(member)?;
+    let target = objects
+        .get(object)
+        .ok_or_else(|| Refusal::Invalid(format!("The layout has no object {object}.")))?;
+    if anchors.flags() == 0 {
+        return Err(Refusal::Invalid("Set at least one autosizing edge.".into()));
+    }
+    if !matches!(target.kind(), ObjectKind::Text | ObjectKind::Field)
+        || target.parent.is_some_and(|parent| {
+            !objects.get(parent).is_some_and(|parent| {
+                matches!(parent.kind(), ObjectKind::Group | ObjectKind::Portal)
+            })
+        })
+    {
+        return Err(Refusal::Unsupported(
+            "Autosizing can be set on text and fields on the layout or inside a group or portal."
+                .into(),
+        ));
+    }
+    if !anchor_chain_is_unlocked(&objects, target) {
+        return Err(Refusal::Unsupported(
+            "Autosizing requires an unlocked object and a readable, unlocked chain of enclosing objects."
+                .into(),
+        ));
+    }
+    let bytes = om_layout::encode::with_object_anchors(&stored, object, anchors.flags())
+        .ok_or_else(|| {
+            Refusal::Unsupported(format!(
+                "OpenMaker cannot safely edit the stored anchors of object {object}."
+            ))
+        })?;
+    let mut next = member.clone();
+    let mut changes = Vec::new();
+    if stored != bytes {
+        next.set_child(stored_value(&[OBJECTS], &bytes));
+        changes.push(("[07]".into(), format!("object {object} autosizing anchors")));
+    }
+    Ok(Planned {
+        member: next,
+        changes,
+    })
+}
+
+fn anchor_chain_is_unlocked<'a>(objects: &'a ObjectStore, mut object: &'a LayoutObject) -> bool {
+    // The display decoder picks the first parent. A write needs an
+    // unambiguous chain, with the same depth bound as the object index.
+    for _ in 0..=MAX_INDEX_DEPTH {
+        if object.is_locked() {
+            return false;
+        }
+        let mut parents = objects
+            .objects
+            .iter()
+            .filter(|parent| parent.children.contains(&object.id));
+        let Some(parent) = parents.next() else {
+            return object.parent.is_none();
+        };
+        if parents.next().is_some()
+            || object.parent != Some(parent.id)
+            || objects
+                .objects
+                .iter()
+                .filter(|o| o.id == parent.id)
+                .nth(1)
+                .is_some()
+        {
+            return false;
+        }
+        object = parent;
+    }
+    false
+}
+
+/// Whether a valid edit already has its requested anchors, for a retry or
+/// a fresh read after the server acknowledges the save.
+pub fn already_anchored(member: &OwnedNode, object: u64, anchors: AutosizingAnchors) -> bool {
+    plan_anchors(member, object, anchors).is_ok_and(|plan| plan.changes.is_empty())
 }
 
 /// The field controls a field object can be given (layout-model.md 5.4),
@@ -1181,6 +1270,87 @@ mod tests {
                 OwnedNode::leaf(vec![0x77], vec![9]),
             ],
         )
+    }
+
+    #[test]
+    fn planning_anchors_edits_one_member_record_and_keeps_a_no_op_exact() {
+        let before = member();
+        let (_, stored) = stored_objects(&before).unwrap();
+        let anchors = AutosizingAnchors {
+            left: false,
+            top: false,
+            right: true,
+            bottom: true,
+        };
+        let edit = plan_anchors(&before, 2, anchors).unwrap();
+        let (_, changed) = stored_objects(&edit.member).unwrap();
+        assert_eq!(changed.get(2).unwrap().autosizing_anchors(), anchors);
+        assert_eq!(stored.get(1), changed.get(1));
+        assert_eq!(stored.root, changed.root);
+        let mut restored = edit.member.clone();
+        restored.set_child(before.child(&[OBJECTS]).unwrap().clone());
+        assert_eq!(restored, before);
+        let repeated = plan_anchors(&edit.member, 2, anchors).unwrap();
+        assert!(repeated.changes.is_empty());
+        assert_eq!(repeated.member, edit.member);
+
+        let object = |kind, id, locked, child| {
+            let mut object = Vec::new();
+            uint(1, kind, &mut object);
+            uint(2, id, &mut object);
+            uint(
+                3,
+                om_layout::encode::ANCHOR_LEFT_TOP | if locked { 0x2 } else { 0 },
+                &mut object,
+            );
+            if let Some(child) = child {
+                uint(6, child, &mut object);
+            }
+            object
+        };
+        let fixture = |kind, locked, enclosing: &[(u64, bool)]| {
+            let mut definitions = vec![object(kind, 2, locked, None)];
+            let mut root = 2;
+            for &(kind, locked) in enclosing {
+                definitions.push(object(kind, root + 1, locked, Some(root)));
+                root += 1;
+            }
+            let mut fixture = before.clone();
+            let store = om_layout::encode::append_to_store(&[], &[root], &definitions);
+            fixture.set_child(stored_value(&[OBJECTS], &store));
+            fixture
+        };
+        for (case, fixture) in [
+            ("locked text", fixture(2, true, &[])),
+            ("rectangle", fixture(5, false, &[])),
+            ("child of tab panel", fixture(2, false, &[(12, false)])),
+            ("child of locked portal", fixture(1, false, &[(9, true)])),
+            (
+                "nested child of locked group",
+                fixture(2, false, &[(8, false), (8, true)]),
+            ),
+        ] {
+            assert!(
+                matches!(
+                    plan_anchors(&fixture, 2, anchors),
+                    Err(Refusal::Unsupported(_))
+                ),
+                "{case}"
+            );
+        }
+        assert!(plan_anchors(&fixture(2, false, &[(8, false), (8, false)]), 2, anchors).is_ok());
+
+        let ambiguous = fixture(2, false, &[(8, false)]);
+        let (stored, _) = stored_objects(&ambiguous).unwrap();
+        for conflicting_group in [object(8, 4, true, Some(2)), object(8, 3, true, None)] {
+            let store = om_layout::encode::append_to_store(&stored, &[], &[conflicting_group]);
+            let mut duplicate = ambiguous.clone();
+            duplicate.set_child(stored_value(&[OBJECTS], &store));
+            assert!(matches!(
+                plan_anchors(&duplicate, 2, anchors),
+                Err(Refusal::Unsupported(_))
+            ));
+        }
     }
 
     /// A field shown as a pop-up menu takes display type 2, the value list
