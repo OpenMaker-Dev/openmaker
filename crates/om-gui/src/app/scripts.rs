@@ -1573,6 +1573,54 @@ impl OpenMakerApp {
         self.fire(ctx, TriggerEvent::RecordLoad, None, None, info());
     }
 
+    /// A cleared Text field can show its auto-entry before the record saves.
+    pub(super) fn restore_text_default_on_field_exit(&mut self, ctx: &egui::Context, name: &str) {
+        if cfg!(any(target_os = "ios", target_os = "android"))
+            || self.w.mode != Mode::Browse
+            || self.w.document.left_related.is_some()
+        {
+            return;
+        }
+        let Some(session) = self.w.session.as_ref() else {
+            return;
+        };
+        if !matches!(
+            session.destination,
+            Some(crate::file_history::SavedFile::Local { .. })
+        ) {
+            return;
+        }
+        let (Some(layout), Some((_, record)), Some(schema)) = (
+            session.layout,
+            session.current_record(),
+            self.w.calcs.schema(),
+        ) else {
+            return;
+        };
+        let Some(table) = crate::calc::layout_occurrence(session).and_then(|o| schema.table_of(o))
+        else {
+            return;
+        };
+        if schema.table_context(table.id).is_some() {
+            return;
+        }
+        let Some(default) = table
+            .fields
+            .values()
+            .find(|field| field.name == name)
+            .and_then(om_data::rules::typed_text_self_default)
+        else {
+            return;
+        };
+        if self
+            .w
+            .document
+            .restore_cleared_text(layout, record.id, name, default)
+        {
+            ctx.request_repaint();
+        }
+    }
+
     /// The field with the focus changed from `from` to `to` in the last
     /// frame: OnObjectExit (cancelling gives the focus back), then
     /// OnObjectEnter. A modified field is validated and saved first
@@ -2387,6 +2435,9 @@ impl OpenMakerApp {
         // Entering Find mode puts the focus in the request's first field.
         let entered_find = mode == Mode::Find && self.w.mode != Mode::Find;
         if mode != self.w.mode {
+            if self.w.mode == Mode::Layout {
+                self.w.layout_workspace.dismiss_deselected_popovers();
+            }
             self.w.mode = mode;
             self.w.calcs.forget_results();
         }

@@ -424,11 +424,15 @@ impl Scheduler {
                             }
                         })?;
                     }
-                    if backups::chosen(shared, &task.files).is_empty() {
-                        warn!(
+                    match backups::chosen(shared, &task.files) {
+                        Ok(files) if files.is_empty() => warn!(
                             "schedule {:?}: no hosted file is in its backup",
                             schedule.name
-                        );
+                        ),
+                        Ok(_) => {}
+                        // A file closed while it was looked at; each run
+                        // chooses again.
+                        Err(why) => warn!("schedule {:?}: {why}", schedule.name),
                     }
                 }
             }

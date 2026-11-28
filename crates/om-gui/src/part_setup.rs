@@ -70,8 +70,9 @@ pub(crate) enum PartSetupAnswer {
 
 /// The height Create gives a new part: what FileMaker Pro 26.0.3's Create
 /// gave a Header (110 points) and a Footer, Title Header or Leading Grand
-/// Summary (22) in `227-parts-objects/` [O]; 22 for the other kinds
-/// [OpenMaker's choice].
+/// Summary (22) in `227-parts-objects/` [O], and Pro 26.1.1's Insert > Part
+/// a Title Header (22, re/client-ui.md, "Layout mode's Insert menu") [O];
+/// 22 for the other kinds [OpenMaker's choice].
 fn new_part_height(part_type: i32) -> f64 {
     if part_type == 1 {
         110.0

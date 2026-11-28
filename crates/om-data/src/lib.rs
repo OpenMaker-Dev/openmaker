@@ -142,6 +142,11 @@ pub enum RecordCreation {
     Other,
 }
 
+/// The local window's direct Set Field assignments in execution order.
+/// A repeated assignment remains a separate step, even when its value
+/// matches the stored value.
+pub type ScriptAssignments = std::sync::Arc<Vec<(u64, Option<String>)>>;
+
 /// A script's write of one record (Set Field and the other field steps,
 /// committed by Commit Records or by leaving the record): the rules a
 /// script's writes follow apply, not a user's (`rules::Entry::script`;
@@ -197,6 +202,9 @@ pub struct ScriptWrite {
     /// This existing-record write is the result of one field-setting
     /// script step, rather than a record's accumulated draft.
     pub single_field_step: bool,
+    /// The ordered assignments for the local GetField auto-entry rule.
+    /// None means there is no complete direct Set Field sequence.
+    pub assignments: Option<ScriptAssignments>,
 }
 
 /// A record of the window's that the host does not have as the window
@@ -1538,6 +1546,12 @@ pub trait DataProvider: Send {
     /// applies. A provider without rules accepts every value.
     fn check_entry(&mut self, _table: u64, _cell: u64, _text: &str) -> Result<(), DataError> {
         Ok(())
+    }
+
+    /// Whether this table uses ordered Set Field auto-entry, and whether
+    /// a same-value assignment to this cell must open the record.
+    fn ordered_script_entry(&mut self, _table: u64, _cell: u64) -> (bool, bool) {
+        (false, false)
     }
 
     /// Whether this provider implements the import write with import entry

@@ -2193,6 +2193,31 @@ impl NativeProvider {
         )?
         .unwrap_or_else(|| text.to_owned());
         let mut changes = om_data::GlobalChanges::new();
+        if repetition == 1 {
+            let outputs = self
+                .catalog
+                .table(table)
+                .map_or_else(Vec::new, |definition| {
+                    om_data::rules::global_evaluate_outputs(&schema, definition, field)
+                });
+            if !outputs.is_empty() {
+                if !local {
+                    return Err(DataError::with_code(
+                        3,
+                        "Global Evaluate auto-entry requires an assignment in the local file.",
+                    ));
+                }
+                let data = self.read_calc_data(&[om_data::host::CalcNeed::Globals { table }])?;
+                let globals = data.globals.get(&table).ok_or_else(|| {
+                    DataError::with_code(3, "The table's global values could not be read.")
+                })?;
+                changes.extend(om_data::rules::global_evaluate_changes(
+                    outputs,
+                    globals,
+                    value.is_empty(),
+                )?);
+            }
+        }
         if local && repetition == 1 {
             if let Some(table) = self.catalog.table(table) {
                 changes.extend(om_data::rules::global_text_input_changes(
@@ -2254,7 +2279,17 @@ impl NativeProvider {
             def.data_type,
             om_hbam::DataType::Date | om_hbam::DataType::Time | om_hbam::DataType::Timestamp
         );
-        self.global_write_schema(table, field, repetition)?;
+        let schema = self.global_write_schema(table, field, repetition)?;
+        if repetition == 1
+            && self.catalog.table(table).is_some_and(|definition| {
+                !om_data::rules::global_evaluate_outputs(&schema, definition, field).is_empty()
+            })
+        {
+            return Err(DataError::with_code(
+                3,
+                "This global feeds an Evaluate auto-entry rule that requires scripted Set Field.",
+            ));
+        }
         if !temporal
             && options
                 .as_ref()
@@ -4322,6 +4357,7 @@ impl DataProvider for NativeProvider {
                     prepared: None,
                     creation: om_data::RecordCreation::Other,
                     single_field_step: false,
+                    assignments: None,
                 },
             )?;
             if let Ok(record) = u64::try_from(id) {
@@ -4497,6 +4533,7 @@ impl DataProvider for NativeProvider {
                         prepared,
                         creation: om_data::RecordCreation::Other,
                         single_field_step: false,
+                        assignments: None,
                     },
                 )?;
                 owner.script_table_record(
@@ -4538,6 +4575,10 @@ impl DataProvider for NativeProvider {
                     om_data::RecordCreation::Other
                 },
                 single_field_step: write.single_field_step && write.table.is_none(),
+                assignments: write
+                    .assignments
+                    .clone()
+                    .filter(|_| write.table.is_none() && write.typed.is_empty()),
             },
         )?;
         if let Ok(id) = u64::try_from(record.id) {
@@ -4573,6 +4614,23 @@ impl DataProvider for NativeProvider {
             });
         }
         self.check_script_entry(table, cell, text)
+    }
+
+    fn ordered_script_entry(&mut self, table: u64, cell: u64) -> (bool, bool) {
+        if !self.plans_local_record_positions()
+            || self.transaction_kind() == Some(transaction::TransactionKind::Script)
+            || !self.catalog.table(table).is_some_and(|table| {
+                table.fields.iter().any(|field| {
+                    field
+                        .decoded_options()
+                        .is_some_and(|options| matches!(options.options, 0x0000_0028 | 0x0000_00a8))
+                })
+            })
+        {
+            return (false, false);
+        }
+        self.entry_plan(table)
+            .map_or((false, false), |plan| plan.ordered_script_entry(cell))
     }
 
     fn set_typed_global(

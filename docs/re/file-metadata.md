@@ -832,6 +832,17 @@ key string. And `07`, an empty leaf per member. Members `[21, 5, V]`:
 | `10` | name |
 | `d8`, `d9`, `fc`… | as for every catalog member |
 
+A local scalar Text field with option word `0`, validation word
+`0x00000100` and no member `07` accepted both tested values in Browse
+without a dialog in FileMaker Pro 26.1.1. Both values also saved through
+Set Field. The field definition survived open, writes and Recover
+unchanged. The comparison's dangling-reference control used validation
+word `0x00000104` and rejected both nonempty values in Browse with the
+same dialog as a nonmember of a working list. The run measured clearing
+through Set Field. Clearing in Browse remains unmeasured. The two
+controls differ in both reference presence and the user-override bit.
+[Absent-reference comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1136#issuecomment-7214224232)
+
 ### 6.2 Definition [O code, 343 corpus + 4 probe definitions]
 
 `DBValueList::Definition::Read`:

@@ -17,7 +17,8 @@ A container field a formula reads is read as its data, through the
 write's container reader. An auto-entered or validation calculation may
 read one repetition of a non-container global of its own table. Other
 global reads, entry from the last visited record, summary fields, plug-in
-functions, custom functions that read fields and dependency cycles fail
+functions, custom functions that read fields outside the measured named
+Text case, and dependency cycles fail
 preflight. The supported lookups, related reads and unstored calculations
 are listed in docs/record-writes.md, Limits.
 
@@ -63,14 +64,35 @@ itself, or a dependency cycle involving different fields, is outside this
 inference and remains refused. Native timing and the named-reference
 substitution have not been measured for this slice.
 
+### Self in an ordinary Text field
+
+FileMaker Pro 26.1.1 stored the literal default at New Record for
+`If ( IsEmpty ( Self ) ; "Draft" ; Self )`. Set Field kept nonempty
+text unchanged and restored the default immediately on a clear. This
+held in unsorted and sorted local windows, with no validation and one
+repetition. The sorted comparison used "Keep records in sorted order".
+The option word was `0x00000088` without indexes and `0xa0000088`
+with All indexing. In Browse mode the cleared field showed Draft when
+Tab moved to the next field, with the record still open. Commit kept
+that value. Exact Finds and closed value and word indexes matched the
+stored result, and the previous text's index key disappeared on clear.
+[Indexed comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1135#issuecomment-7214357479)
+
+The unindexed scripted suffix variant, `Self & "!"` on nonempty
+input, also ran in a sorted local window. The indexed and Browse
+comparisons used the identity formula.
+[Unindexed comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1135#issuecomment-7204266848)
+
+### Self in an ordinary Number field
+
 FileMaker Pro 26.1.1 [measured the `Self` token](https://github.com/OpenMaker-Dev/openmaker/issues/1059)
 in a local Number field. A formula with an empty branch returning 0 stores
 0 at New Record and after an explicit clear. With replacement enabled,
 `Self + 1` in the nonempty branch stores 26 after Set Field of 25. With
 replacement disabled the same assignment stores 25. An unrelated edit
 keeps the value. The result is visible immediately and survives commit.
-Inferred: `Self` reads the proposed field value. Hosted files and other
-field types were not measured.
+Inferred: `Self` reads the proposed field value. This comparison covers
+local Number fields.
 
 In a [sorted local desktop trial](https://github.com/OpenMaker-Dev/openmaker/issues/1059#issuecomment-7203492423)
 with "Keep records in sorted order" on, New Record inserted at position 2
@@ -100,6 +122,32 @@ before Commit showed and stored 25. An unindexed, replacing
 26 after the assignment, with or without an intermediate Commit. The
 tested steps all returned 0 without alerts.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1059#issuecomment-7204905093)
+
+### GetField in a local custom auto-enter helper
+
+FileMaker Pro 26.1.1 evaluated a Text field with the formula
+`Trigger & ":" & ReadNamed ( FieldName )`, where the one-parameter
+helper was exactly `GetField ( name )`. The closed replacing and
+keep-existing definitions held `0x000000a8` and `0x00000028`.
+Ordinary New Record produced `:` in both cases. In the replacing
+case, changing a directly named field recalculated the result at once.
+Changing a field reached only by GetField did not recalculate it. The
+next direct change read that field's new value. The keep-existing case
+retained its creation value through both pre-Commit and later edits.
+The results persisted across reopen. Both scripts returned 0 at every
+step. Other helper bodies and dynamic target types were not part of
+this run.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7205073084)
+
+In a second local run, a same-value Set Field on Trigger changed
+`one:A1` to `one:A2` immediately. Starting with Alpha at `A2`, setting
+Trigger to `three` then Alpha to `A3` kept `three:A2`. Reversing those
+steps gave `three:A3`. Both results survived Commit and reopen. On a new
+record, setting FieldName, Trigger, then Alpha kept `one:`, the value
+produced by the Trigger step. A change only to the field reached through
+GetField left the result alone before and after Commit. This measured
+scripted Set Field. Interactive edits were outside the run.
+[Set Field ordering](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7209664301)
 
 ## Fixed field definition
 
@@ -1020,6 +1068,16 @@ without a trace change or an error. The trial's scripted global
 assignments did not survive reopen, unlike the separate global-input
 trial below. The cause was not measured.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1057#issuecomment-7209580006)
+
+With plain global Text input (`0x00010000`), an explicit Set Field
+recalculates immediately with RecordOpenState 0, even when assigned the
+same text. Ordinary New Record uses the current global input. An unrelated
+edit does neither. A valid expression set the trace when replacement was
+enabled or the output was empty. A nonempty keep-existing output suppressed
+the trace. On a clear or malformed input, Replace cleared the output and
+Keep preserved it, with no trace change. These runs returned 0. Nonempty
+input and output globals persisted across reopen.
+[Global-input comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1057#issuecomment-7209893983)
 
 ### A calculated global reading another global
 
