@@ -1300,12 +1300,10 @@ impl PlannedField {
 }
 
 /// An auto-enter lookup the rules perform (auto-entry.md, Lookups): an
-/// exact match that copies nothing without one, the copied field's stored
-/// text as it is into a field of any type but a container (battery s43),
-/// from the first record,
-/// in the relationship's sort order when it has one, related through one
-/// relationship of `=` predicates on stored text fields, as FileMaker
-/// Pro 26 and FileMaker Server's script engine were seen to.
+/// lookup across one relationship of `=` predicates on stored Text fields.
+/// It uses the first match in the relationship's order or an optional
+/// fallback. Ordinary copies retain stored text (battery s43). The measured
+/// local Text-to-Date case converts it before the write.
 #[derive(Clone, Debug)]
 struct Lookup {
     /// The occurrence it starts from (of the field's table) and the one it
@@ -1320,6 +1318,8 @@ struct Lookup {
     fallback: Option<String>,
     /// The field's table's match fields: a write changing one fires it.
     matches: Vec<u64>,
+    /// A local Date lookup converts the stored Text it copies.
+    text_to_date: bool,
 }
 
 /// A lookup definition `08` (schema-path.md 5.5): byte 0 `00` ("do not
@@ -1371,23 +1371,49 @@ fn exact_lookup(bytes: &[u8], fallback: Option<String>) -> Option<Lookup> {
         copy_empty,
         fallback,
         matches: Vec::new(),
+        text_to_date: false,
     })
 }
 
-/// Whether a lookup copying a value of type `from` into a field of type
-/// `into` gives what FileMaker gives (auto-entry.md, Lookups, battery s43):
-/// the stored text as it is. Both hosts read text, numbers and dates with
-/// their stored text (`Value::NumberText`, `Value::DateText`); a time or
-/// timestamp is read as its value, and text that is no date reads in a
-/// date field as text in calculations, where FileMaker reads an invalid
-/// date. So text, numbers and dates go into text and number fields, and a
-/// date field takes dates only.
+/// The ordinary stored-text copy (auto-entry.md, Lookups, battery s43).
+/// Both hosts retain the stored text of Text, Number and Date. The local
+/// Text-to-Date conversion is a separate case in `lookup_matches`.
 fn typed_copy(from: ValueType, into: DataType) -> bool {
     let read = matches!(from, ValueType::Text | ValueType::Number | ValueType::Date);
     read && match into {
         DataType::Text | DataType::Number => true,
         DataType::Date => from == ValueType::Date,
         _ => false,
+    }
+}
+
+/// Local Date lookups accept the measured slash-separated input forms.
+/// Keep malformed digit-free ASCII text only where the invalid index key
+/// is known. Leave other input forms to a native comparison.
+fn text_lookup_date(value: String, cx: &Ctx) -> Option<String> {
+    let slash_date = value
+        .split_once('/')
+        .and_then(|(month, rest)| rest.split_once('/').map(|(day, year)| (month, day, year)))
+        .is_some_and(|(month, day, year)| {
+            (1..=2).contains(&month.len())
+                && (1..=2).contains(&day.len())
+                && matches!(year.len(), 2 | 4)
+                && [month, day, year]
+                    .iter()
+                    .all(|part| part.bytes().all(|byte| byte.is_ascii_digit()))
+        });
+    match typing::entered(DataType::Date, &value, cx) {
+        Ok(date) if slash_date && om_collate::date_key(&date, cx.locale.date_order).is_some() => {
+            Some(date)
+        }
+        Err(_)
+            if value.bytes().all(|byte| {
+                byte.is_ascii() && !byte.is_ascii_control() && !byte.is_ascii_digit()
+            }) =>
+        {
+            Some(value)
+        }
+        _ => None,
     }
 }
 
@@ -1398,8 +1424,9 @@ fn lookup_matches(
     table: u64,
     fields: &BTreeMap<u64, PlannedField>,
     lookup: &Lookup,
-    into: DataType,
-) -> Result<Vec<u64>, &'static str> {
+    field: &PlannedField,
+    local: bool,
+) -> Result<(Vec<u64>, bool), &'static str> {
     use crate::host::{FieldClass, FieldDef};
     use crate::meta::JoinOp;
     // A stored value of one repetition, as the related record holds it.
@@ -1428,9 +1455,24 @@ fn lookup_matches(
     let copied = to_table
         .fields
         .get(&lookup.copied)
-        .filter(|def| stored(def))
-        .map(|def| def.value_type);
-    if !copied.is_some_and(|ty| typed_copy(ty, into)) {
+        .filter(|def| stored(def));
+    let locale = &schema.locale;
+    let text_to_date = local
+        && !schema.locale_unreadable
+        && locale.language == om_calc::Language::English
+        && locale.date_order == om_calc::locale::DateOrder::MonthDayYear
+        && locale.date_separator == '/'
+        && schema.table_context(to.table).is_none()
+        && field.data_type == DataType::Date
+        && field.options.field_kind == 1
+        && field.options.options == 0x8000_0400
+        && field.options.validation_options == 0
+        && field.options.max_repetitions == 1
+        && lookup.fallback.is_none()
+        && !lookup.copy_empty
+        && copied
+            .is_some_and(|def| def.class == FieldClass::Data && def.value_type == ValueType::Text);
+    if !text_to_date && !copied.is_some_and(|def| typed_copy(def.value_type, field.data_type)) {
         return Err(
             "lookups need a stored text, number or date field of one repetition, copied into a \
              text or number field, or a date into a date field.",
@@ -1483,7 +1525,19 @@ fn lookup_matches(
         }
         matches.push(predicate.left);
     }
-    Ok(matches)
+    if text_to_date
+        && (hop.sorted()
+            || !matches!(hop.predicates.as_slice(), [predicate]
+            if fields[&predicate.left].options.field_kind == 1
+                && fields[&predicate.left].options.options & !(INDEX_OPTIONS | BOOKKEEPING_OPTIONS) == 0
+            && to_table.fields.get(&predicate.right).is_some_and(|def| {
+                def.class == FieldClass::Data
+                    && def.options & !(INDEX_OPTIONS | BOOKKEEPING_OPTIONS) == 0
+            })))
+    {
+        return Err("Text-to-Date lookups need one unsorted equality on plain Text keys.");
+    }
+    Ok((matches, text_to_date))
 }
 
 /// The record a write's lookup reads its related records from: the
@@ -2864,8 +2918,9 @@ impl RecordPlan {
         for id in looked_up {
             let field = &fields[&id];
             let lookup = field.lookup.as_ref().expect("a lookup");
-            let matches = lookup_matches(&schema, table.id, &fields, lookup, field.data_type)
-                .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
+            let (matches, text_to_date) =
+                lookup_matches(&schema, table.id, &fields, lookup, field, local)
+                    .map_err(|reason| DataError::new(format!("Field {}: {reason}", field.name)))?;
             // Creation skips mode-0 lookups when it generates a replacing UUID.
             // Whether FileMaker applies a fallback in this case is unmeasured.
             if lookup.fallback.is_some()
@@ -2884,6 +2939,7 @@ impl RecordPlan {
             }
             if let Some(lookup) = fields.get_mut(&id).and_then(|f| f.lookup.as_mut()) {
                 lookup.matches = matches;
+                lookup.text_to_date = text_to_date;
             }
         }
         // A formula over related fields reads one relationship from its
@@ -3719,9 +3775,11 @@ impl RecordPlan {
             };
             // A final-key demand can come from a key recalculated by an
             // audit field, even when the original inputs did not fire it.
+            // Text-to-Date keys are plain fields and cannot be recalculated.
+            let final_key_needed =
+                !lookup.text_to_date && keyed.contains_key(&(lookup.from, lookup.to));
             if !self.lookup_allowed(*id, lookup, mode, changes, entry)
-                || !keyed.contains_key(&(lookup.from, lookup.to))
-                    && !self.fires(*id, lookup, mode, &dirty, changes, entry)
+                || !final_key_needed && !self.fires(*id, lookup, mode, &dirty, changes, entry)
             {
                 continue;
             }
@@ -3742,6 +3800,8 @@ impl RecordPlan {
             let found = self.first_related(lookup, &keys, source).map_err(|e| {
                 let reason = if e == om_calc::CalcError::CANCELED {
                     "the script was stopped while its related record was read"
+                } else if e.code() == error::UNAVAILABLE && lookup.text_to_date {
+                    "the related text has an unsupported Date lookup form"
                 } else if e.code() == error::UNAVAILABLE {
                     "the related value does not read as its field's type, which OpenMaker \
                      does not copy yet"
@@ -3753,7 +3813,32 @@ impl RecordPlan {
                     format!("Field {}: {reason}. No values were changed.", field.name),
                 )
             })?;
-            if let Some((record, _)) = &found {
+            if let Some((record, value)) = &found {
+                // Refuse while reading the lookup, before it can give a
+                // formula an invalid Date as Text (#235).
+                if lookup.text_to_date
+                    && !value.is_empty()
+                    && om_collate::date_key(value, self.schema.locale.date_order).is_none()
+                    && self
+                        .fields
+                        .values()
+                        .flat_map(PlannedField::formulas)
+                        .any(|formula| {
+                            formula.dependencies.contains(id)
+                                || formula.related.iter().any(|(occurrence, field)| {
+                                    field == id
+                                        && self
+                                            .schema
+                                            .table_of(*occurrence)
+                                            .is_some_and(|table| table.id == self.table)
+                                })
+                        })
+                {
+                    return Err(DataError::with_code(
+                        error::UNAVAILABLE,
+                        format!("Field {}: a record rule reads this invalid looked-up Date. No values were changed.", field.name),
+                    ));
+                }
                 lookups.copied_from.insert(*id, *record);
             }
             lookups
@@ -4065,6 +4150,7 @@ impl RecordPlan {
         let value = values.get(lookup.copied, 1);
         let unreadable = value.is_some_and(|value| {
             value.is_invalid()
+                || (lookup.text_to_date && matches!(value, Value::Text(text) if !text.is_plain()))
                 || (declared == Some(ValueType::Date)
                     && !value.is_empty()
                     && !matches!(value, Value::Date(_) | Value::DateText(..)))
@@ -4075,6 +4161,12 @@ impl RecordPlan {
         let value = value
             .map(|value| value.to_text(&cx).into_string())
             .unwrap_or_default();
+        let value = if lookup.text_to_date && !value.is_empty() {
+            text_lookup_date(value, &cx)
+                .ok_or_else(|| om_calc::CalcError::from_code(3).expect("nonzero"))?
+        } else {
+            value
+        };
         Ok(Some((record, value)))
     }
 
@@ -13244,9 +13336,9 @@ mod tests {
     /// Lookups of other types than text copy the related field's stored
     /// text as it is (auto-entry.md, Lookups, battery s43): a price stored
     /// as `12.50` into a number field, text into a number field (which
-    /// reads its digits, 42), and a date into a text field. A time field
-    /// and text into a date field keep the table read-only (`typed_copy`),
-    /// and a related date field holding other text refuses the write.
+    /// reads its digits, 42), and a date into a text field. The separate
+    /// local Text-to-Date case converts dates and can store invalid text
+    /// when no record rule needs to read it as a Date.
     #[test]
     fn typed_lookups_copy_the_stored_text() {
         use crate::host::{FieldDef, JoinOp, JoinPredicate, RelationshipDef};
@@ -13276,14 +13368,19 @@ mod tests {
             }],
         ));
         // A's field 1 the key, then one lookup field per (type, copied).
-        let plan_for = |lookups: &[(DataType, u8)]| {
+        let plan_for = |lookups: &[(DataType, u8)], local, date_dependency: bool| {
             let mut fields = vec![field(1, FieldKind::Normal, DataType::Text, 0, 0, 0)];
             let leaves: Vec<(u64, Vec<u8>)> = lookups
                 .iter()
                 .enumerate()
                 .map(|(i, (data_type, copied))| {
                     let id = 2 + i as u64;
-                    fields.push(field(id, FieldKind::Normal, *data_type, 0, 0x400, 0));
+                    let options = if (*data_type, *copied) == (DataType::Date, 3) {
+                        0x8000_0400
+                    } else {
+                        0x400
+                    };
+                    fields.push(field(id, FieldKind::Normal, *data_type, 0, options, 0));
                     (id, lookup(*copied))
                 })
                 .collect();
@@ -13302,22 +13399,44 @@ mod tests {
                 tree.insert(&path, om_hbam::slot::ChunkKind::Leaf, Some(bytes))
                     .unwrap();
             }
+            let dependent_formula = date_dependency.then(|| {
+                fields.push(field(3, FieldKind::Calculation, DataType::Number, 0, 0, 0));
+                let mut names = om_formula::NameTable::default();
+                names.add_occurrence(0xd0_0006, "A", 0x8006);
+                names.add_field(0x8006, 2, "Field2");
+                let mut context = om_formula::Context::new(&names);
+                context.occurrence = Some(0xd0_0006);
+                let formula = om_formula::compile("IsValid ( Field2 )", &context).unwrap();
+                let context_bytes = [3, 0xd0, 0, 6];
+                let code = om_formula::polish::encode(&formula.expr);
+                (context_bytes, code)
+            });
+            if let Some((context_bytes, code)) = &dependent_formula {
+                for (member, bytes) in [
+                    (&[4][..], context_bytes.as_slice()),
+                    (&[6][..], code.as_slice()),
+                ] {
+                    let path = [&[0x80, 6][..], &[3], &[5], &[3], &[5], member].map(KeySegment);
+                    tree.insert(&path, om_hbam::slot::ChunkKind::Leaf, Some(bytes))
+                        .unwrap();
+                }
+            }
             let table = Table {
                 id: 0x8006,
                 name: "A".into(),
                 fields,
             };
-            RecordPlan::from_file_schema(&table, &tree, &file)
+            RecordPlan::from_desktop_file_schema(&table, &tree, &file, local)
         };
         let locale = Locale::en_us();
         let cx = Ctx::new(&locale, crate::host::session::today(0));
-        let source = |bought: &str| {
+        let source = |bought: &str, name: &str| {
             let mut b = MemorySource::new();
             let mut values = RecordValues::default();
             for (field, text, ty) in [
                 (1, "K", ValueType::Text),
                 (2, "12.50", ValueType::Number),
-                (3, "Widget 42", ValueType::Text),
+                (3, name, ValueType::Text),
                 (4, bought, ValueType::Date),
             ] {
                 values.set(field, 1, crate::host::stored_value(text, ty, &cx));
@@ -13330,15 +13449,19 @@ mod tests {
         let read = |plan: &RecordPlan, b: &MemorySource| {
             plan.read_lookups(WriteMode::Update, &existing, &changes, Entry::default(), b)
         };
-        let plan = plan_for(&[
-            (DataType::Number, 2),
-            (DataType::Number, 3),
-            (DataType::Text, 4),
-            (DataType::Date, 4),
-        ])
+        let plan = plan_for(
+            &[
+                (DataType::Number, 2),
+                (DataType::Number, 3),
+                (DataType::Text, 4),
+                (DataType::Date, 4),
+            ],
+            false,
+            false,
+        )
         .unwrap();
         let mut environment = environment();
-        environment.lookups = read(&plan, &source("1/2/2020")).unwrap();
+        environment.lookups = read(&plan, &source("1/2/2020", "Widget 42")).unwrap();
         let row = plan
             .compute(
                 WriteMode::Update,
@@ -13361,7 +13484,7 @@ mod tests {
         assert_eq!(text(4), "1/2/2020");
         assert_eq!(text(5), "1/2/2020");
         // A related date field holding text that is no date: refused.
-        let refused = read(&plan, &source("Widget 42")).unwrap_err();
+        let refused = read(&plan, &source("Widget 42", "Widget 42")).unwrap_err();
         assert!(
             refused
                 .message
@@ -13369,10 +13492,60 @@ mod tests {
             "{}",
             refused.message
         );
-        // A time field, and text into a date field: read-only.
+        // A time field, and hosted text into a date field: read-only.
         for lookups in [[(DataType::Time, 4)], [(DataType::Date, 3)]] {
-            assert!(plan_for(&lookups).is_err(), "{lookups:?}");
+            assert!(plan_for(&lookups, false, false).is_err(), "{lookups:?}");
         }
+        let plan = plan_for(&[(DataType::Date, 3)], true, false).unwrap();
+        for (input, expected) in [
+            ("2/3/24", Some("2/3/2024")),
+            ("3/14/2025", Some("3/14/2025")),
+            ("not-a-date", Some("not-a-date")),
+            ("", None),
+        ] {
+            environment.lookups = read(&plan, &source("", input)).unwrap();
+            let row = plan
+                .compute(
+                    WriteMode::Update,
+                    &existing,
+                    &changes,
+                    &environment,
+                    Entry::default(),
+                )
+                .unwrap();
+            assert_eq!(row.get(&2).and_then(|v| v.as_deref()), expected);
+        }
+        for input in [
+            "not-a-date 42",
+            "1/2",
+            "1/2/2003 13:00",
+            "1-2-03",
+            "２/３/２４",
+            "not-a-date ４２",
+        ] {
+            assert_eq!(
+                read(&plan, &source("", input)).unwrap_err().code,
+                Some(error::UNAVAILABLE),
+                "{input:?}"
+            );
+        }
+        let plan = plan_for(&[(DataType::Date, 3)], true, true).unwrap();
+        let refusal = read(&plan, &source("", "not-a-date")).unwrap_err();
+        assert_eq!(refusal.code, Some(error::UNAVAILABLE));
+        assert!(refusal
+            .message
+            .contains("a record rule reads this invalid looked-up Date"));
+        environment.lookups = read(&plan, &source("", "2/3/24")).unwrap();
+        let row = plan
+            .compute(
+                WriteMode::Update,
+                &existing,
+                &changes,
+                &environment,
+                Entry::default(),
+            )
+            .unwrap();
+        assert_eq!(row.get(&3).and_then(|value| value.as_deref()), Some("1"));
     }
 
     /// A lookup through two `=` predicates, a replacing `Get ( UUID )` key

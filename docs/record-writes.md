@@ -2023,20 +2023,34 @@ the starting occurrence, must be as FileMaker Pro writes them. It holds:
   Its immediate Set Field timing is still outside the commit-time
   lookup path, and hosted fallback behavior is unmeasured. A fallback
   with a replacing auto-entered `Get ( UUID )` match key refuses with 3;
-- a stored text, number or date field of one repetition with no other
-  auto-entry, copying a stored text, number or date value of one
-  repetition (a data field or a stored calculation), a date field only
-  from a date: the related value's stored text as it is, as FileMaker
-  Server's engine copies it (auto-entry.md, Lookups, battery s43). These
+- a stored Text or Number field of one repetition with no other
+  auto-entry, copying a single-repetition stored Text, Number or Date
+  value (a data field or a stored calculation), or a stored Date copying
+  a stored Date under the same conditions. They retain the stored text,
+  as FileMaker Server did in battery s43 (auto-entry.md, Lookups). These
   are the types both hosts read with their stored text. A related date
   field holding text that is no date refuses the write with error 3 (the
   desktop reads it as text, OpenMaker Server's scripts as `?`; FileMaker
   copies the text). Times and timestamps lose their stored text when read
   (`01:02:03.500` reads as `1:02:03.5`), and a date field holding other
   text reads as text in calculations where FileMaker reads an invalid
-  date (`+ 1` gives 1/1/0001), so lookups of times and timestamps and of
-  text or numbers into a date field keep the table read-only ([#235](https://github.com/OpenMaker-Dev/openmaker/issues/235),
+  date (`+ 1` gives 1/1/0001). Lookups of times and timestamps and of
+  numbers into a date field keep the table read-only. Text into Date
+  also keeps it read-only outside the local case below ([#235](https://github.com/OpenMaker-Dev/openmaker/issues/235),
   [#236](https://github.com/OpenMaker-Dev/openmaker/issues/236));
+- a local English MDY, value-indexed Date field (`0x80000400`, no
+  validation, one repetition) copying plain Text through one unsorted
+  equality on ordinary Text keys. Mode 0 keeps the prior date for an
+  empty source or a miss. Valid input has one or two ASCII digits each
+  for month and day, followed by a two- or four-digit year, with slash
+  separators. OpenMaker uses its Date parser to expand short years.
+  The native pivot is unmeasured. Invalid digit-free printable ASCII
+  text is kept and indexed under the invalid-date key. If a stored
+  calculation, auto-entry or calculation validation reads the target,
+  an invalid copy returns error 3 before saving the record. Other
+  input forms return error 3. The result is available at Commit.
+  [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1207#issuecomment-7214621999),
+  [field-exit and Set Field timing](https://github.com/OpenMaker-Dev/openmaker/issues/1212);
 - a field of another table of the same file, through one relationship
   whose predicates are all `=` on stored text match fields, unsorted or
   sorted only by the related table's own data fields and stored
