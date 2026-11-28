@@ -838,6 +838,58 @@ fn a_folder_backup_that_leaves_a_file_out_keeps_its_last_backup() {
     );
 }
 
+/// A run lets go of the files it copied before retention (#1189): a close
+/// asked for while retention removes an old backup finishes then, without
+/// waiting for the run to end. The hook runs on the run's thread, so it
+/// records what it saw rather than asserting, and waits less than the
+/// test waits for the run.
+#[cfg(all(unix, debug_assertions))]
+#[test]
+fn a_backup_run_lets_go_of_its_files_before_retention() {
+    let folder = Folder::new("let-go");
+    let file = hosted_file(&folder);
+    let backups = folder.0.join("Backups");
+    let planted = plant_backup(&backups, "Every", "0800");
+    let clock = ManualClock::new(at(8, 59));
+    let (_, handle) = start(&file, &backups, vec![backup_schedule("Every", 1)], &clock);
+    let id = handle.files()[0].id;
+    let closed: Arc<Mutex<Option<bool>>> = Arc::default();
+    let (seen, closing) = (Arc::clone(&closed), handle.clone());
+    handle.before_backup_removal(move || {
+        let mut seen = seen.lock().unwrap();
+        if seen.is_some() {
+            return;
+        }
+        let notice = om_server::Notice {
+            message: String::new(),
+            grace: Duration::ZERO,
+        };
+        let asked = closing.close_file(id, &notice).is_ok();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let is_closed = || {
+            closing
+                .files()
+                .iter()
+                .any(|file| file.id == id && file.status == om_server::FileStatus::Closed)
+        };
+        while asked && !is_closed() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        *seen = Some(asked && is_closed());
+    });
+
+    move_to(&handle, &clock, at(9, 0));
+    assert_eq!(
+        *closed.lock().unwrap(),
+        Some(true),
+        "the file closed while retention removed the old backup"
+    );
+    assert!(!planted.exists(), "{planted:?} kept past the keep count");
+    assert!(backups
+        .join("Every_2026-10-29_0900/Databases/Sample.fmp12")
+        .exists());
+}
+
 #[cfg(unix)]
 #[test]
 fn a_backup_folder_never_holds_a_hosted_file() {
