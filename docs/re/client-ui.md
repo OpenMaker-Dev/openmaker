@@ -530,6 +530,19 @@ artwork. The comparison is retained privately
 **Unknowns:** the exact dimming formula, other kinds of artwork, and
 whether the same effect applies below the last part.
 
+### Saved portal captions in Layout mode
+
+[O] In FileMaker Pro 26.1.1, a saved portal in a tab panel showed its
+related occurrence name and the row indicator `[1..5+]` inside the
+lower-left corner. The caption appeared both with the portal selected
+and with only a field in its authored first row selected. There was no
+caption over the first row. The evidence is the private Layout captures
+from the [#888 native run](https://github.com/OpenMaker-Dev/openmaker/issues/888#issuecomment-7231598734).
+
+**Unknowns:** caption placement for a single visible row or a very short
+portal, and the row indicator rules for a different initial row or when
+vertical scrolling is disabled.
+
 ### Web viewer artwork in Layout mode
 
 [O] FileMaker Pro 26.1.1, private Layout capture from the

@@ -91,6 +91,64 @@ impl<'a> Surface<'a> {
             .galley(caption.min, galley, ink);
     }
 
+    /// The canvas keeps the portal's ordinary editing frame. Its caption
+    /// belongs below the authored row, which paints through the child objects.
+    pub(crate) fn paint_portal_caption(&self, ui: &Ui, key: u64, rect: Rect) -> bool {
+        let Some(object) = self
+            .cache
+            .object(self.layout, key)
+            .filter(|object| object.kind() == ObjectKind::Portal)
+        else {
+            return false;
+        };
+        let style = self.cache.formatted_style(self.layout, object, &[], 1, 1);
+        let Some(geometry) = super::portals::PortalGeometry::new(object, rect, &style) else {
+            return true;
+        };
+        let mut room = geometry.viewport.shrink(3.0);
+        room.min.y = room
+            .top()
+            .max(geometry.viewport.top() + geometry.row_height);
+        let clip = ui.clip_rect().intersect(room);
+        if !clip.is_positive() {
+            return true;
+        }
+        let name = self
+            .schema
+            .zip(object.portal.as_ref())
+            .and_then(|(schema, portal)| {
+                let occurrence = om_layout::occurrence_id(portal.table_alias_key)?;
+                schema
+                    .occurrence(occurrence)
+                    .map(|occurrence| occurrence.name.as_str())
+                    .or_else(|| {
+                        schema
+                            .external_occurrence(occurrence)
+                            .map(|occurrence| occurrence.name.as_str())
+                    })
+            })
+            .map(|name| &name[..name.floor_char_boundary(1024)])
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or("Portal");
+        let ink = crate::theme::TEXT;
+        let mut job = egui::text::LayoutJob::simple(
+            name.to_owned(),
+            crate::theme::small(),
+            ink,
+            room.width(),
+        );
+        job.wrap.max_rows = 1;
+        let galley = super::layer_galley(ui, job);
+        if galley.size().y <= room.height() {
+            ui.painter().with_clip_rect(clip).galley(
+                pos2(room.left(), room.bottom() - galley.size().y),
+                galley,
+                ink,
+            );
+        }
+        true
+    }
+
     /// Draw the saved headers and front-panel background before the canvas
     /// paints the panel's children. Collect selected labels' ink bounds so
     /// their editing frames can be painted above the artwork.
