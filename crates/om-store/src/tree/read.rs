@@ -2621,13 +2621,14 @@ mod tests {
                 spilled += report.spilled_separators;
                 joined += usize::from(before.is_some_and(|n| report.leaves < n));
                 before = Some(report.leaves);
+                let t = format!("written tree {t}, phase {phase}");
                 let tree = Tree::open(&store, root).unwrap();
                 let keys: Vec<Vec<u8>> = tree
                     .walk::<Vec<u8>>(&[])
-                    .map(|item| item.unwrap().key.into_bytes())
+                    .map(|item| item.unwrap_or_else(|e| panic!("{t}: a walk: {e}")))
+                    .map(|item| item.key.into_bytes())
                     .collect();
                 assert_eq!(keys.len(), report.items);
-                let t = format!("written tree {t}, phase {phase}");
                 seeks_and_listings(&t, &tree, &keys, &mut rng, true);
             }
         }
