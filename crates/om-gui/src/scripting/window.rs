@@ -922,6 +922,13 @@ impl Window {
         }) {
             return Err(missing_related_parent());
         }
+        // A self-related draft can be merged into the window's own write
+        // below. Check its related fields before saving either record.
+        for draft in open.related.iter().filter(|draft| !draft.deleted) {
+            for &cell in draft.cells.keys() {
+                provider.check_related_entry(draft.table, cell)?;
+            }
+        }
         let mut committed = Vec::new();
         // Repetition editors retain numeric cell identities in related drafts.
         // The layout's own repetitions belong to the same record write as its

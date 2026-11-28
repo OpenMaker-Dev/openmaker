@@ -19,10 +19,12 @@
 //! field values; it does not send protocol requests or write records.
 //! Refusals carry the FileMaker error a script step reports
 //! ([`DataError::code`]).
+mod date_self;
 mod global_evaluate;
 mod global_text_input;
 mod global_text_self;
 mod named_auto_entry;
+pub use date_self::{check_related_date_self, scripted_date_self_clamp, typed_date_self_clamp};
 pub use global_evaluate::{global_evaluate_changes, global_evaluate_outputs};
 pub use global_text_input::global_text_input_changes;
 pub use global_text_self::{global_text_assignment, typed_text_self_default};
@@ -1213,6 +1215,7 @@ enum AutoEntrySelf {
     Unused,
     ProposedNumber,
     ProposedText,
+    ProposedDate,
     Unsupported,
 }
 
@@ -1221,6 +1224,7 @@ impl AutoEntrySelf {
         match self {
             Self::ProposedNumber => Some(ValueType::Number),
             Self::ProposedText => Some(ValueType::Text),
+            Self::ProposedDate => Some(ValueType::Date),
             Self::Unused | Self::Unsupported => None,
         }
     }
@@ -2613,6 +2617,11 @@ impl RecordPlan {
                         && typed_text_self_default(&def).is_some()
                     {
                         AutoEntrySelf::ProposedText
+                    } else if local
+                        && !schema.locale_unreadable
+                        && date_self::supported(&def, &schema.locale)
+                    {
+                        AutoEntrySelf::ProposedDate
                     } else {
                         AutoEntrySelf::Unsupported
                     };
@@ -4447,7 +4456,9 @@ impl RecordPlan {
                             && (!sorted || field.options.options & ALWAYS_EVALUATE != 0)
                             && !supports_related_self(*id)
                     }
-                    AutoEntrySelf::ProposedText => (!unsorted && !sorted) || entry.imported,
+                    AutoEntrySelf::ProposedText | AutoEntrySelf::ProposedDate => {
+                        (!unsorted && !sorted) || entry.imported
+                    }
                     AutoEntrySelf::Unsupported => true,
                 }
         }) {
@@ -5183,11 +5194,23 @@ impl RecordPlan {
             self.compute_inner(mode, existing, changes, environment, entry, Some(&all))?;
         let sources = self.volatile_fields(kept);
         let readers = self.reads_unknown(unknown, &environment.lookups);
+        // Set Field and Browse field exit hold the clamped Date. When
+        // the draft already contains the result, a later date cannot
+        // change that result, unlike other uses of the clock.
+        let changes_with_clock = |id: &u64| {
+            sources.contains(id)
+                && (self.fields[id].auto_enter_self != AutoEntrySelf::ProposedDate
+                    || computed.row.get(id).map_or("", String::as_str)
+                        != changes
+                            .get(id)
+                            .and_then(Option::as_deref)
+                            .unwrap_or_default())
+        };
         let seeds: BTreeSet<u64> = computed
             .evaluated
             .iter()
-            .filter(|id| sources.contains(id) || readers.contains(id))
-            .chain(computed.probed.iter().filter(|id| sources.contains(id)))
+            .filter(|id| changes_with_clock(id) || readers.contains(id))
+            .chain(computed.probed.iter().filter(|id| changes_with_clock(id)))
             .chain(&computed.deferred)
             .copied()
             .collect();
@@ -6766,13 +6789,26 @@ impl RecordPlan {
             .table(self.table)
             .and_then(|t| t.fields.get(&id));
         let result_type = def.map(|d| d.value_type);
-        let proposed_type = self
-            .fields
-            .get(&id)
-            .and_then(|f| f.auto_enter_self.proposed_type());
+        let planned = self.fields.get(&id);
+        let proposed = row.get(&id).map_or("", String::as_str);
+        if let Some(field) = planned.filter(|f| f.auto_enter_self == AutoEntrySelf::ProposedDate) {
+            let invalid = || {
+                RunError::Failed(DataError::with_code(
+                    error::UNAVAILABLE,
+                    format!("Field {}: unsupported Date input to Self.", field.name),
+                ))
+            };
+            let today = match session.info.now {
+                Some(now) => now.date(),
+                None if proposed.is_empty() => session.today(),
+                None => return Err(invalid()),
+            };
+            let cx = Ctx::new(&self.schema.locale, today);
+            return date_self::evaluate(proposed, &cx).ok_or_else(invalid);
+        }
+        let proposed_type = planned.and_then(|f| f.auto_enter_self.proposed_type());
         let self_value = proposed_type.map(|value_type| {
             let cx = Ctx::new(&self.schema.locale, session.today());
-            let proposed = row.get(&id).map_or("", String::as_str);
             stored_value(proposed, value_type, &cx)
         });
         let repetition = InRepetition::Calculation(repetition);
@@ -10149,6 +10185,85 @@ mod tests {
                 Some(error::UNAVAILABLE)
             );
         }
+    }
+
+    #[test]
+    fn a_local_date_self_clamp_uses_the_proposed_date() {
+        let table = Table {
+            fields: vec![
+                field(20, FieldKind::Normal, DataType::Date, 0, 0x88, 0),
+                field(21, FieldKind::Normal, DataType::Text, 0, 0, 0),
+            ],
+            ..table()
+        };
+        let formulas = [(
+            20,
+            5,
+            "If ( Self > Get ( CurrentDate ) ; Get ( CurrentDate ) ; Self )",
+        )];
+        let plan = plan_of(&table, &formulas, &[]).unwrap();
+        let mut env = environment();
+        let entry = Entry::script(false, false);
+        for position in [
+            RecordNumber::LocalNewRecord(2),
+            RecordNumber::LocalSortedNewRecord {
+                position: 2,
+                after: 1,
+            },
+        ] {
+            env.context.record_number = Some(position);
+            let note_only = BTreeMap::from([(21, Some("Note only".into()))]);
+            let created = plan
+                .compute(WriteMode::Create, &BTreeMap::new(), &note_only, &env, entry)
+                .unwrap();
+            assert_eq!(created, note_only);
+        }
+        let existing = BTreeMap::from([(20, "10/1/2026".into())]);
+        let known = |_, _, _| false;
+        for (proposed, expected) in [
+            (Some("10/27/2026"), Some("10/27/2026")),
+            (Some("10/28/2026"), Some("10/28/2026")),
+            (Some("10/29/2026"), Some("10/28/2026")),
+            (None, None),
+        ] {
+            let changes = BTreeMap::from([(20, proposed.map(str::to_owned))]);
+            let computed = plan
+                .compute(WriteMode::Update, &existing, &changes, &env, entry)
+                .unwrap();
+            assert_eq!(
+                computed,
+                BTreeMap::from([(20, expected.map(str::to_owned))])
+            );
+            let (pending, unknown) = plan
+                .pending_row(
+                    WriteMode::Update,
+                    &existing,
+                    &changes,
+                    &env,
+                    (entry, (false, false), &known),
+                )
+                .unwrap();
+            assert_eq!(
+                pending.get(&20).map_or("", String::as_str),
+                expected.unwrap_or_default()
+            );
+            assert_eq!(unknown.contains(&20), proposed != expected);
+        }
+        let definitions = plan.schema.table(table.id).unwrap();
+        assert_eq!(
+            check_related_date_self(&definitions.fields[&20], &plan.schema.locale)
+                .unwrap_err()
+                .code,
+            Some(error::UNAVAILABLE)
+        );
+        assert!(check_related_date_self(&definitions.fields[&21], &plan.schema.locale).is_ok());
+        let invalid = BTreeMap::from([(20, Some("not-a-date".into()))]);
+        assert_eq!(
+            plan.compute(WriteMode::Update, &existing, &invalid, &env, entry)
+                .unwrap_err()
+                .code,
+            Some(error::UNAVAILABLE)
+        );
     }
 
     #[test]

@@ -4441,6 +4441,11 @@ impl DataProvider for NativeProvider {
         self.refuse_while_unsettled()?;
         self.require_writable()?;
         self.require_script_layout_records(write.layout)?;
+        if let Some(table) = write.table {
+            for &cell in write.cells.keys() {
+                self.check_related_entry(table, cell)?;
+            }
+        }
         if write.prepared.is_some() && write.record.is_some() {
             return Err(DataError::with_code(
                 3,
@@ -4631,6 +4636,25 @@ impl DataProvider for NativeProvider {
         }
         self.entry_plan(table)
             .map_or((false, false), |plan| plan.ordered_script_entry(cell))
+    }
+
+    fn check_related_entry(&mut self, table: u64, cell: u64) -> Result<(), DataError> {
+        if !self.plans_local_record_positions() || self.external.route(table).is_some() {
+            return Ok(());
+        }
+        let mut schema = self.calc_schema_cached()?;
+        if schema.are_fields_pending(table) {
+            let need = om_data::host::CalcNeed::Records { table };
+            self.grow_for_needs_until(&[need], &|| false)?;
+            schema = self.calc_schema_cached()?;
+        }
+        if let Some(field) = schema
+            .table(table)
+            .and_then(|table| table.fields.get(&cell))
+        {
+            om_data::rules::check_related_date_self(field, &schema.locale)?;
+        }
+        Ok(())
     }
 
     fn set_typed_global(

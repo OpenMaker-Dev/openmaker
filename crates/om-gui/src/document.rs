@@ -1972,13 +1972,13 @@ impl DocumentState {
             .any(|((_, _, name), b)| name == field && b.value != b.original)
     }
 
-    /// Keep the draft and its record version while restoring an auto-entry.
-    pub(crate) fn restore_cleared_text(
+    /// Apply an auto-entry to a typed draft, keeping its record version.
+    pub(crate) fn apply_typed_auto_entry(
         &mut self,
         layout: u32,
         record: i64,
         field: &str,
-        default: &str,
+        transform: impl FnOnce(&str) -> Option<String>,
     ) -> bool {
         let Some(buffer) = self
             .buffers
@@ -1986,10 +1986,13 @@ impl DocumentState {
         else {
             return false;
         };
-        if !buffer.ui_edited || !buffer.value.is_empty() || default.is_empty() {
+        if !buffer.ui_edited {
             return false;
         }
-        buffer.value.push_str(default);
+        let Some(value) = transform(&buffer.value) else {
+            return false;
+        };
+        buffer.value = value;
         true
     }
 
