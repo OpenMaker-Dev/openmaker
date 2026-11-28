@@ -1500,28 +1500,29 @@ fn subtrees_in_pages(
 /// twice, nothing left out without an error. A page that holds the child
 /// fails, the child before it in the page with it: that child was asked
 /// for. And a read of the value that fails once fails the page that gives
-/// the child, not the look, which does not read it.
+/// the child, not the look, which does not read it. Backward the look finds
+/// the next child from the last node under it, and does not seek the
+/// child's own node, which the child's read seeks from there: with a node
+/// under `a`, and `a`'s own value on an overflow page whose read fails
+/// once, a page of one from the end gives `b` and says more follow, the
+/// next page fails at `a`'s value, and the page after it gives `a`.
 #[test]
 fn a_look_ahead_reads_no_value_and_the_page_that_gives_it_fails() {
     let list = vec![b"l".to_vec()];
     let at = refs(&list);
-    // The list `l` with the children `a` and `b`, `b`'s value on overflow
-    // pages; the store, the root and those pages.
-    let tree = || {
+    let under = |segments: &[&[u8]]| -> Vec<Vec<u8>> {
+        list.iter()
+            .cloned()
+            .chain(segments.iter().map(|s| s.to_vec()))
+            .collect()
+    };
+    // The list `l` and the nodes `edits` put under it; the store, the root
+    // and the tree's overflow pages.
+    let tree = |edits: &[Edit]| {
         let store = MemStore::new(Numbering::Sequential);
-        let child = |segment: &[u8]| vec![b"l".to_vec(), segment.to_vec()];
-        let root = apply_unit(
-            &store,
-            &tree_name(),
-            None,
-            1,
-            &[
-                Edit::list(list.clone()),
-                Edit::leaf(child(b"a"), b"a".to_vec()),
-                Edit::leaf(child(b"b"), long_value(6000)),
-            ],
-        )
-        .unwrap();
+        let mut unit = vec![Edit::list(list.clone())];
+        unit.extend_from_slice(edits);
+        let root = apply_unit(&store, &tree_name(), None, 1, &unit).unwrap();
         let overflow: Vec<u64> = om_store::tree::check(&store, root)
             .unwrap()
             .pages
@@ -1532,8 +1533,13 @@ fn a_look_ahead_reads_no_value_and_the_page_that_gives_it_fails() {
         assert!(!overflow.is_empty());
         (store, root, overflow)
     };
+    // The children `a` and `b`, `b`'s value on overflow pages.
+    let b_spills = [
+        Edit::leaf(under(&[b"a"]), b"a".to_vec()),
+        Edit::leaf(under(&[b"b"]), long_value(6000)),
+    ];
     let failed = |read: &Option<ReadError>| matches!(read, Some(ReadError::Unreadable { .. }));
-    let (store, root, overflow) = tree();
+    let (store, root, overflow) = tree(&b_spills);
     for &page in &overflow {
         store.fail_reads(page, 1);
     }
@@ -1541,7 +1547,7 @@ fn a_look_ahead_reads_no_value_and_the_page_that_gives_it_fails() {
     let (given, error) = children_in_pages(&view, &at, 1);
     assert_eq!(given, [b"a".to_vec()]);
     assert!(failed(&error), "{error:?}");
-    let (store, root, overflow) = tree();
+    let (store, root, overflow) = tree(&b_spills);
     for page in overflow {
         assert!(store.damage(page, 100, 0xff));
     }
@@ -1584,6 +1590,39 @@ fn a_look_ahead_reads_no_value_and_the_page_that_gives_it_fails() {
     assert!(
         matches!(page, Err(ReadError::Unreadable { .. })),
         "{page:?}"
+    );
+    // Backward: `a` with its value on an overflow page and the node `x`
+    // under it, then `b`; the overflow page's next read fails, once.
+    let (store, root, overflow) = tree(&[
+        Edit::leaf(under(&[b"a"]), long_value(6000)),
+        Edit::leaf(under(&[b"a", b"x"]), b"x".to_vec()),
+        Edit::leaf(under(&[b"b"]), b"b".to_vec()),
+    ]);
+    let [page] = overflow[..] else {
+        panic!("`a`'s value on one overflow page: {overflow:?}");
+    };
+    store.fail_reads(page, 1);
+    let view = PagedView::open(&store, root).unwrap();
+    let backward = |from: Bound<&[u8]>| {
+        let mut page = Vec::new();
+        let more = view.children_page(&at, from, Direction::Backward, 1, &mut page);
+        let given: Vec<Vec<u8>> = page.iter().map(|child| child.segment.to_vec()).collect();
+        (given, more)
+    };
+    // The look past `b` finds `a` through `x` and reads neither `a`'s node
+    // nor its value: the failing read is left.
+    assert_eq!(backward(Bound::Unbounded), (vec![b"b".to_vec()], Ok(true)));
+    // The next page seeks `a`'s own node from `x` and reads its value.
+    let (given, more) = backward(Bound::Excluded(b"b"));
+    assert!(
+        matches!(&more, Err(ReadError::Unreadable { why, .. }) if why.contains("unreadable")),
+        "{given:02x?}, {more:?}"
+    );
+    // The read failed once: the page after it gives `a`, and nothing
+    // follows.
+    assert_eq!(
+        backward(Bound::Excluded(b"b")),
+        (vec![b"a".to_vec()], Ok(false))
     );
 }
 
