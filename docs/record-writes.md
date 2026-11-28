@@ -833,6 +833,8 @@ New Record starts blank in an unsorted or sorted window. The resulting
 Date is visible after scripted Set Field or after leaving the typed
 Browse editor, and clears leave the cell absent on Commit. This covers
 the measured English MDY file format, valid dates and empty input.
+Related or portal writes to this Date field return error 3. FileMaker's
+behavior through a relationship remains unmeasured.
 Sorted-window reorder timing remains outside the Date rule.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1210#issuecomment-7232048701)
 

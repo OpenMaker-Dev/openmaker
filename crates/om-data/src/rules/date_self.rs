@@ -55,6 +55,20 @@ pub(super) fn evaluate(proposed: &str, cx: &Ctx) -> Option<(Value, String)> {
     Some((Value::DateText(date, om_calc::Text::plain(&text)), text))
 }
 
+/// Related records have no measured field-exit or Set Field timing for this rule.
+pub fn check_related_date_self(field: &FieldDef, locale: &Locale) -> Result<(), DataError> {
+    if supported(field, locale) {
+        return Err(DataError::with_code(
+            super::error::UNAVAILABLE,
+            format!(
+                "Field {}: Date Self is unsupported through a relationship.",
+                field.name
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// A changed Date value to show after leaving the typed editor. Keep
 /// unparseable input in the editor for ordinary Date validation.
 pub fn typed_date_self_clamp(

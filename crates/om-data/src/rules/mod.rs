@@ -23,7 +23,7 @@ mod date_self;
 mod global_text_input;
 mod global_text_self;
 mod named_auto_entry;
-pub use date_self::{scripted_date_self_clamp, typed_date_self_clamp};
+pub use date_self::{check_related_date_self, scripted_date_self_clamp, typed_date_self_clamp};
 pub use global_text_input::global_text_input_changes;
 pub use global_text_self::{global_text_assignment, typed_text_self_default};
 pub mod recalc;
@@ -10218,6 +10218,7 @@ mod tests {
             assert_eq!(created, note_only);
         }
         let existing = BTreeMap::from([(20, "10/1/2026".into())]);
+        let known = |_, _, _| false;
         for (proposed, expected) in [
             (Some("10/27/2026"), Some("10/27/2026")),
             (Some("10/28/2026"), Some("10/28/2026")),
@@ -10232,7 +10233,29 @@ mod tests {
                 computed,
                 BTreeMap::from([(20, expected.map(str::to_owned))])
             );
+            let (pending, unknown) = plan
+                .pending_row(
+                    WriteMode::Update,
+                    &existing,
+                    &changes,
+                    &env,
+                    (entry, (false, false), &known),
+                )
+                .unwrap();
+            assert_eq!(
+                pending.get(&20).map_or("", String::as_str),
+                expected.unwrap_or_default()
+            );
+            assert_eq!(unknown.contains(&20), proposed != expected);
         }
+        let definitions = plan.schema.table(table.id).unwrap();
+        assert_eq!(
+            check_related_date_self(&definitions.fields[&20], &plan.schema.locale)
+                .unwrap_err()
+                .code,
+            Some(error::UNAVAILABLE)
+        );
+        assert!(check_related_date_self(&definitions.fields[&21], &plan.schema.locale).is_ok());
         let invalid = BTreeMap::from([(20, Some("not-a-date".into()))]);
         assert_eq!(
             plan.compute(WriteMode::Update, &existing, &invalid, &env, entry)

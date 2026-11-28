@@ -1548,6 +1548,12 @@ pub trait DataProvider: Send {
         Ok(())
     }
 
+    /// Check whether a cell assignment is supported through a relationship,
+    /// including clearing it and writing it through a portal.
+    fn check_related_entry(&mut self, _table: u64, _cell: u64) -> Result<(), DataError> {
+        Ok(())
+    }
+
     /// Whether this table uses ordered Set Field auto-entry, and whether
     /// a same-value assignment to this cell must open the record.
     fn ordered_script_entry(&mut self, _table: u64, _cell: u64) -> (bool, bool) {

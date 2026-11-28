@@ -1283,6 +1283,9 @@ impl WorkerHost<'_> {
         text: String,
         direct_set_field: bool,
     ) -> HostResult {
+        self.p()
+            .check_related_entry(table, cell)
+            .map_err(data_error)?;
         let value = (!text.is_empty()).then_some(text);
         match target {
             Target::Draft(i) => {
