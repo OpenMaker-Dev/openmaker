@@ -482,7 +482,7 @@ not returned, and then the asset's key is set to its own value:
 - Neither related record made performs the lookup; setting the key does,
   as in s41.
 
-**Other data types** [O-run: script harness battery s43 on assets-en
+**Other data types** [O-run: FileMaker Server script harness battery s43 on assets-en
 with, added by FMUpgradeTool, Assets::AT (Time) and eight Assignments
 lookups from Assets through the starter's relationship, "Do not copy",
 "Don't copy contents if empty" off]. Each asset gets one assignment made
@@ -504,8 +504,9 @@ lookups; the values are then read through it:
   a date copied into a text field used its stored text.
 - The target keeps text that is not of its type ("Widget 42" in a date
   field, "7 units" in a number field) and reads it as its type does
-  elsewhere: the number of its digits, an invalid date. No validation or
-  data-entry conversion is applied.
+  elsewhere: the number of its digits, an invalid date. In this FileMaker
+  Server run the lookup kept the copied text. The run included no dates
+  with short years.
 - An empty related value is copied as empty (asset 2's date and time).
 
 In a local English MDY FileMaker Pro 26.1.1 file, a value-indexed Date
@@ -515,9 +516,11 @@ numeric date key for each valid date and `feff` for the invalid text.
 The lookup copied nothing when the source was empty or the single
 Text equality found no match. The Date was updated at Set Field or
 when Tab left the typed key. The option word was `0x80000400`, with
-mode and empty-copy bytes `00 00`. The short-year pivot and invalid
-texts that contain digits were outside the measurement.
-[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1207#issuecomment-7214668280)
+mode and empty-copy bytes `00 00`. On the stored invalid Date,
+`IsValid` returned 0 and adding 1 returned `1/1/0001`. The short-year
+pivot, other input forms and digit-bearing invalid text were outside the
+measurement.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1207#issuecomment-7214621999)
 
 A local Text equality check in FileMaker Pro 26.1.1 used a regular Text
 key with calculated auto-enter. A constant formula produced its key and
