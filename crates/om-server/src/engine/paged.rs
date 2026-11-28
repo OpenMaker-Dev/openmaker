@@ -32,9 +32,10 @@
 //! before it ([`ReadError::Unreadable`]). It never ends a page that a next
 //! call would continue: that call would start after the last item given,
 //! and a read that failed on a fault of the tree's order (a cursor that
-//! would go back, `om_store::tree::Cursor`) is not met again from there, so
-//! the items after it would be left out without an error (review of
-//! #1166). A download that is going to fail fails. The look past a full
+//! would go back, or a leaf whose keys lie outside the range its
+//! separators give it, `om_store::tree::Cursor`) is not met again from
+//! there, so the items after it would be left out without an error (review
+//! of #1166; #1180). A download that is going to fail fails. The look past a full
 //! page of children, which asks only whether more follow, fails for the
 //! child it looks at and not for those before it (#1200): it reads no
 //! child's value (`om_store::tree::Children::more`), so a value that
@@ -429,12 +430,13 @@ fn more_after(
 /// made, from the same bound, and a seek makes the choices of a descent
 /// from the root wherever it starts (`om_store::tree::Place`): it goes
 /// down to the same leaf, compares the same items there and goes on to
-/// the same next leaf, so it reads that page again before it gives a
+/// the same next leaf, checking each leaf it enters against the same
+/// separators (#1180), so it reads that page again before it gives a
 /// child, and fails there; or, after a read that failed once and not
 /// again, it reads on to the child the look went for. A fault of
-/// order (an item that does not move on, `om_store::tree::Cursor`) is
-/// `Fault::Malformed`, as every other fault of the tree's own checks is;
-/// those fail the call.
+/// order (an item that does not move on, or a leaf outside its separators'
+/// range, `om_store::tree::Cursor`) is `Fault::Malformed`, as every other
+/// fault of the tree's own checks is; those fail the call.
 fn met_again(error: &tree::Error) -> bool {
     matches!(
         error,
