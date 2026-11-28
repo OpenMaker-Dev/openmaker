@@ -1336,8 +1336,8 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
   resolves every hosted file's folder before it takes any file, so a path
   on a mount that does not answer keeps no file it chose from closing. As
   a backup of one folder begins to choose its files, it reads each hosted
-  file's status once, in one pass without any file-system call. The files it must copy are those
-  being served (open or paused) at that read and lying in the folder; if
+  file's status once, in one pass without any file-system call. The files
+  it must copy are those being served (open or paused) at that read and lying in the folder; if
   one of them can no longer be taken, the run fails, naming the file, and
   copies nothing (nor removes an old backup). A file whose close had begun
   when its status was read is left out, as one closed before the run, and
