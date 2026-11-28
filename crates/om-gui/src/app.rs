@@ -2645,7 +2645,7 @@ impl OpenMakerApp {
                     }
             });
             if let Some((field, _)) = &left {
-                self.restore_text_default_on_field_exit(&ctx, field);
+                self.apply_auto_entry_on_field_exit(&ctx, field);
             }
             // The click that left the field: a menu command's, a button's,
             // else the layout background's, which commits the record

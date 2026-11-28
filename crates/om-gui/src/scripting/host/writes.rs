@@ -121,7 +121,7 @@ impl WorkerHost<'_> {
         {
             return Err(HostError::Unsupported);
         }
-        let text = self.text(value);
+        let mut text = self.text(value);
         if def.global {
             // A global field holds this session's value, in Browse and
             // Find mode alike (it takes no criterion, script-runtime.md
@@ -166,6 +166,23 @@ impl WorkerHost<'_> {
             return self.set_container(&def.name, value.clone());
         }
         let cell = cell_of(def.id, repetition);
+        if !cfg!(any(target_os = "ios", target_os = "android"))
+            && direct_set_field
+            && Some(field.occurrence) == self.s.file.occurrence
+            && def.value_type == om_data::calc::ValueType::Date
+            && !schema.locale_unreadable
+            && schema.table_context(table).is_none()
+            && !(self.s.file.transaction.is_some() && self.s.file.transaction_skips_auto_entry)
+            && self.p().local_path().is_some()
+        {
+            let today = om_data::host::session::today(om_provider::local_utc_offset());
+            if let Some(clamped) =
+                om_data::rules::scripted_date_self_clamp(&def, &text, &schema.locale, today)
+                    .map_err(data_error)?
+            {
+                text = clamped;
+            }
+        }
         if !text.is_empty() {
             self.p()
                 .check_entry(table, cell, &text)

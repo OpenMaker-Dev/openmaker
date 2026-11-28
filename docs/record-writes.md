@@ -826,6 +826,16 @@ written result. Suffix formulas and creation outside an ordinary local
 desktop window still refuse evaluation with error 3.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1135#issuecomment-7214357479)
 
+An ordinary local desktop Date field with options `0x00000088`,
+one repetition and no validation can clamp a future value via
+`If ( Self > Get ( CurrentDate ) ; Get ( CurrentDate ) ; Self )`.
+New Record starts blank in an unsorted or sorted window. The resulting
+Date is visible after scripted Set Field or after leaving the typed
+Browse editor, and clears leave the cell absent on Commit. This covers
+the measured English MDY file format, valid dates and empty input.
+Sorted-window reorder timing remains outside the Date rule.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1210#issuecomment-7232048701)
+
 A local table accepts ordinary record writes to its other fields when a
 Container awaits transfer to embedded storage. This covers a
 single-repetition field marked `0x6000` (external Open storage) and a

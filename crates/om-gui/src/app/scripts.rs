@@ -1573,8 +1573,8 @@ impl OpenMakerApp {
         self.fire(ctx, TriggerEvent::RecordLoad, None, None, info());
     }
 
-    /// A cleared Text field can show its auto-entry before the record saves.
-    pub(super) fn restore_text_default_on_field_exit(&mut self, ctx: &egui::Context, name: &str) {
+    /// A typed field can show its measured auto-entry before the record saves.
+    pub(super) fn apply_auto_entry_on_field_exit(&mut self, ctx: &egui::Context, name: &str) {
         if cfg!(any(target_os = "ios", target_os = "android"))
             || self.w.mode != Mode::Browse
             || self.w.document.left_related.is_some()
@@ -1604,18 +1604,24 @@ impl OpenMakerApp {
         if schema.table_context(table.id).is_some() {
             return;
         }
-        let Some(default) = table
-            .fields
-            .values()
-            .find(|field| field.name == name)
-            .and_then(om_data::rules::typed_text_self_default)
-        else {
+        let Some(field) = table.fields.values().find(|field| field.name == name) else {
             return;
         };
         if self
             .w
             .document
-            .restore_cleared_text(layout, record.id, name, default)
+            .apply_typed_auto_entry(layout, record.id, name, |proposed| {
+                if proposed.is_empty() {
+                    return om_data::rules::typed_text_self_default(field)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_owned);
+                }
+                if schema.locale_unreadable || field.value_type != om_data::calc::ValueType::Date {
+                    return None;
+                }
+                let today = om_data::host::session::today(om_provider::local_utc_offset());
+                om_data::rules::typed_date_self_clamp(field, proposed, &schema.locale, today)
+            })
         {
             ctx.request_repaint();
         }

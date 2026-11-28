@@ -83,6 +83,22 @@ input, also ran in a sorted local window. The indexed and Browse
 comparisons used the identity formula.
 [Unindexed comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1135#issuecomment-7204266848)
 
+### Date Self clamped to the current date
+
+In a local English MDY FileMaker Pro 26.1.1 file, a one-repetition Date
+field with options `0x00000088` and no validation ran
+`If ( Self > Get ( CurrentDate ) ; Get ( CurrentDate ) ; Self )`.
+An earlier date or today's date persisted as supplied. A future date
+became today at scripted Set Field or when Tab left the Browse editor,
+before Commit. New Record left the field blank. Clearing it and editing
+only the unrelated Note field left no stored Date cell.
+
+The rule produced the same Date in the sorted trials. In the corrected
+blanks-last trial, the newly clamped row was at position 2 immediately
+after Commit and position 3 after the script ended and after reopen.
+The measurement does not locate the reorder within that interval.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1210#issuecomment-7232048701)
+
 ### Self in an ordinary Number field
 
 FileMaker Pro 26.1.1 [measured the `Self` token](https://github.com/OpenMaker-Dev/openmaker/issues/1059)
