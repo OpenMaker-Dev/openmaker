@@ -1327,30 +1327,33 @@ tools carry over. Points marked (inf) are OpenMaker's decisions. Code:
   while that folder is being deleted can go with it. Nothing can rule that
   out.
 - **Backups and the hosted files' states.** A backup copies the files that
-  are open or paused when it starts, taken as a client's session takes
-  them; one closing or closed is left out. It holds what it copies until
-  it ends, so a file's close waits for a backup under way: the close does
-  not cancel it (inf). A backup of one folder resolves every hosted file's
-  folder before it takes any file, so a path on a mount that does not
-  answer keeps no file it chose from closing. As a backup of one folder
-  begins to choose its files, it reads each hosted file's status once, in
-  one pass without any file-system call. The files it must copy are those
-  being served (open or paused) at that read and lying in the folder; if
-  one of them can no longer be taken, the run fails, naming the file, and
-  copies nothing (nor removes an old backup). A file whose close had begun
-  when its status was read is left out, as one closed before the run, and
-  so is one opened after that read. OpenMaker's choice, so that an
-  incomplete set never counts as a backup; what FileMaker Server's backup
-  does with a file that closes under it is unmeasured. A run that waits
-  for another backup to finish copying already holds its files, so a close
-  of one waits for both
-  ([#1079](https://github.com/OpenMaker-Dev/openmaker/issues/1079)).
-  Every file the server was given stays protected
-  from deletion, closed or not, and so does what can be found of one that
-  failed to open at startup; while such a file cannot be found, backups
-  are still made but none is deleted (retention, Delete, or the cleanup of
-  an earlier run's unfinished folder), since where its data lies is
-  unknown. The backups' layout follows every hosted file, open or not.
+  are open or paused when it starts, taken as a client's session takes them;
+  one closing or closed is left out. It holds what it copies until the
+  backup is written, so a file's close waits for a backup under way: the
+  close does not cancel it (inf). It lets go before retention, which
+  resolves the hosted files' paths and deletes old backups, so a close does
+  not wait for those. A run whose hosted files' common folder changed while
+  its backup was written deletes no old backup, and the next run decides
+  again (inf). A backup of one folder resolves every hosted file's folder
+  before it takes any file, so a path on a mount that does not answer keeps
+  no file it chose from closing. As a backup of one folder begins to choose
+  its files, it reads each hosted file's status once, in one pass without
+  any file-system call. The files it must copy are those being served (open
+  or paused) at that read and lying in the folder; if one of them can no
+  longer be taken, the run fails, naming the file, and copies nothing (nor
+  removes an old backup). A file whose close had begun when its status was
+  read is left out, as one closed before the run, and so is one opened after
+  that read. OpenMaker's choice, so that an incomplete set never counts as a
+  backup; what FileMaker Server's backup does with a file that closes under
+  it is unmeasured. A run that waits for another backup to finish copying
+  already holds its files, so a close of one waits for both
+  ([#1079](https://github.com/OpenMaker-Dev/openmaker/issues/1079)). Every
+  file the server was given stays protected from deletion, closed or not,
+  and so does what can be found of one that failed to open at startup; while
+  such a file cannot be found, backups are still made but none is deleted
+  (retention, Delete, or the cleanup of an earlier run's unfinished folder),
+  since where its data lies is unknown. The backups' layout follows every
+  hosted file, open or not.
 - **Backups in the event log.** A backup schedule gets the scheduler's
   lines (run now, enabled or disabled, skipped, its next run, a run that
   could not start), but its runs write no line of their own: FileMaker
