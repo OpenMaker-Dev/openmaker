@@ -2435,6 +2435,9 @@ impl OpenMakerApp {
         // Entering Find mode puts the focus in the request's first field.
         let entered_find = mode == Mode::Find && self.w.mode != Mode::Find;
         if mode != self.w.mode {
+            if self.w.mode == Mode::Layout {
+                self.w.layout_workspace.dismiss_deselected_popovers();
+            }
             self.w.mode = mode;
             self.w.calcs.forget_results();
         }

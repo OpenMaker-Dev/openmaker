@@ -2210,9 +2210,13 @@ outlines ([client-ui.md](re/client-ui.md#artwork-and-boundaries)).
 Closed popovers and their contents are hidden from the canvas. Selecting
 a popover or one of its objects from Objects previews the styled surface
 and contents above the stored layout objects, at their saved positions.
-The preview takes input above those objects and ends with its selection.
-Field drafts keep their editing layer. FileMaker Pro 26.1.1 opens a popover
-and selects its child when the child is clicked in Objects. Direct opening
+The preview takes input above those objects. In FileMaker Pro 26.1.1, one
+click on blank canvas space cleared selection and left the popover visible.
+OpenMaker keeps the preview visible through further blank clicks and
+dismisses it when you select an object outside the popover, change tools, or
+leave Layout mode. Those choices were not measured in FileMaker.
+Field drafts keep their editing layer. FileMaker Pro opens a popover and
+selects its child when you click that child in Objects. Direct opening
 and dismissal controls, the title and pointer, and FileMaker's
 open-position behavior remain unavailable
 ([#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019)).

@@ -1350,9 +1350,15 @@ impl LayoutWorkspace {
     }
 
     pub(crate) fn clear_selection(&mut self) {
-        if !self.saving {
+        if self.saving {
+            self.dismiss_deselected_popovers();
+        } else {
             self.canvas.clear_selection();
         }
+    }
+
+    pub(crate) fn dismiss_deselected_popovers(&mut self) {
+        self.canvas.dismiss_deselected_popovers();
     }
 
     pub(crate) fn selection_count(&self, session: &Session) -> usize {
