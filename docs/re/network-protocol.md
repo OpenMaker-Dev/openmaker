@@ -386,7 +386,9 @@ OpenMaker Server does with them, its own choices throughout (`om-server`'s
   that can wait, when the session ends (Disconnect, a Connect on its
   connection, that connection closing for any reason), when the
   administrator disconnects the client and when the server closes its
-  connections (one step for every session at once), whatever the
+  connections (one step for every session at once, taken with the batch
+  of connections to close, so that a session one of them starts later is
+  ended too, and one on a connection accepted after is not), whatever the
   session's own connection is doing. A read already admitted finishes,
   and keeps nothing to page once the session has lost the file. A
   download it pages is continued on it alone, and goes when the session
