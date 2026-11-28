@@ -5150,9 +5150,9 @@ At a timeout of 4 the delay is one
 tick: one round trip takes two ticks, the pre-vote's and the vote's
 together four, so a member that does not restart its timer on standing
 has its votes processed after the tick a timeout drawn at 4 falls due,
-and the seeded runs find it there too: of 240 seeds with that plant, 112
-fail, all by this timing check, 38 of the 142 schedules with a timeout
-of 4, 36 of 52 with 10 and 38 of 46 with 16. The fixed test below holds it on a
+and the seeded runs find it there too: of 240 seeds with that plant, 126
+fail, all by this timing check, 48 of the 142 schedules with a timeout
+of 4, 36 of 52 with 10 and 42 of 46 with 16. The fixed test below holds it on a
 network that delays every message two ticks. Then
 the client writes on every tick for twenty election timeouts (after five
 more for the member with a smaller largest entry, which then starts
