@@ -64,14 +64,35 @@ itself, or a dependency cycle involving different fields, is outside this
 inference and remains refused. Native timing and the named-reference
 substitution have not been measured for this slice.
 
+### Self in an ordinary Text field
+
+FileMaker Pro 26.1.1 stored the literal default at New Record for
+`If ( IsEmpty ( Self ) ; "Draft" ; Self )`. Set Field kept nonempty
+text unchanged and restored the default immediately on a clear. This
+held in unsorted and sorted local windows, with no validation and one
+repetition. The sorted comparison used "Keep records in sorted order".
+The option word was `0x00000088` without indexes and `0xa0000088`
+with All indexing. In Browse mode the cleared field showed Draft when
+Tab moved to the next field, with the record still open. Commit kept
+that value. Exact Finds and closed value and word indexes matched the
+stored result, and the previous text's index key disappeared on clear.
+[Indexed comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1135#issuecomment-7214357479)
+
+The unindexed scripted suffix variant, `Self & "!"` on nonempty
+input, also ran in a sorted local window. The indexed and Browse
+comparisons used the identity formula.
+[Unindexed comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1135#issuecomment-7204266848)
+
+### Self in an ordinary Number field
+
 FileMaker Pro 26.1.1 [measured the `Self` token](https://github.com/OpenMaker-Dev/openmaker/issues/1059)
 in a local Number field. A formula with an empty branch returning 0 stores
 0 at New Record and after an explicit clear. With replacement enabled,
 `Self + 1` in the nonempty branch stores 26 after Set Field of 25. With
 replacement disabled the same assignment stores 25. An unrelated edit
 keeps the value. The result is visible immediately and survives commit.
-Inferred: `Self` reads the proposed field value. Hosted files and other
-field types were not measured.
+Inferred: `Self` reads the proposed field value. This comparison covers
+local Number fields.
 
 In a [sorted local desktop trial](https://github.com/OpenMaker-Dev/openmaker/issues/1059#issuecomment-7203492423)
 with "Keep records in sorted order" on, New Record inserted at position 2

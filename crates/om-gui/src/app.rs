@@ -2644,6 +2644,9 @@ impl OpenMakerApp {
                         None => self.w.document.edited(f),
                     }
             });
+            if let Some((field, _)) = &left {
+                self.restore_text_default_on_field_exit(&ctx, field);
+            }
             // The click that left the field: a menu command's, a button's,
             // else the layout background's, which commits the record
             // (#1066).

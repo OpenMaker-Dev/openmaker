@@ -22,23 +22,30 @@ fn self_value(expr: &Expr) -> bool {
     matches!(expr, Expr::Call { op: Opcode::SELF, args } if args.is_empty())
 }
 
-fn default_with_self(expr: &Expr) -> bool {
+fn text_self_branches(expr: &Expr) -> Option<(&str, &Expr)> {
     let Expr::Call {
         op: Opcode::IF,
         args,
     } = expr
     else {
-        return false;
+        return None;
     };
     let [Expr::Call { op, args: tested }, Expr::Text(default), fallback] = args.as_slice() else {
-        return false;
+        return None;
     };
     if op.name() != Some("IsEmpty")
         || !matches!(tested.as_slice(), [value] if self_value(value))
         || default.style.is_some()
     {
-        return false;
+        return None;
     }
+    Some((&default.value, fallback))
+}
+
+fn default_with_self(expr: &Expr) -> bool {
+    let Some((_, fallback)) = text_self_branches(expr) else {
+        return false;
+    };
     self_value(fallback)
         || matches!(
             fallback,
@@ -46,6 +53,22 @@ fn default_with_self(expr: &Expr) -> bool {
                 if matches!(args.as_slice(), [value, Expr::Text(suffix)]
                     if self_value(value) && suffix.style.is_none())
         )
+}
+
+/// The literal restored on leaving a cleared ordinary Text field in a local
+/// desktop window. The measured formula returns nonempty input unchanged.
+pub fn typed_text_self_default(field: &FieldDef) -> Option<&str> {
+    if field.class != FieldClass::Data
+        || field.global
+        || field.value_type != ValueType::Text
+        || field.repetitions != 1
+        || !matches!(field.options, 0x0000_0088 | 0xa000_0088)
+        || field.validation_options != 0
+    {
+        return None;
+    }
+    let (default, fallback) = text_self_branches(&field.auto_enter.as_ref()?.polish)?;
+    self_value(fallback).then_some(default)
 }
 
 pub(super) fn classify(
