@@ -1231,7 +1231,32 @@ impl<'t, 's, S: PageStore + ?Sized> Children<'t, 's, S> {
         self.cursor.as_ref().and_then(Cursor::place)
     }
 
-    fn step(&mut self) -> Result<Option<(Vec<u8>, Node)>> {
+    /// Whether another child follows the last one given, without reading
+    /// it: a page's look past its last child, which asks no more than
+    /// that. It makes the seek the next child's read starts with, from the
+    /// same bound, held to the same checks of order ([`Cursor::step`]: an
+    /// item that lies before the bound sought fails as malformed), and
+    /// reads only the pages and key bytes that seek's comparisons need:
+    /// not the child's key whole, not its value, and backward not its own
+    /// node either. So a value that cannot be read, or a node without its
+    /// parent, does not fail it; the read of that child meets them. The
+    /// listing can go on after it, from the same bound.
+    pub fn more(&mut self) -> Result<bool> {
+        if self.done {
+            return Ok(false);
+        }
+        let found = self.seek_next();
+        if found.is_err() {
+            self.done = true;
+        }
+        found
+    }
+
+    /// Seeks the first item past the listing's bound, from where its
+    /// cursor is, or with a new cursor for the first child: whether there
+    /// is one within the listing's range, at the cursor's place. Only keys
+    /// are read on the way.
+    fn seek_next(&mut self) -> Result<bool> {
         let forward = self.direction == Direction::Forward;
         let below = Bound::Excluded(self.prefix.as_slice());
         let lower = if self.prefix.is_empty() {
@@ -1259,8 +1284,16 @@ impl<'t, 's, S: PageStore + ?Sized> Children<'t, 's, S> {
                 self.cursor.insert(cursor.starting_at(self.place.take()))
             }
         };
+        cursor.step()
+    }
+
+    fn step(&mut self) -> Result<Option<(Vec<u8>, Node)>> {
+        let forward = self.direction == Direction::Forward;
         // Only keys are read on the way: the node read is the child's own.
-        let found = cursor.step()?;
+        let found = self.seek_next()?;
+        let Some(cursor) = self.cursor.as_mut() else {
+            return Ok(None);
+        };
         let Some((leaf, i)) = cursor.at().filter(|_| found) else {
             return Ok(None);
         };

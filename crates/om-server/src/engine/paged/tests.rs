@@ -1430,62 +1430,276 @@ fn a_batch_keeps_within_its_limits() {
     assert_eq!(units.batches, vec![(2, 10), (2, 10), (1, 5)]);
 }
 
-/// A read that fails partway through a call fails the call, whatever it
-/// gave before it (the module doc, "A read that fails partway"; review of
-/// #1166): here the read that fails is the look past the last child, whose
-/// value is on an overflow page that does not check. A page of the first
-/// child, the page after it, the subtrees page and a page asked for both
-/// all fail; none answers "more" past a read that failed.
+/// A listing of children in pages, each from just past the last child the
+/// page before gave, as a client pages them: the segments given, and the
+/// error that ended it, if one did. `page` reads one page from a bound
+/// onto its segments. A page that gives nothing and says more follow fails
+/// the test: a reader ends there, and what follows is lost.
+fn in_pages(
+    mut page: impl FnMut(Bound<&[u8]>, &mut Vec<Vec<u8>>) -> Result<bool, ReadError>,
+) -> (Vec<Vec<u8>>, Option<ReadError>) {
+    let mut given: Vec<Vec<u8>> = Vec::new();
+    loop {
+        let mut got = Vec::new();
+        let from = given
+            .last()
+            .map_or(Bound::Unbounded, |s| Bound::Excluded(s.as_slice()));
+        match page(from, &mut got) {
+            Err(e) => return (given, Some(e)),
+            Ok(more) => {
+                assert!(
+                    !(more && got.is_empty()),
+                    "an empty page said more follow after {given:02x?}"
+                );
+                given.extend(got);
+                assert!(given.len() <= 100, "a listing that does not end");
+                if !more {
+                    return (given, None);
+                }
+            }
+        }
+    }
+}
+
+/// [`in_pages`] through [`View::children_page`], pages of `max`.
+fn children_in_pages(
+    view: &dyn View,
+    path: &[&[u8]],
+    max: usize,
+) -> (Vec<Vec<u8>>, Option<ReadError>) {
+    in_pages(|from, out| {
+        let mut page = Vec::new();
+        let more = view.children_page(path, from, Direction::Forward, max, &mut page)?;
+        out.extend(page.iter().map(|child| child.segment.to_vec()));
+        Ok(more)
+    })
+}
+
+/// [`in_pages`] through [`View::subtrees_page`], pages of `max`.
+fn subtrees_in_pages(
+    view: &dyn View,
+    path: &[&[u8]],
+    max: usize,
+) -> (Vec<Vec<u8>>, Option<ReadError>) {
+    in_pages(|from, out| {
+        let mut page = Vec::new();
+        let more = view.subtrees_page(path, from, Direction::Forward, max, NO_LIMIT, &mut page)?;
+        out.extend(page.iter().map(|node| node.segment.clone()));
+        Ok(more)
+    })
+}
+
+/// The look past a full page asks only whether more follow, and reads no
+/// child's value (the module doc, "A read that fails partway"; #1200):
+/// here the next child's value is on an overflow page that does not check.
+/// An exact lookup of the key before it, a page of one from that key as a
+/// find reads a field's index (`om_query`'s `listed_get`, through the
+/// server's `ViewListing`), answers that key. Listed in pages of one,
+/// children or subtrees, the child before it comes and the page says more
+/// follow, and the next page, which reads the value, fails: nothing given
+/// twice, nothing left out without an error. A page that holds the child
+/// fails, the child before it in the page with it: that child was asked
+/// for. And a read of the value that fails once fails the page that gives
+/// the child, not the look, which does not read it.
 #[test]
-fn a_failed_look_ahead_fails_the_page() {
-    let store = MemStore::new(Numbering::Sequential);
+fn a_look_ahead_reads_no_value_and_the_page_that_gives_it_fails() {
     let list = vec![b"l".to_vec()];
-    let child = |segment: &[u8]| vec![b"l".to_vec(), segment.to_vec()];
-    let root = apply_unit(
-        &store,
-        &tree_name(),
-        None,
-        1,
-        &[
-            Edit::list(list.clone()),
-            Edit::leaf(child(b"a"), b"a".to_vec()),
-            Edit::leaf(child(b"b"), long_value(6000)),
-        ],
-    )
-    .unwrap();
-    let overflow: Vec<u64> = om_store::tree::check(&store, root)
-        .unwrap()
-        .pages
-        .iter()
-        .filter(|(n, h)| store.read(*n, h).unwrap().kind() == PageKind::Overflow)
-        .map(|(n, _)| *n)
-        .collect();
-    assert!(!overflow.is_empty());
+    let at = refs(&list);
+    // The list `l` with the children `a` and `b`, `b`'s value on overflow
+    // pages; the store, the root and those pages.
+    let tree = || {
+        let store = MemStore::new(Numbering::Sequential);
+        let child = |segment: &[u8]| vec![b"l".to_vec(), segment.to_vec()];
+        let root = apply_unit(
+            &store,
+            &tree_name(),
+            None,
+            1,
+            &[
+                Edit::list(list.clone()),
+                Edit::leaf(child(b"a"), b"a".to_vec()),
+                Edit::leaf(child(b"b"), long_value(6000)),
+            ],
+        )
+        .unwrap();
+        let overflow: Vec<u64> = om_store::tree::check(&store, root)
+            .unwrap()
+            .pages
+            .iter()
+            .filter(|(n, h)| store.read(*n, h).unwrap().kind() == PageKind::Overflow)
+            .map(|(n, _)| *n)
+            .collect();
+        assert!(!overflow.is_empty());
+        (store, root, overflow)
+    };
+    let failed = |read: &Option<ReadError>| matches!(read, Some(ReadError::Unreadable { .. }));
+    let (store, root, overflow) = tree();
+    for &page in &overflow {
+        store.fail_reads(page, 1);
+    }
+    let view = PagedView::open(&store, root).unwrap();
+    let (given, error) = children_in_pages(&view, &at, 1);
+    assert_eq!(given, [b"a".to_vec()]);
+    assert!(failed(&error), "{error:?}");
+    let (store, root, overflow) = tree();
     for page in overflow {
         assert!(store.damage(page, 100, 0xff));
     }
     let view = PagedView::open(&store, root).unwrap();
-    let at = refs(&list);
-    let failed = |page: &Result<bool, ReadError>| matches!(page, Err(ReadError::Unreadable { .. }));
-    let mut out = Vec::new();
-    let first = view.children_page(&at, Bound::Unbounded, Direction::Forward, 1, &mut out);
-    assert!(failed(&first), "{first:?}");
-    let mut next = Vec::new();
-    let after = view.children_page(&at, Bound::Excluded(b"a"), Direction::Forward, 1, &mut next);
-    assert!(failed(&after), "{after:?}");
+    let Some(om_query::Children::Listed(listing)) =
+        crate::connection::ViewListing::of(&view, &at).unwrap()
+    else {
+        panic!("a view's node is listed");
+    };
+    let mut keys = Vec::new();
+    let looked_up = listing.keys(
+        Bound::Included(b"a"),
+        om_query::Direction::Forward,
+        1,
+        &mut keys,
+    );
+    assert_eq!(looked_up.ok(), Some(true));
+    assert_eq!(keys, [&b"a"[..]]);
+    let (given, error) = children_in_pages(&view, &at, 1);
+    assert_eq!(given, [b"a".to_vec()]);
+    assert!(failed(&error), "{error:?}");
+    let (given, error) = subtrees_in_pages(&view, &at, 1);
+    assert_eq!(given, [b"a".to_vec()]);
+    assert!(failed(&error), "{error:?}");
+    let mut both = Vec::new();
+    let page = view.children_page(&at, Bound::Unbounded, Direction::Forward, 5, &mut both);
+    assert!(
+        matches!(page, Err(ReadError::Unreadable { .. })),
+        "{page:?}"
+    );
     let mut whole = Vec::new();
-    let subtrees = view.subtrees_page(
+    let page = view.subtrees_page(
         &at,
         Bound::Unbounded,
         Direction::Forward,
-        1,
+        5,
         NO_LIMIT,
         &mut whole,
     );
-    assert!(failed(&subtrees), "{subtrees:?}");
-    let mut both = Vec::new();
-    let page = view.children_page(&at, Bound::Unbounded, Direction::Forward, 5, &mut both);
-    assert!(failed(&page), "{page:?}");
+    assert!(
+        matches!(page, Err(ReadError::Unreadable { .. })),
+        "{page:?}"
+    );
+}
+
+/// A look past a full page that cannot read a page leaves the failure to
+/// the next page (#1200; `met_again`), for each way a page fails to read:
+/// damaged (its checksum), missing, unreadable (an I/O error that stays),
+/// misplaced (another page's bytes at its number) and stale (another
+/// version of it). The page is the leaf past the last child given, which
+/// holds the next child, or the overflow page of the next child's key,
+/// which spills and shares its first 1,024 bytes with the bound the look
+/// seeks. Listed in pages, the children before it come whole, and the
+/// next page fails before it gives anything: no page is empty with more
+/// to follow, no child given twice or left out. An I/O error that fails
+/// the look's read alone leaves the next page to give the child the look
+/// went for, and the rest.
+#[test]
+fn a_look_ahead_that_cannot_read_a_page_leaves_it_to_the_next_page() {
+    use om_store::tree::{built, key};
+    #[derive(Clone, Copy, Debug)]
+    enum Fails {
+        Damaged,
+        Missing,
+        Io,
+        Misplaced,
+        Stale,
+        IoOnce,
+    }
+    let item = |key: Vec<u8>, value: &[u8]| (built::KIND_VALUE, key, value.to_vec());
+    let one = |segment: &[u8]| key::encode(&[segment]);
+    let long = vec![b'p'; 5000];
+    let under = |segment: &[u8]| key::encode(&[long.as_slice(), segment]);
+    // The tree, with `value` for the children past the page given; its
+    // root, the page the look reads, and another page of it.
+    let build = |spilled: bool, store: &MemStore, value: &[u8]| {
+        if spilled {
+            // One leaf: `long`, and its children `a` and `b`, every key
+            // spilled to one overflow page.
+            let leaves = [vec![
+                item(one(long.as_slice()), b"p"),
+                item(under(b"a"), b"a"),
+                item(under(b"b"), value),
+            ]];
+            let built = built::tree(store, &leaves, &[]);
+            assert!(built.overflow.iter().all(|pages| pages.len() == 1));
+            (built.root, built.overflow[2][0], built.overflow[1][0])
+        } else {
+            // The root's children `a`, `b` in one leaf, `c`, `d` in the
+            // next.
+            let leaves = [
+                vec![item(one(b"a"), b"v"), item(one(b"b"), b"v")],
+                vec![item(one(b"c"), value), item(one(b"d"), value)],
+            ];
+            let built = built::tree(store, &leaves, &[one(b"c").as_slice()]);
+            let top = store.read(built.root.page, &built.root.hash).unwrap();
+            (built.root, top.references()[1].0, built.root.page)
+        }
+    };
+    let all = |names: &[&[u8]]| names.iter().map(|n| n.to_vec()).collect::<Vec<_>>();
+    for (spilled, path, max, children, before) in [
+        (false, vec![], 2, all(&[b"a", b"b", b"c", b"d"]), 2),
+        (true, vec![long.clone()], 1, all(&[b"a", b"b"]), 1),
+    ] {
+        for fails in [
+            Fails::Damaged,
+            Fails::Missing,
+            Fails::Io,
+            Fails::Misplaced,
+            Fails::Stale,
+            Fails::IoOnce,
+        ] {
+            let case = format!("{fails:?}, spilled {spilled}");
+            let store = MemStore::new(Numbering::Sequential);
+            let (root, page, other) = build(spilled, &store, b"v");
+            let why = match fails {
+                Fails::Damaged => {
+                    assert!(store.damage(page, 100, 0xff));
+                    "damaged"
+                }
+                Fails::Missing => {
+                    assert!(store.remove(page));
+                    "missing"
+                }
+                Fails::Io => {
+                    store.fail_reads(page, u32::MAX);
+                    "unreadable"
+                }
+                Fails::IoOnce => {
+                    store.fail_reads(page, 1);
+                    "unreadable"
+                }
+                Fails::Misplaced => {
+                    store.put_bytes(page, &store.bytes(other).unwrap());
+                    "misplaced"
+                }
+                Fails::Stale => {
+                    let again = MemStore::new(Numbering::Sequential);
+                    let (_, same, _) = build(spilled, &again, b"w");
+                    assert_eq!(same, page, "{case}");
+                    store.put_bytes(page, &again.bytes(page).unwrap());
+                    "stale"
+                }
+            };
+            let view = PagedView::open(&store, root).unwrap();
+            let (given, error) = children_in_pages(&view, &refs(&path), max);
+            if let Fails::IoOnce = fails {
+                assert_eq!(given, children, "{case}");
+                assert!(error.is_none(), "{case}: {error:?}");
+                continue;
+            }
+            assert_eq!(given, children[..before], "{case}");
+            assert!(
+                matches!(&error, Some(ReadError::Unreadable { why: w, .. }) if w.contains(why)),
+                "{case}: {error:?}"
+            );
+        }
+    }
 }
 
 /// On the page file, an import refused after it committed batches (and
@@ -2229,7 +2443,9 @@ fn paged_measurement() {
 /// across the fault: a seek past `d` finds nothing beyond it, as from the
 /// root, #1180; they are not asserted here.) And on #998's tree (the
 /// separator `x`), a page of children that meets the child that comes back
-/// fails, rather than answer the children before it and "more".
+/// fails, rather than answer the children before it and "more"; so does a
+/// full page of two, `a` and `d`, whose look past `d` comes back to `b`,
+/// though that look asks only whether more follow (#1200).
 #[test]
 fn a_paged_read_fails_at_a_fault_rather_than_end_on_the_next_page() {
     use om_store::tree::{built, key};
@@ -2268,5 +2484,17 @@ fn a_paged_read_fails_at_a_fault_rather_than_end_on_the_next_page() {
     assert!(
         matches!(listed, Err(ReadError::Unreadable { .. })),
         "{listed:?}"
+    );
+    let mut two = Vec::new();
+    let looked = view.children_page(
+        &root_path,
+        Bound::Unbounded,
+        Direction::Forward,
+        2,
+        &mut two,
+    );
+    assert!(
+        matches!(looked, Err(ReadError::Unreadable { .. })),
+        "{looked:?}"
     );
 }

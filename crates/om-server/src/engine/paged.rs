@@ -29,13 +29,21 @@
 //! hold, never false when something under the path changed.
 //!
 //! **A read that fails partway** fails the call, whatever it has given
-//! before it ([`ReadError::Unreadable`]), and so does a failed look past a
-//! full page of children. It never ends a page that a next call would
-//! continue: that call would start after the last item given, and a read
-//! that failed on a fault of the tree's order (a cursor that would go back,
-//! `om_store::tree::Cursor`) is not met again from there, so the items
-//! after it would be left out without an error (review of #1166). A
-//! download that is going to fail fails.
+//! before it ([`ReadError::Unreadable`]). It never ends a page that a next
+//! call would continue: that call would start after the last item given,
+//! and a read that failed on a fault of the tree's order (a cursor that
+//! would go back, `om_store::tree::Cursor`) is not met again from there, so
+//! the items after it would be left out without an error (review of
+//! #1166). A download that is going to fail fails. The look past a full
+//! page of children, which asks only whether more follow, fails for the
+//! child it looks at and not for those before it (#1200): it reads no
+//! child's value (`om_store::tree::Children::more`), so a value that
+//! cannot be read fails the page that gives that child; and when the look
+//! cannot read a page at all (missing, unreadable, damaged, or not the
+//! page and version its parent names), the page answers that more follow,
+//! since the next call reads that page again before it gives anything and
+//! fails there (`met_again`). A fault of order, or of any other check of
+//! the tree's own, met by the look still fails the call.
 //!
 //! **Import.** [`import`] reads an `.fmp12` with `om_hbam`'s streaming
 //! reader ([`NodeStream`]) and puts every node, with its kind and value,
@@ -121,15 +129,16 @@ use std::sync::{Mutex, PoisonError};
 use om_hbam::stream::NodeStream;
 use om_hbam::writer::{index_entry_cost, MAX_INDEX_ENTRY, MAX_INLINE_VALUE};
 use om_hbam::OwnedNode;
-use om_store::page::{EntryPages, MemStore, PageStore, Root, TreeName};
+use om_store::page::{EntryPages, Fault, MemStore, PageFault, PageStore, Root, TreeName};
 use om_store::tree::{self, key, Cursor, Edit, Node, Place, Tree};
 
 use super::export::{self, ExportError, Exported, Progress, Target};
 use super::view::{owned_path, Child, Direction, Head, ReadError, Step, Version, View, NO_LIMIT};
 
 /// One version of a file's tree in a page store (the module doc). A call
-/// whose read fails fails, whatever it has given before it (the module
-/// doc, "A read that fails partway").
+/// whose read fails fails, whatever it has given before it, but for a look
+/// past a full page that could not read a page (the module doc, "A read
+/// that fails partway").
 pub struct PagedView<'s, S: ?Sized> {
     /// The version, its root page read and checked once, at the open.
     tree: Tree<'s, S>,
@@ -394,6 +403,52 @@ fn unreadable(path: &[&[u8]], error: &tree::Error) -> ReadError {
     }
 }
 
+/// Whether more children follow a full page of `given` (the module doc, "A
+/// read that fails partway"), from the look past its last child, `looked`
+/// ([`tree::Children::more`]), which reads no child's value. A look that
+/// could not read a page ([`met_again`]) answers that more follow when the
+/// page gave a child, and leaves the failure to the next call; any other
+/// failure, a fault of order among them, fails the call.
+fn more_after(
+    looked: Result<bool, tree::Error>,
+    path: &[&[u8]],
+    given: usize,
+) -> Result<bool, ReadError> {
+    match looked {
+        Ok(more) => Ok(more),
+        Err(e) if given > 0 && met_again(&e) => Ok(true),
+        Err(e) => Err(unreadable(path, &e)),
+    }
+}
+
+/// Whether the next page of a listing is certain to meet `error`, which a
+/// look past a full page met, rather than leave out what lies past it: a
+/// page the store does not have, could not read, or whose bytes do not
+/// check or are not the page and version its parent names
+/// (`om_store::page::Fault`). The next page starts with the seek the look
+/// made, from the same bound, and a seek makes the choices of a descent
+/// from the root wherever it starts (`om_store::tree::Place`): it goes
+/// down to the same leaf, compares the same items there and goes on to
+/// the same next leaf, so it reads that page again before it gives a
+/// child, and fails there; or, after a read that failed once and not
+/// again, it reads on to the child the look went for. A fault of
+/// order (an item that does not move on, `om_store::tree::Cursor`) is
+/// `Fault::Malformed`, as every other fault of the tree's own checks is;
+/// those fail the call.
+fn met_again(error: &tree::Error) -> bool {
+    matches!(
+        error,
+        tree::Error::Page(PageFault {
+            fault: Fault::Missing
+                | Fault::Io(_)
+                | Fault::Damaged
+                | Fault::Misplaced { .. }
+                | Fault::Stale { .. },
+            ..
+        })
+    )
+}
+
 /// A subtree whose keys do not make a tree: a node without its parent.
 fn orphan(path: &[&[u8]]) -> ReadError {
     ReadError::Unreadable {
@@ -478,12 +533,7 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
                     Some(Err(e)) => break 'page Err(unreadable(path, &e)),
                 }
             }
-            // A full page: more follow if another child does.
-            match children.next() {
-                None => Ok(false),
-                Some(Ok(_)) => Ok(true),
-                Some(Err(e)) => Err(unreadable(path, &e)),
-            }
+            more_after(children.more(), path, max)
         };
         // Kept at the first child given, where a reader of the children's
         // entries starts; the walk of the last entry ends where the next
@@ -519,11 +569,7 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
                 Err(e) => return Err(e),
             }
         }
-        match children.next() {
-            None => Ok(false),
-            Some(Ok(_)) => Ok(true),
-            Some(Err(e)) => Err(unreadable(path, &e)),
-        }
+        more_after(children.more(), path, max)
     }
 
     fn walk_page<'v>(
