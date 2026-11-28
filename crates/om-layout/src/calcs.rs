@@ -1,8 +1,8 @@
 //! Calculations a layout object keeps outside its protobuf, in the layout's
 //! object attribute catalog `4/5/<layout>/5/<object>` (layout-model.md 5.5,
 //! calc-encoding.md 8). Each is a stored formula node (children 4 context,
-//! 5 formatted, 6 Polish); only the context and the Polish stream are
-//! decoded, as FileMaker evaluates only those.
+//! 5 formatted, 6 Polish). Evaluation reads the context and Polish stream;
+//! the Layout canvas also uses the formatted web address for its caption.
 //!
 //! | key | calculation |
 //! |---|---|
@@ -41,6 +41,9 @@ pub const ACTIVE_SEGMENT: u64 = 142;
 /// not decode.
 const WEB_ADDRESS: &[u8] = &[0, 0];
 const WEB_ADDRESS_FORMULA: u64 = 5;
+/// Bound the optional display stream, as the web-address authoring path
+/// bounds the bytes it accepts. A missing caption never prevents evaluation.
+const MAX_WEB_ADDRESS_SOURCE_BYTES: usize = 64 * 1024;
 /// `KFilter`, a portal's row filter: its attribute key, also when its
 /// formula does not decode ([`ObjectCalcs::undecodable`]).
 pub const PORTAL_FILTER: u64 = 37;
@@ -78,6 +81,9 @@ pub struct ObjectCalcs {
     pub active_segment: Option<Formula>,
     /// A web viewer's web address, evaluated on the object's record.
     pub web_address: Option<Formula>,
+    /// The formatted web address, decoded independently of the executable
+    /// formula so Layout mode can show it even if evaluation is unavailable.
+    pub web_address_source: Option<Vec<om_formula::Token>>,
     /// Evaluated in the parent layout context with each portal record as
     /// `Context::portal` (calc-encoding.md 8).
     pub portal_filter: Option<Formula>,
@@ -175,11 +181,14 @@ pub(crate) fn decode(attr: &om_hbam::Node<'_>, flags: u64, has_text: bool) -> Ob
     calcs.placeholder = take(attr.get(PLACEHOLDER), PLACEHOLDER);
     calcs.hide = take(attr.get(HIDE), HIDE);
     calcs.active_segment = take(attr.get(ACTIVE_SEGMENT), ACTIVE_SEGMENT);
-    calcs.web_address = take(
-        attr.child(WEB_ADDRESS)
-            .and_then(|node| node.get(WEB_ADDRESS_FORMULA)),
-        0,
-    );
+    let web_address = attr
+        .child(WEB_ADDRESS)
+        .and_then(|node| node.get(WEB_ADDRESS_FORMULA));
+    calcs.web_address = take(web_address, 0);
+    calcs.web_address_source = web_address
+        .and_then(|node| node.get(5))
+        .and_then(|node| node.assembled_at_most(MAX_WEB_ADDRESS_SOURCE_BYTES))
+        .and_then(|bytes| om_formula::formatted::decode(&bytes).ok());
     calcs.portal_filter = take(attr.get(PORTAL_FILTER), PORTAL_FILTER);
     calcs.button_icon = take(attr.get(BUTTON_ICON), BUTTON_ICON);
     calcs.portal_sort = attr
@@ -308,30 +317,61 @@ mod tests {
     #[test]
     fn a_web_viewers_address_is_the_formula_under_the_two_byte_key() {
         // As the Contacts template's web viewer stores it: `00 00` (one
-        // segment of two bytes), then the formula node 5 with its context
-        // and Polish children.
-        let mut tree = KeyTree::default();
+        // segment of two bytes), then the formula node 5 with its context,
+        // formatted source and Polish children.
         let object: Vec<KeySegment<'_>> = [4u8, 5, 1, 5, 7]
             .iter()
             .map(std::slice::from_ref)
             .map(KeySegment)
             .collect();
-        let polish = compile("\"https://\" & Score");
-        const CHILDREN: [u8; 2] = [4, 6];
-        for (child, value) in CHILDREN.iter().zip([&[3, 0xd0, 0, 2][..], &polish]) {
-            let mut path = object.clone();
-            path.extend([
-                KeySegment(&[0, 0]),
-                KeySegment(&[5]),
-                KeySegment(std::slice::from_ref(child)),
-            ]);
-            tree.insert(&path, ChunkKind::Leaf, Some(value)).unwrap();
+        let compiled = om_formula::compile(
+            "\"https://example.com\"",
+            &om_formula::Context::new(&om_formula::NoNames),
+        )
+        .unwrap();
+        let polish = polish::encode(&compiled.expr);
+        let formatted = om_formula::formatted::encode(&compiled.tokens);
+        const CHILDREN: [u8; 3] = [4, 5, 6];
+        for (source, stored_polish, expected) in [
+            (
+                formatted.as_slice(),
+                polish.as_slice(),
+                Some(compiled.tokens.as_slice()),
+            ),
+            // A damaged display stream must not change Browse evaluation.
+            (&[0xff][..], polish.as_slice(), None),
+            // A damaged executable stream must not hide the source.
+            (
+                formatted.as_slice(),
+                &[][..],
+                Some(compiled.tokens.as_slice()),
+            ),
+        ] {
+            let mut tree = KeyTree::default();
+            for (child, value) in CHILDREN
+                .iter()
+                .zip([&[3, 0xd0, 0, 2][..], source, stored_polish])
+            {
+                let mut path = object.clone();
+                path.extend([
+                    KeySegment(&[0, 0]),
+                    KeySegment(&[5]),
+                    KeySegment(std::slice::from_ref(child)),
+                ]);
+                tree.insert(&path, ChunkKind::Leaf, Some(value)).unwrap();
+            }
+            let calcs = decode(tree.at(&[4, 5, 1, 5, 7]).unwrap(), 0, false);
+            assert_eq!(calcs.web_address_source.as_deref(), expected);
+            if stored_polish.is_empty() {
+                assert!(calcs.web_address.is_none());
+                assert_eq!(calcs.undecodable, [0]);
+            } else {
+                let address = calcs.web_address.as_ref().unwrap();
+                assert_eq!(address.occurrence(), Some(0xd0_0002));
+                assert_eq!(polish::encode(&address.polish), polish);
+                assert!(calcs.undecodable.is_empty());
+            }
         }
-        let calcs = decode(tree.at(&[4, 5, 1, 5, 7]).unwrap(), 0, false);
-        let address = calcs.web_address.as_ref().unwrap();
-        assert_eq!(address.occurrence(), Some(0xd0_0002));
-        assert_eq!(polish::encode(&address.polish), polish);
-        assert!(calcs.undecodable.is_empty());
 
         // A one-byte key 0 is something else.
         let mut other = KeyTree::default();

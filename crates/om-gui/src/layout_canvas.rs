@@ -1269,7 +1269,7 @@ pub(crate) fn show(
     ui: &mut Ui,
     session: &Session,
     tool: LayoutTool,
-    fields: &[FieldChoice],
+    (fields, schema): (&[FieldChoice], Option<&om_data::host::CalcSchema>),
     state: &mut CanvasState,
     frozen: bool,
     document: &mut DocumentState,
@@ -1300,7 +1300,7 @@ pub(crate) fn show(
                 }
             }
             let factor = state.shown_zoom.factor();
-            let (design, scroll) = document.design_surface(session);
+            let (design, scroll) = document.design_surface(session, schema);
             zoom::show(ui, ui.available_size() / factor, factor, |ui| {
                 let unsaved = state.unsaved();
                 let selected_popovers =
@@ -3601,7 +3601,7 @@ mod tests {
                         ui,
                         &session,
                         LayoutTool::Selection,
-                        &[],
+                        (&[], None),
                         state,
                         false,
                         document,
@@ -3740,7 +3740,7 @@ mod tests {
                     ui,
                     &session,
                     LayoutTool::Selection,
-                    &[],
+                    (&[], None),
                     state,
                     false,
                     document,
@@ -3864,7 +3864,7 @@ mod tests {
                         ui,
                         session,
                         LayoutTool::Selection,
-                        &[],
+                        (&[], None),
                         state,
                         false,
                         document,
@@ -4019,7 +4019,7 @@ mod tests {
                         ui,
                         &session,
                         LayoutTool::Selection,
-                        &[],
+                        (&[], None),
                         state,
                         false,
                         document,

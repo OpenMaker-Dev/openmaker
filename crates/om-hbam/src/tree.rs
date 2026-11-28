@@ -63,15 +63,20 @@ impl<'a> Node<'a> {
     /// characters, 4; common in record data, file-metadata.md 6.3). Returns
     /// `None` for a node that is neither a plain value nor that pattern.
     pub fn assembled(&self) -> Option<Cow<'a, [u8]>> {
+        self.assembled_at_most(usize::MAX)
+    }
+
+    /// Like [`Self::assembled`], with a byte limit checked before allocation.
+    pub fn assembled_at_most(&self, limit: usize) -> Option<Cow<'a, [u8]>> {
         if let Some(v) = self.value {
-            return Some(Cow::Borrowed(v));
+            return (v.len() <= limit).then_some(Cow::Borrowed(v));
         }
         let (header, pieces) = self.children.split_first()?;
         let header_value = header.value.filter(|v| is_chunk_header(v))?;
         if header.id() != Some(0) || !header.children.is_empty() {
             return None;
         }
-        join_pieces(header_value, pieces).map(Cow::Owned)
+        join_pieces(header_value, pieces, limit).map(Cow::Owned)
     }
 
     /// The value as FileMaker text: XOR 0x5A masked SCSU (file-format.md 3.5).
@@ -142,8 +147,11 @@ fn is_chunk_header(value: &[u8]) -> bool {
 /// (op70) or an upload (op88), so nothing is reserved until the pieces
 /// present are known to add up to it: a header claiming 4 GiB with no
 /// pieces behind it must not reserve 4 GiB.
-fn join_pieces<N: WireNode>(header: &[u8], pieces: &[N]) -> Option<Vec<u8>> {
-    let total = u32::from_be_bytes(*header.first_chunk()?);
+fn join_pieces<N: WireNode>(header: &[u8], pieces: &[N], limit: usize) -> Option<Vec<u8>> {
+    let total = u32::from_be_bytes(*header.first_chunk()?) as usize;
+    if total > limit {
+        return None;
+    }
     let mut len = 0usize;
     for (n, piece) in pieces.iter().enumerate() {
         if crate::serial::decode(piece.segment()) != Some(n as u64 + 1)
@@ -153,7 +161,7 @@ fn join_pieces<N: WireNode>(header: &[u8], pieces: &[N]) -> Option<Vec<u8>> {
         }
         len = len.checked_add(piece.value()?.len())?;
     }
-    if len != total as usize {
+    if len != total {
         return None;
     }
     let mut out = Vec::with_capacity(len);
@@ -430,7 +438,7 @@ impl OwnedNode {
         if header.segment != [0] || !header.children.is_empty() {
             return None;
         }
-        join_pieces(header_value, pieces).map(Cow::Owned)
+        join_pieces(header_value, pieces, usize::MAX).map(Cow::Owned)
     }
 
     /// Insert or replace the child `node` (by segment), keeping key order.
@@ -918,6 +926,8 @@ mod tests {
         let tree = KeyTree::from_slots(SlotReader::new(&twelve)).unwrap();
         let node = tree.at(&[3]).unwrap();
         assert_eq!(node.text().unwrap().unwrap(), "a\rb");
+        assert!(node.assembled_at_most(text.len() - 1).is_none());
+        assert_eq!(node.assembled_at_most(text.len()).unwrap(), text);
         assert_eq!(node.to_owned_node().assembled().unwrap(), text);
         // Other header sizes are not chunked values.
         let ten = chunked(vec![0, 0, 0, 3, 0, 0, 0, 3, 0, 0]);

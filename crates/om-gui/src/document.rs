@@ -834,9 +834,10 @@ impl DocumentState {
     pub(crate) fn design_surface<'a>(
         &'a mut self,
         session: &'a Session,
+        schema: Option<&'a om_data::host::CalcSchema>,
     ) -> (Option<design::Surface<'a>>, &'a mut scroll::Scroll) {
         (
-            design::Surface::new(session, &self.layout_cache),
+            design::Surface::new(session, &self.layout_cache, schema),
             &mut self.scroll,
         )
     }
