@@ -2392,8 +2392,9 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   so as to leave the desktop alone), and `tests/web_viewer_windows_native.rs`
   reads a second window's List rows' colors from the system's
   `screencapture`.
-- On a Linux Wayland session, when the page host is beside the program (or
-  anywhere with `OPENMAKER_WEB_VIEWER_BACKEND=wayland`), the Wayland backend
+- On a Linux Wayland session whose display answers, when a page host that
+  can be run is beside the program (or anywhere with
+  `OPENMAKER_WEB_VIEWER_BACKEND=wayland`), the Wayland backend
   (`web_viewer/wayland.rs`) draws the pages: the build keeps its windows
   where winit puts them (native Wayland windows on a Wayland session), and
   no view is a window:
@@ -2500,8 +2501,10 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   the page and choosing with Down and Return. An input method, and the
   session's keymap, were not tried (Xvfb has neither).
 - The X11 backend draws the pages on an X11 session, with
-  `OPENMAKER_WEB_VIEWER_BACKEND=x11`, or on a Wayland session without the
-  page host. Its views can only be children of X11 windows, so the build
+  `OPENMAKER_WEB_VIEWER_BACKEND=x11`, or on a Wayland session without a
+  page host that can be run, or whose display does not answer (a
+  `WAYLAND_DISPLAY` left from a compositor that went). A page host that is
+  there but fails to start leaves the web viewers showing a note. Its views can only be children of X11 windows, so the build
   puts its windows on winit's X11 backend whenever an X server answers at
   startup (`om_gui::native_options`); on a Wayland session that is
   XWayland. When no X server answers (XWayland turned off), or a

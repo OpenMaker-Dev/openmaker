@@ -254,8 +254,9 @@ pub(crate) struct PageTexture {
 
 /// Whether pages are textures Browse paints (the Wayland backend) rather
 /// than native views over the window, on Linux with the `web-viewer`
-/// feature: decided once, from the environment. On a Wayland session
-/// (`WAYLAND_DISPLAY`) with the page host beside the program, yes;
+/// feature: decided once, from the environment, before the windows' own
+/// backend is chosen (`native_options`), so that both agree. On a Wayland
+/// session that answers, with a page host that can be run, yes;
 /// `OPENMAKER_WEB_VIEWER_BACKEND` chooses otherwise (`x11` for the X11
 /// backend, through XWayland on a Wayland session; `wayland` anywhere).
 pub(crate) fn composited() -> bool {
@@ -266,10 +267,7 @@ pub(crate) fn composited() -> bool {
             || match std::env::var("OPENMAKER_WEB_VIEWER_BACKEND").as_deref() {
                 Ok("wayland") => true,
                 Ok("x11") => false,
-                _ => {
-                    std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty())
-                        && wayland::host_available()
-                }
+                _ => wayland::session_answers() && wayland::host_available(),
             },
         )
     }

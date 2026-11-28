@@ -38,7 +38,8 @@ in [architecture.md](architecture.md).
 ```sh
 cargo run -p om-gui                                  # desktop client
 OPENMAKER_PROVIDER=mock cargo run -p om-gui          # labeled sample data, no server
-cargo run -p om-gui --features web-viewer            # with embedded web viewers (Linux: painted on Wayland, child windows on X11; macOS)
+cargo build -p om-gui --features web-viewer          # with embedded web viewers: om-gui and its page host, om-gui-webview
+cargo run -p om-gui --features web-viewer            # then run it (Linux: painted on Wayland, child windows on X11; macOS)
 cargo run -p om-server -- --list-all <file.fmp12>... # OpenMaker Server (see Hosting a file below)
 OM_ADMIN_PASSWORD=<password> cargo run -p om-admin --example mock_console  # Admin Console on sample data, https://localhost:16000
 cargo run -p om-client                               # protocol probe: prints isa/connect/open/login/files usage
@@ -62,8 +63,11 @@ host without its own).
 With `--features web-viewer`, `cargo build -p om-gui` also builds the page
 host of the Wayland web viewer backend, `om-gui-webview`, which `om-gui`
 runs from beside itself on a Wayland session (`web_viewer::host`); the
-package installs it. Without it a Wayland session uses the X11 backend,
-through XWayland.
+package installs it. `cargo run` builds only `om-gui`, so build first.
+Without the page host, or when the session's Wayland display does not
+answer, a Wayland session uses the X11 backend, through XWayland. A page
+host that is there but fails to start leaves the web viewers showing a
+note; `OPENMAKER_WEB_VIEWER_BACKEND=x11` chooses the X11 backend then.
 
 **Desktop client.** **File > Open...** opens a `.fmp12` file on this
 computer through a private embedded host (no server or license needed);

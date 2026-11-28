@@ -180,13 +180,32 @@ pub(crate) fn host_available() -> bool {
     host_program().is_some()
 }
 
-/// The host program to run, if there is one.
-fn host_program() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os(HOST_VARIABLE) {
-        return Some(PathBuf::from(path));
+/// Whether the session's Wayland display answers, where winit would open
+/// the windows: a `WAYLAND_DISPLAY` left from a compositor that went must
+/// not turn the windows from an X server that answers to none. A
+/// `WAYLAND_SOCKET` is a connection made for the program, which only winit
+/// may take; it counts as answering.
+pub(crate) fn session_answers() -> bool {
+    if std::env::var_os("WAYLAND_SOCKET").is_some_and(|s| !s.is_empty()) {
+        return true;
     }
-    let program = std::env::current_exe().ok()?.with_file_name(HOST_PROGRAM);
-    program.is_file().then_some(program)
+    std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty())
+        && wayland_client::Connection::connect_to_env().is_ok()
+}
+
+/// The host program to run, if there is one: a file that may be executed,
+/// the variable's or the one beside the program. One that is there but
+/// cannot start fails the web viewers with a note
+/// (`OPENMAKER_WEB_VIEWER_BACKEND=x11` chooses the X11 backend instead).
+fn host_program() -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let program = match std::env::var_os(HOST_VARIABLE) {
+        Some(path) => PathBuf::from(path),
+        None => std::env::current_exe().ok()?.with_file_name(HOST_PROGRAM),
+    };
+    let executable = std::fs::metadata(&program)
+        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0);
+    executable.then_some(program)
 }
 
 /// A size in points from one in pixels.

@@ -869,7 +869,9 @@ fn main() {
             .with_title("OpenMaker web viewer windows test")
             .with_inner_size([900.0, 600.0])
             .with_position([0.0, 0.0]),
-        ..Default::default()
+        // The app's own options, which put the windows on X11 for the X11
+        // backend, also with a `WAYLAND_DISPLAY` inherited from a session.
+        ..om_gui::native_options()
     };
     let result = eframe::run_native(
         "OpenMaker web viewer windows test",
