@@ -428,9 +428,18 @@ fn a_painted_page_with_the_keyboard_takes_the_window_keys() {
     );
     // The window losing the keyboard lets go of every key the page holds
     // (their releases go to another window).
+    // Also a key pressed in the same frame, before the window lost it:
+    // the page hears the press, then lets go of it.
+    let pressed = egui::Event::Key {
+        key: egui::Key::B,
+        physical_key: Some(egui::Key::B),
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    };
     let mut output = ctx.run_ui(
         egui::RawInput {
-            events: vec![egui::Event::WindowFocused(false)],
+            events: vec![pressed, egui::Event::WindowFocused(false)],
             ..Default::default()
         },
         |ui| {
@@ -438,7 +447,17 @@ fn a_painted_page_with_the_keyboard_takes_the_window_keys() {
         },
     );
     output.textures_delta.clear();
-    assert_eq!(commands(&recorded), ["input 1 Unfocused".to_owned()]);
+    let sent = commands(&recorded);
+    assert_eq!(
+        sent.iter().take(2).collect::<Vec<_>>(),
+        [
+            &format!(
+                "input 1 Key {{ code: 48, pressed: true, held: {} }}",
+                held(&[])
+            ),
+            &"input 1 Unfocused".to_owned(),
+        ]
+    );
     // Another window's frame takes nothing.
     assert!(!viewers.take_keys(&ctx, 2));
 }

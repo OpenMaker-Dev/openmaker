@@ -1100,12 +1100,6 @@ impl WebViewers {
                 Some(_) => {}
             }
         });
-        let unfocused = ctx.input(|input| {
-            input
-                .events
-                .iter()
-                .any(|event| matches!(event, egui::Event::WindowFocused(false)))
-        });
         let (events, modifiers) = ctx.input_mut(|input| {
             let mut taken = Vec::new();
             input.events.retain(|event| {
@@ -1118,7 +1112,10 @@ impl WebViewers {
                         | egui::Event::Cut
                         | egui::Event::Paste(_)
                 );
-                if page {
+                // The window losing the keyboard is the page's too, in its
+                // place among the keys (egui keeps it as well).
+                let unfocused = matches!(event, egui::Event::WindowFocused(false));
+                if page || unfocused {
                     taken.push(event.clone());
                 }
                 !page
@@ -1128,9 +1125,6 @@ impl WebViewers {
         let Some(Ok(backend)) = self.backend.as_mut() else {
             return true;
         };
-        if unfocused {
-            backend.input(view, PageInput::Unfocused);
-        }
         let any = !events.is_empty();
         for event in events {
             let command = |key| keys::code(key).map(|code| (code, vec![keys::CONTROL]));
@@ -1150,6 +1144,7 @@ impl WebViewers {
                     Some(PageInput::Preedit(text))
                 }
                 egui::Event::Ime(egui::ImeEvent::Commit(text)) => Some(PageInput::Commit(text)),
+                egui::Event::WindowFocused(false) => Some(PageInput::Unfocused),
                 egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_) => {
                     let key = match event {
                         egui::Event::Copy => egui::Key::C,
