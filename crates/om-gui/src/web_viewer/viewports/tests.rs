@@ -1,6 +1,7 @@
 //! The other viewports' native windows in eframe's real event loop under an
 //! X server (skipped without one): the assumptions `ViewportWindows` rests
-//! on hold for the eframe and winit versions the app uses.
+//! on hold for the eframe and winit versions the app uses. And the script
+//! these tests run under (`tools/xvfb-run.sh`) keeps its display private.
 
 use std::sync::{Arc, Mutex};
 
@@ -38,9 +39,17 @@ fn x11(parent: &Result<NativeParent, Unavailable>) -> Option<u32> {
 /// viewport keeps its own.
 #[test]
 fn immediate_viewports_get_their_own_x11_windows() {
-    if std::env::var_os("DISPLAY").is_none() {
+    let Some(display) = std::env::var_os("DISPLAY") else {
         eprintln!("skipped: no X display");
         return;
+    };
+    // A display set but gone is the environment's fault, as when
+    // `xvfb-run -a` gave it to two jobs and the other one stopped it.
+    if let Err(e) = x11rb::connect(None) {
+        panic!(
+            "the X display {display:?} cannot be opened ({e}): run under \
+             tools/xvfb-run.sh (docs/development.md, Checks)"
+        );
     }
     let seen = Arc::new(Mutex::new(Seen::default()));
     let record = Arc::clone(&seen);
@@ -138,4 +147,41 @@ fn immediate_viewports_get_their_own_x11_windows() {
         TITLES.map(|t| Some(t.to_owned())).to_vec(),
         "each window titled as its viewport"
     );
+}
+
+/// `tools/xvfb-run.sh -s` takes screen settings only: an Xvfb option that
+/// opens the private display to clients without its cookie (`-ac`, `+ac`,
+/// another `-auth`), to more listeners, or that moves it off its locked
+/// number is refused before any Xvfb starts.
+#[test]
+fn the_display_script_refuses_options_that_open_its_display() {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools/xvfb-run.sh");
+    for screen in [
+        "-screen 0 800x600x24 -ac",
+        "+ac",
+        "-auth /tmp/other",
+        "-listen tcp",
+        "-nolisten local",
+        ":5",
+        "-displayfd 3",
+        "-nolock",
+        "-screen 0 800x600x24 -extension MIT-SHM",
+        "   ",
+        "-dpi 96x24",
+        "-screen 0",
+        "-screen 0 800x",
+        "-screen 0 800x600",
+        "-screen x 800x600",
+    ] {
+        let out = std::process::Command::new("sh")
+            .args([script, "-s", screen, "true"])
+            .output()
+            .expect("sh runs the script");
+        assert_eq!(out.status.code(), Some(2), "{screen}: {out:?}");
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            said.contains("-s takes only -screen and -dpi"),
+            "{screen}: {said}"
+        );
+    }
 }

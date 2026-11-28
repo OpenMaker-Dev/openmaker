@@ -16,9 +16,9 @@
 //!   its rows' pages are views of the app's window where that egui window
 //!   shows them. It lies over the app's own page, which hides.
 //!
-//! `xvfb-run -a -s "-screen 0 1920x1200x24" cargo test -p om-gui --features
+//! `tools/xvfb-run.sh -s "-screen 0 1920x1200x24" cargo test -p om-gui --features
 //! web-viewer --test web_viewer_windows_native` on Linux (the windows lie
-//! side by side), skipped without a display; the same without `xvfb-run` on
+//! side by side), skipped without a display; the same without the script on
 //! macOS, which opens two windows and reads the pages' colors from the
 //! system's `screencapture` of each. With `OM_WEB_VIEWER_SHOTS` set to a
 //! directory, each window is saved there as PNG.
@@ -287,7 +287,7 @@ mod native {
         /// Connect to the X server; `None` without a display.
         pub fn start() -> Option<Self> {
             if std::env::var_os("DISPLAY").is_none() {
-                println!("skipped: no X display (run under xvfb-run)");
+                println!("skipped: no X display (run under tools/xvfb-run.sh)");
                 return None;
             }
             let (x11, screen) = x11rb::connect(None).expect("X display");

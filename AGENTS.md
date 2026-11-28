@@ -127,8 +127,8 @@ new `#[ignore]` states its inputs: `#[ignore = "requires ..."]`.
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
-cargo test -p <crates you touched>                         # while iterating
-xvfb-run -a cargo test --locked --workspace --no-fail-fast # before a pull request
+cargo test -p <crates you touched>                               # while iterating
+tools/xvfb-run.sh cargo test --locked --workspace --no-fail-fast # before a pull request
 ```
 
 A pull request that touches `om-server` also builds it in release, with no

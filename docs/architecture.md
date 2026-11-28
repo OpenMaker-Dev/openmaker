@@ -221,7 +221,7 @@ FileMaker wherever possible:
   (`docs/re/catalogs/`, `crates/*/tests/data/`).
 - **In-process server.** End-to-end tests host a file on an in-process
   `om-server` and drive it with the real client stack, including the GUI
-  under `xvfb-run`.
+  under Xvfb (`tools/xvfb-run.sh`).
 
 See [development.md](development.md) for how to run each kind, and
 [AGENTS.md](../AGENTS.md) for when to add a test at all.
