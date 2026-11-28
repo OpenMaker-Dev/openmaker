@@ -26,6 +26,11 @@ struct Follow {
 /// Follow the session's keymap on a thread of its own, sending each to
 /// `display`; nothing when there is no Wayland session to ask.
 pub(crate) fn follow(display: Sender<Request>) {
+    // A `WAYLAND_SOCKET` is the one connection made for the program, which
+    // winit took: a second client on it would break the app's own.
+    if std::env::var_os("WAYLAND_SOCKET").is_some() {
+        return;
+    }
     let Ok(connection) = Connection::connect_to_env() else {
         return;
     };

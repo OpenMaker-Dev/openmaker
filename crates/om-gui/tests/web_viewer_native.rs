@@ -623,6 +623,9 @@ mod native {
             // fail, so the app's own options must put its windows on X11
             // (XWayland in a real session).
             std::env::set_var("WAYLAND_DISPLAY", "openmaker-test-no-such-wayland");
+            // There the Wayland backend is the default: this test is the
+            // X11 backend's, which the variable chooses.
+            std::env::set_var("OPENMAKER_WEB_VIEWER_BACKEND", "x11");
             let (x11, screen) = x11rb::connect(None).expect("X display");
             let root = x11.setup().roots[screen].root;
             Some(Native { x11, root })

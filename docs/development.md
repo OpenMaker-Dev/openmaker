@@ -18,8 +18,11 @@ in [architecture.md](architecture.md).
 - **Optional:**
   - Web viewers (`--features web-viewer`): WebKitGTK 4.1 and GTK 3
     development files and `pkg-config` (Debian/Ubuntu:
-    `libwebkit2gtk-4.1-dev`). On a Wayland session they also need
-    XWayland and the X11 libraries winit opens (Debian/Ubuntu:
+    `libwebkit2gtk-4.1-dev`). On a Wayland session the pages are drawn by
+    the page host, `om-gui-webview`, built and packaged with the program
+    (below). The X11 backend (an X11 session, or
+    `OPENMAKER_WEB_VIEWER_BACKEND=x11` on a Wayland session) needs an X
+    server and the X11 libraries winit opens (Debian/Ubuntu:
     `libxkbcommon-x11-0`, `libx11-xcb1`, `libxcursor1`, `libxi6`).
     Without them the windows stay on Wayland and web viewers show a note.
     On macOS they use the system's WKWebView, with nothing to install.
@@ -35,7 +38,8 @@ in [architecture.md](architecture.md).
 ```sh
 cargo run -p om-gui                                  # desktop client
 OPENMAKER_PROVIDER=mock cargo run -p om-gui          # labeled sample data, no server
-cargo run -p om-gui --features web-viewer            # with embedded web viewers (Linux: X11, or XWayland on Wayland; macOS)
+cargo build -p om-gui --features web-viewer          # with embedded web viewers: om-gui and its page host, om-gui-webview
+cargo run -p om-gui --features web-viewer            # then run it (Linux: painted on Wayland, child windows on X11; macOS)
 cargo run -p om-server -- --list-all <file.fmp12>... # OpenMaker Server (see Hosting a file below)
 OM_ADMIN_PASSWORD=<password> cargo run -p om-admin --example mock_console  # Admin Console on sample data, https://localhost:16000
 cargo run -p om-client                               # protocol probe: prints isa/connect/open/login/files usage
@@ -58,9 +62,14 @@ host without its own).
 
 With `--features web-viewer`, `cargo build -p om-gui` also builds the page
 host of the Wayland web viewer backend, `om-gui-webview`, which `om-gui`
-runs from beside itself when `OPENMAKER_WEB_VIEWER_BACKEND=wayland`
-(`web_viewer::host`); the package installs it. Without it that backend's
-web viewers show "Web viewer: unavailable on this display."
+runs from beside itself on a Wayland session (`web_viewer::host`); the
+package installs it. `cargo run` builds only `om-gui`, so build first.
+Without the page host, or when the session's Wayland display does not
+answer, a Wayland session uses the X11 backend, through XWayland. Without
+XWayland either, the windows stay on Wayland and the web viewers show a
+note. A page host that is there but fails to start also leaves them
+showing a note; `OPENMAKER_WEB_VIEWER_BACKEND=x11` then chooses the X11
+backend, which needs XWayland.
 
 **Desktop client.** **File > Open...** opens a `.fmp12` file on this
 computer through a private embedded host (no server or license needed);
@@ -75,9 +84,9 @@ environment variables:
 | `OPENMAKER_CLIENT_CERT`, `OPENMAKER_CLIENT_KEY` | PEM client identity (default: an in-memory one is generated) |
 | `OPENMAKER_CA_CERT` | Extra trusted certificate: a private CA's, or a server's self-signed one |
 | `WEBKIT_DISABLE_DMABUF_RENDERER`, `WEBKIT_DMABUF_RENDERER_FORCE_SHM` | Either one overrides OpenMaker's choice for web viewers' rendering: WebKitGTK's DMA-BUF renderer off on X servers without DRI3 (Xvfb, VNC), pages through shared memory on NVIDIA's driver |
-| `OPENMAKER_WEB_VIEWER_BACKEND` | `wayland`: a `web-viewer` build's pages are drawn by its page host and painted by the app, whose windows stay native on Wayland ([web viewers](re/layout-model.md#96-web-viewer)) |
+| `OPENMAKER_WEB_VIEWER_BACKEND` | A `web-viewer` build's Linux backend: `wayland` (the default on a Wayland session) has its page host draw the pages and the app paint them in native windows; `x11` has the pages in X11 child windows of the app's windows, through XWayland on a Wayland session ([web viewers](re/layout-model.md#96-web-viewer)) |
 | `OPENMAKER_WEB_VIEWER_HOST` | The page host program to run instead of `om-gui-webview` beside the program |
-| `WINIT_X11_SCALE_FACTOR` | The windows' scale on X11 (winit's), also for a web-viewer build on a Wayland session, which runs through XWayland: on a compositor that leaves X windows unstretched (Hyprland's `force_zero_scaling`), the desktop's scale would size them as native ones (not tried) ([web viewers](re/layout-model.md#96-web-viewer)) |
+| `WINIT_X11_SCALE_FACTOR` | The windows' scale on X11 (winit's), also for a web-viewer build with `OPENMAKER_WEB_VIEWER_BACKEND=x11` on a Wayland session, which runs through XWayland: on a compositor that leaves X windows unstretched (Hyprland's `force_zero_scaling`), the desktop's scale would size them as native ones (not tried) ([web viewers](re/layout-model.md#96-web-viewer)) |
 | `OPENMAKER_PDF_WORKER` | The PDF worker executable to use instead of the one beside the program (above) |
 | `OPENMAKER_USER_NAME` | `Get ( UserName )` and the session name, whatever Settings' User Name says |
 | `OPENMAKER_SETTINGS` | The settings file to read and write instead of the OS account's ([desktop-client](desktop-client.md#settings)) |

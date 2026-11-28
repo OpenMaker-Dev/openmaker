@@ -63,11 +63,12 @@ om-server = { path = "../om-server", default-features = false, features = ["sent
 # needs the WebKitGTK 4.1 and GTK 3 development files (Debian/Ubuntu:
 # libwebkit2gtk-4.1-dev) and pkg-config; running it, the WebKitGTK 4.1
 # runtime. Without it, web viewers show a note and their script steps fail.
-# On Linux its windows are on winit's X11 backend, also on a Wayland session,
-# unless OPENMAKER_WEB_VIEWER_BACKEND=wayland keeps them on Wayland: then the
-# pages are drawn by the page host (`om-gui-webview`, built with the feature)
-# on a display of the app's own (smithay) and painted as textures. On X11,
-# DRI3 tells which GPU driver the X server shares buffers with
+# On a Linux Wayland session the pages are drawn by the page host
+# (`om-gui-webview`, built with the feature) on a display of the app's own
+# (smithay) and painted as textures in native Wayland windows; on an X11
+# session, or with OPENMAKER_WEB_VIEWER_BACKEND=x11, the windows are on
+# winit's X11 backend (XWayland on a Wayland session) with child windows.
+# On X11, DRI3 tells which GPU driver the X server shares buffers with
 # (`web_viewer::gtk::prepare_environment`).
 web-viewer = ["dep:wry", "dep:gtk", "dep:gdkx11", "dep:webkit2gtk", "dep:javascriptcore-rs", "winit/x11", "dep:x11-dl", "dep:xkbcommon-dl", "dep:getrandom", "x11rb/dri3", "dep:smithay", "dep:wayland-client"]
 

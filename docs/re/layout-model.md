@@ -2392,9 +2392,12 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   so as to leave the desktop alone), and `tests/web_viewer_windows_native.rs`
   reads a second window's List rows' colors from the system's
   `screencapture`.
-- With `OPENMAKER_WEB_VIEWER_BACKEND=wayland` (opt-in for now,
-  `web_viewer/wayland.rs`), a Linux build keeps its windows where winit
-  puts them (Wayland on a Wayland session), and no view is a window:
+- On a Linux Wayland session whose display answers, when a page host that
+  can be run is beside the program (or anywhere with
+  `OPENMAKER_WEB_VIEWER_BACKEND=wayland`), the Wayland backend
+  (`web_viewer/wayland.rs`) draws the pages: the build keeps its windows
+  where winit puts them (native Wayland windows on a Wayland session), and
+  no view is a window:
   - **The page host.** WebKitGTK runs in `om-gui-webview`, a process of its
     own beside the program (or `OPENMAKER_WEB_VIEWER_HOST`), which takes
     the app's commands and sends its events as JSON lines on its stdin and
@@ -2435,7 +2438,9 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
       (`wayland/keymap.rs`). Elsewhere it is xkb's default. Only the
       keymap's first layout is used: the connection has no window, so the
       compositor never tells it which layout is active, and switching
-      layouts (US to Russian, say) is not followed.
+      layouts (US to Russian, say) is not followed. An app given a
+      `WAYLAND_SOCKET` and no `WAYLAND_DISPLAY` has no display to ask,
+      and keeps xkb's default.
     - **Edit keys.** egui's Copy and Cut reach the page as Ctrl and the
       keys that type c and x in the page's keymap (their US places unless
       its first layout has them elsewhere, as Dvorak does). A Paste puts
@@ -2497,11 +2502,17 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   keys typed in the page's text box, and a `<select>`'s list drawn below
   the page and choosing with Down and Return. An input method, and the
   session's keymap, were not tried (Xvfb has neither).
-- On Linux the X11 backend's views can only be children of X11 windows, so a build with
-  the feature puts its windows on winit's X11 backend whenever an X server
-  answers at startup (`om_gui::native_options`). On a Wayland session, where
-  winit would otherwise choose Wayland, that is XWayland, and no environment
-  variable is needed. When no X server answers (XWayland turned off), or a
+- The X11 backend draws the pages on an X11 session, with
+  `OPENMAKER_WEB_VIEWER_BACKEND=x11`, or on a Wayland session without a
+  page host that can be run, or whose display does not answer (a
+  `WAYLAND_DISPLAY` left from a compositor that went, or a `WAYLAND_SOCKET`
+  that is not a connected stream socket). A page host that is there but
+  fails to start leaves the web viewers showing a note;
+  `OPENMAKER_WEB_VIEWER_BACKEND=x11` chooses the X11 backend then, which
+  needs an X server. Its views can only be children of X11 windows, so the build
+  puts its windows on winit's X11 backend whenever an X server answers at
+  startup (`om_gui::native_options`); on a Wayland session that is
+  XWayland. When no X server answers (XWayland turned off), or a
   library that winit's X11 backend opens is missing (libX11, libX11-xcb,
   libXcursor, libXi, libxkbcommon-x11), the windows stay on Wayland, and
   every web viewer shows "Web viewer: unavailable on this display." Builds without the feature stay on native

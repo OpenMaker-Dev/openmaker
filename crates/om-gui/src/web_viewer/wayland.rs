@@ -1,4 +1,5 @@
-//! Web viewers in native Wayland windows (`OPENMAKER_WEB_VIEWER_BACKEND=wayland`):
+//! Web viewers in native Wayland windows (on a Wayland session, or with
+//! `OPENMAKER_WEB_VIEWER_BACKEND=wayland`):
 //! WebKitGTK draws the pages in the page host, a process of its own
 //! (`host.rs`) whose only display is one of the app's (`display.rs`), and
 //! Browse paints each view's newest frame as a texture inside its object,
@@ -174,13 +175,97 @@ pub(crate) struct WaylandBackend {
     budget: MessageBudget,
 }
 
-/// The host program to run, if there is one.
-fn host_program() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os(HOST_VARIABLE) {
-        return Some(PathBuf::from(path));
+/// Whether there is a host program to run.
+pub(crate) fn host_available() -> bool {
+    host_program().is_some()
+}
+
+/// Whether the session's Wayland display answers, where winit would open
+/// the windows: a `WAYLAND_DISPLAY` left from a compositor that went must
+/// not turn the windows from an X server that answers to none. A
+/// `WAYLAND_SOCKET` is a connection made for the program, which only winit
+/// may take: it counts as answering when it names a connected Unix stream
+/// socket (looked at, not taken), and as not answering otherwise, since
+/// winit, and any client, tries it before `WAYLAND_DISPLAY`. Whether the
+/// peer speaks Wayland is not asked: in safe Rust, talking on an inherited
+/// descriptor means owning it, and closing it after would leave winit
+/// nothing to connect with.
+pub(crate) fn session_answers() -> bool {
+    if let Some(socket) = std::env::var_os("WAYLAND_SOCKET").filter(|s| !s.is_empty()) {
+        return names_a_socket(&socket);
     }
-    let program = std::env::current_exe().ok()?.with_file_name(HOST_PROGRAM);
-    program.is_file().then_some(program)
+    std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty())
+        && wayland_client::Connection::connect_to_env().is_ok()
+}
+
+/// Whether `value` (a `WAYLAND_SOCKET`) is the number of a descriptor this
+/// process has open on a connected Unix stream socket: not a listening
+/// one, a datagram one, a socket of another family, or a file. The kernel
+/// says through `/proc`: the descriptor's socket inode, and that socket's
+/// type, state and flags in `/proc/net/unix`.
+fn names_a_socket(value: &std::ffi::OsStr) -> bool {
+    let Some(inode) = value
+        .to_str()
+        .and_then(|s| s.parse::<u32>().ok())
+        .and_then(|fd| std::fs::read_link(format!("/proc/self/fd/{fd}")).ok())
+        .and_then(|target| {
+            let target = target.to_string_lossy().into_owned();
+            target
+                .strip_prefix("socket:[")?
+                .strip_suffix(']')?
+                .parse::<u64>()
+                .ok()
+        })
+    else {
+        return false;
+    };
+    std::fs::read_to_string("/proc/net/unix").is_ok_and(|table| connected_stream(&table, inode))
+}
+
+/// Whether `/proc/net/unix`'s `table` lists socket `inode` as a connected
+/// stream socket that is not listening (`Flags`, `Type` and `St` in hex:
+/// `__SO_ACCEPTCON` 0x10000, `SOCK_STREAM` 1, `SS_CONNECTED` 3).
+fn connected_stream(table: &str, inode: u64) -> bool {
+    table.lines().skip(1).any(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        let hex = |i: usize| fields.get(i).and_then(|f| u32::from_str_radix(f, 16).ok());
+        fields.get(6).and_then(|f| f.parse::<u64>().ok()) == Some(inode)
+            && hex(3).is_some_and(|flags| flags & 0x1_0000 == 0)
+            && hex(4) == Some(1)
+            && hex(5) == Some(3)
+    })
+}
+
+/// The host program to run, if there is one: a file that may be executed,
+/// the variable's or the one beside the program. One that is there but
+/// cannot start fails the web viewers with a note
+/// (`OPENMAKER_WEB_VIEWER_BACKEND=x11` chooses the X11 backend instead).
+fn host_program() -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let executable = |path: &std::path::Path| {
+        std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    };
+    let Some(program) = std::env::var_os(HOST_VARIABLE).map(PathBuf::from) else {
+        let beside = std::env::current_exe().ok()?.with_file_name(HOST_PROGRAM);
+        return executable(&beside).then_some(beside);
+    };
+    // A bare name is looked for on `PATH` by the shell's rules (POSIX
+    // `execvp`), which `Command` itself would follow: an empty entry is the
+    // current directory, a relative one is relative to it. The file found
+    // is the one run, so the host checked is the host started.
+    if program.components().count() == 1 && !program.is_absolute() {
+        let path = std::env::var_os("PATH")?;
+        return std::env::split_paths(&path)
+            .map(|dir| {
+                if dir.as_os_str().is_empty() {
+                    PathBuf::from(".").join(&program)
+                } else {
+                    dir.join(&program)
+                }
+            })
+            .find(|candidate| executable(candidate));
+    }
+    executable(&program).then_some(program)
 }
 
 /// A size in points from one in pixels.
@@ -737,6 +822,31 @@ impl Backend for WaylandBackend {
 #[cfg(test)]
 mod tests {
     use super::{encode, HostCommand, MAX_COMMAND};
+
+    /// A `WAYLAND_SOCKET` counts only when it names a connected stream
+    /// socket of this process: with anything else (a listening socket, a
+    /// datagram one, a file, a malformed value) winit fails before opening
+    /// a window, so the X11 backend is kept.
+    #[test]
+    fn a_wayland_socket_counts_only_when_it_names_an_open_socket() {
+        use std::os::fd::AsRawFd as _;
+        let (socket, _peer) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
+        let file = tempfile::tempfile().expect("a file");
+        let directory = tempfile::tempdir().expect("a directory");
+        let listening = std::os::unix::net::UnixListener::bind(directory.path().join("socket"))
+            .expect("a listening socket");
+        let (datagram, _other) = std::os::unix::net::UnixDatagram::pair().expect("a datagram pair");
+        let named = |fd: i32| super::names_a_socket(std::ffi::OsStr::new(&fd.to_string()));
+        assert!(named(socket.as_raw_fd()));
+        assert!(
+            !named(listening.as_raw_fd()),
+            "a listening socket is not a connection"
+        );
+        assert!(!named(datagram.as_raw_fd()));
+        assert!(!named(file.as_raw_fd()));
+        assert!(!super::names_a_socket(std::ffi::OsStr::new("invalid")));
+        assert!(!super::names_a_socket(std::ffi::OsStr::new("999999")));
+    }
 
     /// A command whose line would pass the cap is refused while it is
     /// written, never held whole, also when only its escaping passes it (a

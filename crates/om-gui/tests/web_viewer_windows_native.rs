@@ -290,6 +290,9 @@ mod native {
                 println!("skipped: no X display (run under xvfb-run)");
                 return None;
             }
+            // This test is the X11 backend's, which a Wayland session
+            // would not choose by default.
+            std::env::set_var("OPENMAKER_WEB_VIEWER_BACKEND", "x11");
             let (x11, screen) = x11rb::connect(None).expect("X display");
             let root = x11.setup().roots[screen].root;
             Some(Native { x11, root })
@@ -866,7 +869,9 @@ fn main() {
             .with_title("OpenMaker web viewer windows test")
             .with_inner_size([900.0, 600.0])
             .with_position([0.0, 0.0]),
-        ..Default::default()
+        // The app's own options, which put the windows on X11 for the X11
+        // backend, also with a `WAYLAND_DISPLAY` inherited from a session.
+        ..om_gui::native_options()
     };
     let result = eframe::run_native(
         "OpenMaker web viewer windows test",

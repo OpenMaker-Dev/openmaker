@@ -17,11 +17,12 @@
 //! a new one, and a callback runs a script of the view's own file only.
 //!
 //! Native views come from a [`Backend`]: with the `web-viewer` feature,
-//! WebKitGTK on Linux and WKWebView on macOS. On Linux the views are X11
-//! child windows of the app's windows (`gtk.rs`), or, with
-//! `OPENMAKER_WEB_VIEWER_BACKEND=wayland`, pages drawn by a process of their
-//! own that Browse paints as textures in native Wayland windows
-//! (`wayland.rs`, [`composited`]). Without a backend, web viewers show a note
+//! WebKitGTK on Linux and WKWebView on macOS. On Linux, on a Wayland
+//! session, the pages are drawn by a process of their own and Browse paints
+//! them as textures in native Wayland windows (`wayland.rs`,
+//! [`composited`]); on an X11 session, or with
+//! `OPENMAKER_WEB_VIEWER_BACKEND=x11`, the views are X11 child windows of
+//! the app's windows (`gtk.rs`). Without a backend, web viewers show a note
 //! and the script steps fail instead of reporting success.
 
 #[cfg(all(feature = "web-viewer", target_os = "macos"))]
@@ -252,16 +253,23 @@ pub(crate) struct PageTexture {
 }
 
 /// Whether pages are textures Browse paints (the Wayland backend) rather
-/// than native views over the window: decided once, from the environment
-/// (`OPENMAKER_WEB_VIEWER_BACKEND=wayland`, on Linux with the `web-viewer`
-/// feature).
+/// than native views over the window, on Linux with the `web-viewer`
+/// feature: decided once, from the environment, before the windows' own
+/// backend is chosen (`native_options`), so that both agree. On a Wayland
+/// session that answers, with a page host that can be run, yes;
+/// `OPENMAKER_WEB_VIEWER_BACKEND` chooses otherwise (`x11` for the X11
+/// backend, through XWayland on a Wayland session; `wayland` anywhere).
 pub(crate) fn composited() -> bool {
     #[cfg(all(feature = "web-viewer", target_os = "linux"))]
     {
         static COMPOSITED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *COMPOSITED.get_or_init(|| {
-            std::env::var("OPENMAKER_WEB_VIEWER_BACKEND").as_deref() == Ok("wayland")
-        })
+        *COMPOSITED.get_or_init(
+            || match std::env::var("OPENMAKER_WEB_VIEWER_BACKEND").as_deref() {
+                Ok("wayland") => true,
+                Ok("x11") => false,
+                _ => wayland::session_answers() && wayland::host_available(),
+            },
+        )
     }
     #[cfg(not(all(feature = "web-viewer", target_os = "linux")))]
     {
