@@ -2192,9 +2192,16 @@ markers and fields show their design names. The editor draws this artwork
 without evaluating record calculations or running document actions. If an icon
 cannot be resolved, a labeled button keeps its full-width label and an
 image-only button uses the canvas's outline and caption.
+Saved web viewers show a centered OpenMaker globe and their stored address
+expression in the upper left. Layout mode never loads a page. The caption
+uses the file's names when available and is clipped to the first line of a
+multiline expression. If the formatted expression is missing, unreadable,
+over 64 KiB or needs names from an unavailable schema, the caption says
+Web Viewer.
+The glyph, sizing rule and clipping are OpenMaker's choices
+([FileMaker comparison](re/client-ui.md#web-viewer-artwork-in-layout-mode)).
 Unsupported objects and geometry-only providers still use outlines and
-captions. Design-time web viewer placeholders are tracked
-in [#1019](https://github.com/OpenMaker-Dev/openmaker/issues/1019).
+captions.
 The scrollable canvas, part tabs, objects and selection handles scale
 together. Placement, movement, resizing and the Inspector use the original
 layout points at every zoom. The toolbar, Objects pane and Inspector keep
@@ -2449,7 +2456,9 @@ operation `om-author`'s `place_web_viewer` uses ([authoring](authoring.md),
   field names read as the layout's occurrence's and stored qualified. A
   calculation that does not compile shows FileMaker's message for its
   error under the options. OK is disabled for an option combination
-  FileMaker Pro was not seen to store, with a note saying so. Cancel drops
+  FileMaker Pro was not seen to store, with a note saying so; the ones it
+  stored are listed in [authoring](authoring.md), "Web viewers on
+  layouts". Cancel drops
   a viewer not set up yet; a double click on the new viewer opens the
   dialog again.
 - **Save Layout** places it as it places a new portal, with the layout's

@@ -599,10 +599,16 @@ with a custom web address (operation 28, planned with
   `display_status_messages`, `encode_url` and `allow_javascript_scripts`.
   Unnamed ones keep Pro's defaults for a new viewer (interaction, progress
   bar, status messages and encoding on). Only the combinations Pro was
-  seen to store are written: the defaults (`0x800d`); interaction, Find
-  mode and JavaScript scripts on with the rest off (`0x80e3`); and that
-  with the progress bar on (`0x80e7`). Any other is refused before
-  anything is sent, as its bit `0x0080` is unmeasured
+  seen to store are written:
+  - the defaults (`0x800d`);
+  - the defaults with one option changed: JavaScript scripts on
+    (`0x80cd`), Find mode on (`0x800f`), encoding off (`0x802d`) or
+    interaction off (`0x800c`);
+  - interaction, Find mode and JavaScript scripts on with the rest off
+    (`0x80e3`), and that with the progress bar on (`0x80e7`).
+
+  Any other is refused before anything is sent, as what Pro stores for it
+  is not measured
   ([#896](https://github.com/OpenMaker-Dev/openmaker/issues/896)).
 - **What is written** are the records Pro wrote for its viewers: the
   viewer object, its attribute record (the address under `00 00`, the

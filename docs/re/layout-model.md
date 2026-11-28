@@ -2273,7 +2273,7 @@ Storage [O, 2026-11-02]:
   `0x40`. The setup model does not touch `0x8000`, which most stored viewers
   have: FileMaker Pro 26.1.1 set it for a custom web address and not for a
   template (inferred, 10.19); it also stored `0x0080`, which no setter
-  writes, with some options (10.19). Across the 80 web viewers of the MBS 16.3
+  writes, together with JavaScript scripts (10.19). Across the 80 web viewers of the MBS 16.3
   examples, 62 store `0x800d`: FileMaker's defaults (interaction, progress
   bar, status messages, encoding on; Find mode and JavaScript scripts off).
   None of them allows JavaScript scripts, and none of their pages call
@@ -2419,12 +2419,36 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
     viewer, menus, popovers and dialogs draw over the page, where the X11
     backend's views hide instead. A window needs no native window of its own
     for its pages.
-  - **Input.** The pointer's moves, buttons and wheel over an interactive
-    viewer go to the page; nothing egui draws above it gets them. A press
-    gives the page the keyboard's focus, and scrolling over the page scrolls
-    it, not the layout. Keys, input methods, the page's menus and pop-ups
-    (shown nowhere yet, and closed by the next press), its cursor shapes and
-    the clipboard do not reach it yet.
+  - **Pointer.** The pointer's moves, buttons and wheel over an interactive
+    viewer go to the page; nothing egui draws above it gets them.
+    Scrolling over the page scrolls it, not the layout.
+  - **Keyboard.** A press in the page gives it the keyboard, and takes
+    egui's focus from any field; a press elsewhere in the window takes the
+    keyboard back. While the page has it, the window's keys go to the page
+    before anything else in the window sees them: its shortcuts and Tab
+    too, as with the X11 backend, where the page's own window takes them;
+    egui's focus stays with the page meanwhile. Every key the page holds
+    goes up when the keyboard moves, and when the app's window loses it.
+    - **Keymap.** Keys go as Linux key codes with the modifier keys held.
+      On a Wayland session the page's keymap is the session's: a connection
+      of the app's own reads the compositor's keyboard keymap
+      (`wayland/keymap.rs`). Elsewhere it is xkb's default. Only the
+      keymap's first layout is used: the connection has no window, so the
+      compositor never tells it which layout is active, and switching
+      layouts (US to Russian, say) is not followed.
+    - **Edit keys.** egui's Copy, Cut and Paste reach the page as Ctrl+C,
+      X and V, in the page's own clipboard for now. egui sends Paste only
+      when the system clipboard holds text, so with it empty Ctrl+V does
+      not reach the page at all, even after a copy inside the page.
+    - **Input methods.** The input method's text goes to the page through
+      `zwp_text_input_v3`: its preedit, shown in the page as it is
+      composed, and its commit. The input method's window is placed by the
+      caret the page reports.
+    - **Order.** Keys in the same frame as a click reach the page before
+      the click.
+  - **Not yet.** The page's menus and pop-ups (shown nowhere yet, and closed
+    by the next press), its cursor shapes and the system clipboard do not
+    reach it.
   - **The host is another process.** Both ways are bounded. A command
     line longer than 16 MiB (a page's address, a function's parameters) is
     refused as it is written, and that load or call fails; the Set Web
@@ -2442,7 +2466,9 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
   [#323](https://github.com/OpenMaker-Dev/openmaker/issues/323)'s study.
   `tests/web_viewer_composited.rs` runs it in the real app under Xvfb: a
   page painted in its object with no child window, a text object above
-  the viewer drawn over it, and a real click reaching the page's bridge.
+  the viewer drawn over it, a real click reaching the page's bridge, and
+  real keys typed in the page's text box. An input method, and the
+  session's keymap, were not tried (Xvfb has neither).
 - On Linux the X11 backend's views can only be children of X11 windows, so a build with
   the feature puts its windows on winit's X11 backend whenever an X server
   answers at startup (`om_gui::native_options`). On a Wayland session, where
@@ -3830,17 +3856,46 @@ text, and recompiled to the stored Polish.
 
 [I] `0x8000` marks a custom address: W2 and W4 have the same check boxes
 and differ only by it, which explains why most stored viewers have it
-(9.6). [U] `0x0080`: W1 and W3 have it and no Setup setter writes it; W2
-does not. Which option or action sets it is not isolated yet (#896's
-follow-up runs W5-W8, one option each).
+(9.6).
+
+[O, 2026-11-26, FileMaker Pro 26.1.1 for macOS, #896's follow-up: a blank
+file, one viewer drawn with the Web Viewer tool at 40/300/440/500 points,
+Custom Web Address `"https://example.com"`, the defaults, saved and closed
+(`0x800d`); four copies of it, each with one check box changed in Web
+Viewer Setup, saved and closed. Pro showed no warning or confirmation. The
+object stores matched byte for byte apart from the flags, and the stored
+calculation was the same in all five.]
+
+| Copy | Change from the defaults | `externalObj.flags` |
+|---|---|---|
+| W5 | Allow JavaScript to perform FileMaker scripts on | `0x80cd` |
+| W6 | Display content in Find mode on | `0x800f` |
+| W7 | Automatically encode URL off | `0x802d` |
+| W8 | Allow interaction with web viewer content off | `0x800c` |
+
+Turning JavaScript scripts on alone set `0x0040` and `0x0080` together.
+The other three each changed only their own bit and left `0x0080` clear.
+With W1 and W3, every value Pro stored with JavaScript scripts on has
+`0x0080`, and none without them does: an observation over these seven
+values, not a rule found in code. [U] What `0x0080` does on its own,
+whether turning JavaScript scripts off on a viewer that has them clears it,
+the progress bar or status messages turned off alone, templates, and
+combinations of several changes other than W1's and W3's.
+
+[O, 2026-11-28, FileMaker Pro 26.1.1 for macOS, #896's native check] A
+copy of the Contacts starter in which OpenMaker placed a viewer with
+JavaScript scripts on (`0x80cd`, the address `"https://example.com"`)
+opened with no alert. The viewer showed in Browse mode, Web Viewer Setup
+showed "Allow JavaScript to perform FileMaker scripts" on, and Recover
+reported 0 for all 215 of its codes.
 
 What OpenMaker writes for a new viewer (`om_data::layout_placement::
 plan_web_viewer`, `docs/authoring.md`, "Web viewers on layouts"): the
 records above, but for `kSelected` in the object's flags, which no
 placement writes (10.5), and the object store, to which the viewer is
 appended with every stored byte kept. It writes only the option
-combinations measured above (W2's, W1's and W3's flags) with a custom
-address, and refuses the others; and only an address whose formatted
+combinations measured above (W1's, W2's, W3's and W5's to W8's flags)
+with a custom address, and refuses the others; and only an address whose formatted
 stream, printed with the file's names as Web Viewer Setup shows it and
 compiled again as text with them, gives back the same tokens and the
 stored Polish stream, as Pro's four did (names that begin or end a binding

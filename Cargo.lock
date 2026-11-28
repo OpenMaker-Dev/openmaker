@@ -4933,6 +4933,7 @@ dependencies = [
  "smithay",
  "tempfile",
  "ttf-parser",
+ "wayland-client",
  "webkit2gtk",
  "winit",
  "wry",

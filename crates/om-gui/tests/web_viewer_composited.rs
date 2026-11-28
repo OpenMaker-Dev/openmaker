@@ -10,6 +10,8 @@
 //! - A text object stacked above the viewer draws over the page.
 //! - A real click on the page's button reaches the page, whose bridge
 //!   performs a script that commits the record's field.
+//! - A click in the page's text box gives the page the keyboard: real keys
+//!   (XTest) type in it, in xkb's default keymap (no Wayland session).
 //!
 //! `dbus-run-session -- xvfb-run -a cargo test -p om-gui --features web-viewer
 //! --test web_viewer_composited` on Linux; skipped without an X display.
@@ -47,7 +49,9 @@ mod linux {
     const PAGE: &str = "\"data:text/html,<!doctype html><html><body style='margin:0;\
         background:rgb(32,192,64)'><button onclick=\\\"FileMaker.PerformScript('Record', \
         'clicked')\\\" style='position:absolute;left:100px;top:100px;width:200px;\
-        height:80px'>Go</button><script>window.addEventListener('load', function () \
+        height:80px'>Go</button><input id='t' oninput=\\\"FileMaker.PerformScript('Record', \
+        'typed:' + this.value)\\\" style='position:absolute;left:100px;top:220px;width:200px;\
+        height:30px'><script>window.addEventListener('load', function () \
         { FileMaker.PerformScript('Record', 'loaded'); });</script></body></html>\"";
 
     #[derive(Default)]
@@ -423,6 +427,10 @@ mod linux {
     enum Phase {
         Loading,
         Clicking,
+        /// Clicked in the text box: keys go in a later frame, once the app
+        /// has given the page the click.
+        Focusing(Instant),
+        Typing,
     }
 
     struct Driver {
@@ -441,6 +449,20 @@ mod linux {
                 Ok(RawWindowHandle::Xlib(h)) => h.window as u32,
                 Ok(RawWindowHandle::Xcb(h)) => h.window.get(),
                 other => fail(format!("not an X11 window: {other:?}")),
+            }
+        }
+
+        /// Real key presses (XTest) of X keycodes, as the X server's
+        /// keymap has them (xkb's evdev rules: the input event code plus 8).
+        fn type_keys(&self, keycodes: &[u8]) {
+            for keycode in keycodes {
+                for kind in [xproto::KEY_PRESS_EVENT, xproto::KEY_RELEASE_EVENT] {
+                    self.x11
+                        .xtest_fake_input(kind, *keycode, x11rb::CURRENT_TIME, self.root, 0, 0, 0)
+                        .unwrap();
+                    self.x11.flush().unwrap();
+                    std::thread::sleep(Duration::from_millis(60));
+                }
             }
         }
 
@@ -525,6 +547,31 @@ mod linux {
                         shot.save("2-composited-after-click");
                     }
                     println!("the click reached the page, whose bridge set Given");
+                    // Into the text box (100..300 x 220..250 in the page),
+                    // then a, b and c.
+                    let Some([left, top, ..]) =
+                        Shot::take(&self.x11, window).as_ref().and_then(Shot::page)
+                    else {
+                        fail("the page went".into());
+                    };
+                    self.click(window, (left + 200) as i16, (top + 235) as i16);
+                    // No window manager gives the app's window the keyboard
+                    // here: the test does, as one would.
+                    self.x11
+                        .set_input_focus(xproto::InputFocus::PARENT, window, x11rb::CURRENT_TIME)
+                        .unwrap();
+                    self.x11.flush().unwrap();
+                    self.phase = Phase::Focusing(Instant::now() + Duration::from_millis(500));
+                }
+                Phase::Focusing(at) if Instant::now() >= at => {
+                    self.type_keys(&[38, 56, 54]);
+                    self.phase = Phase::Typing;
+                }
+                Phase::Typing if given == "typed:abc" => {
+                    if let Some(shot) = Shot::take(&self.x11, window) {
+                        shot.save("3-composited-typed");
+                    }
+                    println!("keys typed in the page's text box reached it");
                     println!("PASS");
                     std::process::exit(0);
                 }
