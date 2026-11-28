@@ -31,7 +31,7 @@
 //! How a session's authority goes, in order. The step that begins taking
 //! it away first sets a flag the rule reads, an atomic set before anything
 //! that can wait, the grant's own lock included ([`Grant::stop`],
-//! [`Grant::revoke`], the owner's disconnect flag, [`Joins::stop_all`]);
+//! [`Grant::revoke`], the owner's disconnect flag, [`Joins::cut`]);
 //! the session's locks are released next; what the joined transports page
 //! goes last ([`Grant::drain`]), as that waits for a read under way. A read
 //! keeps a page only once it has checked the grant again under its
@@ -159,7 +159,8 @@ struct State {
 /// takes it away ([`Grant::revoke`]), everything when the session ends
 /// ([`Grant::stop`], the first thing `Connection::end_session` does), when
 /// the administrator disconnects it (the owner's disconnect flag) and when
-/// the server closes every connection ([`Joins::stop_all`]). Each is a flag
+/// the server closes every connection ([`Joins::cut`] and the socket's
+/// `closed` flag). Each is a flag
 /// the rule reads, set without waiting for a read that holds the grant's
 /// lock, so that no read is admitted once it is set, whatever the lock lets
 /// in while a writer waits. What the joined transports page for it goes
@@ -180,6 +181,11 @@ pub(crate) struct Grant {
     /// grant was opened, and how many times it has now: one more ended it.
     epoch: u64,
     closes: Arc<AtomicU64>,
+    /// The owning connection's socket is in a bulk close's batch
+    /// (`Sockets::close_all` sets it, with the cut, before it shuts the
+    /// socket): a grant opened on it after the cut is ended from the
+    /// start.
+    closed: Arc<AtomicBool>,
     /// The session ended ([`Grant::stop`]).
     stopped: AtomicBool,
     /// The Login whose account the owning transport is taking away from a
@@ -202,12 +208,14 @@ impl Grant {
     }
 
     /// The session ended, the administrator told its transport to
-    /// disconnect, or the server closed every connection: no transport
-    /// reads through it, and what one holds for it can go.
+    /// disconnect, or the server closed every connection, its own among
+    /// them: no transport reads through it, and what one holds for it can
+    /// go.
     pub fn ended(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
             || self.control.disconnecting()
             || self.closes.load(Ordering::Acquire) != self.epoch
+            || self.closed.load(Ordering::Acquire)
     }
 
     /// The file `file_id` as the session has it open, logged in only while
@@ -453,7 +461,7 @@ impl Drop for Seat {
 pub(crate) struct Joins {
     grants: Mutex<HashMap<(CertificateHash, u32), Arc<Grant>>>,
     /// How many times the server has closed every connection
-    /// ([`Joins::stop_all`]).
+    /// ([`Joins::cut`]).
     closes: Arc<AtomicU64>,
     /// Grants opened so far.
     opened: AtomicU64,
@@ -567,15 +575,16 @@ impl Joins {
     }
 
     /// Start the grant of the session `id` whose own transport is `owner`,
-    /// told what the administrator asks by `control`. A session whose
-    /// transport presented no certificate can be joined by none: its grant
-    /// is not listed.
+    /// told what the administrator asks by `control`, and `closed` once a
+    /// bulk close takes its socket. A session whose transport presented no
+    /// certificate can be joined by none: its grant is not listed.
     pub fn open(
         &self,
         id: u32,
         owner: Peer,
         owner_name: &str,
         control: Arc<Control>,
+        closed: Arc<AtomicBool>,
     ) -> Arc<Grant> {
         let grant = Arc::new(Grant {
             id,
@@ -585,6 +594,7 @@ impl Joins {
             control,
             epoch: self.closes.load(Ordering::Acquire),
             closes: Arc::clone(&self.closes),
+            closed,
             stopped: AtomicBool::new(false),
             revoked: AtomicU64::new(0),
             state: RwLock::new(State {
@@ -740,13 +750,24 @@ impl Joins {
         }
     }
 
-    /// End at once the reads of every session, in one step: the server
-    /// closes every connection (`Shared::close_connections`). Returns the
-    /// grants, in the order they were opened, to [`Grant::drain`] once the
-    /// sockets are shut. A grant opened after this is not ended by it.
-    pub fn stop_all(&self) -> Vec<Arc<Grant>> {
+    /// End at once the reads of every session opened so far, in one step:
+    /// the server closes every connection (`Shared::close_connections`,
+    /// under the lock with which it takes its batch of sockets). A grant
+    /// opened after it is ended only if its socket is in that batch
+    /// (`Grant::closed`).
+    pub fn cut(&self) {
         self.closes.fetch_add(1, Ordering::AcqRel);
-        let mut grants: Vec<Arc<Grant>> = self.grants().values().cloned().collect();
+    }
+
+    /// The grants that ended, in the order they were opened: what a bulk
+    /// close drains ([`Grant::drain`]).
+    pub fn ended_grants(&self) -> Vec<Arc<Grant>> {
+        let mut grants: Vec<Arc<Grant>> = self
+            .grants()
+            .values()
+            .filter(|grant| grant.ended())
+            .cloned()
+            .collect();
         grants.sort_by_key(|grant| grant.serial);
         grants
     }
@@ -1081,7 +1102,13 @@ mod tests {
         let joins = Joins::default();
         let owner = peer("192.0.2.7", Some(1));
         let control = Arc::new(Control::default());
-        let grant = joins.open(7, owner, "192.0.2.7:5555", Arc::clone(&control));
+        let grant = joins.open(
+            7,
+            owner,
+            "192.0.2.7:5555",
+            Arc::clone(&control),
+            Arc::default(),
+        );
         let seats: Vec<Seat> = (0..MAX_JOINED)
             .map(|_| grant.take_seat(transfers()).unwrap())
             .collect();
@@ -1102,10 +1129,13 @@ mod tests {
         assert!(lookup.grant.is_none() && lookup.session.is_none());
         assert!(grant.ended());
 
-        let before = joins.open(8, owner, "before", Arc::new(Control::default()));
-        assert_eq!(joins.stop_all().len(), 1);
-        let after = joins.open(9, owner, "after", Arc::new(Control::default()));
-        assert!(before.ended() && !after.ended());
+        let before = joins.open(8, owner, "before", Arc::default(), Arc::default());
+        joins.cut();
+        assert_eq!(joins.ended_grants().len(), 1);
+        let after = joins.open(9, owner, "after", Arc::default(), Arc::default());
+        let in_the_batch = Arc::new(AtomicBool::new(true));
+        let late = joins.open(10, owner, "late", Arc::default(), in_the_batch);
+        assert!(before.ended() && !after.ended() && late.ended());
     }
 
     /// An address's refused looks are counted: when they are spent it may
@@ -1151,6 +1181,7 @@ mod tests {
             peer("192.0.2.7", Some(1)),
             "owner",
             Arc::new(Control::default()),
+            Arc::default(),
         );
         let _seat = grant.take_seat(Arc::clone(&table)).unwrap();
         let stream = om_hbam::OwnedNode::list(

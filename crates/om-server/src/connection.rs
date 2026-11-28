@@ -322,14 +322,23 @@ impl Sockets {
     }
 
     /// Shut down every socket, both ways: blocked reads and writes return
-    /// and their connections end. Returns how many there were.
-    pub fn close_all(&self) -> usize {
+    /// and their connections end. Returns how many there were. Under the
+    /// lock that takes the batch, each socket's flag is set, then `cut`
+    /// runs, then the sockets are shut: a socket tracked after it is not in
+    /// the batch, and one in it has its flag set by the cut (what its
+    /// connection opens later reads it, `joins::Grant`). The lock waits
+    /// only for one entry going in or out ([`Sockets::track`],
+    /// [`Sockets::close`]) or for another bulk close's shutdowns.
+    pub fn close_all(&self, cut: impl FnOnce()) -> usize {
         let open = self
             .open
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for (socket, closed) in open.values() {
+        for (_, closed) in open.values() {
             closed.store(true, Ordering::Release);
+        }
+        cut();
+        for (socket, _) in open.values() {
             let _ = socket.shutdown(std::net::Shutdown::Both);
         }
         open.len()
@@ -377,14 +386,15 @@ impl Shared {
 
     /// Close every accepted connection's socket at once
     /// ([`crate::ServerHandle::close_connections`]); how many there were.
-    /// First, in one step, no session's other transports are admitted to
-    /// read from then on, before any connection's thread gets to end its
-    /// session; the sockets are shut next, and what those transports page
-    /// goes last, as that waits for reads under way.
+    /// First, in one step with taking the batch of sockets, no session's
+    /// other transports are admitted to read from then on, nor those of a
+    /// session a socket of the batch starts later, before any connection's
+    /// thread gets to end its session; the sockets are shut next, and what
+    /// those transports page goes last, as that waits for reads under way.
+    /// A socket accepted after the batch was taken is untouched.
     pub(crate) fn close_connections(&self) -> usize {
-        let grants = self.joins.stop_all();
-        let closed = self.sockets.close_all();
-        for grant in grants {
+        let closed = self.sockets.close_all(|| self.joins.cut());
+        for grant in self.joins.ended_grants() {
             grant.drain();
         }
         closed
@@ -1432,6 +1442,7 @@ impl Connection {
                 self.transport,
                 &self.peer,
                 Arc::clone(&self.control),
+                Arc::clone(&self.closed_by_server),
             ),
         });
         self.shared
@@ -4890,9 +4901,13 @@ mod tests {
         let hosted = crate::scripts::tests::hosted(&shared);
         let address: IpAddr = "127.0.0.1".parse().unwrap();
         let owner = Peer::new(address, Some([1; 32]));
-        let grant = shared
-            .joins
-            .open(7, owner, "owner", Arc::new(Control::default()));
+        let grant = shared.joins.open(
+            7,
+            owner,
+            "owner",
+            Arc::new(Control::default()),
+            Arc::default(),
+        );
         let mut session = Session {
             connection_id: 7,
             key: [0; 16],

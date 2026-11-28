@@ -62,10 +62,13 @@ impl Lab {
             &om_protocol::MachineInfo::default(),
             Arc::clone(&control),
         );
-        let grant = self
-            .shared
-            .joins
-            .open(id, owner.transport, &owner.peer, control);
+        let grant = self.shared.joins.open(
+            id,
+            owner.transport,
+            &owner.peer,
+            control,
+            Arc::clone(&owner.closed_by_server),
+        );
         let mut session = Session {
             connection_id: id,
             key: [0; 16],
@@ -458,6 +461,98 @@ fn every_order_of_a_bulk_close_and_the_reads_of_two_sessions() {
         },
     );
     report("a bulk close and the reads of two sessions", &explored);
+}
+
+/// A client connects on a socket the server has accepted, while the
+/// server closes every connection, its socket among them; another
+/// transport of the client then tries to read through the new session. A
+/// session a socket of the batch starts is ended by the close whenever its
+/// Connect comes.
+#[test]
+fn every_order_of_a_connect_during_a_bulk_close_and_a_joined_read() {
+    let lab = Lab::new("orders-connect", generous());
+    let here = address("127.0.0.1");
+    let listener = std::net::TcpListener::bind((here, 0)).unwrap();
+    let explored = model::every_order(&[Section::Grants, Section::Grant], None, 10_000, || {
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (socket, peer) = listener.accept().unwrap();
+        let (tracked, closed) = lab.shared.sockets.track(&socket).unwrap();
+        let mut owner = Connection::new(Arc::clone(&lab.shared), peer, Arc::default())
+            .closed_by_server(closed)
+            .with_client_certificate(Some(CERTIFICATE));
+        let mut joiner = lab.joiner(here, 5001, true, 0);
+        let connect =
+            om_protocol::build_connect(1, "127.0.0.1", 5003, &Default::default()).unwrap();
+        let (shared, hosted, account) = (
+            Arc::clone(&lab.shared),
+            Arc::clone(&lab.hosted),
+            lab.account(),
+        );
+        let session = Arc::new(Mutex::new(None::<u32>));
+        let named = Arc::clone(&session);
+        let (parked, kept) = parking();
+        let parked_too = Arc::clone(&parked);
+        let untrack = Arc::clone(&lab.shared);
+        Run {
+            actors: vec![
+                (
+                    "server",
+                    Box::new(move || {
+                        model::record(Event::Began(Removal::All));
+                        shared.close_connections();
+                        model::record(Event::Finished(Removal::All));
+                    }),
+                ),
+                (
+                    "owner",
+                    Box::new(move || {
+                        // The Connect as it runs; the Open and the Login
+                        // stubbed, then published as after a Login.
+                        owner.connect(1, &connect);
+                        let session = owner.session.as_mut().unwrap();
+                        let mut file = OpenFile {
+                            hosted: Arc::clone(&hosted),
+                            nonce: 0,
+                            account: None,
+                            close: CloseStep::None,
+                            withheld: Default::default(),
+                            login: 0,
+                        };
+                        logged_in(&mut file, account);
+                        session.open.insert(hosted.id, file);
+                        session.publish();
+                        *lock(&named) = Some(session.connection_id);
+                        park(&parked, owner);
+                    }),
+                ),
+                (
+                    "joined",
+                    Box::new(move || {
+                        if let Some(id) = *lock(&session) {
+                            joiner.session = id;
+                            joiner.admit();
+                        }
+                        park(&parked_too, joiner);
+                    }),
+                ),
+            ],
+            keep: vec![kept, Box::new(client), Box::new(Untrack(untrack, tracked))],
+        }
+    });
+    report("a Connect during a bulk close and a joined read", &explored);
+}
+
+/// Stops tracking a socket once its order is done.
+struct Untrack(Arc<Shared>, u64);
+
+impl Drop for Untrack {
+    fn drop(&mut self) {
+        self.0.sockets.close(self.1);
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Limits of one refused look per address, refilled each second of the
