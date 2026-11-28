@@ -1026,6 +1026,15 @@ impl ServerHandle {
         self.schedules.backups().on_removal(Box::new(hook));
     }
 
+    /// Run `hook` each time a backup is written and its run has let go of
+    /// the files it copied, before retention resolves the hosted files'
+    /// paths. A test fixture, only in debug builds.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn after_backup_written(&self, hook: impl FnMut() + Send + 'static) {
+        self.schedules.backups().on_written(Box::new(hook));
+    }
+
     /// The default backup folder and the backup schedules' own, made
     /// absolute.
     fn backup_folders(&self) -> Vec<PathBuf> {
