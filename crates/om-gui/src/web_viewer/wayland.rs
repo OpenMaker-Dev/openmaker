@@ -184,13 +184,25 @@ pub(crate) fn host_available() -> bool {
 /// the windows: a `WAYLAND_DISPLAY` left from a compositor that went must
 /// not turn the windows from an X server that answers to none. A
 /// `WAYLAND_SOCKET` is a connection made for the program, which only winit
-/// may take; it counts as answering.
+/// may take: it counts as answering when it names an open socket (looked
+/// at, not taken), and as not answering otherwise, since winit, and any
+/// client, tries it before `WAYLAND_DISPLAY`.
 pub(crate) fn session_answers() -> bool {
-    if std::env::var_os("WAYLAND_SOCKET").is_some_and(|s| !s.is_empty()) {
-        return true;
+    if let Some(socket) = std::env::var_os("WAYLAND_SOCKET").filter(|s| !s.is_empty()) {
+        return names_a_socket(&socket);
     }
     std::env::var_os("WAYLAND_DISPLAY").is_some_and(|d| !d.is_empty())
         && wayland_client::Connection::connect_to_env().is_ok()
+}
+
+/// Whether `value` (a `WAYLAND_SOCKET`) is the number of a descriptor this
+/// process has open on a socket.
+fn names_a_socket(value: &std::ffi::OsStr) -> bool {
+    value
+        .to_str()
+        .and_then(|s| s.parse::<u32>().ok())
+        .and_then(|fd| std::fs::read_link(format!("/proc/self/fd/{fd}")).ok())
+        .is_some_and(|target| target.to_string_lossy().starts_with("socket:"))
 }
 
 /// The host program to run, if there is one: a file that may be executed,
@@ -199,13 +211,22 @@ pub(crate) fn session_answers() -> bool {
 /// (`OPENMAKER_WEB_VIEWER_BACKEND=x11` chooses the X11 backend instead).
 fn host_program() -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt as _;
-    let program = match std::env::var_os(HOST_VARIABLE) {
-        Some(path) => PathBuf::from(path),
-        None => std::env::current_exe().ok()?.with_file_name(HOST_PROGRAM),
+    let executable = |path: &std::path::Path| {
+        std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
     };
-    let executable = std::fs::metadata(&program)
-        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0);
-    executable.then_some(program)
+    let Some(program) = std::env::var_os(HOST_VARIABLE).map(PathBuf::from) else {
+        let beside = std::env::current_exe().ok()?.with_file_name(HOST_PROGRAM);
+        return executable(&beside).then_some(beside);
+    };
+    // A bare name is looked for on `PATH`, as a shell would, and the file
+    // found is the one run.
+    if program.components().count() == 1 && !program.is_absolute() {
+        let path = std::env::var_os("PATH")?;
+        return std::env::split_paths(&path)
+            .map(|dir| dir.join(&program))
+            .find(|candidate| candidate.is_absolute() && executable(candidate));
+    }
+    executable(&program).then_some(program)
 }
 
 /// A size in points from one in pixels.
@@ -762,6 +783,21 @@ impl Backend for WaylandBackend {
 #[cfg(test)]
 mod tests {
     use super::{encode, HostCommand, MAX_COMMAND};
+
+    /// A `WAYLAND_SOCKET` counts only when it names an open socket of this
+    /// process: winit refuses anything else before opening a window, so a
+    /// malformed one keeps the X11 backend.
+    #[test]
+    fn a_wayland_socket_counts_only_when_it_names_an_open_socket() {
+        use std::os::fd::AsRawFd as _;
+        let (socket, _peer) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
+        let file = tempfile::tempfile().expect("a file");
+        let named = |fd: i32| super::names_a_socket(std::ffi::OsStr::new(&fd.to_string()));
+        assert!(named(socket.as_raw_fd()));
+        assert!(!named(file.as_raw_fd()));
+        assert!(!super::names_a_socket(std::ffi::OsStr::new("invalid")));
+        assert!(!super::names_a_socket(std::ffi::OsStr::new("999999")));
+    }
 
     /// A command whose line would pass the cap is refused while it is
     /// written, never held whole, also when only its escaping passes it (a

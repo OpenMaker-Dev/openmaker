@@ -2438,7 +2438,9 @@ OpenMaker's runtime (`om-gui` `web_viewer`, the `web-viewer` feature):
       (`wayland/keymap.rs`). Elsewhere it is xkb's default. Only the
       keymap's first layout is used: the connection has no window, so the
       compositor never tells it which layout is active, and switching
-      layouts (US to Russian, say) is not followed.
+      layouts (US to Russian, say) is not followed. An app given a
+      `WAYLAND_SOCKET` and no `WAYLAND_DISPLAY` has no display to ask,
+      and keeps xkb's default.
     - **Edit keys.** egui's Copy and Cut reach the page as Ctrl and the
       keys that type c and x in the page's keymap (their US places unless
       its first layout has them elsewhere, as Dvorak does). A Paste puts
