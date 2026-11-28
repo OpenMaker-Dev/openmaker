@@ -838,11 +838,12 @@ fn a_folder_backup_that_leaves_a_file_out_keeps_its_last_backup() {
     );
 }
 
-/// A run lets go of the files it copied before retention (#1189): a close
-/// asked for while retention removes an old backup finishes then, without
-/// waiting for the run to end. The hook runs on the run's thread, so it
-/// records what it saw rather than asserting, and waits less than the
-/// test waits for the run.
+/// A run lets go of the files it copied once its backup is written, before
+/// it resolves any hosted file's path for retention (#1189): a close asked
+/// for at that moment finishes then, without waiting for the run to end,
+/// and retention still removes the old backup after it. The hook runs on
+/// the run's thread, so it records what it saw rather than asserting, and
+/// waits less than the test waits for the run.
 #[cfg(all(unix, debug_assertions))]
 #[test]
 fn a_backup_run_lets_go_of_its_files_before_retention() {
@@ -855,7 +856,7 @@ fn a_backup_run_lets_go_of_its_files_before_retention() {
     let id = handle.files()[0].id;
     let closed: Arc<Mutex<Option<bool>>> = Arc::default();
     let (seen, closing) = (Arc::clone(&closed), handle.clone());
-    handle.before_backup_removal(move || {
+    handle.after_backup_written(move || {
         let mut seen = seen.lock().unwrap();
         if seen.is_some() {
             return;
@@ -882,12 +883,85 @@ fn a_backup_run_lets_go_of_its_files_before_retention() {
     assert_eq!(
         *closed.lock().unwrap(),
         Some(true),
-        "the file closed while retention removed the old backup"
+        "the file closed before retention looked up the hosted files"
     );
     assert!(!planted.exists(), "{planted:?} kept past the keep count");
     assert!(backups
         .join("Every_2026-10-29_0900/Databases/Sample.fmp12")
         .exists());
+}
+
+/// A run during which the hosted files' common folder changes deletes no
+/// old backup (the review of #1220): a closed file's folder link points
+/// outside the common folder when the run begins, so the run lays its
+/// backup out under a wider root, and points back before the run looks up
+/// the files it left out. Placed below the wider root, the closed file
+/// would not be found in the one backup that holds it, which keep 1 would
+/// delete. The file outside is a hard link of the closed one, so that its
+/// last saved identity is found there and the protection of #468 does not
+/// refuse every deletion by itself.
+#[cfg(all(unix, debug_assertions))]
+#[test]
+fn a_run_whose_common_folder_changed_deletes_no_old_backup() {
+    let folder = Folder::new("root-moved");
+    let file = hosted_file(&folder);
+    let inside = folder.0.join("db/b");
+    let outside = folder.0.join("outside");
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let built = TempFile::new("root-moved-other", &[], true);
+    std::fs::rename(&built.0, inside.join("Other.fmp12")).unwrap();
+    let link = folder.0.join("db/link");
+    std::os::unix::fs::symlink(&inside, &link).unwrap();
+    let other = TempFile(link.join("Other.fmp12"));
+    let backups = folder.0.join("Backups");
+    let clock = ManualClock::new(at(8, 59));
+    let (_, handle) =
+        server::start_hosting(&[(fixture::FILE, &file), ("Other", &other)], |server| {
+            server
+                .with_clock(clock.clone())
+                .with_backup_folder(&backups)
+                .unwrap()
+                .with_schedules(vec![backup_schedule("Every", 1)])
+                .unwrap()
+        });
+    assert!(
+        handle.wait_for_schedules(WAIT),
+        "the scheduler did not start"
+    );
+    let other_id = handle
+        .files()
+        .iter()
+        .find(|info| info.name == "Other")
+        .unwrap()
+        .id;
+    move_to(&handle, &clock, at(9, 0));
+    let first = backups.join("Every_2026-10-29_0900");
+    assert!(first.join("Databases/b/Other.fmp12").exists());
+
+    // Other closed, its link moved outside the common folder; back once
+    // the next backup is written.
+    close_file(&handle, other_id);
+    std::fs::hard_link(inside.join("Other.fmp12"), outside.join("Other.fmp12")).unwrap();
+    let point = |link: &Path, to: &Path| {
+        std::fs::remove_file(link).unwrap();
+        std::os::unix::fs::symlink(to, link).unwrap();
+    };
+    point(&link, &outside);
+    let (moving, back) = (link.clone(), inside.clone());
+    handle.after_backup_written(move || point(&moving, &back));
+    move_to(&handle, &clock, at(9, 1));
+    let run = last_run(&handle, "Every");
+    assert!(run.succeeded(), "{run:?}");
+    let second = backups.join("Every_2026-10-29_0901");
+    assert!(
+        second.join("Databases/db/Sample.fmp12").exists(),
+        "laid out under the wider root"
+    );
+    assert!(
+        first.join("Databases/b/Other.fmp12").exists(),
+        "the only backup of Other is kept"
+    );
 }
 
 #[cfg(unix)]
