@@ -1169,11 +1169,13 @@ Nothing of its write side is built.
   tree of the same file (`om_hbam::tree::memory` counts capacity). A
   listing or walk that meets a read that fails at any step of a page
   fails the call, and what the page had gathered is not given: a fault
-  of order (an item that would go back, in a stored tree whose pages
+  of order (an item that would go back, or a leaf whose keys lie outside
+  the range its separators give it, in a stored tree whose pages
   disagree) is not met again by a later seek, so a page that gave what
   came before it could end the read without what follows the fault
   ([#998](https://github.com/OpenMaker-Dev/openmaker/issues/998),
-  [#1149](https://github.com/OpenMaker-Dev/openmaker/issues/1149)). The
+  [#1149](https://github.com/OpenMaker-Dev/openmaker/issues/1149),
+  [#1180](https://github.com/OpenMaker-Dev/openmaker/issues/1180)). The
   look past a full page of children or subtrees, which asks only whether
   more follow, fails for the child it looks at and not for those before
   it ([#1200](https://github.com/OpenMaker-Dev/openmaker/issues/1200)).
@@ -3124,6 +3126,34 @@ download is encoded once per version.
 
 Long reads hold their view: an export, a backup, a paged download, a
 large find or a SQL query sees one version while writes go on.
+
+A view's pages are checked one by one when they are read (section 6.4),
+and a page file can come from outside this process: a restored backup, a
+copied store, a file made to look valid. So the tree's reads also hold
+the pages to what the writer keeps across them, as far as a read reaches
+([server-storage-format.md](server-storage-format.md) 2.6): every leaf a
+read enters lies in the range its ancestors' separators give it, at every
+level (its first key at or above the separator before it, its last below
+the one after it), and a read's items only move on. A read gives the
+items it reaches in key order, from such leaves, or fails as malformed;
+a listing or a walk in pages ends on any tree, and never ends early
+without an error because a key lies outside its leaf's range
+([#998](https://github.com/OpenMaker-Dev/openmaker/issues/998),
+[#1149](https://github.com/OpenMaker-Dev/openmaker/issues/1149),
+[#1180](https://github.com/OpenMaker-Dev/openmaker/issues/1180)). The
+check costs at most two key comparisons a level for each leaf a read
+enters, and nothing while it stays in one: listing a million records
+makes 242,841 more, 1.6% of 15.2 million, in no more time than the
+spread of the runs
+([store-engine-file.md](performance/store-engine-file.md)). It does not
+make a damaged tree whole: a lookup routed past a misplaced key, and a
+read that never
+enters its leaf, answer that it is absent; within a leaf whose bytes
+cannot prove its keys in order only its first and last key are held to
+the range ([#1228](https://github.com/OpenMaker-Dev/openmaker/issues/1228));
+and only a check of the whole tree (section 6.12) finds every key where
+a search will find it
+([#1181](https://github.com/OpenMaker-Dev/openmaker/issues/1181)).
 
 ### 6.7 Checkpoints, space and recovery
 

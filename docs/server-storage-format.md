@@ -351,7 +351,10 @@ A child entry's footprint is 48 bytes (hash, stamp and number), plus the
 separator's `2 + L` or `2 + 1024 + 40n`.
 
 Child `i` holds the keys from its separator (child 0: from its parent's
-lower bound) up to the next child's separator. A separator made by a
+lower bound) up to, and not including, the next child's separator (the
+last child: up to its parent's upper bound); a key equal to a separator
+belongs to the child that separator begins, where a search sends it. A
+separator made by a
 leaf split (2.7) is the shortest prefix of the right side's first key `r`
 that is above the left side's last key `l`: `r` cut just after the first
 byte where the two differ, or, when `l` is a proper prefix of `r`, just
@@ -361,7 +364,15 @@ can end inside a segment, but as it begins a key it is a whole key or the
 start of one, with at most 64 segment ends and none followed by more
 bytes after the 64th; a page with any other separator is malformed.
 Separators of index pages are not made: they move up from a split or
-down into a join (2.7).
+down into a join (2.7). So the writer keeps every leaf in the range its
+ancestors give it: a split puts its separator `s` above every key on its
+left and at or below every key on its right (`l < s <= r`), a key set
+later goes to the child whose range holds it, a delete only removes keys,
+and a join or a range delete only drops separators, which widens a range;
+a separator stale after deletions still bounds its leaf, if loosely. For
+keys that are well formed the cut never gives `r` itself (that would need
+`l` to hold `00 00`), so no separator the writer makes equals a key; the
+rule above still settles one that does.
 
 An overflow page holds `count` data bytes after its header and refers to
 no page. The overflow pages of an item or separator hold the bytes after
@@ -424,22 +435,53 @@ page in the error:
 The tree then checks that a child has the level and kind its parent
 implies, was written by the entry its stamp names and, if a leaf, is not
 empty, and that an overflow page holds the bytes its item expects.
-Pages are not checked against each other's keys: a leaf whose keys lie
-outside the range its parent's separators give it is read where the
-separators route a key, so that every read, one that seeks from pages it
-holds included, finds what a descent from the root finds. But a
-cursor's items only move on, and a read fails as *malformed* where one
-would not: the first item after a seek must lie past the bound sought
-(as one the leaf's own search found does, that search having compared
-it with the bound; one reached through the next leaf is compared), and
-each item after it must follow the one before (it does by construction
-within a leaf whose bytes prove its keys in order, and is compared
-within any other and into the next leaf). A listing, which seeks each child past
-the one before, and a walk in pages, each page sought past its last
-item, therefore end on any tree
+A read finds what a descent from the root finds: it goes where the
+separators route a key, one that seeks from pages it holds included.
+Pages are not checked against each other's keys as a whole, but a
+cursor (`tree::Cursor`, through which every range, walk and listing
+reads) holds what it reads to two rules, and fails as *malformed* where
+the pages break them:
+
+- **Every leaf it enters lies in the range its ancestors give it**
+  ([#1180](https://github.com/OpenMaker-Dev/openmaker/issues/1180)).
+  Entering a leaf, by a seek's descent or by stepping on into the next
+  leaf, it compares the leaf's first key with the separator of the child
+  it took, and its last key with the next child's separator, at every
+  level from the leaf's parent to the root where those exist (2.4: at or
+  above the one, below the other), before it gives anything of the leaf:
+  at most two comparisons a level, by bytes as every comparison here,
+  reading a key's or a spilled separator's overflow pages only where the
+  bytes the pages hold are equal (a separator then read whole). A seek
+  that stays in the leaf the cursor holds, below the same pages, does
+  not compare it again. A root leaf has no range to check.
+- **Its items only move on**: the first item after a seek must lie past
+  the bound sought (as one the leaf's own search found does, that search
+  having compared it with the bound; one reached through the next leaf is
+  compared), and each item after it must follow the one before (it does
+  by construction within a leaf whose bytes prove its keys in order, and
+  is compared within any other and into the next leaf, which two leaves
+  in their ranges always pass).
+
+So a read gives the items it reaches in key order, from leaves that lie
+in their ancestors' range, or fails. A listing, which seeks each child
+past the one before, and a walk in pages, each page sought past its last
+item, end on any tree
 ([#998](https://github.com/OpenMaker-Dev/openmaker/issues/998),
-[#1149](https://github.com/OpenMaker-Dev/openmaker/issues/1149)). A
-page the store cannot find is *missing*. Nothing is allocated by a size the bytes give before
+[#1149](https://github.com/OpenMaker-Dev/openmaker/issues/1149)), and
+neither ends early, without an error, because a key lies outside its
+leaf's range: a key placed in a leaf left of its range was given where
+the leaf was read, and the seek past it, routed beyond it, found nothing
+after it and ended the read, the keys after it left out; that leaf now
+fails the read on entering it. What the rules do not reach: a
+lookup (`Tree::get`), which descends once, and a read that never enters
+the leaf holding a misplaced key, find it absent; and in a leaf whose
+bytes cannot prove its keys in order, the keys between the first and
+the last are bounded only by the cursor's checks of order, so one out of
+order there can still end a listing without what follows it
+([#1228](https://github.com/OpenMaker-Dev/openmaker/issues/1228)). Only a
+check of the whole tree (`tree::check`, section 6.12 of the design) finds
+every key where a search will find it. A page the store cannot find is
+*missing*. Nothing is allocated by a size the bytes give before
 it is checked against the page size or the bounds, and no read recurses
 deeper than the tree's levels.
 

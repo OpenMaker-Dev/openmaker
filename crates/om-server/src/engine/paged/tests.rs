@@ -1824,8 +1824,11 @@ fn a_refused_import_leaves_no_page_in_use_on_the_page_file() {
 
 /// A tree of random shape: lists empty and full, values empty, short and
 /// long (which the writer writes in pieces), segments with zero and `ff`
-/// bytes, as the writer writes them.
-fn random_tree(rng: &mut Rng, depth: usize) -> Vec<OwnedNode> {
+/// bytes, as the writer writes them. With `long`, one segment in five is
+/// 4,200 bytes `p` and one more, which no `.fmp12` holds: in the store
+/// engine's tree its keys and the separators between them spill, sharing
+/// their first 1,024 bytes, so that pages cannot prove their order.
+fn random_tree(rng: &mut Rng, depth: usize, long: bool) -> Vec<OwnedNode> {
     let mut segments = std::collections::BTreeSet::new();
     let width = match rng.below(8) {
         0 => 0,
@@ -1833,6 +1836,12 @@ fn random_tree(rng: &mut Rng, depth: usize) -> Vec<OwnedNode> {
         _ => 1 + rng.below(6),
     };
     for _ in 0..width {
+        if long && rng.below(5) == 0 {
+            let mut segment = vec![b'p'; 4200];
+            segment.push(rng.next() as u8);
+            segments.insert(segment);
+            continue;
+        }
         let len = 1 + rng.below(4);
         let segment: Vec<u8> = (0..len)
             .map(|_| match rng.below(4) {
@@ -1847,7 +1856,7 @@ fn random_tree(rng: &mut Rng, depth: usize) -> Vec<OwnedNode> {
         .into_iter()
         .map(|segment| {
             if depth < 5 && rng.below(3) == 0 {
-                OwnedNode::list(segment, random_tree(rng, depth + 1))
+                OwnedNode::list(segment, random_tree(rng, depth + 1, long))
             } else {
                 let len = match rng.below(6) {
                     0 => 0,
@@ -1873,7 +1882,7 @@ fn an_export_of_what_import_accepts_imports_to_the_same_root_hash() {
     let mut nodes = 0;
     for seed in 1..=40u64 {
         let mut rng = Rng(seed * 0x9e37_79b9);
-        let root = OwnedNode::list(Vec::new(), random_tree(&mut rng, 0));
+        let root = OwnedNode::list(Vec::new(), random_tree(&mut rng, 0, false));
         let bytes =
             om_hbam::writer::rebuild(&root, &om_hbam::new_superblock("Random").unwrap()).unwrap();
         let batch = Batch {
@@ -2469,37 +2478,42 @@ fn paged_measurement() {
     );
 }
 
+/// The leaves `a, d` and `b, c` under the separator `separator`, written
+/// page by page: with `b`, the reviewer's tree of #1166 (#1180's), whose
+/// first leaf holds `d` past its separator; with `x`, #998's, whose second
+/// leaf begins below its separator.
+fn crossed(store: &MemStore, separator: &[u8]) -> Root {
+    use om_store::tree::{built, key};
+    let item = |s: &[u8]| (built::KIND_VALUE, key::encode(&[s]), b"v".to_vec());
+    let separator = key::encode(&[separator]);
+    let leaves = [vec![item(b"a"), item(b"d")], vec![item(b"b"), item(b"c")]];
+    built::tree(store, &leaves, &[separator.as_slice()]).root
+}
+
 /// Review of #1166 (P1): a paged read that meets a fault fails the call,
 /// whatever it gave before it, rather than answer those as a page after
 /// which the next call starts past them (the module doc, "A read that
-/// fails partway"). On the reviewer's tree (leaves `a, d` and `b, c`, the
-/// separator `b`, written page by page), a walk of the root in one page
-/// with room for every node, through the view's own walk, and in pages of
-/// two, fails where the cursor steps from `d` into the leaf that begins
-/// before it. Answered as a continuation, the next page, sought past `d`,
-/// found nothing beyond it and the walk ended without `b` and `c`. (A walk
-/// in pages of three, and a listing of the root's children, take no step
-/// across the fault: a seek past `d` finds nothing beyond it, as from the
-/// root, #1180; they are not asserted here.) And on #998's tree (the
-/// separator `x`), a page of children that meets the child that comes back
-/// fails, rather than answer the children before it and "more"; so does a
-/// full page of two, `a` and `d`, whose look past `d` comes back to `b`,
-/// though that look asks only whether more follow (#1200).
+/// fails partway"). On #998's tree (`crossed` with `x`), a walk of the
+/// root in one page with room for every node, through the view's own
+/// walk, and in pages of two, fails where the cursor steps from `d` into
+/// the leaf that begins before it (since #1180, where it enters that
+/// leaf, whose first key lies below its separator). On the reviewer's tree
+/// (`crossed` with `b`) a continuation answered there was followed by a
+/// page, sought past `d`, that found nothing beyond it, and the walk ended
+/// without `b` and `c`; that tree now fails every read before `a`
+/// (`an_item_outside_its_leafs_range_fails_every_paged_read_before_it`).
+/// And on #998's tree a page of children that meets the child that comes
+/// back fails, rather than answer the children before it and "more"; so
+/// does a full page of two, `a` and `d`, whose look past `d` comes back to
+/// `b`, though that look asks only whether more follow (#1200).
 #[test]
 fn a_paged_read_fails_at_a_fault_rather_than_end_on_the_next_page() {
-    use om_store::tree::{built, key};
     let store = MemStore::new(Numbering::Sequential);
-    let item = |s: &[u8]| (built::KIND_VALUE, key::encode(&[s]), b"v".to_vec());
-    let tree_with = |separator: &[u8]| {
-        let separator = key::encode(&[separator]);
-        let leaves = [vec![item(b"a"), item(b"d")], vec![item(b"b"), item(b"c")]];
-        built::tree(&store, &leaves, &[separator.as_slice()]).root
-    };
     let root_path: [&[u8]; 0] = [];
     let failed = |read: &Result<Option<Vec<Vec<u8>>>, ReadError>| {
         matches!(read, Err(ReadError::Unreadable { .. }))
     };
-    let view = PagedView::open(&store, tree_with(b"b")).unwrap();
+    let view = PagedView::open(&store, crossed(&store, b"x")).unwrap();
     let mut whole = Vec::new();
     let one_page = view.walk_page(&root_path, None, 100, &mut whole);
     assert!(failed(&one_page), "{one_page:?}");
@@ -2511,7 +2525,6 @@ fn a_paged_read_fails_at_a_fault_rather_than_end_on_the_next_page() {
     let mut second = Vec::new();
     let next = view.walk_page(&root_path, resume.as_deref(), 2, &mut second);
     assert!(failed(&next), "{next:?}");
-    let view = PagedView::open(&store, tree_with(b"x")).unwrap();
     let mut children = Vec::new();
     let listed = view.children_page(
         &root_path,
@@ -2536,4 +2549,185 @@ fn a_paged_read_fails_at_a_fault_rather_than_end_on_the_next_page() {
         matches!(looked, Err(ReadError::Unreadable { .. })),
         "{looked:?}"
     );
+}
+
+/// [`in_pages`] for a walk of the root through [`View::walk_page`], pages
+/// of `max`, each resumed where the one before ended, as a client's
+/// download in pages (op90) resumes: the paths given, and the error that
+/// ended it, if one did.
+fn walk_in_pages(view: &dyn View, max: usize) -> (Vec<Vec<Vec<u8>>>, Option<ReadError>) {
+    let root_path: [&[u8]; 0] = [];
+    let (mut given, mut after) = (Vec::new(), None::<Vec<Vec<u8>>>);
+    loop {
+        let mut page = Vec::new();
+        match view.walk_page(&root_path, after.as_deref(), max, &mut page) {
+            Err(e) => return (given, Some(e)),
+            Ok(resume) => {
+                given.extend(paths_of(&page));
+                assert!(given.len() <= 100, "a walk that does not end");
+                match resume {
+                    Some(resume) => after = Some(resume),
+                    None => return (given, None),
+                }
+            }
+        }
+    }
+}
+
+/// #1180: on the reviewer's tree of #1166 (`crossed` with `b`: leaves
+/// `a, d` and `b, c` under the separator `b`), `d` lies in the first leaf
+/// although the separator gives that leaf only keys before `b`. A seek
+/// past `d` is routed, rightly by the separator, to the second leaf, finds
+/// nothing beyond `d` there and ends, and no step of a cursor crosses the
+/// fault, so a walk in pages of three gave the root, `a` and `d` and ended,
+/// and a listing of the root's children in pages of two, three or a
+/// hundred gave `a` and `d` and ended, `b` and `c` left out without an
+/// error. Now every read, in pages of any size, children, subtrees or a
+/// walk, fails on entering the first leaf, before it gives `a`: the leaf's
+/// last key lies at or past the separator after it.
+#[test]
+fn an_item_outside_its_leafs_range_fails_every_paged_read_before_it() {
+    let store = MemStore::new(Numbering::Sequential);
+    let view = PagedView::open(&store, crossed(&store, b"b")).unwrap();
+    let root_path: [&[u8]; 0] = [];
+    let outside = |error: &Option<ReadError>| {
+        matches!(error, Some(ReadError::Unreadable { why, .. })
+            if why.contains("malformed: a key outside its separators"))
+    };
+    // Every read's result, to be shown together where one is wrong: what
+    // it gave, and the error that ended it.
+    let mut reads = Vec::new();
+    for max in [1, 2, 3, 100] {
+        let (given, error) = walk_in_pages(&view, max);
+        reads.push((
+            format!("a walk in pages of {max}"),
+            format!("{given:02x?}"),
+            error,
+        ));
+        let (given, error) = children_in_pages(&view, &root_path, max);
+        reads.push((
+            format!("children in pages of {max}"),
+            format!("{given:02x?}"),
+            error,
+        ));
+        let (given, error) = subtrees_in_pages(&view, &root_path, max);
+        reads.push((
+            format!("subtrees in pages of {max}"),
+            format!("{given:02x?}"),
+            error,
+        ));
+    }
+    let walked: Result<Vec<Step>, ReadError> = (&view as &dyn View).walk(&root_path).collect();
+    let (given, error) = match walked {
+        Ok(steps) => (format!("{:02x?}", paths_of(&steps)), None),
+        Err(e) => ("[]".to_string(), Some(e)),
+    };
+    reads.push(("the view's walk".to_string(), given, error));
+    let wrong: Vec<String> = reads
+        .iter()
+        .filter(|(_, given, error)| given != "[]" || !outside(error))
+        .map(|(read, given, error)| format!("{read}: {given}, then {error:?}"))
+        .collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Every node of `node`'s subtree below it, parents first, with its path.
+fn nodes_of<'n>(
+    node: &'n OwnedNode,
+    path: &mut Vec<Vec<u8>>,
+    out: &mut Vec<(Vec<Vec<u8>>, &'n OwnedNode)>,
+) {
+    for child in &node.children {
+        path.push(child.segment.clone());
+        out.push((path.clone(), child));
+        nodes_of(child, path, out);
+        path.pop();
+    }
+}
+
+/// #1180's check never fails a read of a tree the writer built, through the
+/// paged readers: for random trees (`random_tree`, with long segments)
+/// put node by node through `om_store::tree::apply` in entries of random
+/// size, then a third of their nodes deleted again in entries, each read
+/// the [`seeded_reads`] make, children, subtrees and walks in pages of
+/// random size from random bounds both ways, is answered by the store
+/// engine's view as by the file engine's view of the same tree (which
+/// fails no read), after the puts and after the deletes.
+#[test]
+fn two_engines_answer_alike_on_trees_the_writer_built_and_deleted_from() {
+    let (mut calls, mut nodes, mut leaves, mut tall, mut spilled) = (0, 0, 0, 0, 0);
+    for seed in 1..=12u64 {
+        let mut rng = Rng(seed * 0x2545_f491);
+        let mut root = OwnedNode::list(Vec::new(), random_tree(&mut rng, 0, true));
+        // The root as a file's tree holds it, which no list opens.
+        root.push = false;
+        let mut all = Vec::new();
+        nodes_of(&root, &mut Vec::new(), &mut all);
+        let puts: Vec<Edit> = all
+            .iter()
+            .map(|(path, node)| match node.push {
+                true => Edit::list(path.clone()),
+                false => Edit::leaf(path.clone(), node.value.clone().unwrap_or_default()),
+            })
+            .collect();
+        let mut deletes: Vec<Vec<Vec<u8>>> = all
+            .iter()
+            .filter(|_| rng.below(3) == 0)
+            .map(|(path, _)| path.clone())
+            .collect();
+        for i in (1..deletes.len()).rev() {
+            deletes.swap(i, rng.below(i + 1));
+        }
+        let store = MemStore::new(Numbering::Sequential);
+        let (mut at, mut entry) = (None, 1);
+        let mut apply = |edits: &[Edit]| {
+            let mut unit = store.begin().unwrap();
+            let new = tree::apply(&store, &mut unit, at, entry, edits).unwrap();
+            unit.commit().unwrap();
+            (at, entry) = (Some(new), entry + 1);
+            new
+        };
+        let mut compare = |root: &OwnedNode, tree: Root| {
+            let report = tree::check(&store, tree).unwrap();
+            nodes += report.items;
+            leaves += report.leaves;
+            tall += usize::from(report.height >= 3);
+            spilled += report.spilled_separators;
+            // A clone holds its lists at their lengths, as a loaded file
+            // does: a subtree's limit counts capacity, which `remove` left.
+            let root = root.clone();
+            let file = crate::engine::TreeView::new(&root, 1);
+            let paged = PagedView::open(&store, tree).unwrap();
+            let both = Both::new(&file, &paged);
+            let steps: Vec<Step> = (&both as &dyn View)
+                .walk(&[])
+                .collect::<Result<_, _>>()
+                .expect("the walk reads");
+            seeded_reads(&both, &paths_of(&steps), seed, 400);
+            calls += both.calls.get();
+        };
+        let mut tree_root = None;
+        for chunk in puts.chunks(1 + rng.below(300)) {
+            tree_root = Some(apply(chunk));
+        }
+        let Some(written) = tree_root else { continue };
+        compare(&root, written);
+        let edits: Vec<Edit> = deletes
+            .iter()
+            .map(|path| {
+                root.remove(&refs(path));
+                Edit::delete(path.clone())
+            })
+            .collect();
+        for chunk in edits.chunks(1 + rng.below(100)) {
+            tree_root = Some(apply(chunk));
+        }
+        compare(&root, tree_root.expect("a tree"));
+    }
+    println!(
+        "24 versions: {nodes} items, {leaves} leaves, {tall} of three levels or more, \
+         {spilled} spilled separators, {calls} calls compared"
+    );
+    assert!(tall >= 2, "{tall} versions of three levels");
+    assert!(spilled >= 20, "{spilled} spilled separators");
 }

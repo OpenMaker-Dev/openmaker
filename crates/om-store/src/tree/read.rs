@@ -421,6 +421,75 @@ impl<'s, S: PageStore + ?Sized> Pages<'s, S> {
         self.cmp_stored(self.stored_separator(page, i)?, key)
     }
 
+    /// How item `i` of the leaf `leaf` compares with the separator of child
+    /// `c` of the index page `index`, by bytes as every comparison here.
+    /// A separator its page holds whole is compared as any key is
+    /// ([`Pages::cmp_item`]: the item's overflow pages read only while the
+    /// two are equal). A spilled one (longer than 4,094 bytes, its first
+    /// 1,024 in the page) is decided by the bytes the two pages hold where
+    /// those differ, reading nothing; otherwise it is read whole
+    /// ([`Pages::separator`]) and compared the same way.
+    fn cmp_item_separator(
+        &self,
+        leaf: &Page,
+        i: usize,
+        index: &Page,
+        c: usize,
+    ) -> Result<Ordering> {
+        let s = self.stored_separator(index, c)?;
+        if s.part.len() == s.len {
+            return self.cmp_item(leaf, i, s.part);
+        }
+        let item = self.stored_item(leaf, i);
+        let n = item.part.len().min(s.part.len());
+        match item.part[..n].cmp(&s.part[..n]) {
+            Ordering::Equal => {}
+            order => return Ok(order),
+        }
+        if n == item.len {
+            // The item's whole key starts the longer separator.
+            return Ok(Ordering::Less);
+        }
+        self.cmp_item(leaf, i, &self.separator(index, c)?)
+    }
+
+    /// Whether the keys of `leaf`, reached through `path` (the index pages
+    /// from the root down to its parent, with the child taken at each), lie
+    /// in the range those pages give it, as the writer keeps every leaf
+    /// (`docs/server-storage-format.md` sections 2.4 and 2.7): at every
+    /// level, at or above the separator of the child taken when it has one,
+    /// and below the separator of the next child when there is one.
+    ///
+    /// Only the leaf's first key is compared with the separators below it
+    /// and its last with those above: its other keys lie between the two
+    /// when the leaf is in order, as the writer keeps it, and as a leaf
+    /// whose bytes prove its keys in order is. Every level is compared,
+    /// not only the nearest separator on each side: on a tree the writer
+    /// made those are the tightest bounds, the separators of a page lying
+    /// within its own range, but a tree read from its pages can hold a leaf
+    /// inside its parent's range and outside its grandparent's. Nothing is
+    /// compared with a bound a separator stale after deletions gives too
+    /// strictly: the first key may lie above the separator below it and
+    /// the last key well below the next one. At most two comparisons a
+    /// level; none for a root leaf or an empty one (only a root is empty).
+    fn leaf_in_range(&self, path: &[(Arc<Page>, usize)], leaf: &Page) -> Result<bool> {
+        let Some(last) = leaf.count().checked_sub(1) else {
+            return Ok(true);
+        };
+        for (page, c) in path.iter().rev() {
+            let (page, c) = (&**page, *c);
+            if c > 0 && self.cmp_item_separator(leaf, 0, page, c)? == Ordering::Less {
+                return Ok(false);
+            }
+            if c + 1 < page.count()
+                && self.cmp_item_separator(leaf, last, page, c + 1)? != Ordering::Less
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// How many items of a leaf have a key below `key` (or equal to it).
     pub(crate) fn items_below(&self, page: &Page, key: &[u8], or_equal: bool) -> Result<usize> {
         partition(page.count(), |i| {
@@ -759,6 +828,7 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
             self.stack.push((page, c));
             page = child;
         }
+        self.enter(&page)?;
         let n = match bound {
             Bound::Unbounded if forward => 0,
             Bound::Unbounded => page.count(),
@@ -766,6 +836,29 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
             Bound::Excluded(k) => pages.items_below(&page, k, forward)?,
         };
         self.land(page, n)
+    }
+
+    /// Checks `leaf`, which the cursor is about to enter below the pages it
+    /// holds, against the range they give it ([`Pages::leaf_in_range`]):
+    /// a leaf outside it fails the read as malformed (#1180), before
+    /// anything of it is given. Every leaf goes onto the cursor's stack
+    /// through here, so a leaf it holds has passed; a seek that keeps the
+    /// leaf it holds ([`Cursor::reposition`]), with the same pages above
+    /// it, does not check it again, and a cursor that stays in its leaf
+    /// pays nothing.
+    ///
+    /// Without it, an item placed in a leaf to the left of the range its
+    /// separators give it (the leaves `a, d` and `b, c` under the
+    /// separator `b`) is given where the leaf is walked, and a seek past
+    /// it, routed by the separators beyond it, finds nothing after it: a
+    /// listing, or a walk in pages whose page ends right after it, ends
+    /// there without an error, the items after it left out. No step of a
+    /// cursor goes back on such a tree, so #1166's checks do not see it.
+    fn enter(&self, leaf: &Page) -> Result<()> {
+        if self.tree.pages.leaf_in_range(&self.stack, leaf)? {
+            return Ok(());
+        }
+        Err(malformed(leaf, "a key outside its separators"))
     }
 
     /// Starts the cursor again from `bound` (its low bound going forward,
@@ -783,15 +876,21 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
     /// from ([`Place`]): `None` unless it holds the whole way from the root
     /// to a leaf, as it does after any step that found an item.
     pub fn place(&self) -> Option<Place> {
-        let whole = self.stack.len() == self.tree.height()
-            && self
-                .stack
-                .last()
-                .is_some_and(|(page, _)| page.kind() == PageKind::Leaf);
-        whole.then(|| Place {
+        self.holds_leaf().then(|| Place {
             root: self.tree.root,
             stack: self.stack.clone(),
         })
+    }
+
+    /// Whether the cursor holds the whole way from the root to a leaf: not
+    /// before its first step, after it ran off the tree's end, or after a
+    /// read on the way down or into a leaf failed.
+    fn holds_leaf(&self) -> bool {
+        self.stack.len() == self.tree.height()
+            && self
+                .stack
+                .last()
+                .is_some_and(|(page, _)| page.kind() == PageKind::Leaf)
     }
 
     /// The cursor, its starting bound to be sought from `place` rather than
@@ -824,7 +923,10 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
         if matches!(bound, Bound::Unbounded) {
             return self.position();
         }
-        if self.stack.is_empty() {
+        // Held pages that do not reach a leaf (a cursor that ran off the
+        // end, or one whose read failed on the way, a leaf that failed its
+        // range check among them) are no place to seek from.
+        if !self.holds_leaf() {
             return self.position();
         }
         let pages = &self.tree.pages;
@@ -893,6 +995,7 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
                     self.stack.push((page, c));
                     page = child;
                 }
+                self.enter(&page)?;
                 let n = below(&page)?;
                 (page, n)
             }
@@ -1027,6 +1130,7 @@ impl<'t, 's, S: PageStore + ?Sized> Cursor<'t, 's, S> {
                     child = next;
                 } else {
                     if count > 0 {
+                        self.enter(&child)?;
                         let edge = if forward { 0 } else { count - 1 };
                         self.stack.push((child, edge));
                         return Ok(true);
@@ -1802,103 +1906,135 @@ mod tests {
         }
     }
 
+    /// The key of the one-segment path `spilling(tail)`.
+    fn spilled_key(tail: u8) -> Vec<u8> {
+        key_of_segment(&spilling(tail))
+    }
+
+    /// The tree of the review of #938 as a read can still enter it since
+    /// #1180, written page by page: a first leaf `a, z, a/c` and a second
+    /// `n, o`, under the separator `a` followed by the byte `d` (the start
+    /// of the path `a/d…`), each segment `a`, `z`, `n` and `o` a `spilling`
+    /// one (4,200 bytes `p`, then the letter). Every key spills, so the
+    /// first leaf's bytes cannot prove its order: its first key `a` and its
+    /// last `a/c` lie below the separator, as the range check asks, and `z`,
+    /// between them, does not. A seek past `a` or to `n`, from the root,
+    /// goes to the second leaf; the first leaf's own items straddle either
+    /// bound. (The reviewer's tree, leaves `a, z` and `n, o` under `m`, now
+    /// fails every read that enters its first leaf, whose last key lies
+    /// past `m`.)
+    fn straddling(store: &MemStore) -> Root {
+        use crate::tree::built::{shaped, Shape};
+        let item = |key: Vec<u8>| (KIND_VALUE, key, vec![7; 10]);
+        let a = spilled_key(b'a');
+        let below_a = key::encode(&[spilling(b'a'), b"c".to_vec()]);
+        let mut separator = a.clone();
+        separator.push(b'd');
+        let first = vec![item(a), item(spilled_key(b'z')), item(below_a)];
+        let second = vec![item(spilled_key(b'n')), item(spilled_key(b'o'))];
+        shaped(
+            store,
+            &Shape::Index(
+                vec![Shape::Leaf(first), Shape::Leaf(second)],
+                vec![separator],
+            ),
+        )
+    }
+
     /// Review of #938 (#767): a tree whose pages each pass their own checks
-    /// although they are out of order across pages, as `tree::built`
-    /// writes them: a first leaf `a, z`, a second `n, o`, the separator `m`
-    /// between them. A cursor that holds the first leaf and seeks `n`, as a
-    /// listing seeks its next child, gives what a cursor from the root
-    /// gives, in both directions, though the leaf's own items straddle the
-    /// bound; and with the separator at `a`, a listing gives the children
-    /// that seeking each from the root gives. On such a tree a seek can come
-    /// back before its bound, where a read fails
-    /// ([#998](https://github.com/OpenMaker-Dev/openmaker/issues/998)), so
-    /// the first items are compared.
+    /// although its keys are out of order across them (`straddling`). A
+    /// cursor that holds the first leaf and seeks `n`, as a listing seeks
+    /// its next child, gives what a cursor from the root gives, in both
+    /// directions, though the leaf's own items straddle the bound; and a
+    /// listing gives the children that seeking each from the root gives,
+    /// though the first leaf straddles the bound past `a` too. On such a
+    /// tree a read can go back, where it fails (#998, #1149), so the first
+    /// items are compared, errors included. With every held page trusted
+    /// (#938's fault), the held cursor seeking `n` forward gave `z`, then
+    /// failed stepping back to `a/c`, where the root gives `n, o`.
     #[test]
     fn a_seek_from_a_held_leaf_gives_what_the_root_gives_on_a_tree_out_of_order() {
         let store = MemStore::new(Numbering::Sequential);
-        let item = |s: &[u8]| (KIND_VALUE, key_of_segment(s), vec![7; 10]);
-        let tree_with = |separator: &[u8]| {
-            let separator = key_of_segment(separator);
-            let leaves = [vec![item(b"a"), item(b"z")], vec![item(b"n"), item(b"o")]];
-            crate::tree::built::tree(&store, &leaves, &[separator.as_slice()]).root
-        };
-        let first = |cursor: &mut Cursor<'_, '_, MemStore>| firsts(cursor);
-        let tree = Tree::open(&store, tree_with(b"m")).unwrap();
+        let tree = Tree::open(&store, straddling(&store)).unwrap();
         assert_eq!(tree.height(), 2);
-        let n = key_of_segment(b"n");
+        let first_leaf = Pages { store: &store }
+            .child(&Pages { store: &store }.root(tree.root()).unwrap(), 0)
+            .unwrap();
+        assert!(!first_leaf.keys_ordered());
+        let (a, n) = (spilled_key(b'a'), spilled_key(b'n'));
         for direction in [Direction::Forward, Direction::Backward] {
             for bound in [Bound::Included(n.clone()), Bound::Excluded(n.clone())] {
                 // In the first leaf, at `a`: forward its first item, backward
-                // sought from `b`, which the separator sends there (walking
-                // back from the second leaf fails where it crosses, #1149).
-                let b = key_of_segment(b"b");
+                // sought from `a` itself, which the separator sends there.
                 let mut held = match direction {
                     Direction::Forward => tree.range(Bound::Unbounded, Bound::Unbounded, direction),
                     Direction::Backward => {
-                        tree.range(Bound::Unbounded, Bound::Included(&b), direction)
+                        tree.range(Bound::Unbounded, Bound::Included(&a), direction)
                     }
                 };
                 let last = held.next().unwrap().unwrap();
-                assert_eq!(last.key.as_bytes(), key_of_segment(b"a"));
+                assert_eq!(last.key.as_bytes(), a);
                 held.seek(bound.clone());
-                let from_held = first(&mut held);
+                let from_held = firsts(&mut held);
                 let start = bound.as_ref().map(Vec::as_slice);
                 let (lo, hi) = match direction {
                     Direction::Forward => (start, Bound::Unbounded),
                     Direction::Backward => (Bound::Unbounded, start),
                 };
-                let from_root = first(&mut tree.range(lo, hi, direction));
+                let from_root = firsts(&mut tree.range(lo, hi, direction));
+                if matches!(bound, Bound::Included(_)) {
+                    assert_eq!(from_root[0].as_deref(), Ok(&n[..]), "{direction:?}");
+                }
                 assert_eq!(from_held, from_root, "{direction:?} {bound:?}");
             }
         }
         // A listing: each child sought from where the one before was found,
         // against each sought from the root, as a listing did before #767.
-        let tree = Tree::open(&store, tree_with(b"a")).unwrap();
         let root: [&[u8]; 0] = [];
-        let listed: Vec<Vec<u8>> = tree
+        let segment =
+            |child: Result<(Vec<u8>, Node)>| child.map(|c| c.0).map_err(|e| format!("{e:?}"));
+        let listed: Firsts = tree
             .children(&root, Bound::Unbounded, Direction::Forward)
             .take(4)
-            .map(|child| child.unwrap().0)
+            .map(segment)
             .collect();
-        let mut sought = Vec::new();
+        let mut sought: Firsts = Vec::new();
         let mut from = Bound::Unbounded;
         while sought.len() < 4 {
             let start = from.as_ref().map(Vec::as_slice);
-            let Some(item) = tree
-                .range(start, Bound::Unbounded, Direction::Forward)
-                .next()
-            else {
+            let Some(child) = tree.children(&root, start, Direction::Forward).next() else {
                 break;
             };
-            let key = item.unwrap().key.into_bytes();
-            sought.push(key::decode_last(&key).unwrap());
-            from = Bound::Included(key::subtree_end(&key).unwrap());
+            let child = segment(child);
+            if let Ok(s) = &child {
+                from = Bound::Excluded(s.clone());
+            }
+            let failed = child.is_err();
+            sought.push(child);
+            if failed {
+                break;
+            }
         }
+        assert_eq!(listed[..2], [Ok(spilling(b'a')), Ok(spilling(b'n'))]);
         assert_eq!(listed, sought);
     }
 
-    /// Review of #938, the reviewer's case through a place: on the tree of
-    /// `a_seek_from_a_held_leaf_gives_what_the_root_gives_on_a_tree_out_of_order`
-    /// (leaves `a, z` and `n, o`, the separator `m`), a new cursor started
-    /// from the place a cursor left after `a`, with the bound `n`, and a
-    /// listing started there from the child `n`, give what the same reads
-    /// from the root give, in both directions (their first items, errors
-    /// included: such a listing fails where a child comes back before its
-    /// bound, #998).
+    /// Review of #938, the reviewer's case through a place: on the
+    /// `straddling` tree, a new cursor started from the place a cursor left
+    /// after `a`, with the bound `n`, and a listing started there from the
+    /// child `n`, give what the same reads from the root give, in both
+    /// directions (their first items, errors included: going backward from
+    /// `n` a read steps into the first leaf, whose items go back).
     #[test]
     fn a_place_gives_what_the_root_gives_on_a_tree_out_of_order() {
         let store = MemStore::new(Numbering::Sequential);
-        let item = |s: &[u8]| (KIND_VALUE, key_of_segment(s), vec![7; 10]);
-        let separator = key_of_segment(b"m");
-        let leaves = [vec![item(b"a"), item(b"z")], vec![item(b"n"), item(b"o")]];
-        let root = crate::tree::built::tree(&store, &leaves, &[separator.as_slice()]).root;
-        let tree = Tree::open(&store, root).unwrap();
+        let tree = Tree::open(&store, straddling(&store)).unwrap();
         let mut after_a = tree.range(Bound::Unbounded, Bound::Unbounded, Direction::Forward);
         let a = after_a.next().unwrap().unwrap();
-        assert_eq!(a.key.as_bytes(), key_of_segment(b"a"));
+        assert_eq!(a.key.as_bytes(), spilled_key(b'a'));
         let place = after_a.place();
         assert!(place.is_some());
-        let n = key_of_segment(b"n");
+        let n = spilled_key(b'n');
         let root_path: [&[u8]; 0] = [];
         for direction in [Direction::Forward, Direction::Backward] {
             for bound in [Bound::Included(&n[..]), Bound::Excluded(&n[..])] {
@@ -1911,15 +2047,14 @@ mod tests {
                 let from_place = first(tree.range(lo, hi, direction).starting_at(place.clone()));
                 assert_eq!(from_place, from_root, "{direction:?} {bound:?}");
             }
-            // Errors included: a listing on such a tree fails where a child
-            // comes back before its bound (#998), from either start alike.
             let first = |children: Children<'_, '_, MemStore>| -> Firsts {
                 let segment = |child: Result<(Vec<u8>, Node)>| {
                     child.map(|c| c.0).map_err(|e| format!("{e:?}"))
                 };
                 children.take(6).map(segment).collect()
             };
-            let listing = || tree.children(&root_path, Bound::Included(&b"n"[..]), direction);
+            let from = spilling(b'n');
+            let listing = || tree.children(&root_path, Bound::Included(&from[..]), direction);
             let from_root = first(listing());
             let from_place = first(listing().starting_at(place.clone()));
             assert_eq!(from_place, from_root, "the listing {direction:?}");
@@ -2078,144 +2213,374 @@ mod tests {
         items.take(4).map(key).collect()
     }
 
+    /// Edits for a tree the writer builds (`written`): `n` edits, each a
+    /// delete one time in `deletes`, of a path put before (`paths`, a
+    /// subtree, if it is still there) or of one drawn afresh, else a put:
+    /// below a path put before one time in three, else at a new path of two or three segments
+    /// whose first is a `spilling` one time in two (keys and separators
+    /// that spill and share their first 1,024 bytes, so that leaves and
+    /// index pages cannot prove their order), the others as
+    /// `drawn_segment` draws them; a list one time in four, else a value of
+    /// 10 bytes, of 3,000 (held whole, few to a leaf) or of 5,000 (spilled).
+    fn drawn_edits(
+        rng: &mut crate::sim::Rng,
+        paths: &[Vec<Vec<u8>>],
+        n: usize,
+        deletes: u32,
+    ) -> Vec<Edit> {
+        let held = |rng: &mut crate::sim::Rng| match paths.len() {
+            0 => None,
+            n => Some(paths[rng.below(n as u64) as usize].clone()),
+        };
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            if rng.one_in(deletes) {
+                let path = match held(rng) {
+                    Some(path) if !rng.one_in(4) => path,
+                    _ => vec![drawn_segment(rng)],
+                };
+                out.push(Edit::delete(path));
+                continue;
+            }
+            let path = match held(rng) {
+                Some(mut path) if rng.one_in(3) && path.len() < 4 => {
+                    path.push(drawn_segment(rng));
+                    path
+                }
+                _ => {
+                    let first = match rng.one_in(2) {
+                        true => spilling(b'a' + rng.below(8) as u8),
+                        false => drawn_segment(rng),
+                    };
+                    let mut path = vec![first, drawn_segment(rng)];
+                    if rng.one_in(2) {
+                        path.push(drawn_segment(rng));
+                    }
+                    path
+                }
+            };
+            let node = match rng.below(8) {
+                0 | 1 => Node::List,
+                2 | 3 => Node::Value(vec![3; 3000]),
+                4 => Node::Value(vec![5; 5000]),
+                _ => Node::Value(vec![1; 10]),
+            };
+            out.push(Edit::Put { path, node });
+        }
+        out
+    }
+
+    /// A tree built by the writer (`crate::tree::apply`) from `drawn_edits`,
+    /// in entries of 1 to 60 edits: a first phase of 30, 150 or 800 edits,
+    /// one delete in twelve, so that pages split; then half as many, one
+    /// delete in two, so that they shrink and join. Its store, and its root
+    /// after each phase (the store keeps every version's pages).
+    fn written(rng: &mut crate::sim::Rng) -> (MemStore, [Root; 2]) {
+        let store = MemStore::new(Numbering::Sequential);
+        let size = [30, 150, 800][rng.below(3) as usize];
+        let (mut root, mut entry, mut paths) = (None, 1, Vec::new());
+        let mut roots = Vec::new();
+        for (deletes, mut left) in [(12, size), (2, size / 2)] {
+            while left > 0 {
+                let n = (1 + rng.below(60) as usize).min(left);
+                left -= n;
+                let edits = drawn_edits(rng, &paths, n, deletes);
+                let mut unit = store.begin().unwrap();
+                let new = crate::tree::apply(&store, &mut unit, root, entry, &edits).unwrap();
+                unit.commit().unwrap();
+                (root, entry) = (Some(new), entry + 1);
+                paths.extend(edits.into_iter().filter_map(|edit| match edit {
+                    Edit::Put { path, .. } => Some(path),
+                    Edit::Delete { .. } => None,
+                }));
+            }
+            roots.push(root.expect("a tree after its first entry"));
+        }
+        (store, [roots[0], roots[1]])
+    }
+
+    /// The first four of `keys` (in key order) past `bound` in `direction`,
+    /// as a read from the root gives them on a tree that holds those keys.
+    fn past(keys: &[Vec<u8>], bound: &Bound<Vec<u8>>, direction: Direction) -> Firsts {
+        past_n(keys, bound, direction, 4)
+    }
+
+    /// The first `n` of `keys` past `bound` in `direction` ([`past`]).
+    fn past_n(keys: &[Vec<u8>], bound: &Bound<Vec<u8>>, direction: Direction, n: usize) -> Firsts {
+        let past = |k: &&Vec<u8>| match (direction, bound) {
+            (_, Bound::Unbounded) => true,
+            (Direction::Forward, Bound::Included(b)) => *k >= b,
+            (Direction::Forward, Bound::Excluded(b)) => *k > b,
+            (Direction::Backward, Bound::Included(b)) => *k <= b,
+            (Direction::Backward, Bound::Excluded(b)) => *k < b,
+        };
+        let take = |keys: &mut dyn Iterator<Item = &Vec<u8>>| -> Firsts {
+            keys.filter(past).take(n).map(|k| Ok(k.clone())).collect()
+        };
+        match direction {
+            Direction::Forward => take(&mut keys.iter()),
+            Direction::Backward => take(&mut keys.iter().rev()),
+        }
+    }
+
+    /// The segments of the children of `path` among `keys` (in key order),
+    /// as the keys of one-segment paths, so that [`past`] takes them.
+    fn children_of(keys: &[Vec<u8>], path: &[Vec<u8>]) -> Vec<Vec<u8>> {
+        keys.iter()
+            .filter_map(|k| key::decode(k))
+            .filter(|p| p.len() == path.len() + 1 && p.starts_with(path))
+            .map(|p| key_of_segment(&p[path.len()]))
+            .collect()
+    }
+
+    /// The reads of
+    /// `a_cursor_that_seeks_from_what_it_holds_finds_what_one_from_the_root_finds`
+    /// on one tree, `keys` its keys as its leaves hold them, in page order:
+    /// 24 seeks and 4 listings of the root's children, each against the
+    /// same read from the root. On a `well_formed` tree, one the writer
+    /// built, whose keys are in order, no read fails, and each gives what
+    /// the keys say it gives: those seeks and listings, a listing of a node
+    /// the tree holds, from a random bound, in either direction, from the
+    /// root and from a place, and a walk in pages of 1 to 8 in either
+    /// direction, each page sought past the last key the one before gave,
+    /// from that page's place.
+    fn seeks_and_listings(
+        t: &str,
+        tree: &Tree<'_, MemStore>,
+        keys: &[Vec<u8>],
+        rng: &mut crate::sim::Rng,
+        well_formed: bool,
+    ) {
+        let all = Bound::Unbounded;
+        let root_path: [&[u8]; 0] = [];
+        let direction_of = |forward: bool| match forward {
+            true => Direction::Forward,
+            false => Direction::Backward,
+        };
+        let segment =
+            |child: Result<(Vec<u8>, Node)>| child.map(|c| c.0).map_err(|e| format!("{e:?}"));
+        // A cursor moved a random number of items in `direction`: from the
+        // tree's end; on a tree the writer built, of up to thousands of
+        // keys, from a key drawn and sought, a few items on.
+        let moved = |rng: &mut crate::sim::Rng, direction: Direction| {
+            if !well_formed {
+                let mut cursor = tree.range(all, all, direction);
+                for _ in 0..rng.below(keys.len() as u64 + 1) {
+                    cursor.next();
+                }
+                return cursor;
+            }
+            let from = drawn_bound(rng, keys);
+            let mut cursor = match direction {
+                Direction::Forward => tree.range(Bound::Included(&from), all, direction),
+                Direction::Backward => tree.range(all, Bound::Included(&from), direction),
+            };
+            for _ in 0..1 + rng.below(4) {
+                cursor.next();
+            }
+            cursor
+        };
+        for _ in 0..24 {
+            let direction = direction_of(rng.one_in(2));
+            let key = drawn_bound(rng, keys);
+            let bound = match rng.one_in(2) {
+                true => Bound::Included(key),
+                false => Bound::Excluded(key),
+            };
+            let mut held = moved(rng, direction);
+            let place = held.place();
+            held.seek(bound.clone());
+            let start = bound.as_ref().map(Vec::as_slice);
+            let (lo, hi) = match direction {
+                Direction::Forward => (start, all),
+                Direction::Backward => (all, start),
+            };
+            let from_root = firsts(&mut tree.range(lo, hi, direction));
+            // Whatever the tree, a cursor after a seek gives nothing on the
+            // near side of its bound, nor anything that does not move on,
+            // without an error (#998, #1149).
+            let moved_on = moves_on(&from_root, &bound, direction);
+            assert!(moved_on, "{t}: {direction:?} {bound:?}: {from_root:?}");
+            if well_formed {
+                let expected = past(keys, &bound, direction);
+                assert_eq!(from_root, expected, "{t}: {direction:?} {bound:?}");
+            }
+            assert_eq!(firsts(&mut held), from_root, "{t}: {direction:?} {bound:?}");
+            // The same through a place (#938): a new cursor started from
+            // where the held one stood.
+            let started = &mut tree.range(lo, hi, direction).starting_at(place);
+            assert_eq!(
+                firsts(started),
+                from_root,
+                "{t}: a place, {direction:?} {bound:?}"
+            );
+        }
+        for _ in 0..4 {
+            let direction = direction_of(rng.one_in(2));
+            let segment_drawn = key::decode_last(&drawn_bound(rng, keys)).unwrap_or_default();
+            let from = match rng.below(3) {
+                0 => Bound::Unbounded,
+                1 => Bound::Included(segment_drawn),
+                _ => Bound::Excluded(segment_drawn),
+            };
+            let start = from.as_ref().map(Vec::as_slice);
+            let listed: Firsts = tree
+                .children(&root_path, start, direction)
+                .take(4)
+                .map(segment)
+                .collect();
+            let mut sought: Firsts = Vec::new();
+            let mut next = from.clone();
+            while sought.len() < 4 {
+                let start = next.as_ref().map(Vec::as_slice);
+                let Some(child) = tree.children(&root_path, start, direction).next() else {
+                    break;
+                };
+                let child = segment(child);
+                let failed = child.is_err();
+                if let Ok(segment) = &child {
+                    next = Bound::Excluded(segment.clone());
+                }
+                sought.push(child);
+                if failed {
+                    break;
+                }
+            }
+            assert_eq!(
+                listed, sought,
+                "{t}: the listing {direction:?} from {from:?}"
+            );
+            let moved_on = moves_on(&listed, &from, direction);
+            assert!(
+                moved_on,
+                "{t}: the listing {direction:?} from {from:?}: {listed:?}"
+            );
+            if well_formed {
+                let bound = from.as_ref().map(|s| key_of_segment(s));
+                let expected = past(&children_of(keys, &[]), &bound, direction);
+                let as_keys: Firsts = listed
+                    .iter()
+                    .map(|c| c.as_ref().map(|s| key_of_segment(s)).map_err(Clone::clone))
+                    .collect();
+                assert_eq!(
+                    as_keys, expected,
+                    "{t}: the listing {direction:?} from {from:?}"
+                );
+            }
+            // The same listing started from the place a cursor moved a
+            // random number of items in either direction left (#938).
+            let moved_direction = direction_of(rng.one_in(2));
+            let listing = tree.children(&root_path, start, direction);
+            let from_place: Firsts = listing
+                .starting_at(moved(rng, moved_direction).place())
+                .take(4)
+                .map(segment)
+                .collect();
+            assert_eq!(
+                from_place, sought,
+                "{t}: the listing from a place {direction:?}"
+            );
+        }
+        if !well_formed {
+            return;
+        }
+        // A listing of a node the tree holds, whole, from a random bound in
+        // either direction, from the root and from a place.
+        let path = match keys.len() {
+            0 => Vec::new(),
+            n => key::decode(&keys[rng.below(n as u64) as usize]).unwrap(),
+        };
+        let direction = direction_of(rng.one_in(2));
+        let drawn = key::decode_last(&drawn_bound(rng, keys)).unwrap_or_default();
+        let from = match rng.below(3) {
+            0 => Bound::Unbounded,
+            1 => Bound::Included(drawn),
+            _ => Bound::Excluded(drawn),
+        };
+        let start = from.as_ref().map(Vec::as_slice);
+        let bound = from.as_ref().map(|s| key_of_segment(s));
+        let children = children_of(keys, &path);
+        let expected = past_n(&children, &bound, direction, usize::MAX);
+        let moved_direction = direction_of(rng.one_in(2));
+        for place in [None, moved(rng, moved_direction).place()] {
+            let listed: Firsts = tree
+                .children(&path, start, direction)
+                .starting_at(place)
+                .map(|c| segment(c).map(|s| key_of_segment(&s)))
+                .collect();
+            assert_eq!(
+                listed, expected,
+                "{t}: the children of {path:02x?} {direction:?} from {from:?}"
+            );
+        }
+        // A walk in pages of 1 to 8, each page sought past the last key the
+        // one before gave, from that page's place.
+        for direction in [Direction::Forward, Direction::Backward] {
+            let size = 1 + rng.below(8) as usize;
+            let (mut walked, mut place) = (Vec::new(), None);
+            loop {
+                let last = walked.last().map(Vec::as_slice);
+                let after = last.map_or(all, Bound::Excluded);
+                let (lo, hi) = match direction {
+                    Direction::Forward => (after, all),
+                    Direction::Backward => (all, after),
+                };
+                let mut page = tree.range(lo, hi, direction).starting_at(place);
+                let mut given = 0;
+                for item in page.by_ref().take(size) {
+                    let item =
+                        item.unwrap_or_else(|e| panic!("{t}: a walk in pages of {size}: {e}"));
+                    walked.push(item.key.into_bytes());
+                    given += 1;
+                }
+                place = page.place();
+                if given < size {
+                    break;
+                }
+                assert!(
+                    walked.len() <= keys.len(),
+                    "{t}: a walk in pages that does not end"
+                );
+            }
+            if direction == Direction::Backward {
+                walked.reverse();
+            }
+            assert_eq!(
+                walked, keys,
+                "{t}: a walk in pages of {size}, {direction:?}"
+            );
+        }
+    }
+
     /// The contract of a cursor that seeks from the pages it holds
     /// (`Cursor::reposition`, review of #938): it finds what a cursor from
-    /// the root finds, on any tree, well formed or not. Over 300 generated
-    /// trees (`generated`): a cursor moved a random number of items in
-    /// either direction seeks a random bound of either kind
-    /// (`drawn_bound`), against a cursor from the root; and a listing of
-    /// the root's children from a random bound in either direction, every
-    /// child after the first sought from where the one before was found,
-    /// against each child sought from the root, as listings did before
-    /// #767. Each also through a place (#938): a cursor, and a listing,
-    /// started from where a cursor moved at random stood.
+    /// the root finds, on any tree, well formed or not; and on a tree the
+    /// writer built, no read fails (#1180: the check of a leaf's range
+    /// never fires on a well-formed tree) and each gives what the tree
+    /// holds. `seeks_and_listings` on 300 trees written page by page
+    /// (`generated`), most of them out of order across their pages, and
+    /// on 24 trees the writer built (`written`), after each of their two
+    /// phases: inserts that split pages, then deletes that join them, with
+    /// keys and separators that spill, and leaves and index pages that
+    /// cannot prove their order. Each tree the writer built passes the
+    /// whole-tree check (`tree::check`) first.
     #[test]
     fn a_cursor_that_seeks_from_what_it_holds_finds_what_one_from_the_root_finds() {
         let mut rng = crate::sim::Rng::new(767);
-        let (mut unproven, mut out_of_order, mut seeks, mut listings) = (0, 0, 0, 0);
-        let root_path: [&[u8]; 0] = [];
+        let (mut unproven, mut out_of_order) = (0, 0);
         for t in 0..300 {
             let (shape, has_unproven) = generated(&mut rng);
             unproven += usize::from(has_unproven);
             let store = MemStore::new(Numbering::Sequential);
             let tree = Tree::open(&store, crate::tree::built::shaped(&store, &shape)).unwrap();
-            let all = Bound::Unbounded;
             // The keys as the leaves hold them, in page order (a walk fails
             // where a tree out of order crosses to a leaf that begins
-            // before the one it leaves, #1149).
+            // before the one it leaves, #1149, or enters a leaf outside its
+            // range, #1180).
             let mut keys = Vec::new();
             shape_keys(&shape, &mut keys);
             out_of_order += usize::from(keys.windows(2).any(|w| w[0] >= w[1]));
-            for _ in 0..24 {
-                let direction = match rng.one_in(2) {
-                    true => Direction::Forward,
-                    false => Direction::Backward,
-                };
-                let key = drawn_bound(&mut rng, &keys);
-                let bound = match rng.one_in(2) {
-                    true => Bound::Included(key),
-                    false => Bound::Excluded(key),
-                };
-                let mut held = tree.range(all, all, direction);
-                for _ in 0..rng.below(keys.len() as u64 + 1) {
-                    held.next();
-                }
-                let place = held.place();
-                held.seek(bound.clone());
-                let start = bound.as_ref().map(Vec::as_slice);
-                let (lo, hi) = match direction {
-                    Direction::Forward => (start, all),
-                    Direction::Backward => (all, start),
-                };
-                let from_root = firsts(&mut tree.range(lo, hi, direction));
-                // Whatever the tree, a cursor after a seek gives nothing on the
-                // near side of its bound, nor anything that does not move on,
-                // without an error (#998, #1149).
-                let moved_on = moves_on(&from_root, &bound, direction);
-                assert!(moved_on, "tree {t}: {direction:?} {bound:?}: {from_root:?}");
-                assert_eq!(
-                    firsts(&mut held),
-                    from_root,
-                    "tree {t}: {direction:?} {bound:?}"
-                );
-                // The same through a place (#938): a new cursor started from
-                // where the held one stood.
-                let started = &mut tree.range(lo, hi, direction).starting_at(place);
-                assert_eq!(
-                    firsts(started),
-                    from_root,
-                    "tree {t}: a place, {direction:?} {bound:?}"
-                );
-                seeks += 1;
-            }
-            for _ in 0..4 {
-                let direction = match rng.one_in(2) {
-                    true => Direction::Forward,
-                    false => Direction::Backward,
-                };
-                let segment = key::decode_last(&drawn_bound(&mut rng, &keys)).unwrap_or_default();
-                let from = match rng.below(3) {
-                    0 => Bound::Unbounded,
-                    1 => Bound::Included(segment),
-                    _ => Bound::Excluded(segment),
-                };
-                let segment = |child: Result<(Vec<u8>, Node)>| {
-                    child.map(|c| c.0).map_err(|e| format!("{e:?}"))
-                };
-                let start = from.as_ref().map(Vec::as_slice);
-                let listed: Firsts = tree
-                    .children(&root_path, start, direction)
-                    .take(4)
-                    .map(segment)
-                    .collect();
-                let mut sought: Firsts = Vec::new();
-                let mut next = from.clone();
-                while sought.len() < 4 {
-                    let start = next.as_ref().map(Vec::as_slice);
-                    let Some(child) = tree.children(&root_path, start, direction).next() else {
-                        break;
-                    };
-                    let child = segment(child);
-                    let failed = child.is_err();
-                    if let Ok(segment) = &child {
-                        next = Bound::Excluded(segment.clone());
-                    }
-                    sought.push(child);
-                    if failed {
-                        break;
-                    }
-                }
-                assert_eq!(
-                    listed, sought,
-                    "tree {t}: the listing {direction:?} from {from:?}"
-                );
-                let moved_on = moves_on(&listed, &from, direction);
-                assert!(
-                    moved_on,
-                    "tree {t}: the listing {direction:?} from {from:?}: {listed:?}"
-                );
-                // The same listing started from the place a cursor moved a
-                // random number of items in either direction left (#938).
-                let moved_direction = match rng.one_in(2) {
-                    true => Direction::Forward,
-                    false => Direction::Backward,
-                };
-                let mut moved = tree.range(all, all, moved_direction);
-                for _ in 0..rng.below(keys.len() as u64 + 1) {
-                    moved.next();
-                }
-                let listing = tree.children(&root_path, start, direction);
-                let from_place: Firsts = listing
-                    .starting_at(moved.place())
-                    .take(4)
-                    .map(segment)
-                    .collect();
-                assert_eq!(
-                    from_place, sought,
-                    "tree {t}: the listing from a place {direction:?}"
-                );
-                listings += 1;
-            }
+            seeks_and_listings(&format!("tree {t}"), &tree, &keys, &mut rng, false);
         }
         assert!(
             unproven > 10,
@@ -2225,7 +2590,245 @@ mod tests {
             out_of_order > 100,
             "{out_of_order} trees out of order across pages"
         );
-        assert_eq!((seeks, listings), (300 * 24, 300 * 4));
+        // What the trees the writer built hold, over their versions read:
+        // versions three levels high, leaves and index pages whose bytes
+        // cannot prove their order, spilled separators, and trees whose
+        // second phase left fewer leaves than its first.
+        let (mut versions, mut items, mut leaves, mut tall) = (0, 0, 0, 0);
+        let (mut unproven_leaves, mut unproven_indexes, mut spilled, mut joined) = (0, 0, 0, 0);
+        let mut rng = crate::sim::Rng::new(1180);
+        for t in 0..24 {
+            let (store, roots) = written(&mut rng);
+            let mut before = None;
+            for (phase, root) in roots.into_iter().enumerate() {
+                let report = check(&store, root).unwrap();
+                for (number, hash) in &report.pages {
+                    let page = store.read(*number, hash).unwrap();
+                    unproven_leaves += usize::from(
+                        page.kind() == PageKind::Leaf && page.count() > 1 && !page.keys_ordered(),
+                    );
+                    unproven_indexes += usize::from(
+                        page.kind() == PageKind::Index
+                            && page.count() > 2
+                            && !page.separators_ordered(),
+                    );
+                }
+                versions += 1;
+                items += report.items;
+                leaves += report.leaves;
+                tall += usize::from(report.height >= 3);
+                spilled += report.spilled_separators;
+                joined += usize::from(before.is_some_and(|n| report.leaves < n));
+                before = Some(report.leaves);
+                let t = format!("written tree {t}, phase {phase}");
+                let tree = Tree::open(&store, root).unwrap();
+                let keys: Vec<Vec<u8>> = tree
+                    .walk::<Vec<u8>>(&[])
+                    .map(|item| item.unwrap_or_else(|e| panic!("{t}: a walk: {e}")))
+                    .map(|item| item.key.into_bytes())
+                    .collect();
+                assert_eq!(keys.len(), report.items);
+                seeks_and_listings(&t, &tree, &keys, &mut rng, true);
+            }
+        }
+        println!(
+            "{versions} versions written: {items} items, {leaves} leaves, {tall} of three levels \
+             or more, {unproven_leaves} leaves and {unproven_indexes} index pages unproven, \
+             {spilled} spilled separators, {joined} trees with fewer leaves after the deletes"
+        );
+        assert!(tall >= 5, "{tall} versions of three levels");
+        assert!(unproven_leaves >= 50, "{unproven_leaves} unproven leaves");
+        assert!(
+            unproven_indexes >= 5,
+            "{unproven_indexes} unproven index pages"
+        );
+        assert!(spilled >= 50, "{spilled} spilled separators");
+        assert!(joined >= 5, "{joined} trees whose leaves joined");
+    }
+
+    /// The leaf pages of the tree at `root`, in key order.
+    fn leaf_pages(store: &MemStore, root: Root) -> Vec<PageNo> {
+        fn walk(pages: &Pages<'_, MemStore>, page: Arc<Page>, out: &mut Vec<PageNo>) {
+            if page.kind() == PageKind::Leaf {
+                out.push(page.number());
+                return;
+            }
+            for c in 0..page.count() {
+                walk(pages, pages.child(&page, c).unwrap(), out);
+            }
+        }
+        let pages = Pages { store };
+        let mut out = Vec::new();
+        walk(&pages, pages.root(root).unwrap(), &mut out);
+        out
+    }
+
+    /// The keys of each leaf of a tree `tree::built::shaped` writes, in
+    /// key order.
+    fn shape_leaves(shape: &crate::tree::built::Shape, out: &mut Vec<Vec<Vec<u8>>>) {
+        match shape {
+            crate::tree::built::Shape::Leaf(items) => {
+                out.push(items.iter().map(|i| i.1.clone()).collect())
+            }
+            crate::tree::built::Shape::Index(children, _) => {
+                for child in children {
+                    shape_leaves(child, out);
+                }
+            }
+        }
+    }
+
+    /// What a read gave: each key, or the page a malformed error names and
+    /// why, which ends it.
+    type Given = Vec<std::result::Result<Vec<u8>, (PageNo, &'static str)>>;
+
+    fn given<T>(items: impl Iterator<Item = Result<T>>, key: impl Fn(T) -> Vec<u8>) -> Given {
+        let malformed = |e: Error| match e {
+            Error::Page(PageFault {
+                page,
+                fault: Fault::Malformed(why),
+                ..
+            }) => (page, why),
+            other => panic!("{other:?}"),
+        };
+        items
+            .take(20)
+            .map(|i| i.map(&key).map_err(malformed))
+            .collect()
+    }
+
+    /// #1180: a leaf whose keys lie outside the range its ancestors give it
+    /// fails every read that enters it, as malformed and naming it, before
+    /// any of its items is given: a leaf whose first key lies below the
+    /// separator before it, one whose last key is that of the separator
+    /// after it (a key equal to a separator belongs to the child on its
+    /// right) or lies past it, and, a level above the parent, one inside
+    /// its parent's range but past or below its grandparent's. Walks and
+    /// listings of the root's children, in both directions, give the items
+    /// of the leaves on their side of it and fail entering it; a seek of
+    /// its first key from the root fails before anything. And a tree that
+    /// keeps every leaf in its range gives everything: a leaf's first key
+    /// equal to the separator before it at its parent's level, and at its
+    /// grandparent's, and separators that bound their leaves loosely, as
+    /// they do after deletions.
+    #[test]
+    fn a_read_fails_entering_a_leaf_outside_the_range_its_ancestors_give_it() {
+        use crate::tree::built::{shaped, Shape};
+        let leaf = |keys: &[&[u8]]| {
+            let items = keys
+                .iter()
+                .map(|k| (KIND_VALUE, key_of_segment(k), vec![7; 10]));
+            Shape::Leaf(items.collect())
+        };
+        let index = |children: Vec<Shape>, separators: &[&[u8]]| {
+            Shape::Index(
+                children,
+                separators.iter().map(|s| key_of_segment(s)).collect(),
+            )
+        };
+        // A name, the tree, and the leaf outside its range (in key order).
+        let cases: Vec<(&str, Shape, Option<usize>)> = vec![
+            (
+                "the first key below the separator before it",
+                index(vec![leaf(&[b"a", b"b"]), leaf(&[b"k", b"n"])], &[b"m"]),
+                Some(1),
+            ),
+            (
+                "the last key at the separator after it",
+                index(vec![leaf(&[b"a", b"m"]), leaf(&[b"n", b"p"])], &[b"m"]),
+                Some(0),
+            ),
+            (
+                "the last key past the separator after it",
+                index(vec![leaf(&[b"a", b"n"]), leaf(&[b"p", b"q"])], &[b"m"]),
+                Some(0),
+            ),
+            (
+                "inside its parent's range, past its grandparent's",
+                index(
+                    vec![
+                        index(vec![leaf(&[b"a"]), leaf(&[b"d", b"p"])], &[b"c"]),
+                        index(vec![leaf(&[b"n", b"o"]), leaf(&[b"u"])], &[b"t"]),
+                    ],
+                    &[b"m"],
+                ),
+                Some(1),
+            ),
+            (
+                "inside its parent's range, below its grandparent's",
+                index(
+                    vec![
+                        index(vec![leaf(&[b"a"]), leaf(&[b"d", b"e"])], &[b"c"]),
+                        index(vec![leaf(&[b"k", b"o"]), leaf(&[b"u"])], &[b"t"]),
+                    ],
+                    &[b"m"],
+                ),
+                Some(2),
+            ),
+            (
+                "every leaf in its range, first keys at their separators",
+                index(
+                    vec![
+                        index(vec![leaf(&[b"a", b"b"]), leaf(&[b"e", b"f"])], &[b"c"]),
+                        index(vec![leaf(&[b"m", b"n"]), leaf(&[b"t", b"z"])], &[b"t"]),
+                    ],
+                    &[b"m"],
+                ),
+                None,
+            ),
+        ];
+        let root_path: [&[u8]; 0] = [];
+        let all = Bound::Unbounded;
+        for (name, shape, outside) in cases {
+            let store = MemStore::new(Numbering::Sequential);
+            let root = shaped(&store, &shape);
+            let tree = Tree::open(&store, root).unwrap();
+            let pages = leaf_pages(&store, root);
+            let mut keys = Vec::new();
+            shape_leaves(&shape, &mut keys);
+            let (before, after): (Given, Given) = match outside {
+                None => (keys.concat().into_iter().map(Ok).collect(), Vec::new()),
+                Some(bad) => {
+                    let failed = Err((pages[bad], "a key outside its separators"));
+                    let mut before: Given = keys[..bad].concat().into_iter().map(Ok).collect();
+                    before.push(failed.clone());
+                    let mut after: Given = keys[bad + 1..].concat().into_iter().map(Ok).collect();
+                    after.reverse();
+                    after.push(failed);
+                    (before, after)
+                }
+            };
+            let after = match outside {
+                None => before.iter().rev().cloned().collect(),
+                Some(_) => after,
+            };
+            let item_key = |item: Item| item.key.into_bytes();
+            let child_key = |child: (Vec<u8>, Node)| key_of_segment(&child.0);
+            let walked = given(tree.walk(&root_path), item_key);
+            assert_eq!(walked, before, "{name}: a walk");
+            let back = given(tree.range(all, all, Direction::Backward), item_key);
+            assert_eq!(back, after, "{name}: a walk backward");
+            let listed = given(
+                tree.children(&root_path, all, Direction::Forward),
+                child_key,
+            );
+            assert_eq!(listed, before, "{name}: a listing");
+            let listed = given(
+                tree.children(&root_path, all, Direction::Backward),
+                child_key,
+            );
+            assert_eq!(listed, after, "{name}: a listing backward");
+            if let Some(bad) = outside {
+                let first = keys[bad][0].as_slice();
+                let sought = tree.range(Bound::Included(first), all, Direction::Forward);
+                let sought = given(sought, item_key);
+                assert_eq!(
+                    sought[0],
+                    Err((pages[bad], "a key outside its separators")),
+                    "{name}"
+                );
+            }
+        }
     }
 
     /// #998: on a tree whose leaves are out of order with their separators
@@ -2233,9 +2836,12 @@ mod tests {
     /// that went on from there gave children it had given, without end: the
     /// issue's tree (leaves `a, d` and `b, c`, the separator `x`) listed
     /// forward gave `a, d, b, d, b, …`, and leaves `a, z` and `n, o` with
-    /// the separator `b` listed backward `o, n, z, o, n, …`. Each now fails
-    /// as malformed at the child that came back, and the other direction of
-    /// each ends within the tree's four children.
+    /// the separator `b` listed backward `o, n, z, o, n, …`. Each fails as
+    /// malformed where the listing would go back, and the other direction
+    /// of each ends within the tree's four children. Since #1180 the
+    /// failure is the range check of the leaf the listing enters there (its
+    /// first key below the separator before it, or its last at or above the
+    /// one after it), before #1166's check of the child that comes back.
     #[test]
     fn a_listing_fails_rather_than_repeat_children_on_a_tree_out_of_order() {
         let store = MemStore::new(Numbering::Sequential);
@@ -2277,7 +2883,7 @@ mod tests {
                 [Err(Error::Page(PageFault {
                     fault: Fault::Malformed(why),
                     ..
-                }))] => assert_eq!(*why, "an item before the bound it was sought from"),
+                }))] => assert_eq!(*why, "a key outside its separators"),
                 other => panic!("{direction:?}: {other:?}"),
             }
             let back = match direction {
@@ -2296,9 +2902,12 @@ mod tests {
     /// again and again, and pages of three `a, d, b`, then `d, b, c` again
     /// and again: each seek lands past the last item, on `d`, and the walk
     /// then steps on into the leaf that begins before it. Now the walk
-    /// fails as malformed where it would go back: pages of two at the
-    /// second page's seek, which comes back before `d`; pages of three
-    /// where the first page crosses from `d` to `b`.
+    /// fails as malformed where it would go back, entering the leaf `b, c`,
+    /// whose first key lies below its separator (#1180): pages of two at
+    /// the second page's seek, which goes on from `d` into that leaf (with
+    /// #1166's checks alone: comes back before `d`); pages of three where
+    /// the first page crosses from `d` to `b` (with #1166's alone: an item
+    /// that does not follow `d`).
     #[test]
     fn a_walk_in_pages_fails_rather_than_repeat_on_a_tree_out_of_order() {
         let store = MemStore::new(Numbering::Sequential);
@@ -2308,16 +2917,8 @@ mod tests {
         let root = crate::tree::built::tree(&store, &leaves, &[separator.as_slice()]).root;
         let tree = Tree::open(&store, root).unwrap();
         let cases: [(usize, &[&[u8]], &str); 2] = [
-            (
-                2,
-                &[b"a", b"d"],
-                "an item before the bound it was sought from",
-            ),
-            (
-                3,
-                &[b"a", b"d"],
-                "an item that does not follow the one before it",
-            ),
+            (2, &[b"a", b"d"], "a key outside its separators"),
+            (3, &[b"a", b"d"], "a key outside its separators"),
         ];
         for (size, before, failure) in cases {
             let (mut given, mut after, mut failed) = (Vec::new(), None::<Vec<u8>>, None);
