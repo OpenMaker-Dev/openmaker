@@ -2201,6 +2201,11 @@ over 64 KiB or needs names from an unavailable schema, the caption says
 Web Viewer.
 The glyph, sizing rule and clipping are OpenMaker's choices
 ([FileMaker comparison](re/client-ui.md#web-viewer-artwork-in-layout-mode)).
+Saved portals on the canvas show their related occurrence at the lower
+left when the caption fits below the authored first row. If the name is
+unavailable, the caption says Portal. OpenMaker omits the row indicator
+and hides the caption when it has no room below the first row
+([FileMaker comparison](re/client-ui.md#saved-portal-captions-in-layout-mode)).
 Unsupported objects and geometry-only providers still use outlines and
 captions.
 The scrollable canvas, part tabs, objects and selection handles scale

@@ -2143,7 +2143,13 @@ fn draw(
                         painter.rect_stroke(rect, CornerRadius::ZERO, outline, StrokeKind::Inside);
                     }
                 }
-                if !painted && rect.width() >= 1.0 && rect.height() >= 1.0 {
+                if !painted
+                    && rect.width() >= 1.0
+                    && rect.height() >= 1.0
+                    && !design.is_some_and(|design| {
+                        design.paint_portal_caption(&artwork, object.key, rect)
+                    })
+                {
                     let stored_words = (!texts.words.objects.contains_key(&object.key))
                         .then(|| (texts.stored)(object.key))
                         .flatten();
