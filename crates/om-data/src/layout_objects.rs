@@ -130,10 +130,23 @@ pub fn plan_anchors(
 ) -> Result<Planned, Refusal> {
     fixed_layout(member)?;
     let (stored, objects) = stored_objects(member)?;
-    if objects.get(object).is_none() {
-        return Err(Refusal::Invalid(format!(
-            "The layout has no object {object}."
-        )));
+    let target = objects
+        .get(object)
+        .ok_or_else(|| Refusal::Invalid(format!("The layout has no object {object}.")))?;
+    if anchors.flags() == 0 {
+        return Err(Refusal::Invalid("Set at least one autosizing edge.".into()));
+    }
+    if target.is_locked()
+        || !matches!(target.kind(), ObjectKind::Text | ObjectKind::Field)
+        || target.parent.is_some_and(|parent| {
+            !objects.get(parent).is_some_and(|parent| {
+                matches!(parent.kind(), ObjectKind::Group | ObjectKind::Portal)
+            })
+        })
+    {
+        return Err(Refusal::Unsupported(
+            "Autosizing can be set on unlocked text and fields on the layout or inside a group or portal.".into(),
+        ));
     }
     let bytes = om_layout::encode::with_object_anchors(&stored, object, anchors.flags())
         .ok_or_else(|| {
@@ -151,6 +164,12 @@ pub fn plan_anchors(
         member: next,
         changes,
     })
+}
+
+/// Whether a valid edit already has its requested anchors, for a retry or
+/// a fresh read after the server acknowledges the save.
+pub fn already_anchored(member: &OwnedNode, object: u64, anchors: AutosizingAnchors) -> bool {
+    plan_anchors(member, object, anchors).is_ok_and(|plan| plan.changes.is_empty())
 }
 
 /// The field controls a field object can be given (layout-model.md 5.4),

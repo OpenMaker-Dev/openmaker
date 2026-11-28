@@ -720,6 +720,7 @@ pub enum DesignEdit {
     SetObjectFrames(design::SetObjectFrames),
     DeleteObjects(design::DeleteObjects),
     SetText(design::SetText),
+    SetObjectAnchors(design::SetObjectAnchors),
     FieldControl(design::FieldControl),
     PartOptions(design::PartOptions),
     ChangeParts(design::ChangeParts),

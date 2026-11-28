@@ -628,7 +628,8 @@ impl AutosizingAnchors {
     const RIGHT: u64 = 1 << 30;
     const BOTTOM: u64 = 1 << 31;
 
-    fn from_flags(flags: u64) -> Self {
+    /// Decode stored autosizing edges, ignoring other object flags.
+    pub fn from_flags(flags: u64) -> Self {
         Self {
             left: flags & Self::LEFT != 0,
             top: flags & Self::TOP != 0,

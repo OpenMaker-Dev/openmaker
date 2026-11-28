@@ -1386,6 +1386,13 @@ flag changes. Within `[4, 5, L]`, only `07` and stamps `fc` and `fc03`
 changed. File history and modification counts elsewhere also changed.
 [Native run and method](https://github.com/OpenMaker-Dev/openmaker/issues/888#issuecomment-7214357808).
 
+FileMaker Pro 26.1.1 opened and reopened an OpenMaker-written copy with
+the same four anchor edits. The changes were confined to the four anchor
+bits of each target; the object order and selection bits were left intact.
+Both parent anchor sets read back unchanged. Recover returned only code
+0 on the edited copy and rebuilt no-edit control.
+[Native acceptance](https://github.com/OpenMaker-Dev/openmaker/issues/888#issuecomment-7231598734).
+
 **Unknowns:** Whether the definition order reverses on every subsequent
 save, how the Inspector handles multiple selected objects or all four
 anchors unchecked, and effective Browse resizing of the edited nested

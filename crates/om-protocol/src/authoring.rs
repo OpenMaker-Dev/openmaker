@@ -136,6 +136,7 @@ const CHANGE_PARTS: u8 = 22;
 const LAYOUT_SETUP_MARGINS: u8 = 23;
 /// 28 onward: web viewers.
 const PLACE_WEB_VIEWER: u8 = 28;
+const SET_OBJECT_ANCHORS: u8 = 30;
 
 /// Bits of [`Described::operations`].
 pub const OP_REPLACE_SCRIPT_STEPS: u32 = 1 << REPLACE_SCRIPT_STEPS;
@@ -169,6 +170,7 @@ pub const OP_LAYOUT_SETUP_MARGINS: u32 = 1 << LAYOUT_SETUP_MARGINS;
 pub const OP_FIELD_CONTROL: u32 = 1 << FIELD_CONTROL;
 pub const OP_PART_OPTIONS: u32 = 1 << PART_OPTIONS;
 pub const OP_SET_TEXT: u32 = 1 << SET_TEXT;
+pub const OP_SET_OBJECT_ANCHORS: u32 = 1 << SET_OBJECT_ANCHORS;
 pub const OP_VALUE_LIST_VALUES: u32 = 1 << VALUE_LIST_VALUES;
 pub const OP_PLACE_WEB_VIEWER: u32 = 1 << PLACE_WEB_VIEWER;
 /// The most items, and characters in all, a value list's values request
@@ -241,6 +243,7 @@ pub enum Request {
     FieldControl(FieldControl),
     PartOptions(PartOptions),
     SetText(SetText),
+    SetObjectAnchors(SetObjectAnchors),
     ValueListValues(ValueListValues),
     PlacePortal(PlacePortal),
     ChangeParts(ChangeParts),
@@ -280,6 +283,7 @@ pub enum Operation {
     FieldControl,
     PartOptions,
     SetText,
+    SetObjectAnchors,
     ValueListValues,
     PlaceWebViewer,
     PlacePortal,
@@ -452,6 +456,17 @@ pub struct SetText {
     pub layout: u64,
     pub object: u64,
     pub text: String,
+}
+
+/// Set one object's stored autosizing anchors at the expected layout revision.
+/// The reply is [`Reply::Framed`] with the member's revision.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SetObjectAnchors {
+    pub expected: Revision,
+    pub layout: u64,
+    pub object: u64,
+    /// The four autosizing bits (28 through 31 of LayoutObject.flags).
+    pub flags: u32,
 }
 
 /// Set Part Setup's options for part `part` (its key, `[4, 5, L, 03, P]`)
@@ -763,6 +778,14 @@ pub fn build_request(
                 .push_u64(place.layout);
             (b, PLACE_PORTAL, VERSION)
         }
+        Request::SetObjectAnchors(set) => {
+            let b = b
+                .push_u32(set.flags)
+                .push_u64(set.object)
+                .push_raw(&set.expected)
+                .push_u64(set.layout);
+            (b, SET_OBJECT_ANCHORS, VERSION)
+        }
         Request::SetText(set) => {
             let b = b
                 .push_string(&set.text)
@@ -1067,6 +1090,18 @@ pub fn parse_request_within(
                 field,
                 frame,
                 label,
+            })
+        }
+        Operation::SetObjectAnchors => {
+            let layout = r.pop_u64()?;
+            let expected: Revision = r.pop_raw(32)?.try_into().expect("32 bytes");
+            let object = r.pop_u64()?;
+            let flags = r.pop_u32()?;
+            Request::SetObjectAnchors(SetObjectAnchors {
+                expected,
+                layout,
+                object,
+                flags,
             })
         }
         Operation::FieldControl => {
@@ -1409,6 +1444,7 @@ fn request_header(transaction: &[u8]) -> Result<(Reader<'_>, Operation), Perform
         (VERSION, PART_OPTIONS) => Operation::PartOptions,
         (VERSION, CHANGE_PARTS) => Operation::ChangeParts,
         (VERSION, SET_TEXT) => Operation::SetText,
+        (VERSION, SET_OBJECT_ANCHORS) => Operation::SetObjectAnchors,
         (VERSION, VALUE_LIST_VALUES) => Operation::ValueListValues,
         (VERSION, PLACE_PORTAL) => Operation::PlacePortal,
         (VERSION, SAVE) => Operation::Save,
@@ -1666,6 +1702,7 @@ pub fn parse_reply(request: &Request, result: &[u8]) -> Result<Reply, PerformErr
             | Request::PartOptions(_)
             | Request::ChangeParts(_)
             | Request::SetText(_)
+            | Request::SetObjectAnchors(_)
             | Request::ValueListValues(_) => {
                 let changed = r.pop_bool()?;
                 let revision: Revision = r.pop_raw(32)?.try_into().expect("32 bytes");
@@ -1862,6 +1899,12 @@ mod tests {
             rows: 7,
             fields: vec![2, 0x8001],
         });
+        let anchors = Request::SetObjectAnchors(SetObjectAnchors {
+            expected: [12; 32],
+            layout: 3,
+            object: 5,
+            flags: 0xc0000000,
+        });
         let words = Request::SetText(SetText {
             expected: [2; 32],
             layout: 3,
@@ -1948,6 +1991,7 @@ mod tests {
             polish: vec![0x13, 1, b'x' ^ 0x5a],
         });
         for request in [
+            anchors,
             viewer,
             values,
             no_values,

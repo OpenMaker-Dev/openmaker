@@ -648,6 +648,7 @@ fn mcp_2026_07_28_discovers_lists_and_applies_through_the_same_service() {
             "openmaker_set_part_options",
             "openmaker_change_parts",
             "openmaker_set_text",
+            "openmaker_set_object_anchors",
             "openmaker_run_script",
             "openmaker_list_choices",
             "openmaker_choose_value_list_item",

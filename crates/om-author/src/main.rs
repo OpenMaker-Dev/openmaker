@@ -8,12 +8,12 @@ use std::io::Read;
 use std::process::ExitCode;
 
 use om_author::api::{
-    self, ApplyParams, ChangePartsParams, CreateFieldParams, CreateLayoutParams,
-    DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, EditParams, FieldControlParams,
-    FieldParams, FieldType, FrameParams, InspectParams, LabelParams, LayoutParams,
-    LayoutSetupParams, LayoutWidthParams, ObjectFrameParams, ObjectFramesParams, PageMargins, Part,
-    PartOptionsParams, PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlaceWebViewerParams,
-    PlacementParams, RunScriptParams, ScriptParams, TextParams,
+    self, AnchorEdge, AnchorParams, ApplyParams, ChangePartsParams, CreateFieldParams,
+    CreateLayoutParams, DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, EditParams,
+    FieldControlParams, FieldParams, FieldType, FrameParams, InspectParams, LabelParams,
+    LayoutParams, LayoutSetupParams, LayoutWidthParams, ObjectFrameParams, ObjectFramesParams,
+    PageMargins, Part, PartOptionsParams, PlaceFieldParams, PlacePortalParams, PlaceTextParams,
+    PlaceWebViewerParams, PlacementParams, RunScriptParams, ScriptParams, TextParams,
 };
 use om_author::api::{
     ChoiceParams, ChooseParams, CompletionParams, NoParams, OtherParams, ValueListParams,
@@ -85,6 +85,8 @@ commands (each prints one JSON response):
                                      set a layout's name, views, General
                                      options, menu inclusion and fixed
                                      page margins as Layout Setup does
+  set-object-anchors --object REF --anchors left,top --expected-revision REV
+                                     set one object's stored anchors
   set-field-control OBJECT --expected-revision REV --control CONTROL
       [--value-list REF]             show a field object with another control
   set-text OBJECT --expected-revision REV --text TEXT
@@ -255,6 +257,7 @@ struct Args {
     options: Option<String>,
     width: Option<String>,
     control: Option<String>,
+    anchors: Option<String>,
     value_list: Option<String>,
     part: Option<String>,
     page_break_after: Option<String>,
@@ -315,6 +318,7 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
             "--options" => args.options = Some(value(&arg)?),
             "--width" => args.width = Some(value(&arg)?),
             "--control" => args.control = Some(value(&arg)?),
+            "--anchors" => args.anchors = Some(value(&arg)?),
             "--value-list" => args.value_list = Some(value(&arg)?),
             "--part" => args.part = Some(value(&arg)?),
             "--page-break-after" => args.page_break_after = Some(value(&arg)?),
@@ -795,6 +799,29 @@ fn command(name: &str, args: &Args) -> Result<Command, String> {
                 .clone()
                 .ok_or("set-text needs --text, the new words.")?,
         }),
+        "set_object_anchors" => Command::SetObjectAnchors(AnchorParams {
+            object: args
+                .object
+                .clone()
+                .ok_or("set-object-anchors needs --object from get-layout.")?,
+            expected_revision: args
+                .expected_revision
+                .clone()
+                .ok_or("set-object-anchors needs --expected-revision from get-layout.")?,
+            anchors: args
+                .anchors
+                .as_deref()
+                .ok_or("set-object-anchors needs --anchors.")?
+                .split(',')
+                .map(|edge| match edge.trim() {
+                    "left" => Ok(AnchorEdge::Left),
+                    "top" => Ok(AnchorEdge::Top),
+                    "right" => Ok(AnchorEdge::Right),
+                    "bottom" => Ok(AnchorEdge::Bottom),
+                    _ => Err("--anchors takes left, top, right or bottom, separated by commas."),
+                })
+                .collect::<Result<_, _>>()?,
+        }),
         "set_field_control" => Command::SetFieldControl(FieldControlParams {
             object: args
                 .object
@@ -1092,6 +1119,7 @@ mod tests {
             value: Some("v".into()),
             width: Some("900".into()),
             control: Some("pop_up_menu".into()),
+            anchors: Some("left,top,right".into()),
             part: Some("2".into()),
             action: Some("resize".into()),
             height: Some("100".into()),

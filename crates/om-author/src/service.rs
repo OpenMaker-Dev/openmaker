@@ -48,6 +48,7 @@ use om_data::{
 use om_hbam::design_paths::{self, is_stamp, Kind, Revision};
 use om_hbam::slot::uint_segment;
 use om_hbam::OwnedNode;
+use om_layout::object::AutosizingAnchors;
 use om_layout::{LayoutObject, ObjectKind, PartKind, Rect};
 use om_protocol::authoring::{self as wire, status};
 use om_provider::{Authoring, AuthoringError, NativeProvider, ScriptDefinitions};
@@ -55,14 +56,14 @@ use om_scripts::display::{Lookup, StepNames, MAX_PASTE_BYTES, MAX_PASTE_STEPS};
 use serde_json::{json, Value};
 
 use crate::api::{
-    self, ApplyParams, ArrangeObjectsParams, AuthorError, ChangePartsParams, ChoiceParams,
-    ChooseParams, Command, CompletionParams, CreateFieldParams, CreateFileParams,
-    CreateLayoutParams, DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, EditParams,
-    ErrorKind, FieldControlParams, FieldParams, FieldType, FrameParams, InspectParams,
-    LayoutParams, LayoutSetupParams, LayoutWidthParams, MoveObjectsParams, ObjectFramesParams,
-    OtherParams, Part, PartOptionsParams, PlaceFieldParams, PlacePortalParams, PlaceTextParams,
-    PlaceWebViewerParams, PlacementParams, RunScriptParams, ScriptParams, TextParams,
-    ValueListParams, ValueListValuesParams, API_VERSION,
+    self, AnchorEdge, AnchorParams, ApplyParams, ArrangeObjectsParams, AuthorError,
+    ChangePartsParams, ChoiceParams, ChooseParams, Command, CompletionParams, CreateFieldParams,
+    CreateFileParams, CreateLayoutParams, DeleteLayoutParams, DeleteObjectsParams,
+    DuplicateLayoutParams, EditParams, ErrorKind, FieldControlParams, FieldParams, FieldType,
+    FrameParams, InspectParams, LayoutParams, LayoutSetupParams, LayoutWidthParams,
+    MoveObjectsParams, ObjectFramesParams, OtherParams, Part, PartOptionsParams, PlaceFieldParams,
+    PlacePortalParams, PlaceTextParams, PlaceWebViewerParams, PlacementParams, RunScriptParams,
+    ScriptParams, TextParams, ValueListParams, ValueListValuesParams, API_VERSION,
 };
 use crate::catalog::{self, CommandSpec, Grant, Needs};
 use crate::refs::{self, reference};
@@ -300,6 +301,18 @@ fn new_layout_availability(authoring: &Authoring) -> Value {
     value
 }
 
+fn anchor_edges(anchors: AutosizingAnchors) -> Vec<&'static str> {
+    [
+        ("left", anchors.left),
+        ("top", anchors.top),
+        ("right", anchors.right),
+        ("bottom", anchors.bottom),
+    ]
+    .into_iter()
+    .filter_map(|(edge, enabled)| enabled.then_some(edge))
+    .collect()
+}
+
 /// Whether and why not the host grants `grant`, with what it covers.
 fn grant_availability(grant: Grant, authoring: &Authoring) -> Value {
     match grant {
@@ -316,6 +329,7 @@ fn grant_availability(grant: Grant, authoring: &Authoring) -> Value {
         | Grant::LayoutWidths
         | Grant::FieldControls
         | Grant::PartOptions
+        | Grant::AnchorEditing
         | Grant::TextEditing
         | Grant::WebViewers
         | Grant::ValueLists => availability(authoring),
@@ -742,6 +756,7 @@ impl Service {
             Command::SetFieldControl(params) => self.set_field_control(params),
             Command::SetPartOptions(params) => self.set_part_options(params),
             Command::ChangeParts(params) => self.change_parts(params),
+            Command::SetObjectAnchors(params) => self.set_object_anchors(params),
             Command::SetText(params) => self.set_text(params),
             Command::RunScript(params) => self.run_script(params),
             Command::ListChoices(params) => self.list_choices(params),
@@ -806,6 +821,7 @@ impl Service {
             Grant::LayoutWidths => opened.layout_widths(),
             Grant::FieldControls => opened.field_controls(),
             Grant::PartOptions => opened.part_options(),
+            Grant::AnchorEditing => opened.anchor_editing(),
             Grant::TextEditing => opened.text_editing(),
             Grant::WebViewers => opened.web_viewer_placement(),
             Grant::ValueLists => opened.value_list_editing(),
@@ -3304,6 +3320,85 @@ impl Service {
         }))
     }
 
+    /// Save a single object's anchors and read them over a fresh connection.
+    fn set_object_anchors(&mut self, params: &AnchorParams) -> Result<Value, AuthorError> {
+        let expected = parse_revision(&params.expected_revision)?;
+        let (layout_id, object) = refs::layout_object_id(&params.object, &self.file())?;
+        let mut anchors = AutosizingAnchors::from_flags(0);
+        for edge in &params.anchors {
+            let selected = match edge {
+                AnchorEdge::Left => &mut anchors.left,
+                AnchorEdge::Top => &mut anchors.top,
+                AnchorEdge::Right => &mut anchors.right,
+                AnchorEdge::Bottom => &mut anchors.bottom,
+            };
+            if std::mem::replace(selected, true) {
+                return Err(AuthorError::new(
+                    ErrorKind::InvalidRequest,
+                    "An autosizing edge was supplied twice.".to_owned(),
+                ));
+            }
+        }
+        if anchors.flags() == 0 {
+            return Err(AuthorError::new(
+                ErrorKind::InvalidRequest,
+                "Specify at least one autosizing edge.".to_owned(),
+            ));
+        }
+        let layout_ref = self.layout_ref(layout_id);
+        let object_ref = self.object_ref(layout_id, object);
+        let layout_params = LayoutParams {
+            layout: Some(layout_ref.clone()),
+            layout_name: None,
+        };
+        let mut opened = self.load_layout(&layout_params)?.opened;
+        Self::require_grant(&mut opened, &catalog::SET_OBJECT_ANCHORS)?;
+        let set = opened.anchors_on_host(wire::SetObjectAnchors {
+            expected,
+            layout: layout_id,
+            object,
+            flags: anchors.flags() as u32,
+        });
+        drop(opened);
+        let set = set.map_err(|e| {
+            authoring_error(e, &layout_ref, |reason| {
+                AuthorError::new(
+                    ErrorKind::OutcomeUnknown,
+                    format!("The host did not confirm the anchors of {object_ref} ({reason}). Read the layout again or repeat the same request."),
+                )
+                .with_details(json!({ "previous_revision": revision_text(&expected) }))
+            })
+        })?;
+        let verified = match self.load_layout(&layout_params) {
+            Ok(fresh)
+                if fresh.revision != set.revision
+                    || !layout_objects::already_anchored(&fresh.member, object, anchors) =>
+            {
+                return Err(AuthorError::new(
+                    ErrorKind::VerificationFailed,
+                    format!("A fresh connection did not read the reported revision and anchors of {object_ref}."),
+                )
+                .with_details(json!({
+                    "expected_revision": revision_text(&set.revision),
+                    "found_revision": revision_text(&fresh.revision),
+                })));
+            }
+            Ok(fresh) => {
+                json!({ "fresh_connection": true, "revision": revision_text(&fresh.revision) })
+            }
+            Err(e) => json!({ "fresh_connection": false, "reason": e.message }),
+        };
+        Ok(json!({
+            "status": if set.changed { "set" } else { "already_applied" },
+            "layout": layout_ref,
+            "object": object_ref,
+            "anchors": anchor_edges(anchors),
+            "previous_revision": revision_text(&expected),
+            "revision": revision_text(&set.revision),
+            "verified": verified,
+        }))
+    }
+
     /// Change a text object's words as typing into it in Layout mode does
     /// (`om_data::layout_placement::plan_words`) through the host's authoring
     /// extension, then read the layout back over a new connection.
@@ -4205,6 +4300,7 @@ impl Service {
             "key": object.id,
             "kind": object_kind(object),
             "frame": decoded.absolute_bounds(object.id).as_ref().map(frame_json),
+            "anchors": anchor_edges(object.autosizing_anchors()),
         });
         if let Some(position) = decoded.objects.root.iter().position(|&r| r == object.id) {
             value["stacking"] = json!(position);

@@ -9,12 +9,12 @@ mod common;
 
 use common::*;
 use om_author::api::{
-    ArrangeObjectsParams, ChangePartsParams, CreateFieldParams, CreateLayoutParams,
-    DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams, FieldControlParams, FieldType,
-    FrameParams, InspectParams, LabelParams, LayoutParams, LayoutSetupParams, LayoutWidthParams,
-    MoveObjectsParams, ObjectFrameParams, ObjectFramesParams, PageMargins, Part, PartOptionsParams,
-    PlaceFieldParams, PlacePortalParams, PlaceTextParams, PlaceWebViewerParams, PlacementParams,
-    TextParams,
+    AnchorEdge, AnchorParams, ArrangeObjectsParams, ChangePartsParams, CreateFieldParams,
+    CreateLayoutParams, DeleteLayoutParams, DeleteObjectsParams, DuplicateLayoutParams,
+    FieldControlParams, FieldType, FrameParams, InspectParams, LabelParams, LayoutParams,
+    LayoutSetupParams, LayoutWidthParams, MoveObjectsParams, ObjectFrameParams, ObjectFramesParams,
+    PageMargins, Part, PartOptionsParams, PlaceFieldParams, PlacePortalParams, PlaceTextParams,
+    PlaceWebViewerParams, PlacementParams, TextParams,
 };
 use om_author::{Command, Service};
 use om_data::DataProvider;
@@ -833,6 +833,55 @@ fn a_parts_options_are_set_and_last_a_restart() {
     let reopened = common::host(&file, "OpenMaker Server test restart");
     let mut service = Service::new(target(&reopened, ACCOUNT, PASSWORD));
     assert_eq!(text(&get_layout(&mut service)["revision"]), current);
+    reopened.stop();
+}
+
+#[test]
+fn set_object_anchors_saves_and_accepts_retries_without_writing_again() {
+    use AnchorEdge::{Bottom, Left, Right};
+    let file = TempFile::from_tree("author-set-anchors", &form_tree());
+    let host = host(&file, "OpenMaker Server test");
+    let mut service = Service::new(target(&host, ACCOUNT, PASSWORD));
+    let before = get_layout(&mut service);
+    let base = text(&before["revision"]);
+    let set = |revision: &str, anchors| {
+        Command::SetObjectAnchors(AnchorParams {
+            object: text(&object(&before, NAME_LABEL)["ref"]).to_owned(),
+            expected_revision: revision.to_owned(),
+            anchors,
+        })
+    };
+    let done = ok(service.handle(&set(base, vec![Right, Bottom])));
+    assert_eq!(done["status"], "set");
+    assert_eq!(done["verified"]["fresh_connection"], true);
+    let revision = text(&done["revision"]);
+    assert_ne!(revision, base);
+    for expected in [base, revision] {
+        let repeated = ok(service.handle(&set(expected, vec![Right, Bottom])));
+        assert_eq!(repeated["status"], "already_applied");
+        assert_eq!(repeated["revision"], revision);
+    }
+    let stale = error(service.handle(&set(base, vec![Left])));
+    assert_eq!(stale["kind"], "conflict", "{stale:#}");
+    let empty = error(service.handle(&set(revision, vec![])));
+    assert_eq!(empty["kind"], "invalid_request", "{empty:#}");
+    let after = get_layout(&mut service);
+    assert_eq!(after["revision"], revision);
+    assert_eq!(
+        object(&after, NAME_LABEL)["anchors"],
+        json!(["right", "bottom"])
+    );
+    assert_eq!(object(&after, NAME_FIELD), object(&before, NAME_FIELD));
+    host.stop();
+
+    let reopened = common::host(&file, "OpenMaker Server test restart");
+    let mut service = Service::new(target(&reopened, ACCOUNT, PASSWORD));
+    let saved = get_layout(&mut service);
+    assert_eq!(saved["revision"], revision);
+    assert_eq!(
+        object(&saved, NAME_LABEL)["anchors"],
+        json!(["right", "bottom"])
+    );
     reopened.stop();
 }
 

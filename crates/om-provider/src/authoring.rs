@@ -669,6 +669,51 @@ impl NativeProvider {
         }
     }
 
+    /// Whether this connection may set autosizing anchors on its host, as
+    /// [`NativeProvider::script_authoring`].
+    pub fn anchor_editing(&mut self) -> Result<Authoring, DataError> {
+        self.authoring(
+            authoring::OP_SET_OBJECT_ANCHORS,
+            "setting autosizing anchors",
+        )
+    }
+
+    /// Set one object's autosizing anchors if its layout is still at
+    /// revision `expected`. The host checks the account, the layout and its
+    /// lock and the object, and saves the file before it answers.
+    pub fn anchors_on_host(
+        &mut self,
+        set: authoring::SetObjectAnchors,
+    ) -> Result<authoring::Framed, AuthoringError> {
+        match self.anchor_editing() {
+            Ok(Authoring::Available { .. }) => {}
+            Ok(Authoring::Denied(reason) | Authoring::Unavailable(reason)) => {
+                return Err(AuthoringError::Unavailable(reason))
+            }
+            Err(e) => return Err(AuthoringError::NotSent(e.to_string())),
+        }
+        match self.authoring_request(&Request::SetObjectAnchors(set))? {
+            Reply::Framed(framed) => Ok(framed),
+            Reply::Refused {
+                status,
+                message,
+                current,
+            } => Err(AuthoringError::Refused {
+                status,
+                message,
+                current,
+            }),
+            Reply::NotSupported { status } => Err(AuthoringError::Refused {
+                status,
+                message: "The host does not implement setting autosizing anchors.".into(),
+                current: None,
+            }),
+            _ => Err(AuthoringError::OutcomeUnknown(
+                "the host answered the autosizing edit with something else".into(),
+            )),
+        }
+    }
+
     /// Whether this connection may retype layout texts on its host, as
     /// [`NativeProvider::script_authoring`].
     pub fn text_editing(&mut self) -> Result<Authoring, DataError> {
