@@ -2304,7 +2304,16 @@ fn local_related_creation_keeps_the_validated_match_key() {
 
 #[test]
 fn local_related_self_is_visible_after_an_intermediate_commit() {
-    local_first_related(RelatedProbe::ReplacingAmount);
+    local_first_related(RelatedProbe::ReplacingAmount {
+        intermediate_commit: true,
+    });
+}
+
+#[test]
+fn local_related_self_is_visible_without_an_intermediate_commit() {
+    local_first_related(RelatedProbe::ReplacingAmount {
+        intermediate_commit: false,
+    });
 }
 
 #[test]
@@ -2316,7 +2325,7 @@ enum RelatedProbe {
     Position,
     IndexedPosition,
     ValidatedUuidKey,
-    ReplacingAmount,
+    ReplacingAmount { intermediate_commit: bool },
     CalculatedMatchKey,
 }
 
@@ -2327,7 +2336,13 @@ fn local_first_related(probe: RelatedProbe) {
 
     const RESULT: u64 = 3;
     const AMOUNT: u64 = 4;
-    let replacing = matches!(probe, RelatedProbe::ReplacingAmount);
+    let replacing = matches!(probe, RelatedProbe::ReplacingAmount { .. });
+    let intermediate_commit = matches!(
+        probe,
+        RelatedProbe::ReplacingAmount {
+            intermediate_commit: true
+        }
+    );
     let refuses = matches!(probe, RelatedProbe::CalculatedMatchKey);
     let validated = matches!(probe, RelatedProbe::ValidatedUuidKey);
     let result_name = if replacing { "Amount" } else { "Position" };
@@ -2386,8 +2401,17 @@ fn local_first_related(probe: RelatedProbe) {
     if validated {
         steps.push(set_related(AMOUNT, "25"));
     }
-    steps.push(commit.clone());
     if replacing {
+        if intermediate_commit {
+            let mut after_commit = show("\"\"");
+            after_commit.set_calculation(
+                1,
+                Some(&calc(
+                    "\"first commit|\" & Get ( LastError ) & \"|\" & Notes::Amount",
+                )),
+            );
+            steps.extend([commit.clone(), after_commit]);
+        }
         let mut assigned = show("\"\"");
         assigned.set_calculation(
             1,
@@ -2395,8 +2419,9 @@ fn local_first_related(probe: RelatedProbe) {
                 "\"pending|\" & Get ( LastError ) & \"|\" & Notes::Amount",
             )),
         );
-        steps.extend([set_related(RESULT, "25"), assigned, commit]);
+        steps.extend([set_related(RESULT, "25"), assigned]);
     }
+    steps.push(commit);
     steps.push(report);
     if refuses {
         let mut revert = ScriptStep::new(51);
@@ -2434,11 +2459,17 @@ fn local_first_related(probe: RelatedProbe) {
             "Get ( RecordNumber )",
             "related-position-calculated-key",
         ),
-        RelatedProbe::ReplacingAmount => (
+        RelatedProbe::ReplacingAmount {
+            intermediate_commit,
+        } => (
             1,
             0x0000_0088,
             "If ( IsEmpty ( Self ) ; 0 ; Self + 1 )",
-            "related-replacing-self",
+            if intermediate_commit {
+                "related-replacing-self"
+            } else {
+                "related-replacing-self-no-intermediate-commit"
+            },
         ),
     };
     fixture::add_field(
@@ -2515,6 +2546,22 @@ fn local_first_related(probe: RelatedProbe) {
         .iter()
         .all(|row| { row.text(BODY).transpose().unwrap().as_deref() != Some("linked") }));
     common::click(&mut app, "OK");
+    if intermediate_commit {
+        common::wait_for_label(&mut app, "first commit|0|0");
+        let saved_rows = HbamFile::open(folder.file())
+            .unwrap()
+            .records(NOTES)
+            .unwrap();
+        let linked = saved_rows
+            .iter()
+            .find(|row| row.text(BODY).transpose().unwrap().as_deref() == Some("linked"))
+            .unwrap();
+        assert_eq!(
+            linked.text(RESULT).transpose().unwrap().as_deref(),
+            Some("0")
+        );
+        common::click(&mut app, "OK");
+    }
     if replacing {
         common::wait_for_label(&mut app, "pending|0|26");
         common::click(&mut app, "OK");

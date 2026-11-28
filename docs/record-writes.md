@@ -813,6 +813,19 @@ the option word `0xa8`, with "Do not evaluate if all referenced fields
 are empty" off. That option still refuses sorted creation.
 [Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1059)
 
+An ordinary Text field in a local desktop window can replace its
+cleared value with a literal default through
+`If ( IsEmpty ( Self ) ; "Draft" ; Self )`. New Record shows the
+default, Set Field leaves nonempty text as supplied and restores the
+default on a clear, and leaving a cleared Browse editor shows the
+default before Commit. The field must have one repetition, no
+validation, and option word `0x00000088` or `0xa0000088`. Sorted
+New Record uses the same rule for both keep-sorted settings; the native
+trial used the setting on. Existing value and word indexes follow the
+written result. Suffix formulas and creation outside an ordinary local
+desktop window still refuse evaluation with error 3.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1135#issuecomment-7214357479)
+
 A local table accepts ordinary record writes to its other fields when a
 Container awaits transfer to embedded storage. This covers a
 single-repetition field marked `0x6000` (external Open storage) and a
@@ -1012,6 +1025,25 @@ is omitted. Stored self-cycles and cycles between different fields remain
 refused. This named-reference behavior is inferred from Claris's documented
 `Self` auto-entry support (auto-entry.md), without a native comparison.
 
+Local scripted Text auto-entry supports concatenating a plain Text trigger,
+a literal separator, and a one-argument helper consisting of
+`GetField ( name )`. The helper receives the name from a plain Text field
+in the same occurrence and reads another plain scalar Text field of that
+record. The named field does not trigger the rule. Ordinary unsorted
+New Record with the measured keep-existing option keeps its initial result
+through the first Commit. The replacing option evaluates each direct input
+assignment against the values present at that step, including a same-value
+Set Field. A scripted read of the current record sees that result before
+Commit, and a later assignment to just the indirect input keeps it.
+This covers option words `0x00000028` and
+`0x000000a8` without validation. Qualified, repeating and computed
+targets, other helper forms, and other creation contexts remain unsupported.
+A save that would evaluate the rule without a complete local Set Field
+sequence returns error 3. Interactive entry and explicit transactions are
+outside the measured scope.
+[Native comparison](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7205073084)
+[Set Field ordering](https://github.com/OpenMaker-Dev/openmaker/issues/39#issuecomment-7209664301)
+
 **A field validated against a related-values list** (one field's values,
 "Include only related values starting from", file-metadata.md 6.4) is
 checked by the desktop at the commit (`om-provider` `related_lists.rs`).
@@ -1122,6 +1154,24 @@ checked by the desktop at the commit (`om-provider` `related_lists.rs`).
 - **OpenMaker Server's scripts** refuse with 3 a value the rules check
   against such a list.
 
+For a local normal one-repetition Text field with option word `0` and
+validation word `0x00000100`, an absent list reference (`07`) leaves
+the field and table writable. Browse accepts typed text without a
+membership check, and record writes preserve the field definition.
+The comparison covered this exact combination of validation flags and
+reference storage.
+[Absent-reference comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1136#issuecomment-7214224232)
+
+The measured local scalar Text definition with option word `0` and
+validation word `0x00000104` retains its single-byte list ID reference
+after list deletion. For the tested nonempty typed values, FileMaker
+showed the same dialog as for a nonmember of a working list. OpenMaker
+reports error 506, inferred from the working-list error mapping (s17).
+OpenMaker accepts a typed clear under its ordinary empty-value rule.
+Clearing in FileMaker Browse remains unmeasured. A script whose write
+skips the membership check can still save or clear the value.
+[Dangling-reference comparison](https://github.com/OpenMaker-Dev/openmaker/issues/1136#issuecomment-7214224232)
+
 **A field validated against a value list the rules cannot check yet**
 (another file's, a calculation, or a second field) leaves the table
 writable.
@@ -1131,12 +1181,6 @@ writable.
 - **A write that doesn't check it is written:** a script's write, for a
   field validated only during data entry (s18), and a related record's
   untyped cells, which the window commits with a script's rules.
-- The measured local scalar Text definition with option word 0 and
-  validation word `0x00000104` also stays writable when the stored
-  one-byte list reference points to an unavailable list. Writes
-  that would check membership return 3. A definition with no reference
-  member remains unsupported.
-  [Native list deletion](https://github.com/OpenMaker-Dev/openmaker/issues/1136#issuecomment-7204267134)
 - **Such lists are not evaluated.** What FileMaker's membership check
   gives for them is not claimed. An auto-entered or validation calculation may read a
 global field of its own table, one repetition and not a container: it

@@ -613,6 +613,15 @@ pub enum TextRun {
     MergeField(String),
 }
 
+/// The four autosizing anchors as stored, before constraints from enclosing objects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AutosizingAnchors {
+    pub left: bool,
+    pub top: bool,
+    pub right: bool,
+    pub bottom: bool,
+}
+
 /// `FMLayoutPB.LayoutObject`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LayoutObject {
@@ -768,6 +777,16 @@ impl LayoutObject {
 
     pub fn kind(&self) -> ObjectKind {
         ObjectKind::from_type(self.object_type)
+    }
+
+    /// The stored autosizing flags (layout-model.md §5.7).
+    pub fn autosizing_anchors(&self) -> AutosizingAnchors {
+        AutosizingAnchors {
+            left: self.flags & (1 << 28) != 0,
+            top: self.flags & (1 << 29) != 0,
+            right: self.flags & (1 << 30) != 0,
+            bottom: self.flags & (1 << 31) != 0,
+        }
     }
 
     /// Whether the layout object has FileMaker's design-time lock flag.
