@@ -15,6 +15,7 @@
 mod display;
 mod keymap;
 mod shm;
+mod transfer;
 
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
@@ -28,11 +29,11 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 pub(crate) use display::TITLE;
-use display::{Carets, FrameSlots, Frames, PageDisplay, Request};
+use display::{Carets, Copied, FrameSlots, Frames, Outbox, PageDisplay, Request};
 
 use super::{
     Backend, Event, Geometry, MessageBudget, NativeParent, Navigation, PageFrame, PageInput,
-    Unavailable, ViewSpec, MAX_MESSAGE,
+    PagePopup, Unavailable, ViewSpec, MAX_MESSAGE,
 };
 
 /// The variable naming another host program.
@@ -158,6 +159,8 @@ pub(crate) struct WaylandBackend {
     /// text caret.
     frames: Frames,
     carets: Carets,
+    /// What a page last copied, for the app's clipboard.
+    copied: Copied,
     views: HashMap<u64, Hosted>,
     /// Events the backend makes itself, for commands a host that ended
     /// cannot carry out.
@@ -227,17 +230,19 @@ impl WaylandBackend {
         let max_side = i32::try_from(ctx.input(|i| i.max_texture_side)).unwrap_or(i32::MAX);
         let frames = Arc::new(Mutex::new(FrameSlots {
             frames: HashMap::new(),
+            popups: HashMap::new(),
             max_side: usize::try_from(max_side).unwrap_or(usize::MAX),
         }));
         let carets = Carets::default();
+        let copied = Copied::default();
         let wake = ctx.clone();
-        let display = PageDisplay::start(
-            Arc::clone(&frames),
-            Arc::clone(&carets),
-            Box::new(move || wake.request_repaint()),
-            scale,
-        )
-        .map_err(|error| {
+        let outbox = Outbox {
+            frames: Arc::clone(&frames),
+            carets: Arc::clone(&carets),
+            copied: Arc::clone(&copied),
+            wake: Arc::new(move || wake.request_repaint()),
+        };
+        let display = PageDisplay::start(outbox, scale).map_err(|error| {
             eprintln!("openmaker: web viewers: {error}");
             Unavailable::Platform
         })?;
@@ -326,6 +331,7 @@ impl WaylandBackend {
             events,
             frames,
             carets,
+            copied,
             views: HashMap::new(),
             pending: Vec::new(),
             scale,
@@ -629,7 +635,47 @@ impl Backend for WaylandBackend {
         self.display.send(Request::Focus(None));
     }
 
+    fn copied(&mut self) -> Option<String> {
+        self.copied.lock().ok()?.take()
+    }
+
+    fn popups(&mut self) -> Vec<PagePopup> {
+        let Ok(mut slots) = self.frames.lock() else {
+            return Vec::new();
+        };
+        slots
+            .popups
+            .iter_mut()
+            .map(|(id, slot)| PagePopup {
+                id: *id,
+                view: slot.view,
+                at: slot.at,
+                extent: slot.extent,
+                frame: slot.frame.take().map(|f| PageFrame {
+                    view: f.view,
+                    size: [f.width, f.height],
+                    rgba: f.rgba,
+                }),
+            })
+            .collect()
+    }
+
+    fn popup_input(&mut self, popup: u32, input: PageInput) {
+        self.display.send(Request::PopupPointer { popup, input });
+    }
+
     fn input(&mut self, view: u64, input: PageInput) {
+        match input {
+            PageInput::Paste(text) => {
+                self.display.send(Request::Paste { view, text });
+                return;
+            }
+            PageInput::Edit { cut } => {
+                self.display.send(Request::Edit { view, cut });
+                return;
+            }
+            _ => {}
+        }
         if matches!(input, PageInput::Button { pressed: true, .. }) {
             self.display.send(Request::Focus(Some(view)));
         }

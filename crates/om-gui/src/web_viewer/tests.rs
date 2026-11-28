@@ -17,6 +17,7 @@ struct Recorded {
     unavailable: bool,
     /// Commands the backend cannot send (too long for its page host).
     refused: bool,
+    copied: Option<String>,
     started: usize,
 }
 
@@ -84,6 +85,9 @@ impl Backend for Recording {
     }
     fn available(&mut self) -> bool {
         !self.0.borrow().unavailable
+    }
+    fn copied(&mut self) -> Option<String> {
+        self.0.borrow_mut().copied.take()
     }
     fn input(&mut self, view: u64, input: PageInput) {
         self.0
@@ -358,7 +362,7 @@ fn steps_on_a_backend_that_ended_fail_as_unavailable() {
 
 /// A page a press gave the keyboard takes the window's keys, as event
 /// codes with the modifiers held, and its input method's text; egui's Copy
-/// is Ctrl+C again; nothing of it is left for the window's own widgets.
+/// is a copy in the page; nothing of it is left for the window's own widgets.
 #[test]
 fn a_painted_page_with_the_keyboard_takes_the_window_keys() {
     let (mut viewers, recorded) = viewers();
@@ -389,6 +393,7 @@ fn a_painted_page_with_the_keyboard_takes_the_window_keys() {
         egui::Event::Text("A".into()),
         egui::Event::Ime(egui::ImeEvent::Commit("日本".into())),
         egui::Event::Copy,
+        egui::Event::Paste("pasted".into()),
     ];
     let mut left = None;
     let mut output = ctx.run_ui(
@@ -412,14 +417,9 @@ fn a_painted_page_with_the_keyboard_takes_the_window_keys() {
                 held(&[42])
             ),
             "input 1 Commit(\"日本\")".to_owned(),
-            format!(
-                "input 1 Key {{ code: 46, pressed: true, held: {} }}",
-                held(&[29])
-            ),
-            format!(
-                "input 1 Key {{ code: 46, pressed: false, held: {} }}",
-                held(&[29])
-            ),
+            // Copy: Ctrl and the page keymap's c, which the display finds.
+            "input 1 Edit { cut: false }".to_owned(),
+            "input 1 Paste(\"pasted\")".to_owned(),
             format!(
                 "input 1 Key {{ code: 42, pressed: false, held: {} }}",
                 held(&[])
@@ -514,6 +514,36 @@ fn the_first_tab_after_a_press_in_a_page_leaves_egui_focus_with_it() {
     );
     output.textures_delta.clear();
     assert_eq!(ctx.memory(|m| m.focused()), Some(page_id));
+}
+
+/// What the pointer is over in a painted page sets the cursor Browse shows
+/// over it, and what the page copies is the app's clipboard's.
+#[test]
+fn a_painted_page_sets_its_cursor_and_copies_to_the_app() {
+    let (mut viewers, recorded) = viewers();
+    let ctx = egui::Context::default();
+    let page = placement(Some("about:blank"));
+    viewers.reconcile(&ctx, &frame(std::slice::from_ref(&page), &[]));
+    recorded.borrow_mut().frames.push(PageFrame {
+        view: 1,
+        size: [2, 2],
+        rgba: vec![255; 16],
+    });
+    recorded.borrow_mut().events.push(Event::Cursor {
+        view: 1,
+        cursor: PageCursor::Pointer,
+    });
+    recorded.borrow_mut().copied = Some("copied".into());
+    viewers.frames(&ctx);
+    viewers.poll();
+    let pages = viewers.pages(1, UUID, 3, 5, Some(9));
+    assert_eq!(pages.first().map(|p| p.cursor), Some(PageCursor::Pointer));
+    let copied = ctx.output(|o| {
+        o.commands
+            .iter()
+            .any(|c| *c == egui::OutputCommand::CopyText("copied".into()))
+    });
+    assert!(copied);
 }
 
 /// A painted page's newest frame is what Browse paints, until its view
