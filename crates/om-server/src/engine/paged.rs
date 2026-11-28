@@ -427,10 +427,11 @@ fn more_after(
 /// check or are not the page and version its parent names
 /// (`om_store::page::Fault`). The next page starts with the seek the look
 /// made, from the same bound, and a seek makes the choices of a descent
-/// from the root wherever it starts (`om_store::tree::Place`): it reaches
-/// the same pages and compares the same keys, so it reads that page again
-/// before it gives a child, and fails there; or, a read that failed once
-/// and not again, it reads on to the child the look went for. A fault of
+/// from the root wherever it starts (`om_store::tree::Place`): it goes
+/// down to the same leaf, compares the same items there and goes on to
+/// the same next leaf, so it reads that page again before it gives a
+/// child, and fails there; or, after a read that failed once and not
+/// again, it reads on to the child the look went for. A fault of
 /// order (an item that does not move on, `om_store::tree::Cursor`) is
 /// `Fault::Malformed`, as every other fault of the tree's own checks is;
 /// those fail the call.
