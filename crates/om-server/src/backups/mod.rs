@@ -2138,7 +2138,7 @@ mod tests {
         assert!(spared.is_empty());
         assert!(
             looked.is_empty(),
-            "nothing is looked at when nothing is deleted"
+            "nothing is looked at when nothing is deleted: {looked:?}"
         );
 
         let mut doomed = [true, true, true, false, false];
