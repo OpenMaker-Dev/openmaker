@@ -28,18 +28,14 @@
 //! own (docs/server-storage-format.md 2.8): from the stamps index pages
 //! hold, never false when something under the path changed.
 //!
-//! **A read that fails partway.** A call that has already given some
-//! children, subtrees or walk steps when a read fails ends there and gives
-//! them, with "more may follow" (`Ok(true)`, or the walk's place to resume
-//! after the last step given), as the trait lets a view give fewer than it
-//! was asked for. A failed look-ahead past a full page of children answers
-//! "more" too, never "no more". So nothing is lost and nothing is made up:
-//! the next call starts after what was given and reaches the failed read
-//! first, which fails it with [`ReadError::Unreadable`], or reads what is
-//! there if the read now succeeds. A call whose first read fails fails.
-//! The readers of views read a short page with "more" as such: the
-//! iterators ask for the next page, and `security`'s one-child probe asks
-//! for one child, which this view gives or fails on.
+//! **A read that fails partway** fails the call, whatever it has given
+//! before it ([`ReadError::Unreadable`]), and so does a failed look past a
+//! full page of children. It never ends a page that a next call would
+//! continue: that call would start after the last item given, and a read
+//! that failed on a fault of the tree's order (a cursor that would go back,
+//! `om_store::tree::Cursor`) is not met again from there, so the items
+//! after it would be left out without an error (review of #1166). A
+//! download that is going to fail fails.
 //!
 //! **Import.** [`import`] reads an `.fmp12` with `om_hbam`'s streaming
 //! reader ([`NodeStream`]) and puts every node, with its kind and value,
@@ -132,9 +128,8 @@ use super::export::{self, ExportError, Exported, Progress, Target};
 use super::view::{owned_path, Child, Direction, Head, ReadError, Step, Version, View, NO_LIMIT};
 
 /// One version of a file's tree in a page store (the module doc). A call
-/// whose read fails after it has given something gives that with "more may
-/// follow", never "no more", and the next call fails on the same read (the
-/// module doc, "A read that fails partway").
+/// whose read fails fails, whatever it has given before it (the module
+/// doc, "A read that fails partway").
 pub struct PagedView<'s, S: ?Sized> {
     /// The version, its root page read and checked once, at the open.
     tree: Tree<'s, S>,
@@ -480,15 +475,15 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
                             head: head(node),
                         });
                     }
-                    // The children before it are given; the next page
-                    // reaches it first.
-                    Some(Err(_)) if given > 0 => break 'page Ok(true),
                     Some(Err(e)) => break 'page Err(unreadable(path, &e)),
                 }
             }
-            // A full page: more follow if another child does (one that
-            // does not read is for the next page to reach).
-            Ok(children.next().is_some())
+            // A full page: more follow if another child does.
+            match children.next() {
+                None => Ok(false),
+                Some(Ok(_)) => Ok(true),
+                Some(Err(e)) => Err(unreadable(path, &e)),
+            }
         };
         // Kept at the first child given, where a reader of the children's
         // entries starts; the walk of the last entry ends where the next
@@ -508,11 +503,10 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
     ) -> Result<bool, ReadError> {
         let tree = &self.tree;
         let mut children = tree.children(path, from, store_direction(direction));
-        for given in 0..max {
+        for _ in 0..max {
             let segment = match children.next() {
                 None => return Ok(false),
                 Some(Ok((segment, _))) => segment,
-                Some(Err(_)) if given > 0 => return Ok(true),
                 Some(Err(e)) => return Err(unreadable(path, &e)),
             };
             let mut child_path = path.to_vec();
@@ -521,13 +515,15 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
                 Ok(Some(node)) => out.push(Cow::Owned(node)),
                 Ok(None) => return Err(orphan(&child_path)),
                 // A subtree past the limit fails the page, as the file
-                // engine's view fails it: so would the next page.
-                Err(e @ ReadError::TooLarge { .. }) => return Err(e),
-                Err(_) if given > 0 => return Ok(true),
+                // engine's view fails it.
                 Err(e) => return Err(e),
             }
         }
-        Ok(children.next().is_some())
+        match children.next() {
+            None => Ok(false),
+            Some(Ok(_)) => Ok(true),
+            Some(Err(e)) => Err(unreadable(path, &e)),
+        }
     }
 
     fn walk_page<'v>(
@@ -596,7 +592,6 @@ impl<S: PageStore + ?Sized> View for PagedView<'_, S> {
             let (depth, segment, node) = match lent {
                 None => return Ok(None),
                 Some(Ok(item)) => item,
-                Some(Err(_)) if given > 0 => return Ok(have_last.then(|| resume(&last))),
                 Some(Err(e)) => return Err(unreadable(path, &e)),
             };
             let Some(below) = depth.checked_sub(base) else {
