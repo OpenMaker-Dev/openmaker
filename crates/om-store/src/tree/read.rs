@@ -2364,6 +2364,191 @@ mod tests {
         assert_eq!((seeks, listings), (300 * 24, 300 * 4));
     }
 
+    /// The leaf pages of the tree at `root`, in key order.
+    fn leaf_pages(store: &MemStore, root: Root) -> Vec<PageNo> {
+        fn walk(pages: &Pages<'_, MemStore>, page: Arc<Page>, out: &mut Vec<PageNo>) {
+            if page.kind() == PageKind::Leaf {
+                out.push(page.number());
+                return;
+            }
+            for c in 0..page.count() {
+                walk(pages, pages.child(&page, c).unwrap(), out);
+            }
+        }
+        let pages = Pages { store };
+        let mut out = Vec::new();
+        walk(&pages, pages.root(root).unwrap(), &mut out);
+        out
+    }
+
+    /// The keys of each leaf of a tree `tree::built::shaped` writes, in
+    /// key order.
+    fn shape_leaves(shape: &crate::tree::built::Shape, out: &mut Vec<Vec<Vec<u8>>>) {
+        match shape {
+            crate::tree::built::Shape::Leaf(items) => {
+                out.push(items.iter().map(|i| i.1.clone()).collect())
+            }
+            crate::tree::built::Shape::Index(children, _) => {
+                for child in children {
+                    shape_leaves(child, out);
+                }
+            }
+        }
+    }
+
+    /// What a read gave: each key, or the page a malformed error names and
+    /// why, which ends it.
+    type Given = Vec<std::result::Result<Vec<u8>, (PageNo, &'static str)>>;
+
+    fn given<T>(items: impl Iterator<Item = Result<T>>, key: impl Fn(T) -> Vec<u8>) -> Given {
+        let malformed = |e: Error| match e {
+            Error::Page(PageFault {
+                page,
+                fault: Fault::Malformed(why),
+                ..
+            }) => (page, why),
+            other => panic!("{other:?}"),
+        };
+        items
+            .take(20)
+            .map(|i| i.map(&key).map_err(malformed))
+            .collect()
+    }
+
+    /// #1180: a leaf whose keys lie outside the range its ancestors give it
+    /// fails every read that enters it, as malformed and naming it, before
+    /// any of its items is given: a leaf whose first key lies below the
+    /// separator before it, one whose last key is that of the separator
+    /// after it (a key equal to a separator belongs to the child on its
+    /// right) or lies past it, and, a level above the parent, one inside
+    /// its parent's range but past or below its grandparent's. Walks and
+    /// listings of the root's children, in both directions, give the items
+    /// of the leaves on their side of it and fail entering it; a seek of
+    /// its first key from the root fails before anything. And a tree that
+    /// keeps every leaf in its range gives everything: a leaf's first key
+    /// equal to the separator before it at its parent's level, and at its
+    /// grandparent's, and separators that bound their leaves loosely, as
+    /// they do after deletions.
+    #[test]
+    fn a_read_fails_entering_a_leaf_outside_the_range_its_ancestors_give_it() {
+        use crate::tree::built::{shaped, Shape};
+        let leaf = |keys: &[&[u8]]| {
+            let items = keys
+                .iter()
+                .map(|k| (KIND_VALUE, key_of_segment(k), vec![7; 10]));
+            Shape::Leaf(items.collect())
+        };
+        let index = |children: Vec<Shape>, separators: &[&[u8]]| {
+            Shape::Index(
+                children,
+                separators.iter().map(|s| key_of_segment(s)).collect(),
+            )
+        };
+        // A name, the tree, and the leaf outside its range (in key order).
+        let cases: Vec<(&str, Shape, Option<usize>)> = vec![
+            (
+                "the first key below the separator before it",
+                index(vec![leaf(&[b"a", b"b"]), leaf(&[b"k", b"n"])], &[b"m"]),
+                Some(1),
+            ),
+            (
+                "the last key at the separator after it",
+                index(vec![leaf(&[b"a", b"m"]), leaf(&[b"n", b"p"])], &[b"m"]),
+                Some(0),
+            ),
+            (
+                "the last key past the separator after it",
+                index(vec![leaf(&[b"a", b"n"]), leaf(&[b"p", b"q"])], &[b"m"]),
+                Some(0),
+            ),
+            (
+                "inside its parent's range, past its grandparent's",
+                index(
+                    vec![
+                        index(vec![leaf(&[b"a"]), leaf(&[b"d", b"p"])], &[b"c"]),
+                        index(vec![leaf(&[b"n", b"o"]), leaf(&[b"u"])], &[b"t"]),
+                    ],
+                    &[b"m"],
+                ),
+                Some(1),
+            ),
+            (
+                "inside its parent's range, below its grandparent's",
+                index(
+                    vec![
+                        index(vec![leaf(&[b"a"]), leaf(&[b"d", b"e"])], &[b"c"]),
+                        index(vec![leaf(&[b"k", b"o"]), leaf(&[b"u"])], &[b"t"]),
+                    ],
+                    &[b"m"],
+                ),
+                Some(2),
+            ),
+            (
+                "every leaf in its range, first keys at their separators",
+                index(
+                    vec![
+                        index(vec![leaf(&[b"a", b"b"]), leaf(&[b"e", b"f"])], &[b"c"]),
+                        index(vec![leaf(&[b"m", b"n"]), leaf(&[b"t", b"z"])], &[b"t"]),
+                    ],
+                    &[b"m"],
+                ),
+                None,
+            ),
+        ];
+        let root_path: [&[u8]; 0] = [];
+        let all = Bound::Unbounded;
+        for (name, shape, outside) in cases {
+            let store = MemStore::new(Numbering::Sequential);
+            let root = shaped(&store, &shape);
+            let tree = Tree::open(&store, root).unwrap();
+            let pages = leaf_pages(&store, root);
+            let mut keys = Vec::new();
+            shape_leaves(&shape, &mut keys);
+            let (before, after): (Given, Given) = match outside {
+                None => (keys.concat().into_iter().map(Ok).collect(), Vec::new()),
+                Some(bad) => {
+                    let failed = Err((pages[bad], "a key outside its separators"));
+                    let mut before: Given = keys[..bad].concat().into_iter().map(Ok).collect();
+                    before.push(failed.clone());
+                    let mut after: Given = keys[bad + 1..].concat().into_iter().map(Ok).collect();
+                    after.reverse();
+                    after.push(failed);
+                    (before, after)
+                }
+            };
+            let after = match outside {
+                None => before.iter().rev().cloned().collect(),
+                Some(_) => after,
+            };
+            let item_key = |item: Item| item.key.into_bytes();
+            let child_key = |child: (Vec<u8>, Node)| key_of_segment(&child.0);
+            let walked = given(tree.walk(&root_path), item_key);
+            assert_eq!(walked, before, "{name}: a walk");
+            let back = given(tree.range(all, all, Direction::Backward), item_key);
+            assert_eq!(back, after, "{name}: a walk backward");
+            let listed = given(
+                tree.children(&root_path, all, Direction::Forward),
+                child_key,
+            );
+            assert_eq!(listed, before, "{name}: a listing");
+            let listed = given(
+                tree.children(&root_path, all, Direction::Backward),
+                child_key,
+            );
+            assert_eq!(listed, after, "{name}: a listing backward");
+            if let Some(bad) = outside {
+                let first = keys[bad][0].as_slice();
+                let sought = tree.range(Bound::Included(first), all, Direction::Forward);
+                let sought = given(sought, item_key);
+                assert_eq!(
+                    sought[0],
+                    Err((pages[bad], "a key outside its separators")),
+                    "{name}"
+                );
+            }
+        }
+    }
+
     /// #998: on a tree whose leaves are out of order with their separators
     /// a seek past one child can come back before its bound, and a listing
     /// that went on from there gave children it had given, without end: the
