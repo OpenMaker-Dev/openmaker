@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -226,6 +227,10 @@ pub(crate) struct Outbox {
 pub(crate) struct PageDisplay {
     requests: channel::Sender<Request>,
     signal: LoopSignal,
+    /// Set when it is dropped: the loop stops at its next turn, also when
+    /// it was dropped before the loop began (entering its run clears a
+    /// stop asked before).
+    stopping: Arc<AtomicBool>,
     socket: PathBuf,
 }
 
@@ -244,9 +249,11 @@ impl PageDisplay {
         let (requests, request_rx) = channel::channel();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let socket_directory = (listener, directory);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&stopping);
         std::thread::Builder::new()
             .name("openmaker-page-display".into())
-            .spawn(move || run(socket_directory, request_rx, outbox, scale, ready_tx))
+            .spawn(move || run(socket_directory, request_rx, outbox, scale, ready_tx, stop))
             .map_err(|e| e.to_string())?;
         let signal = ready_rx
             .recv_timeout(Duration::from_secs(5))
@@ -254,6 +261,7 @@ impl PageDisplay {
         Ok(PageDisplay {
             requests,
             signal,
+            stopping,
             socket,
         })
     }
@@ -275,6 +283,7 @@ impl PageDisplay {
 
 impl Drop for PageDisplay {
     fn drop(&mut self) {
+        self.stopping.store(true, Ordering::SeqCst);
         self.signal.stop();
         self.signal.wakeup();
     }
@@ -358,6 +367,7 @@ fn run(
     outbox: Outbox,
     scale: i32,
     ready: Sender<Result<LoopSignal, String>>,
+    stopping: Arc<AtomicBool>,
 ) {
     let Outbox {
         frames,
@@ -438,6 +448,7 @@ fn run(
             return;
         }
     };
+    let closing = event_loop.get_signal();
     let handle = event_loop.handle();
     // The display's own file descriptor (a copy), so that the display can
     // stay outside the loop's state and be dispatched without `unsafe`.
@@ -491,10 +502,10 @@ fn run(
             )
             .map_err(|e| e.to_string())?;
         handle
-            .insert_source(requests, |event, _, state| {
-                if let channel::Event::Msg(request) = event {
-                    state.request(request);
-                }
+            .insert_source(requests, move |event, _, state| match event {
+                channel::Event::Msg(request) => state.request(request),
+                // Every sender went: nothing will ask anything again.
+                channel::Event::Closed => closing.stop(),
             })
             .map_err(|e| e.to_string())?;
         handle
@@ -514,8 +525,14 @@ fn run(
     }
     let _ = ready.send(Ok(event_loop.get_signal()));
     let flush = Rc::clone(&display);
+    let signal = event_loop.get_signal();
     let _ = event_loop.run(None, &mut state, move |_| {
         let _ = flush.borrow_mut().flush_clients();
+        // Dropped, perhaps before the run began: the wakeup it sent, or the
+        // next frame tick, brings the loop here.
+        if stopping.load(Ordering::SeqCst) {
+            signal.stop();
+        }
     });
 }
 
@@ -1312,6 +1329,36 @@ impl Dispatch<ZwpTextInputV3, ()> for State {
                 state.text_inputs.retain(|i| &i.resource != resource);
             }
             _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A display dropped as soon as it started (perhaps before its loop
+    /// began) still ends, and takes its socket's directory with it.
+    #[test]
+    fn a_display_dropped_at_once_ends_and_removes_its_socket() {
+        for _ in 0..20 {
+            let outbox = Outbox {
+                frames: Frames::default(),
+                carets: Carets::default(),
+                copied: Copied::default(),
+                wake: Arc::new(|| {}),
+            };
+            let display = PageDisplay::start(outbox, 1).expect("a display");
+            let directory = display.socket().parent().expect("its directory").to_owned();
+            drop(display);
+            let until = Instant::now() + Duration::from_secs(5);
+            while directory.exists() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                !directory.exists(),
+                "the display went on after it was dropped"
+            );
         }
     }
 }
