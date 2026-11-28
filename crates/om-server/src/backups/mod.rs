@@ -768,30 +768,22 @@ impl Backups {
                 take && found.name != made
             })
             .collect();
-        // Newest first, what the backups that stay hold so far; a doomed
-        // one that holds a hosted file none of them does stays too.
-        let mut covered = vec![false; places.len()];
-        for (found, doomed) in ours.iter().zip(doomed.iter_mut()).rev() {
-            let held: Vec<usize> = (0..places.len())
-                .filter(|&place| !covered[place] && holds(&found.folder, &places[place]))
+        let spared = spare_last_holders(&mut doomed, places.len(), |backup, open| {
+            open.iter()
+                .copied()
+                .filter(|&place| holds(&ours[backup].folder, &places[place]))
+                .collect()
+        });
+        for (backup, held) in spared {
+            let names: Vec<&str> = held
+                .iter()
+                .map(|&place| places[place].name.as_str())
                 .collect();
-            if *doomed && !held.is_empty() {
-                *doomed = false;
-                let names: Vec<&str> = held
-                    .iter()
-                    .map(|&place| places[place].name.as_str())
-                    .collect();
-                info!(
-                    "Schedule {schedule:?}: the old backup {} is kept: it is the newest that \
-                     holds {names:?}",
-                    target.path.join(&found.name).display()
-                );
-            }
-            if !*doomed {
-                for place in held {
-                    covered[place] = true;
-                }
-            }
+            info!(
+                "Schedule {schedule:?}: the old backup {} is kept: it is the newest that holds \
+                 {names:?}",
+                target.path.join(&ours[backup].name).display()
+            );
         }
         for found in ours
             .into_iter()
@@ -835,6 +827,48 @@ impl Backups {
     pub fn on_removal(&self, hook: Box<dyn FnMut() + Send>) {
         *self.removing.lock().unwrap_or_else(PoisonError::into_inner) = Some(hook);
     }
+}
+
+/// Retention's rule over a schedule's backups, oldest first: `doomed`
+/// marks those the keep count would delete. Walking newest first, a doomed
+/// backup that holds a place (of `places`) that no newer backup that stays
+/// holds stays too: its mark is cleared, and it is returned with those
+/// places. `held_by(backup, open)` gives the places among `open`, those
+/// no backup that stays holds yet, that `backup` holds.
+///
+/// Only what can change a mark is looked at: nothing when no backup is
+/// doomed, nothing older than the oldest doomed one, and nothing once every
+/// place is held by a backup that stays. A covered place is not looked at
+/// again, so a run that holds every hosted file costs one look per place.
+fn spare_last_holders(
+    doomed: &mut [bool],
+    places: usize,
+    mut held_by: impl FnMut(usize, &[usize]) -> Vec<usize>,
+) -> Vec<(usize, Vec<usize>)> {
+    let mut spared = Vec::new();
+    let Some(oldest) = doomed.iter().position(|&doomed| doomed) else {
+        return spared;
+    };
+    let mut covered = vec![false; places];
+    let mut open: Vec<usize> = (0..places).collect();
+    for backup in (oldest..doomed.len()).rev() {
+        if open.is_empty() {
+            break;
+        }
+        let held = held_by(backup, &open);
+        if held.is_empty() {
+            continue;
+        }
+        for &place in &held {
+            covered[place] = true;
+        }
+        open.retain(|&place| !covered[place]);
+        if doomed[backup] {
+            doomed[backup] = false;
+            spared.push((backup, held));
+        }
+    }
+    spared
 }
 
 /// A target folder, opened for one operation: what an operation lists,
@@ -1191,43 +1225,46 @@ fn served_now(slots: &[crate::hosting::Slot]) -> Vec<bool> {
 
 /// Where a hosted file's copy lies in a backup, as a run lays it out
 /// (`write_backup`): the folders below `Databases/` (its folder's place
-/// below the database root) and its file name. The same names find a
-/// previous backup's copy to link to (`link_previous`).
+/// below the database root, [`below`]) and its file name. The same names
+/// find a previous backup's copy to link to (`link_previous`).
 struct Place {
     /// The file's hosted name, for the log.
     name: String,
-    folders: Vec<OsString>,
+    folders: PathBuf,
     file: OsString,
 }
 
-/// The places of the files the server hosts now, open or not: each slot's
-/// file, a closed one and one whose opening again failed included. A file
-/// that failed to open at startup has no slot, and no place in the layout
-/// (the database root follows the slots); nor has one whose path does not
-/// resolve now.
-fn hosted_places(shared: &Shared) -> Vec<Place> {
-    let root = database_root(shared);
+/// The places of the files the server hosts that a run did not copy (not
+/// one of `copied`, by id) in its layout below `root`: each slot's file, a
+/// closed one and one whose opening again failed included. A file that
+/// failed to open at startup has no slot, and no place in the layout (the
+/// database root follows the slots); nor has one whose path does not
+/// resolve now. Each path is resolved here, so the run calls this only once
+/// it has let go of the files it copied: a path that takes long to resolve,
+/// on a mount that does not answer, keeps no file from closing.
+fn places_left_out(shared: &Shared, root: &Path, copied: &[u32]) -> Vec<Place> {
     shared
         .hosting
         .slots()
         .iter()
+        .filter(|slot| !copied.contains(&slot.id))
         .filter_map(|slot| {
-            let real = real_folder(&slot.path).ok()?;
-            let folders = real
-                .strip_prefix(&root)
-                .unwrap_or(Path::new(""))
-                .components()
-                .filter_map(|part| match part {
-                    Component::Normal(name) => Some(name.to_os_string()),
-                    _ => None,
-                })
-                .collect();
             Some(Place {
                 name: slot.name.clone(),
-                folders,
+                folders: below(&real_folder(&slot.path).ok()?, root),
                 file: slot.path.file_name()?.to_os_string(),
             })
         })
+        .collect()
+}
+
+/// The place of the resolved folder `real` below the database root `root`:
+/// every part a plain name; none when it does not lie below the root.
+fn below(real: &Path, root: &Path) -> PathBuf {
+    real.strip_prefix(root)
+        .unwrap_or(Path::new(""))
+        .components()
+        .filter(|part| matches!(part, Component::Normal(_)))
         .collect()
 }
 
@@ -1428,20 +1465,29 @@ pub(crate) fn run(
         Err(failure) => return failed(false, failure),
     };
     match write_backup(shared, backups, &ticket, &target, &protected, &files) {
-        Ok(folder) => {
+        Ok(written) => {
+            // The backup is published: the run lets go of the files it
+            // copied before it resolves the other hosted files' paths and
+            // applies retention, so that neither keeps a file from closing.
+            // The copied files' places are those the writer laid them out
+            // at.
+            let copied: Vec<u32> = files.iter().map(|hosted| hosted.id).collect();
+            drop(files);
+            let mut places = written.places;
+            places.extend(places_left_out(shared, &written.root, &copied));
             backups.retain(
                 &target,
                 &protected,
                 &name,
                 task.keep,
-                &folder,
-                &hosted_places(shared),
+                &written.folder,
+                &places,
             );
             info!("Schedule {name:?} completed.");
             Outcome {
                 copied: true,
                 error: 0,
-                folder: Some(folder),
+                folder: Some(written.folder),
                 cancelled: None,
             }
         }
@@ -1483,7 +1529,17 @@ impl Drop for Unfinished<'_> {
     }
 }
 
-/// Write `ticket`'s backup of `files` in `target`; its folder name.
+/// A backup a run wrote.
+struct Written {
+    /// Its folder's name.
+    folder: String,
+    /// The database root its layout follows ([`database_root`]).
+    root: PathBuf,
+    /// Where each file it copied lies in it.
+    places: Vec<Place>,
+}
+
+/// Write `ticket`'s backup of `files` in `target`.
 fn write_backup(
     shared: &Shared,
     backups: &Backups,
@@ -1491,7 +1547,7 @@ fn write_backup(
     target: &Target,
     protected: &Protected,
     files: &[Arc<Hosted>],
-) -> Result<String, Failure> {
+) -> Result<Written, Failure> {
     let schedule = &ticket.schedule;
     let name = config::folder_name(schedule, ticket.started.datetime());
     let done = target.path.join(&name);
@@ -1547,6 +1603,7 @@ fn write_backup(
         .cloned()
         .unwrap_or_default();
     let mut made = HashMap::new();
+    let mut places = Vec::with_capacity(files.len());
     let stop = || ticket.cancelled().is_some();
     let copied = |n: u64| backups.update(ticket, |run| run.bytes_copied += n);
     for hosted in files {
@@ -1558,13 +1615,7 @@ fn write_backup(
             message: format!("{}: {e}", hosted.path.display()),
         };
         let real = real_folder(&hosted.path).map_err(|e| unreadable(&e))?;
-        // Below the root, every part a plain name (the path is canonical).
-        let relative: PathBuf = real
-            .strip_prefix(&root)
-            .unwrap_or(Path::new(""))
-            .components()
-            .filter(|c| matches!(c, Component::Normal(_)))
-            .collect();
+        let relative = below(&real, &root);
         let file_name = hosted
             .path
             .file_name()
@@ -1675,6 +1726,11 @@ fn write_backup(
         );
         back_up_container_data(hosted, &into, &stop, &mut |n| copied(n))
             .map_err(|e| Failure::copy(&hosted.path.display(), e, ticket))?;
+        places.push(Place {
+            name: hosted.name.clone(),
+            folders: relative,
+            file: file_name.to_os_string(),
+        });
         backups.update(ticket, |run| run.files_done += 1);
     }
     let stamp = Config::new(
@@ -1731,7 +1787,11 @@ fn write_backup(
         ));
     }
     backups.lock().last.insert(schedule.to_lowercase(), made);
-    Ok(name)
+    Ok(Written {
+        folder: name,
+        root,
+        places,
+    })
 }
 
 /// The folder `relative` below `databases`, made as needed, each made one
@@ -2062,5 +2122,32 @@ mod tests {
             take_matched(&matched).unwrap().is_empty(),
             "a file opened after the snapshot is not taken"
         );
+    }
+
+    /// Retention's pass looks at no backup when the keep count deletes
+    /// none, and at no older backup once the newest holds every hosted file
+    /// (#1189): the old doomed ones then go, none spared.
+    #[test]
+    fn retention_looks_no_further_than_it_must() {
+        let mut looked: Vec<usize> = Vec::new();
+        let mut doomed = [false; 5];
+        let spared = spare_last_holders(&mut doomed, 3, |backup, open| {
+            looked.push(backup);
+            open.to_vec()
+        });
+        assert!(spared.is_empty());
+        assert!(
+            looked.is_empty(),
+            "nothing is looked at when nothing is deleted"
+        );
+
+        let mut doomed = [true, true, true, false, false];
+        let spared = spare_last_holders(&mut doomed, 3, |backup, open| {
+            looked.push(backup);
+            open.to_vec()
+        });
+        assert!(spared.is_empty());
+        assert_eq!(doomed, [true, true, true, false, false]);
+        assert_eq!(looked, [4], "only the newest is looked at");
     }
 }
