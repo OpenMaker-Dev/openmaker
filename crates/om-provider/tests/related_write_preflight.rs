@@ -141,6 +141,7 @@ fn autoentered_list_script_edit_refuses_before_lock() {
         record_number: None,
         prepared: None,
         single_field_step: false,
+        assignments: None,
     });
     assert_eq!(result.unwrap_err().code, Some(3));
     assert_eq!(
