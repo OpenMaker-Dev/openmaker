@@ -306,6 +306,12 @@ struct Node {
     appended: Option<Appended>,
     /// The tick it last opened.
     up_since: u64,
+    /// Whether the last vote or pre-vote request delivered to it went under
+    /// the opening election's delay: its answer is the next it sends.
+    answering: Option<bool>,
+    /// In the opening election, the members whose pre-vote grant it last
+    /// counted though grant or request did not go under that delay.
+    unruled: BTreeSet<ServerId>,
 }
 
 /// The simulator's own record (module docs): the committed entries, entry
@@ -473,11 +479,14 @@ struct World {
     /// The steady phase's opening election is under way: every message
     /// takes [`World::electing_delay`] ticks.
     electing: bool,
-    /// The vote requests sent under that rule: candidate, voter and term.
-    ruled: BTreeSet<(ServerId, ServerId, u64)>,
-    /// The campaigns (candidate and term) under way when the steady phase
-    /// opened: one of them that wins was not elected under that rule.
-    begun: BTreeSet<(ServerId, u64)>,
+    /// The messages in flight sent under that delay, by number: an answer
+    /// to a vote or pre-vote request only when the request went under it
+    /// too.
+    opening: BTreeSet<u64>,
+    /// The campaigns (candidate and term) that stood in the opening
+    /// election on pre-vote grants that each went, request and answer,
+    /// under its delay: the only ones whose win ends it.
+    ruled: BTreeSet<(ServerId, u64)>,
     /// The member that runs with a smaller largest entry until the steady
     /// phase, when it starts again with the cluster's (an operator's
     /// mistake and its correction, section 7.1).
@@ -557,8 +566,8 @@ impl World {
             closing: None,
             leaderless: None,
             electing: false,
+            opening: BTreeSet::new(),
             ruled: BTreeSet::new(),
-            begun: BTreeSet::new(),
             small,
             after_answer: 0,
             after_append: 0,
@@ -597,6 +606,8 @@ impl World {
                 asked: None,
                 appended: None,
                 up_since: 0,
+                answering: None,
+                unruled: BTreeSet::new(),
             });
         }
         Ok(w)
@@ -680,12 +691,14 @@ impl World {
         let election = self.timing.0;
         // It opens with an election: every member that believes it leads
         // stops and starts again (one deposed that has not heard yet too),
-        // and until a leader is in office whose campaign began after this,
-        // every message takes the same time, a vote's round trip less than
-        // the shortest timeout. A campaign under way now, its votes asked
-        // on the faults' network, may still win: that leader stops and
-        // starts again too ([`World::watch_election`]). The election check
-        // bounds it.
+        // and until a leader is in office whose whole campaign, pre-vote
+        // and vote, ran after this, every message takes the same time, a
+        // vote's round trip less than the shortest timeout. A campaign
+        // that counts anything of the faults' network (a vote asked
+        // before, a pre-vote grant asked or answered before, which a
+        // pre-vote asked again for the same round still counts) may still
+        // win: that leader stops and starts again too
+        // ([`World::watch_election`]). The election check bounds it.
         let leaders: Vec<usize> = self
             .up()
             .into_iter()
@@ -694,14 +707,19 @@ impl World {
         for l in leaders {
             self.restart(l)?;
         }
-        self.begun = self
-            .up()
-            .into_iter()
-            .filter(|i| self.core_of(*i).role() == Role::Candidate)
-            .map(|i| (self.ids[i], self.core_of(i).term()))
-            .collect();
-        self.electing = true;
+        // The grants a pre-candidate counted before.
+        for i in self.up() {
+            let core = self.core_of(i);
+            let mut before = BTreeSet::new();
+            if core.role() == Role::PreCandidate {
+                before = core.grants.clone();
+                before.remove(&self.ids[i]);
+            }
+            self.nodes[i].unruled = before;
+        }
+        self.opening.clear();
         self.ruled.clear();
+        self.electing = true;
         self.run_until(1000 * election, |w| !w.electing)?;
         // The member given a smaller largest entry keeps it a while under
         // that leader, which reports it blocked, then starts again with the
@@ -761,10 +779,11 @@ impl World {
                 let tenths = spell * 10 / (self.election_deadline() / ATTEMPTS);
                 self.cov.leaderless_tenths = self.cov.leaderless_tenths.max(tenths);
             }
-            if self.electing && self.begun.contains(&(self.ids[l], self.core_of(l).term())) {
-                // Elected by a campaign begun before the opening election,
-                // not under its rule: it stops and starts again, a leader's
-                // fall, and the election goes on.
+            if self.electing && !self.ruled.contains(&(self.ids[l], self.core_of(l).term())) {
+                // Elected by a campaign that counted something of the
+                // faults' network, not under the opening election's delay:
+                // it stops and starts again, a leader's fall, and the
+                // election goes on.
                 return self.restart(l);
             }
             self.electing = false;
@@ -1308,6 +1327,15 @@ impl World {
 
     fn send(&mut self, m: Message) {
         self.cov.sent += 1;
+        // An answer to a vote or pre-vote request goes under the opening
+        // election's delay, for its checks, only if the request did too.
+        let request_ruled = match m.body {
+            Body::PreVoteReply { .. } | Body::VoteReply { .. } => {
+                let i = self.ids.iter().position(|x| *x == m.from).unwrap();
+                self.nodes[i].answering.take() == Some(true)
+            }
+            _ => true,
+        };
         let mut copies = 1;
         let storm = if self.faults { self.storm } else { STORMS[0] };
         if self.rng.one_in(storm.drop) {
@@ -1350,28 +1378,27 @@ impl World {
                 continue;
             }
             let stall = if success && self.churn { 25 } else { 300 };
-            let delay = if self.faults && storm.weight > 0 && self.rng.one_in(stall) {
+            let (delay, opening) = if self.faults && storm.weight > 0 && self.rng.one_in(stall) {
                 self.cov.stalled += 1;
                 self.cov.faults += 1;
-                self.timing.0 * (2 + self.rng.below(6))
+                (self.timing.0 * (2 + self.rng.below(6)), false)
             } else if self.writing && self.electing {
                 // The steady phase's opening election: every message takes
                 // the same time, a round trip less than the shortest
-                // timeout. The vote requests sent so are the ones its
-                // timing check judges.
-                if matches!(m.body, Body::Vote { .. }) {
-                    self.ruled.insert((m.from, m.to, m.term));
-                }
-                self.electing_delay()
+                // timeout.
+                (self.electing_delay(), true)
             } else if self.writing {
                 // The rest of the steady phase: one or two ticks, so that
                 // appends to a follower cross, and no answer arrives before
                 // the next entry's append has gone out.
-                1 + self.rng.below(2)
+                (1 + self.rng.below(2), false)
             } else {
-                self.rng.below(storm.delay.min(self.timing.0) + 1)
+                (self.rng.below(storm.delay.min(self.timing.0) + 1), false)
             };
             self.seq += 1;
+            if opening && request_ruled {
+                self.opening.insert(self.seq);
+            }
             self.flight.push((self.now + delay, self.seq, m.clone()));
         }
     }
@@ -1397,7 +1424,10 @@ impl World {
     }
 
     fn deliver(&mut self, k: usize) -> Outcome {
-        let (_, _, m) = self.flight.remove(k);
+        let (_, seq, m) = self.flight.remove(k);
+        // Whether it went under the opening election's delay (an answer,
+        // with its request).
+        let ruled = self.opening.remove(&seq);
         let Some(i) = self.ids.iter().position(|x| *x == m.to) else {
             return Ok(());
         };
@@ -1409,8 +1439,14 @@ impl World {
         if !member.idle() {
             // It takes messages only when done with the last: this one waits.
             self.seq += 1;
+            if ruled {
+                self.opening.insert(self.seq);
+            }
             self.flight.push((self.now, self.seq, m));
             return self.act(i);
+        }
+        if matches!(m.body, Body::PreVote { .. } | Body::Vote { .. }) {
+            self.nodes[i].answering = Some(ruled);
         }
         if let Body::Vote { last } = m.body {
             self.nodes[i].asked = Some((m.from, m.term, last));
@@ -1424,22 +1460,28 @@ impl World {
             let carried = entries.iter().map(|e| (e.index, e.hash)).collect();
             self.nodes[i].appended = Some((m.from, echo, *prev, carried));
         }
-        if self.electing && matches!(m.body, Body::VoteReply { granted: true }) {
-            // A vote's round trip is shorter than the shortest timeout here:
-            // a candidate whose request to this voter went under the opening
-            // election's delay is still standing in that term when the grant
-            // arrives (section 7.1). A request sent before, on the faults'
-            // network, may come back late, even if the phase opened on the
-            // tick it was sent.
+        if ruled && matches!(m.body, Body::VoteReply { granted: true }) {
+            // A grant whose request and answer both went under the opening
+            // election's delay, judged also after that election ended. It
+            // arrives two delays after its candidate stood, which sent the
+            // request before the next tick, the voter answering before the
+            // tick after it arrived: a round trip shorter than any timeout
+            // drawn (section 7.1), and standing restarted the timer. So on
+            // correct code the candidate still stands in that term, has
+            // won, or follows a leader or a newer term; a leader this
+            // phase stops and starts again has a full timeout ahead, longer
+            // than what is left of that round trip. Only a timer that ran
+            // out puts it back to asking for a pre-vote in that term. A
+            // request or an answer sent outside that delay (before the
+            // phase, or after the opening election, one or two ticks) is
+            // not judged: that delay does not bound its round trip.
             let core = &self.nodes[i].member.as_ref().unwrap().core;
-            let asked = self.ruled.contains(&(m.to, m.from, m.term));
-            if asked && core.term() == m.term && core.role() == Role::PreCandidate {
+            if core.term() == m.term && core.role() == Role::PreCandidate {
                 return Err(self.fail(
                     Check::Election,
                     format!(
-                        "member {i}'s timer ran out while the answers to its vote of term {} \
-                         were on their way: a round trip takes {} ticks, its shortest \
-                         timeout {}",
+                        "member {i}'s timer ran out while the answer to its vote of term {} \
+                         was on its way: a round trip takes {} ticks, its shortest timeout {}",
                         m.term,
                         2 * self.electing_delay(),
                         self.timing.0
@@ -1447,8 +1489,39 @@ impl World {
                 ));
             }
         }
+        // In the opening election, a pre-vote grant the member counts: if
+        // it stands on grants that each went, request and answer, under
+        // the opening election's delay, its campaign ran under it.
+        let mut counted = None;
+        if let (
+            true,
+            Body::PreVoteReply {
+                round,
+                granted: true,
+            },
+        ) = (self.electing, &m.body)
+        {
+            let node = &mut self.nodes[i];
+            let core = &node.member.as_ref().unwrap().core;
+            if core.role() == Role::PreCandidate && core.term() + 1 == *round {
+                if ruled {
+                    node.unruled.remove(&m.from);
+                } else {
+                    node.unruled.insert(m.from);
+                }
+                let clean = !node.unruled.contains(&m.from)
+                    && core.grants.iter().all(|g| !node.unruled.contains(g));
+                counted = Some(clean);
+            }
+        }
         let member = self.nodes[i].member.as_mut().unwrap();
         member.receive(m);
+        if let Some(clean) = counted {
+            let core = &member.core;
+            if clean && core.role() == Role::Candidate {
+                self.ruled.insert((self.ids[i], core.term()));
+            }
+        }
         self.cov.delivered += 1;
         self.check(i)
     }
@@ -1665,6 +1738,8 @@ impl World {
                 node.was_leader = false;
                 node.lead_mark = None;
                 node.up_since = self.now;
+                node.answering = None;
+                node.unruled.clear();
                 self.cov.restarts += 1;
                 self.check(i)
             }
@@ -4868,4 +4943,108 @@ fn answers_count_only_before_the_tick_the_timeout_falls_due() {
     assert_eq!(voted(standing(None), 2), Role::Leader);
     let planted = Some(Plant::StandWithoutRestart);
     assert_eq!(voted(standing(planted), 2), Role::PreCandidate);
+}
+
+/// Member `c` of `w` asks for a pre-vote, and its asks to `voters` are
+/// granted, the grants left on the network; its other asks are lost.
+fn grants_in_flight(w: &mut World, c: usize, voters: &[usize]) {
+    for _ in 0..4 * w.timing.0 {
+        if w.core_of(c).role() == Role::PreCandidate {
+            break;
+        }
+        w.tick_member(c, 1).unwrap();
+    }
+    assert_eq!(w.core_of(c).role(), Role::PreCandidate);
+    w.pass(|m, f, t| matches!(m.body, Body::PreVote { .. }) && f == c && voters.contains(&t))
+        .unwrap();
+    w.take(|m, f, _| matches!(m.body, Body::PreVote { .. }) && f == c);
+    let granted = |m: &Message| matches!(m.body, Body::PreVoteReply { granted: true, .. });
+    let n = w.flight.iter().filter(|f| granted(&f.2)).count();
+    assert_eq!(n, voters.len());
+}
+
+/// Review of #1222, finding 1 (seed 1's settings, five members): a member
+/// that asked for a pre-vote before the steady phase opened, its grants
+/// still on the network, stands on them in the phase and wins: its
+/// pre-vote did not run under the opening election's delay, so that win
+/// does not end the opening election, which goes on. Two schedules: the
+/// grants due when the phase opens; and due after the member asked again
+/// in the phase, for the same round, so that they count for the new ask.
+#[test]
+fn a_pre_vote_asked_before_the_phase_does_not_end_its_election() {
+    for again in [false, true] {
+        let mut w = World::scripted_seed(1, 5, None);
+        grants_in_flight(&mut w, 0, &[1, 2]);
+        assert_eq!(w.core_of(0).term(), 0);
+        let due = if again {
+            // Its timer runs out on the phase's second tick; the grants
+            // come on the third.
+            let core = &mut w.nodes[0].member.as_mut().unwrap().core;
+            core.elapsed = core.timeout - 2;
+            w.now + 3
+        } else {
+            w.now
+        };
+        for f in w.flight.iter_mut() {
+            f.0 = due;
+        }
+        w.steady().unwrap();
+        let terms = led_terms(&w);
+        assert!(
+            terms.iter().any(|t| *t > 1),
+            "again {again}: leaders of terms {terms:?}"
+        );
+    }
+}
+
+/// Review of #1222, finding 2 (seed 4's settings: five members, a timeout
+/// of 10, a delay of 4 in the opening election). Two campaigns in term 2
+/// under the opening election's delay: member 1 asks on the phase's first
+/// tick, stands on the ninth and wins on the seventeenth, which ends the
+/// opening election; member 0 asks on the third tick and stands on the
+/// eleventh. Member 4, whose log is newer than member 1's, refuses member
+/// 1 and grants member 0, the grant due on the nineteenth tick, after the
+/// opening election ended. Planted, member 0's timer is not restarted
+/// when it stands: it runs out on the thirteenth tick, with that grant on
+/// its way, which the election check must catch though the opening
+/// election has ended. Without the plant every check holds.
+#[test]
+fn a_vote_asked_in_the_opening_election_is_judged_after_it_ends() {
+    let run = |plant| {
+        let mut w = World::scripted_seed(4, 5, plant);
+        let election = w.timing.0;
+        assert_eq!((election, w.electing_delay()), (10, 4));
+        // Member 0 leads term 1 with the votes of 1, 2 and 3; its `empty`
+        // entry reaches member 4 alone, and it steps down.
+        w.win(0, &[1, 2, 3]).unwrap();
+        w.exchange(0, &[4]).unwrap();
+        w.take(|_, f, _| f == 0);
+        w.tick_member(0, election).unwrap();
+        w.take(|_, f, _| f == 0);
+        assert_eq!(w.core_of(0).role(), Role::Follower);
+        assert!(w.flight.is_empty());
+        let (a, b) = (w.core_of(0).last(), w.core_of(1).last());
+        assert!(a > b && w.core_of(4).last() == a, "{a:?} {b:?}");
+        // Timers: member 1 runs out on the first tick and draws 19, member
+        // 0 on the third and draws 10; the others later.
+        let drawing = |n: u64| (0..).find(|r| mix(*r) % election == n).unwrap();
+        let set = |w: &mut World, i: usize, elapsed: u64, timeout: u64, rng: Option<u64>| {
+            let core = &mut w.nodes[i].member.as_mut().unwrap().core;
+            core.elapsed = elapsed;
+            core.timeout = timeout;
+            if let Some(r) = rng {
+                core.rng = r;
+            }
+        };
+        set(&mut w, 1, election - 1, election, Some(drawing(9)));
+        set(&mut w, 0, election - 3, election, Some(drawing(0)));
+        for i in 2..5 {
+            set(&mut w, i, 0, 2 * election - 1, None);
+        }
+        w.steady()
+    };
+    let failure = run(Some(Plant::StandWithoutRestart)).unwrap_err();
+    eprintln!("planted: {failure}");
+    assert_eq!(failure.check, Check::Election, "{failure}");
+    run(None).unwrap();
 }
