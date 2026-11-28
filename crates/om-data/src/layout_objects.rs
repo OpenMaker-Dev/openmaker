@@ -44,7 +44,7 @@ use om_hbam::slot::be_uint;
 use om_hbam::{serial, OwnedNode};
 use om_layout::object::AutosizingAnchors;
 use om_layout::wire::{Fields, RawValue, Value};
-use om_layout::{LayoutDef, LayoutObject, ObjectKind, Rect};
+use om_layout::{LayoutDef, LayoutObject, ObjectKind, ObjectStore, Rect};
 
 use crate::layout_placement::{
     definition, frame_text, hex, is_container, key_string, kind_name, overlap, part_list, parts,
@@ -136,8 +136,7 @@ pub fn plan_anchors(
     if anchors.flags() == 0 {
         return Err(Refusal::Invalid("Set at least one autosizing edge.".into()));
     }
-    if target.is_locked()
-        || !matches!(target.kind(), ObjectKind::Text | ObjectKind::Field)
+    if !matches!(target.kind(), ObjectKind::Text | ObjectKind::Field)
         || target.parent.is_some_and(|parent| {
             !objects.get(parent).is_some_and(|parent| {
                 matches!(parent.kind(), ObjectKind::Group | ObjectKind::Portal)
@@ -145,7 +144,14 @@ pub fn plan_anchors(
         })
     {
         return Err(Refusal::Unsupported(
-            "Autosizing can be set on unlocked text and fields on the layout or inside a group or portal.".into(),
+            "Autosizing can be set on text and fields on the layout or inside a group or portal."
+                .into(),
+        ));
+    }
+    if !anchor_chain_is_unlocked(&objects, target) {
+        return Err(Refusal::Unsupported(
+            "Autosizing requires an unlocked object and a readable, unlocked chain of enclosing objects."
+                .into(),
         ));
     }
     let bytes = om_layout::encode::with_object_anchors(&stored, object, anchors.flags())
@@ -164,6 +170,36 @@ pub fn plan_anchors(
         member: next,
         changes,
     })
+}
+
+fn anchor_chain_is_unlocked<'a>(objects: &'a ObjectStore, mut object: &'a LayoutObject) -> bool {
+    // The display decoder picks the first parent. A write needs an
+    // unambiguous chain, with the same depth bound as the object index.
+    for _ in 0..=MAX_INDEX_DEPTH {
+        if object.is_locked() {
+            return false;
+        }
+        let mut parents = objects
+            .objects
+            .iter()
+            .filter(|parent| parent.children.contains(&object.id));
+        let Some(parent) = parents.next() else {
+            return object.parent.is_none();
+        };
+        if parents.next().is_some()
+            || object.parent != Some(parent.id)
+            || objects
+                .objects
+                .iter()
+                .filter(|o| o.id == parent.id)
+                .nth(1)
+                .is_some()
+        {
+            return false;
+        }
+        object = parent;
+    }
+    false
 }
 
 /// Whether a valid edit already has its requested anchors, for a retry or
@@ -1257,6 +1293,64 @@ mod tests {
         let repeated = plan_anchors(&edit.member, 2, anchors).unwrap();
         assert!(repeated.changes.is_empty());
         assert_eq!(repeated.member, edit.member);
+
+        let object = |kind, id, locked, child| {
+            let mut object = Vec::new();
+            uint(1, kind, &mut object);
+            uint(2, id, &mut object);
+            uint(
+                3,
+                om_layout::encode::ANCHOR_LEFT_TOP | if locked { 0x2 } else { 0 },
+                &mut object,
+            );
+            if let Some(child) = child {
+                uint(6, child, &mut object);
+            }
+            object
+        };
+        let fixture = |kind, locked, enclosing: &[(u64, bool)]| {
+            let mut definitions = vec![object(kind, 2, locked, None)];
+            let mut root = 2;
+            for &(kind, locked) in enclosing {
+                definitions.push(object(kind, root + 1, locked, Some(root)));
+                root += 1;
+            }
+            let mut fixture = before.clone();
+            let store = om_layout::encode::append_to_store(&[], &[root], &definitions);
+            fixture.set_child(stored_value(&[OBJECTS], &store));
+            fixture
+        };
+        for (case, fixture) in [
+            ("locked text", fixture(2, true, &[])),
+            ("rectangle", fixture(5, false, &[])),
+            ("child of tab panel", fixture(2, false, &[(12, false)])),
+            ("child of locked portal", fixture(1, false, &[(9, true)])),
+            (
+                "nested child of locked group",
+                fixture(2, false, &[(8, false), (8, true)]),
+            ),
+        ] {
+            assert!(
+                matches!(
+                    plan_anchors(&fixture, 2, anchors),
+                    Err(Refusal::Unsupported(_))
+                ),
+                "{case}"
+            );
+        }
+        assert!(plan_anchors(&fixture(2, false, &[(8, false), (8, false)]), 2, anchors).is_ok());
+
+        let ambiguous = fixture(2, false, &[(8, false)]);
+        let (stored, _) = stored_objects(&ambiguous).unwrap();
+        for conflicting_group in [object(8, 4, true, Some(2)), object(8, 3, true, None)] {
+            let store = om_layout::encode::append_to_store(&stored, &[], &[conflicting_group]);
+            let mut duplicate = ambiguous.clone();
+            duplicate.set_child(stored_value(&[OBJECTS], &store));
+            assert!(matches!(
+                plan_anchors(&duplicate, 2, anchors),
+                Err(Refusal::Unsupported(_))
+            ));
+        }
     }
 
     /// A field shown as a pop-up menu takes display type 2, the value list

@@ -903,9 +903,11 @@ om-author set-object-anchors --object 'layout_object:1.4@File.fmp12' \
 
 The MCP tool `openmaker_set_object_anchors` takes an array of the same edge
 names. The operation saves one unlocked text or field on a fixed layout,
-including a direct child of a group or portal. It refuses an empty set of
-anchors. Clearing all four and changing anchors for other object kinds
-remain unmeasured. The desktop Inspector still shows a read-only summary.
+including a direct child of a group or portal. OpenMaker refuses the edit
+if an enclosing object is locked because FileMaker's behavior in that case
+is unmeasured. It also refuses an empty set of anchors. Clearing all four
+and changing anchors for other object kinds remain unmeasured. The desktop
+Inspector still shows a read-only summary.
 
 OpenMaker changes only the object's anchor bits in `[4, 5, L, 07]` and
 stamps the layout member through the ordinary hosted object-edit path.
