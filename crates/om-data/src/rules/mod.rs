@@ -20,10 +20,12 @@
 //! Refusals carry the FileMaker error a script step reports
 //! ([`DataError::code`]).
 mod date_self;
+mod global_evaluate;
 mod global_text_input;
 mod global_text_self;
 mod named_auto_entry;
 pub use date_self::{check_related_date_self, scripted_date_self_clamp, typed_date_self_clamp};
+pub use global_evaluate::{global_evaluate_changes, global_evaluate_outputs};
 pub use global_text_input::global_text_input_changes;
 pub use global_text_self::{global_text_assignment, typed_text_self_default};
 pub mod recalc;
@@ -1243,6 +1245,8 @@ struct PlannedField {
     global_text_self: GlobalTextSelf,
     /// This local global's auto-entry reads an independent plain global.
     global_text_input: Option<GlobalTextInput>,
+    /// Global formula text this output would evaluate on local New Record.
+    global_evaluate_input: Option<u64>,
     /// Creation Date supplies the value on create. The calculation's
     /// dependencies identify updates with an unmeasured result.
     creation_date_with_calculation: bool,
@@ -2184,45 +2188,6 @@ fn supports_creation_time_text(locale: &Locale) -> bool {
         && locale.pm == " PM"
 }
 
-/// A global rule of the form `Let ( result = Evaluate ( Input ) ; "" )`.
-/// The input has no default and the result is empty at ordinary New Record.
-/// An explicit assignment to the input is outside that measured write path.
-fn blank_global_evaluate_input<'a>(
-    table: &Table,
-    context: &[u8],
-    polish: &'a Expr,
-) -> Option<(u64, &'a Expr)> {
-    let Expr::Let { bindings, body } = polish else {
-        return None;
-    };
-    let [Expr::Evaluate {
-        args,
-        need_field_ref: 0,
-    }] = bindings.as_slice()
-    else {
-        return None;
-    };
-    let [Expr::Field(field)] = args.as_slice() else {
-        return None;
-    };
-    if field.occurrence.0 != context
-        || field.repetition != 1
-        || !matches!(field.flags, 0 | 4)
-        || !matches!(body.as_ref(), Expr::Text(text) if text.style.is_none() && text.value.is_empty())
-    {
-        return None;
-    }
-    let id = field.field.id()?;
-    let source = table.field(id)?;
-    let options = source.decoded_options()?;
-    (source.kind == FieldKind::Normal
-        && source.data_type == DataType::Text
-        && options.options == 0
-        && options.validation_options == 0
-        && options.max_repetitions == 1)
-        .then_some((id, body.as_ref()))
-}
-
 impl RecordPlan {
     /// The rules of `table` from its definitions in `tree` alone (no other
     /// tables, occurrences or custom functions).
@@ -2485,6 +2450,7 @@ impl RecordPlan {
             } else {
                 None
             };
+            let mut global_evaluate_input = None;
             let mut formula_at = |key: u64, usage: FormulaUse| -> Result<Expression, DataError> {
                 let formula = field_node.and_then(|node| node.get(key));
                 let context = formula
@@ -2504,10 +2470,23 @@ impl RecordPlan {
                     && options.validation_options == 0
                     && options.max_repetitions == 1
                 {
-                    if let Some((input, blank)) =
-                        blank_global_evaluate_input(table, &context, &polish)
+                    if let Some((input, global, blank)) =
+                        global_evaluate::classify(table, &context, &polish)
                     {
-                        blank_evaluate_inputs.insert(input);
+                        if global {
+                            let local_occurrence = Key(context.to_vec())
+                                .id()
+                                .and_then(|occurrence| schema.table_of(occurrence))
+                                .is_some_and(|source| source.id == table.id);
+                            if !local_occurrence {
+                                return Err(error(
+                                    "Global Evaluate input requires this table's occurrence.",
+                                ));
+                            }
+                            global_evaluate_input = Some(input);
+                        } else {
+                            blank_evaluate_inputs.insert(input);
+                        }
                         blank_evaluate_outputs.insert(field.id);
                         return analyze_rule(blank.clone(), &context, usage).map_err(|e| error(&e));
                     }
@@ -2845,6 +2824,7 @@ impl RecordPlan {
                 auto_enter_self,
                 global_text_self,
                 global_text_input,
+                global_evaluate_input,
                 creation_date_with_calculation,
                 constant,
                 validation,
@@ -3287,7 +3267,23 @@ impl RecordPlan {
                     ),
                 ));
             }
-            if let Some(input) = field.global_text_input {
+            if let Some(input) = field.global_evaluate_input {
+                if !allow_nonempty {
+                    return Err(DataError::with_code(
+                        error::UNAVAILABLE,
+                        "Global Evaluate auto-entry requires local New Record.",
+                    ));
+                }
+                let input_empty = globals.get(input, 1).is_none_or(Value::is_empty);
+                if global_evaluate::clears_output(
+                    id,
+                    field.options.calculation_replaces_existing(),
+                    globals,
+                    input_empty,
+                )? {
+                    values.insert((id, 1), String::new());
+                }
+            } else if let Some(input) = field.global_text_input {
                 if !allow_nonempty {
                     return Err(DataError::with_code(
                         error::UNAVAILABLE,
@@ -4345,7 +4341,12 @@ impl RecordPlan {
             context.record_number,
             Some(RecordNumber::LocalSortedNewRecord { .. })
         );
-        if !self.blank_evaluate_inputs.is_empty() && (!unsorted || !entry.script || entry.imported)
+        if (!self.blank_evaluate_inputs.is_empty()
+            || self
+                .fields
+                .values()
+                .any(|field| field.global_evaluate_input.is_some()))
+            && (!unsorted || !entry.script || entry.imported)
         {
             return Err(DataError::with_code(
                 error::UNAVAILABLE,
